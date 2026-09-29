@@ -1,6 +1,6 @@
 # Loose Screws — Implementation Plan
 
-Status: Milestone 1 (vertical slice) in progress — waves 1 and 2 done · Source design: [design/game-design-doc.md](design/game-design-doc.md)
+Status: Milestone 1 (vertical slice) in progress — waves 1 to 3 done (playable end to end with bots) · Source design: [design/game-design-doc.md](design/game-design-doc.md)
 
 Milestone 1 proves the three riskiest parts of the design before anything else is built:
 
@@ -33,6 +33,7 @@ crates/
   ls-worldgen/          Sliders, share codes, SDF generator, chunk store, meshers, terrain edits, paint layer
   ls-sim/               Game simulation: ship, weapons, projectiles, collisions, rule sets, Paint the Void
   ls-net/               Wire protocol, quantization, snapshots and deltas, transport trait
+  ls-game/              Shared glue (no I/O): terrain adapter, match setup, sim/net conversions, client prediction and interpolation, server Room with lag compensation
   ls-server/            Native authoritative server binary (tokio), WebSocket + WebTransport
   ls-wasm/              wasm-bindgen bindings for the browser: worldgen, meshing, prediction
   ls-bots/              Headless bot clients for load and soak tests
@@ -120,7 +121,7 @@ userDocs/               Player-facing manuals and hosting guides
 
 ### 4.7 ls-bots
 - Headless clients reusing `ls-net` and `ls-sim` prediction; simple behaviors (wander through open space, aim at nearest enemy, paint walls).
-- CLI: `ls-bots --server ws://127.0.0.1:7777 --count 7`.
+- CLI: `ls-bots --server ws://127.0.0.1:7777/ws --count 7`.
 
 ## 5. Work breakdown and orchestration
 

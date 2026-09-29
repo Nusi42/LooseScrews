@@ -1,8 +1,10 @@
-// Full-screen error overlay, used when WebGPU is unavailable or the device is lost.
+// Full-screen error overlay: WebGPU unavailable, device lost, or the game server unreachable.
 
 import type { GpuFailureReason } from "../renderer/gpu.ts";
 
-const HELP: Record<GpuFailureReason | "lost" | "other", string> = {
+export type ErrorKind = GpuFailureReason | "lost" | "network" | "match-over" | "other";
+
+const HELP: Record<ErrorKind, string> = {
   "no-webgpu":
     "Loose Screws needs WebGPU. Use a current Chrome or Edge (113+), Firefox 141+ on Windows, " +
     "or Safari 26+. On Linux Chrome, enable chrome://flags/#enable-unsafe-webgpu. " +
@@ -13,6 +15,11 @@ const HELP: Record<GpuFailureReason | "lost" | "other", string> = {
   "no-device": "The GPU refused to create a device. Close other GPU-heavy tabs or apps and reload.",
   "no-context": "The page could not attach WebGPU to its canvas. Reload the page; if that fails, try another browser.",
   lost: "The GPU device was lost (driver reset or the system reclaimed it). Reload the page to continue.",
+  network:
+    "Check that ls-server is running and reachable (the page connects to ws://<this host>/ws; add " +
+    "?server=host:port to use another server). Reload to return to the start screen, where Practice " +
+    "offline works without a server.",
+  "match-over": "The server starts the next match on the same level. Reload to join it.",
   other: "Something went wrong while starting the game. Reload the page to try again.",
 };
 
@@ -20,7 +27,7 @@ export function showErrorScreen(
   parent: HTMLElement,
   title: string,
   detail: string,
-  kind: GpuFailureReason | "lost" | "other" = "other",
+  kind: ErrorKind = "other",
 ): void {
   parent.querySelector(".error-screen")?.remove();
   const root = document.createElement("div");

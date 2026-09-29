@@ -9,8 +9,15 @@ rust-version.workspace = true
 
 [dependencies]
 ls-math.workspace = true
+ls-net.workspace = true
+ls-sim.workspace = true
+ls-worldgen.workspace = true
+ls-game = { workspace = true, features = ["server"] }
 anyhow.workspace = true
+thiserror.workspace = true
 clap.workspace = true
 tokio.workspace = true
+tokio-tungstenite.workspace = true
+futures-util = { workspace = true, features = ["sink"] }
 tracing.workspace = true
-tracing-subscriber.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter"] }

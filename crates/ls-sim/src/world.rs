@@ -301,6 +301,11 @@ impl World {
     pub fn mode(&self) -> &PaintTheVoid {
         &self.mode
     }
+    /// Mutable mode state (admin commands such as ending a match early,
+    /// host tests). Bypasses the rules.
+    pub fn mode_mut(&mut self) -> &mut PaintTheVoid {
+        &mut self.mode
+    }
 
     /// Adds a scrap pile (level junk placed by the generator, tests).
     pub fn add_scrap_pile(&mut self, pos: Vec3, amount: f32) -> u32 {

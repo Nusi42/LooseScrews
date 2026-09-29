@@ -4,9 +4,10 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "npm run typecheck && vite build",
-    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.test.json",
+    "build:wasm": "node scripts/build-wasm.mjs",
+    "dev": "node scripts/build-wasm.mjs && vite",
+    "build": "npm run build:wasm && npm run typecheck && vite build",
+    "typecheck": "node scripts/build-wasm.mjs --if-missing && tsc --noEmit && tsc --noEmit -p tsconfig.test.json",
     "test": "node --test \"src/**/*.test.ts\"",
     "preview": "vite preview"
   },

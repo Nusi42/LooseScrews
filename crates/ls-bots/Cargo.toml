@@ -8,9 +8,15 @@ publish.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-ls-math.workspace = true
-anyhow.workspace = true
+ls-game.workspace = true
+thiserror.workspace = true
 clap.workspace = true
 tokio.workspace = true
+tokio-tungstenite.workspace = true
+futures-util.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+
+[dev-dependencies]
+# The end-to-end tests host an authoritative `Room` in-process.
+ls-game = { workspace = true, features = ["server"] }

@@ -1,6 +1,6 @@
 // Pointer-lock keyboard/mouse input, exposed as an InputState sampled once per frame.
 
-import { axesFromActions, KEY_BINDINGS, MOUSE_PRIMARY, MOUSE_SECONDARY, type Action } from "./bindings.ts";
+import { axesFromActions, KEY_BINDINGS, MOUSE_PRIMARY, MOUSE_SECONDARY, WEAPON_ACTIONS, type Action } from "./bindings.ts";
 
 export interface InputState {
   /** Thrust axes in ship space, each -1..1 (per-axis, so diagonals add up). */
@@ -16,8 +16,12 @@ export interface InputState {
   firePrimary: boolean;
   fireSecondary: boolean;
   scavenge: boolean;
+  /** Overdrive gamble held (F). */
+  overdrive: boolean;
   /** True for exactly one sample after H is pressed. */
   toggleHorizonAssist: boolean;
+  /** Weapon key pressed since the previous sample: 1-4, or 0 for none. */
+  weaponKey: number;
   pointerLocked: boolean;
 }
 
@@ -33,7 +37,9 @@ export function emptyInput(): InputState {
     firePrimary: false,
     fireSecondary: false,
     scavenge: false,
+    overdrive: false,
     toggleHorizonAssist: false,
+    weaponKey: 0,
     pointerLocked: false,
   };
 }
@@ -106,7 +112,9 @@ export class InputController {
       firePrimary: this.primary,
       fireSecondary: this.secondary,
       scavenge: this.held.has("scavenge"),
+      overdrive: this.held.has("overdrive"),
       toggleHorizonAssist: this.edges.has("toggleHorizonAssist"),
+      weaponKey: WEAPON_ACTIONS.findIndex((a) => this.edges.has(a)) + 1,
       pointerLocked: this.locked,
     };
     this.lookX = 0;

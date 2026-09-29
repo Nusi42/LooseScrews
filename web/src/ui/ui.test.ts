@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { formatTimer, meterPercent } from "./hud.ts";
+import { FEED_LINES, FEED_MS, formatTimer, meterPercent, pushFeed } from "./hud.ts";
 import { checkShareCode, normalizeShareCode, SHARE_CODE_PRINTED_LEN } from "./shareCode.ts";
+import { cleanName, DEFAULT_NAME, readShareCode } from "./startScreen.ts";
 
 // Printed by ls-worldgen (crates/ls-worldgen/tests/fixtures/golden_hashes.txt).
 const REAL_CODE = "LS04-0000-0000-000A-K4M6-8001-8F1P";
@@ -41,4 +42,37 @@ test("timer and meter formatting", () => {
   assert.equal(meterPercent(50, 100), 50);
   assert.equal(meterPercent(150, 100), 100);
   assert.equal(meterPercent(5, 0), 0);
+});
+
+test("kill feed keeps the newest lines and expires old ones", () => {
+  let feed = pushFeed([], ["a", "b"], 0);
+  assert.deepEqual(feed.map((e) => e.text), ["a", "b"]);
+  feed = pushFeed(feed, ["c", "d", "e", "f"], 100);
+  assert.equal(feed.length, FEED_LINES);
+  assert.equal(feed[0]!.text, "b");
+  feed = pushFeed(feed, [], FEED_MS + 50);
+  assert.deepEqual(feed.map((e) => e.text), ["c", "d", "e", "f"], "lines from t=0 expired");
+});
+
+test("start screen: empty code means server/random world; validator runs after the format check", () => {
+  assert.deepEqual(readShareCode("   "), { ok: true, code: null });
+  assert.deepEqual(readShareCode(REAL_CODE.toLowerCase()), { ok: true, code: REAL_CODE });
+  let calls = 0;
+  const validate = (code: string) => {
+    calls++;
+    return code === REAL_CODE ? { ok: true as const, code } : { ok: false as const, error: "checksum" };
+  };
+  assert.equal(readShareCode("XX", validate).ok, false);
+  assert.equal(calls, 0, "format errors never reach the validator");
+  assert.deepEqual(readShareCode(REAL_CODE, validate), { ok: true, code: REAL_CODE });
+  const typo = REAL_CODE.replace("K4M6", "K4M7");
+  assert.deepEqual(readShareCode(typo, validate), { ok: false, error: "checksum" });
+});
+
+test("pilot names are trimmed to the server's limits", () => {
+  assert.equal(cleanName("  Ace  "), "Ace");
+  assert.equal(cleanName(""), DEFAULT_NAME);
+  assert.equal(cleanName("a\u0007b"), "ab");
+  const long = cleanName("é".repeat(40));
+  assert.ok(new TextEncoder().encode(long).length <= 32);
 });

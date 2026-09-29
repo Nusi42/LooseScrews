@@ -13,7 +13,12 @@ export type Action =
   | "rollRight"
   | "boost"
   | "scavenge"
-  | "toggleHorizonAssist";
+  | "overdrive"
+  | "toggleHorizonAssist"
+  | "weapon1"
+  | "weapon2"
+  | "weapon3"
+  | "weapon4";
 
 export const KEY_BINDINGS: Readonly<Record<string, Action>> = {
   KeyW: "forward",
@@ -31,8 +36,18 @@ export const KEY_BINDINGS: Readonly<Record<string, Action>> = {
   ShiftLeft: "boost",
   ShiftRight: "boost",
   KeyR: "scavenge",
+  // Overdrive gamble: hold to pay missing weapon energy with hull (2 hull per 1 energy).
+  KeyF: "overdrive",
   KeyH: "toggleHorizonAssist",
+  // Weapon selection (see WEAPON_KEYS in game/controls.ts for the order).
+  Digit1: "weapon1",
+  Digit2: "weapon2",
+  Digit3: "weapon3",
+  Digit4: "weapon4",
 };
+
+/** Weapon-slot actions in key order (Digit1 = index 0). */
+export const WEAPON_ACTIONS: readonly Action[] = ["weapon1", "weapon2", "weapon3", "weapon4"];
 
 /** Mouse buttons (MouseEvent.button): 0 = left = primary, 2 = right = secondary. */
 export const MOUSE_PRIMARY = 0;

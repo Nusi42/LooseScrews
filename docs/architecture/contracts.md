@@ -30,6 +30,13 @@ the same change.
   | Constant | Value | Use |
   | --- | --- | --- |
   | `ls_sim::world::RNG_STREAM_PICKUPS` | `0x5349_4d5f_5049_434b` ("SIM_PICK") | Weapon pickup rolls, seeded with `Pcg32::from_seed(match_seed, ..)` |
+  | `ls_game::setup::RNG_STREAM_SPAWNS` | `0x4741_4d45_5f53_504e` ("GAME_SPN") | Team spawn point placement, `Pcg32::from_seed(world_seed, ..)` |
+  | `ls_game::setup::RNG_STREAM_PICKUP_POINTS` | `0x4741_4d45_5f50_4b50` ("GAME_PKP") | Pickup point placement, `Pcg32::from_seed(world_seed, ..)` |
+
+  The simulation's `match_seed` (`WorldConfig::seed`) is
+  `mix64(world_seed ^ ls_game::setup::MATCH_SEED_SALT)` with the salt `0x4d41_5443_485f_5345`
+  ("MATCH_SE"). Spawn and pickup placement reads only the pristine generated level, so every
+  peer derives the same `MatchSetup` from the share code and rule set.
 
   `ls-worldgen` draws no RNG streams: its noise and features are integer hashes of the seed.
 - `det::tests::golden_bits` and the RNG reference-vector tests run on native and on wasm32
@@ -108,8 +115,9 @@ pub trait TerrainQuery {
 
 The real implementation (`ls-worldgen`'s chunk store) implements the same trait, so
 `ls-sim` code written against the test terrains runs unchanged against generated worlds.
-To keep scores, it (or an adapter in `ls-server` / `ls-wasm`) must also implement
-`ls_sim::SimTerrain` (`apply_edit` plus `paint_coverage`).
+`ls_game::GameTerrain` wraps it and also implements `ls_sim::SimTerrain` (`apply_edit` plus
+`paint_coverage`); it logs every edit it is handed, so the log index is the edit's sequence
+number on the wire.
 
 ## Chunk meshes (`ls-worldgen` -> `ls-wasm` -> web client)
 
@@ -131,7 +139,10 @@ back-face culling and `frontFace: "ccw"`.
 ## Network quantization (`ls-net`)
 
 `QuantConfig::default()` covers the default level box plus a 2 u margin
-(`[-2,258] x [-2,130] x [-2,258]` u). The server fills `Welcome.quant.bounds` from
-`Generator::bounds()` (plus margin) so clients always use the real level box.
+(`[-2,258] x [-2,130] x [-2,258]` u). The server fills `Welcome.quant` with
+`ls_game::convert::quant_config_for(Generator::bounds(), weapons)` (bounds plus 2 u) so
+clients always use the real level box. How game state maps onto the wire types (ids, tick
+numbering, `ack_input`, status scaling, scores, edit delivery) is specified in
+[game-glue.md](game-glue.md#wire-conventions).
 `SnapshotHistory::default()` holds 128 snapshots (256 ticks at 30 Hz), covering
 `MAX_BASELINE_AGE = 255`; server and client must use the same capacity.

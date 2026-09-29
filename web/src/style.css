@@ -368,6 +368,63 @@ button {
   font-size: 15px;
 }
 
+.hud-secondary {
+  font-size: 14px;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+
+.hud-status {
+  position: absolute;
+  top: 40%;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 8px 16px;
+  border-radius: 8px;
+  background: var(--panel);
+  font-size: 18px;
+  font-weight: 700;
+  text-align: center;
+}
+
+.hud-feed {
+  position: absolute;
+  top: 64px;
+  right: 16px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+  font-size: 14px;
+}
+
+.hud-feed div {
+  padding: 3px 10px;
+  border-radius: 6px;
+  background: var(--panel);
+}
+
+/* ---- Start screen buttons and loading ---- */
+
+.play-row {
+  display: flex;
+  gap: 10px;
+}
+
+.play-row .play {
+  flex: 1;
+}
+
+.play.secondary {
+  background: rgba(255, 255, 255, 0.12);
+  color: var(--text);
+}
+
+.loading-card {
+  font-size: 20px;
+  color: var(--muted);
+}
+
 @media (max-width: 640px) {
   .hud-left {
     min-width: 0;
@@ -379,7 +436,8 @@ button {
     bottom: 8px;
     min-width: 0;
   }
-  .hud-flags {
+  .hud-flags,
+  .hud-feed {
     display: none;
   }
 }

@@ -1,0 +1,28 @@
+[package]
+name = "ls-game"
+description = "Shared game glue for server, WASM client and bots: terrain adapter, match setup, sim<->net conversions, client prediction/interpolation and the server room"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+
+[features]
+default = ["server"]
+# The authoritative `server::Room` (pure logic, no I/O). The WASM client can
+# leave it out with `default-features = false`; it still compiles on wasm32.
+server = []
+
+[dependencies]
+ls-math.workspace = true
+ls-worldgen.workspace = true
+ls-sim.workspace = true
+ls-net.workspace = true
+ron.workspace = true
+thiserror.workspace = true
+
+# Lets the unit tests run on wasm32 under Node:
+#   CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=wasm-bindgen-test-runner \
+#   cargo test -p ls-game --lib --target wasm32-unknown-unknown
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test.workspace = true

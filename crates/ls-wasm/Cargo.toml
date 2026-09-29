@@ -12,6 +12,14 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 ls-math.workspace = true
+ls-worldgen.workspace = true
+ls-sim.workspace = true
+ls-net.workspace = true
+ls-game.workspace = true
 wasm-bindgen.workspace = true
 js-sys.workspace = true
 console_error_panic_hook.workspace = true
+
+[dev-dependencies]
+# The online tests talk to a real `Room` over encoded packets.
+ls-game = { workspace = true, features = ["server"] }

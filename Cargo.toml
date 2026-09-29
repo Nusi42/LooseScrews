@@ -5,6 +5,7 @@ members = [
     "crates/ls-worldgen",
     "crates/ls-sim",
     "crates/ls-net",
+    "crates/ls-game",
     "crates/ls-server",
     "crates/ls-wasm",
     "crates/ls-bots",
@@ -23,6 +24,7 @@ ls-math = { path = "crates/ls-math" }
 ls-worldgen = { path = "crates/ls-worldgen" }
 ls-sim = { path = "crates/ls-sim" }
 ls-net = { path = "crates/ls-net" }
+ls-game = { path = "crates/ls-game", default-features = false }
 
 # Serialization and data
 serde = { version = "1.0.229", features = ["derive"] }

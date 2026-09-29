@@ -10,6 +10,7 @@ working on the repo are in [`CLAUDE.md`](../CLAUDE.md).
 | --- | --- |
 | [dev-guide.md](dev-guide.md) | Toolchain, building, running server + client + bots, tests, CI, e2e, profiling, adding a weapon or a rule set |
 | [implementation-plan.md](implementation-plan.md) | Milestone 1 scope, module specs with acceptance criteria, work waves and current status, later milestones |
+| [milestone-2-plan.md](milestone-2-plan.md) | Milestone 2 (arsenal and physics): scope, design decisions, waves, acceptance criteria |
 | [design/game-design-doc.md](design/game-design-doc.md) | The game: rules, ships, weapons, modes (exported from the living design doc; source of truth for game rules) |
 
 ## Architecture

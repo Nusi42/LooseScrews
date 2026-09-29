@@ -5,6 +5,7 @@
 - Docs index: `docs/README.md`; building, running, testing, adding weapons/rule sets: `docs/dev-guide.md`
 - Design: `docs/design/game-design-doc.md` (exported from the living doc; source of truth for game rules)
 - Plan and scope: `docs/implementation-plan.md` (read the relevant module spec before working on a crate)
+- Current milestone: `docs/milestone-2-plan.md` (M2 arsenal and physics: scope, design decisions for gaps in the design doc, waves, acceptance criteria)
 - Cross-crate contracts (terrain trait/edits, axes, units, RNG streams): `docs/architecture/contracts.md`; types live in `ls_math::terrain`. Changing them is a cross-crate change: update the doc and all users together
 - Architecture: `docs/architecture/overview.md` (crates, data flow), `netcode.md`, `determinism.md` (rules, golden hashes, re-blessing)
 - Client/server glue (`ClientSession`, `Room`, wire conventions, lag compensation): `docs/architecture/game-glue.md`; server internals, browser client lifecycle, bots: `docs/architecture/server.md`

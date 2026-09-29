@@ -1,0 +1,22 @@
+// Polite Laser: special primary. Very high damage. Malus: 1.5 s charge with an 'excuse me'
+// chime the target hears (PoliteWarning cue). Lasting effect: burns a clean hole through thin
+// walls.
+// Behaviour: crates/ls-sim/src/weapons/specials/polite_laser.rs (TODO(wave-B): generic fallback until implemented).
+// `params` are read by the weapon module (`WeaponDef::param`); numbers are tuning starting points.
+WeaponDef(
+    id: "polite_laser",
+    name: "Polite Laser",
+    family: Special,
+    slot: Primary,
+    speed: 40.0,
+    lifetime_secs: 3.0,
+    damage: 60.0,
+    fire_interval_secs: 2.0,
+    cost: Energy(25.0),
+    projectile_radius: 0.12,
+    knockback: 5.0,
+    shield: PassThrough(0.5),
+    charge: Some((max_secs: 1.5, min_secs: 1.5, auto_release: true)),
+    visual: (shape: Bolt, color: (255, 200, 230), scale: 1.4),
+    params: { "hole_radius": 0.6, "hole_thickness": 2.0 },
+)

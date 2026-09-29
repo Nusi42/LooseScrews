@@ -1,0 +1,14 @@
+// Decoy: a copy of your ship that draws fire. Integrity equals your max hull; it lasts
+// `duration_secs`, then snaps back to you like a rubber band and hits the first ship on its path
+// (teammates and you included) for 99% of its remaining integrity. Press G to launch.
+// Behaviour: crates/ls-sim/src/gadgets/decoy.rs (TODO(wave-B): return hit). Schema: `ls_sim::GadgetDef`.
+GadgetDef(
+    id: "decoy",
+    name: "Decoy",
+    activation: Instant,
+    energy_cost: 30.0,
+    cooldown_secs: 10.0,
+    duration_secs: 6.0,
+    visual: (shape: Decoy, color: (255, 255, 255), scale: 1.0),
+    params: { "return_fraction": 0.99, "return_speed": 60.0, "launch_speed": 12.0 },
+)

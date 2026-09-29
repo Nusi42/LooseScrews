@@ -3,8 +3,8 @@
 //! A chunk owns cells `0..32` on each axis. To emit every face whose edge
 //! starts inside the chunk, the mesher also needs the vertices of the cells
 //! at local index `-1` (owned by the neighbouring chunks), so the grid holds
-//! corners `-1..=32` (34 per axis) and paint teams for cells `-1..=31`
-//! (33 per axis). Neighbouring chunks compute the shared vertices from
+//! corners `-1..=32` (34 per axis) and paint teams and surface state bits
+//! for cells `-1..=31` (33 per axis). Neighbouring chunks compute the shared vertices from
 //! bit-identical samples, which is what makes the meshes seam-free.
 
 use ls_math::Vec3;
@@ -16,17 +16,19 @@ pub const GRID_CORNERS: usize = CHUNK_CELLS as usize + 2;
 /// Cells per axis in a padded grid (`-1..=31`).
 pub const GRID_CELLS: usize = CHUNK_CELLS as usize + 1;
 
-/// SDF samples (and paint) around one chunk.
+/// SDF samples (and surface layers) around one chunk.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SampleGrid {
     /// World position of local corner `(0, 0, 0)` (1 u per cell).
     pub origin: [i32; 3],
     values: Vec<f32>,
     teams: Vec<u8>,
+    /// Active surface state bits per cell (`ls_math::SurfaceStates`).
+    states: Vec<u8>,
 }
 
 impl SampleGrid {
-    /// A grid filled by evaluating `f` at every corner position; no paint.
+    /// A grid filled by evaluating `f` at every corner position; no paint or states.
     pub fn from_fn(origin: [i32; 3], f: impl Fn(Vec3) -> f32) -> Self {
         let n = GRID_CORNERS;
         let mut values = Vec::with_capacity(n * n * n);
@@ -41,10 +43,12 @@ impl SampleGrid {
             origin,
             values,
             teams: vec![NO_TEAM; GRID_CELLS * GRID_CELLS * GRID_CELLS],
+            states: vec![0; GRID_CELLS * GRID_CELLS * GRID_CELLS],
         }
     }
 
-    /// A grid from raw corner values (`GRID_CORNERS³`, x fastest) with no paint.
+    /// A grid from raw corner values (`GRID_CORNERS³`, x fastest) with no
+    /// paint or states.
     ///
     /// # Panics
     /// If `values` has the wrong length.
@@ -54,6 +58,7 @@ impl SampleGrid {
             origin,
             values,
             teams: vec![NO_TEAM; GRID_CELLS * GRID_CELLS * GRID_CELLS],
+            states: vec![0; GRID_CELLS * GRID_CELLS * GRID_CELLS],
         }
     }
 
@@ -95,6 +100,18 @@ impl SampleGrid {
     #[inline]
     pub fn set_team(&mut self, i: i32, j: i32, k: i32, team: u8) {
         self.teams[Self::cell_index(i, j, k)] = team;
+    }
+
+    /// Active surface state bits of local cell `(i, j, k)`, each in `-1..=31`.
+    #[inline]
+    pub fn states(&self, i: i32, j: i32, k: i32) -> u8 {
+        self.states[Self::cell_index(i, j, k)]
+    }
+
+    /// Sets the surface state bits of local cell `(i, j, k)`, each in `-1..=31`.
+    #[inline]
+    pub fn set_states(&mut self, i: i32, j: i32, k: i32, bits: u8) {
+        self.states[Self::cell_index(i, j, k)] = bits;
     }
 
     /// All corner values (x fastest, then y, then z).

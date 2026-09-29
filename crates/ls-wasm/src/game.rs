@@ -21,22 +21,32 @@
 //! kill/death tally (from the kill events since joining) and the match
 //! result ([`GameCore::debug_stats`], [`GameCore::scoreboard`],
 //! [`GameCore::match_info`]).
+//!
+//! M2: generic entities with data-driven visuals ([`GameCore::entities`],
+//! [`GameCore::visuals`], see [`crate::scene`]), player names
+//! ([`GameCore::players`]), the carried weapons for the weapon HUD
+//! ([`GameCore::loadout`]) and weapon selection by number key, mouse wheel
+//! and X ([`crate::inventory`]); online the inventory comes from the
+//! server (`Message::Inventory`).
 
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, VecDeque};
 
 use ls_game::client::ClientSession;
-use ls_game::setup::{match_seed, match_setup};
+use ls_game::setup::match_setup;
 use ls_game::{GameError, GameTerrain, MatchConfig};
 use ls_math::terrain::TerrainQuery;
 use ls_math::{Aabb, Quat, Vec3};
-use ls_net::{check_welcome, ship_flags, Message, NetEvent, NetShip};
+use ls_net::{check_welcome, ship_flags, Message, NetEvent, NetPlayer, NetShip};
 use ls_sim::{
-    Event, InputCmd, MatchPhase, PlayerId, ResolvedRules, ShipState, ShipTuning, ShipType,
-    WeaponCost, WeaponDef, WeaponId, WeaponTable, World, WorldConfig,
+    Event, GadgetTable, GameData, InputCmd, MatchPhase, PlayerId, ResolvedRules, ShipState,
+    ShipTable, ShipTuning, ShipType, VisualTable, WeaponCost, WeaponDef, WeaponId, WeaponSlot,
+    WeaponTable, World,
 };
 use ls_worldgen::{ChunkCoord, Generator, Mesh, ShareCode};
 
 use crate::controls::{Controls, FixedStep, LookAccumulator};
+use crate::inventory::{resolve_select, Inventory, LoadoutView};
+use crate::scene::{EntityDraw, PlayerInfo};
 use crate::shots::{FireRules, Resources, ShotPredictor, ShotStats};
 use crate::stream::ChunkStreamer;
 
@@ -75,6 +85,12 @@ pub struct ShipView {
     pub boosting: bool,
     pub pos: Vec3,
     pub rot: Quat,
+    /// `ls_sim::ShipType::index`.
+    pub ship_type: u8,
+    /// Hitbox radius of the ship type (u).
+    pub radius: f32,
+    /// Its gadget (Shield, Cloak) is switched on.
+    pub gadget_active: bool,
 }
 
 /// A projectile, ready to draw.
@@ -86,6 +102,10 @@ pub struct ProjectileView {
     pub owner: u8,
     pub pos: Vec3,
     pub vel: Vec3,
+    /// Visual id (the weapon's projectile visual in the match's table).
+    pub visual: u16,
+    /// Replicated `ls_sim::proj_flags` low byte (stuck, armed, ...).
+    pub state: u8,
 }
 
 /// Values for the HUD.
@@ -130,10 +150,12 @@ pub struct DebugStats {
 }
 
 /// One scoreboard row.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScoreRow {
     /// Wire id (online) or player id (practice).
     pub id: u8,
+    /// Player name (online: from the snapshot's player list).
+    pub name: String,
     pub team: u8,
     pub alive: bool,
     /// Online: counted from kill events since this client joined.
@@ -166,13 +188,12 @@ pub struct ChunkMeshOut {
 #[derive(Debug)]
 struct Online {
     session: ClientSession,
-    /// Secondary loadout weapon and starting count (ammo is not on the wire;
-    /// the count is estimated from the player's own projectiles).
-    secondary: Option<(WeaponId, u32)>,
-    ammo_estimate: u32,
-    seen_own: BTreeSet<u16>,
-    last_snapshot: Option<u32>,
-    was_alive: bool,
+    /// The own ship's weapons as the server reported them, with the local
+    /// selection on top (see [`crate::inventory`]).
+    inventory: Inventory,
+    /// First input tick of the newest local weapon selection: server
+    /// inventories older than it keep the local selection.
+    select_tick: Option<u64>,
     match_over: Option<Option<u8>>,
     /// Resolved rule set (firing rules for shot prediction).
     resolved: ResolvedRules,
@@ -238,6 +259,27 @@ impl Online {
         }
     }
 
+    /// Takes the inventory the server sent; a local selection the server
+    /// has not processed yet stays shown.
+    fn apply_inventory(&mut self, weapons: &ls_sim::WeaponTable) {
+        let Some(msg) = self.session.inventory() else {
+            return;
+        };
+        let mut inv = Inventory::from_server(msg, weapons);
+        match self.select_tick {
+            Some(t) if (msg.tick as u64) < t => {
+                for w in [self.inventory.primary, self.inventory.secondary]
+                    .into_iter()
+                    .flatten()
+                {
+                    inv.select(w, weapons);
+                }
+            }
+            _ => self.select_tick = None,
+        }
+        self.inventory = inv;
+    }
+
     /// Feeds the newest snapshot to the shot predictor: own-ship weapon and
     /// resources, then matches the own projectiles.
     fn reconcile_shots(&mut self) {
@@ -248,7 +290,10 @@ impl Online {
         if let Some(own) = snap.ships.iter().find(|s| s.id == me) {
             let primary = WeaponId(ship_flags::weapon(own.flags));
             let mut res = Resources {
-                count: self.ammo_estimate,
+                count: self
+                    .inventory
+                    .secondary
+                    .map_or(0, |w| self.inventory.ammo(w)),
                 ..Resources::default()
             };
             if let Some(st) = own.status {
@@ -329,6 +374,8 @@ impl Online {
                         owner: p.owner,
                         pos: p.pos + step + self.shots.offset(p.id),
                         vel: p.vel,
+                        visual: 0,
+                        state: p.state,
                     });
                 }
                 _ => out.push(ProjectileView {
@@ -336,6 +383,8 @@ impl Online {
                     owner: p.owner,
                     pos: p.pos + p.vel * server_dt as f32,
                     vel: p.vel,
+                    visual: 0,
+                    state: p.state,
                 }),
             }
         }
@@ -350,6 +399,8 @@ impl Online {
                         owner: me,
                         pos: shot.pos_at(t),
                         vel: shot.vel,
+                        visual: 0,
+                        state: 0,
                     }),
             );
         }
@@ -366,7 +417,13 @@ pub struct GameCore {
     streamer: ChunkStreamer,
     feed: Vec<String>,
     weapons: WeaponTable,
-    tuning: ShipTuning,
+    ships: ShipTable,
+    gadgets: GadgetTable,
+    /// The match's visuals (derived from the data on every peer).
+    visuals: VisualTable,
+    /// Weapon id + 1 picked by the player and not yet sent with a tick
+    /// (0 = none): a key press on a frame that runs no tick is not lost.
+    pending_select: u8,
 }
 
 impl GameCore {
@@ -377,25 +434,29 @@ impl GameCore {
     pub fn online(welcome_packet: &[u8]) -> Result<GameCore, String> {
         let msg = Message::decode(welcome_packet).map_err(|e| format!("bad welcome: {e}"))?;
         let welcome = check_welcome(msg).map_err(|e| e.to_string())?;
-        let weapons = WeaponTable::builtin();
-        let tuning = ShipTuning::tinker();
-        let session = ClientSession::from_welcome(&welcome, weapons.clone(), tuning.clone())
-            .map_err(|e| e.to_string())?;
+        // Built-in data: the session checks the Welcome's data hash.
+        let data = GameData::builtin();
+        let session =
+            ClientSession::from_welcome_with(&welcome, data.clone()).map_err(|e| e.to_string())?;
+        let GameData {
+            weapons,
+            ships,
+            gadgets,
+        } = data;
         let resolved = session
             .rules()
-            .resolve(&weapons)
+            .resolve_with(&weapons, &gadgets)
             .map_err(|e| e.to_string())?;
-        let secondary = resolved.loadout_secondaries.first().copied();
+        let slots = ships.get(session.ship_type()).secondary_slots;
+        let inventory = Inventory::loadout(&resolved, slots);
         let shots = ShotPredictor::new(&resolved);
         let streamer = ChunkStreamer::new(session.terrain().chunk_coords());
+        let visuals = VisualTable::new(&weapons, &gadgets);
         Ok(GameCore {
             mode: Mode::Online(Box::new(Online {
                 session,
-                secondary,
-                ammo_estimate: secondary.map_or(0, |s| s.1),
-                seen_own: BTreeSet::new(),
-                last_snapshot: None,
-                was_alive: false,
+                inventory,
+                select_tick: None,
                 match_over: None,
                 resolved,
                 shots,
@@ -411,7 +472,10 @@ impl GameCore {
             streamer,
             feed: Vec::new(),
             weapons,
-            tuning,
+            ships,
+            gadgets,
+            visuals,
+            pending_select: 0,
         })
     }
 
@@ -434,13 +498,7 @@ impl GameCore {
         let cfg = MatchConfig::paint_the_void(code);
         let mut terrain = GameTerrain::new(gen);
         let setup = match_setup(&cfg.code, &cfg.rules, &terrain)?;
-        let mut world = World::new(WorldConfig {
-            seed: match_seed(&cfg.code),
-            weapons: cfg.weapons.clone(),
-            rules: cfg.rules.clone(),
-            tuning: cfg.tuning.clone(),
-            setup,
-        })?;
+        let mut world = World::new(cfg.world_config(setup))?;
         if pregenerate {
             terrain.generate_all();
         }
@@ -450,6 +508,7 @@ impl GameCore {
         }
         let prev = world.ships().cloned().collect();
         let streamer = ChunkStreamer::new(terrain.chunk_coords());
+        let visuals = world.visuals().clone();
         Ok(GameCore {
             mode: Mode::Practice(Box::new(Practice {
                 world,
@@ -463,7 +522,10 @@ impl GameCore {
             streamer,
             feed: Vec::new(),
             weapons: cfg.weapons,
-            tuning: cfg.tuning,
+            ships: cfg.ships,
+            gadgets: cfg.gadgets,
+            visuals,
+            pending_select: 0,
         })
     }
 
@@ -520,6 +582,30 @@ impl GameCore {
         &self.weapons
     }
 
+    /// Gadget table (ids are `PlayerInfo::gadget`).
+    pub fn gadgets(&self) -> &GadgetTable {
+        &self.gadgets
+    }
+
+    /// The match's visual table (ids are `EntityDraw::visual` and
+    /// `ProjectileView::visual`).
+    pub fn visuals(&self) -> &VisualTable {
+        &self.visuals
+    }
+
+    /// Ship type of the local ship (this life).
+    pub fn ship_type(&self) -> ShipType {
+        match &self.mode {
+            Mode::Online(o) => o.session.ship_type(),
+            Mode::Practice(p) => p.world.ship(p.me).map_or(ShipType::Tinker, |s| s.ship_type),
+        }
+    }
+
+    /// Tuning of the local ship's type.
+    pub fn tuning(&self) -> &ShipTuning {
+        self.ships.get(self.ship_type())
+    }
+
     /// Terrain desync check (edit log + SDF lattice + paint); compare with the
     /// server's `GameTerrain::state_hash`. Expensive: debug use only.
     pub fn terrain_hash(&self) -> u64 {
@@ -541,12 +627,8 @@ impl GameCore {
         };
         let incoming = o.session.handle_packet(bytes).map_err(|e| e.to_string())?;
         match &incoming {
-            ls_game::client::Incoming::Snapshot { stale: false, .. } => {
-                self.track_online_ammo();
-                if let Mode::Online(o) = &mut self.mode {
-                    o.reconcile_shots();
-                }
-            }
+            ls_game::client::Incoming::Snapshot { stale: false, .. } => o.reconcile_shots(),
+            ls_game::client::Incoming::Inventory => o.apply_inventory(&self.weapons),
             ls_game::client::Incoming::Pong { nonce, .. } => o.on_pong(*nonce),
             _ => {}
         }
@@ -575,7 +657,9 @@ impl GameCore {
     /// Returns the packets to send to the server (in order; empty offline).
     pub fn frame(&mut self, dt: f64, controls: Controls) -> Vec<Vec<u8>> {
         let due = self.step.advance(dt);
-        let max_turn = self.tuning.max_turn_rate * ls_math::DT;
+        let tuning = self.tuning().clone();
+        let max_turn = tuning.max_turn_rate * ls_math::DT;
+        let controls = self.apply_selection(controls);
         let mut out = Vec::new();
         match &mut self.mode {
             Mode::Online(o) => {
@@ -587,11 +671,17 @@ impl GameCore {
                 let first = o.session.next_input_tick();
                 let synced = o.session.is_synced();
                 let msgs = o.session.run_ticks(n, due, cmd);
+                if n > 0 && cmd.weapon_select != 0 {
+                    o.inventory
+                        .select(WeaponId(cmd.weapon_select - 1), &self.weapons);
+                    o.select_tick = Some(first);
+                    self.pending_select = 0;
+                }
                 if !o.host_clock {
                     o.local_ms += dt.max(0.0) * 1000.0;
                 }
                 if synced {
-                    o.predict_shots(first, &cmd, &self.weapons, &self.tuning);
+                    o.predict_shots(first, &cmd, &self.weapons, &tuning);
                 }
                 o.shots.decay(n);
                 for msg in msgs {
@@ -604,10 +694,12 @@ impl GameCore {
                     }
                 }
                 self.collect_online_events();
-                self.track_online_ammo();
             }
             Mode::Practice(p) => {
                 let cmd = self.look.command(controls, due, max_turn);
+                if due > 0 {
+                    self.pending_select = 0;
+                }
                 let mut events = Vec::new();
                 for _ in 0..due {
                     p.prev = p.world.ships().cloned().collect();
@@ -629,7 +721,57 @@ impl GameCore {
         out
     }
 
+    /// Resolves this frame's number key, wheel step or X press against the
+    /// carried weapons into a pending weapon selection, and puts the pending
+    /// selection into the controls (a direct `weapon_select` also counts).
+    fn apply_selection(&mut self, mut controls: Controls) -> Controls {
+        if controls.weapon_select != 0 {
+            self.pending_select = controls.weapon_select;
+        }
+        let req = controls.select_request();
+        if !req.is_empty() {
+            let view = self.loadout();
+            let mut primary = view.primaries.iter().find(|e| e.selected).map(|e| e.weapon);
+            let mut secondary = view
+                .secondaries
+                .iter()
+                .find(|e| e.selected)
+                .map(|e| e.weapon);
+            if let Some(w) = self.pending_select.checked_sub(1).map(WeaponId) {
+                if (w.0 as usize) < self.weapons.len() {
+                    match self.weapons.get(w).slot {
+                        WeaponSlot::Primary => primary = Some(w),
+                        WeaponSlot::Secondary => secondary = Some(w),
+                    }
+                }
+            }
+            if let Some(w) = resolve_select(
+                req,
+                &view.primary_ids(),
+                primary,
+                &view.secondary_ids(),
+                secondary,
+            ) {
+                self.pending_select = w.0 + 1;
+            }
+        }
+        controls.weapon_select = self.pending_select;
+        controls
+    }
+
     fn pull_dirty(&mut self) {
+        // Surface states (hot, charged, glow) expire: move the meshes' display
+        // tick to the match time so expired ones are remeshed away.
+        match &mut self.mode {
+            Mode::Online(o) => {
+                let now = o.session.clock().server_time().max(0.0) as u64;
+                o.session.terrain_mut().advance_to(now);
+            }
+            Mode::Practice(p) => {
+                let now = p.world.tick();
+                p.terrain.advance_to(now);
+            }
+        }
         let dirty = self.terrain_mut().take_dirty_chunks();
         self.streamer.mark_dirty(dirty);
     }
@@ -681,10 +823,11 @@ impl GameCore {
         match &self.mode {
             Mode::Online(o) => {
                 let t = o.session.render_tick() + alpha as f64;
+                let players = o.session.players();
                 o.session
                     .remote_ships_at(t)
                     .iter()
-                    .map(net_ship_view)
+                    .map(|s| net_ship_view(s, players, &self.ships))
                     .collect()
             }
             Mode::Practice(p) => p
@@ -705,6 +848,9 @@ impl GameCore {
                         boosting: cur.boosting,
                         pos,
                         rot,
+                        ship_type: cur.ship_type.index(),
+                        radius: self.ships.get(cur.ship_type).radius,
+                        gadget_active: cur.gadget_active,
                     }
                 })
                 .collect(),
@@ -714,7 +860,7 @@ impl GameCore {
     /// Projectiles moved along their velocity to the current render time.
     pub fn projectiles(&self) -> Vec<ProjectileView> {
         let alpha = self.step.alpha();
-        match &self.mode {
+        let mut out = match &self.mode {
             Mode::Online(o) => o.projectiles(alpha),
             Mode::Practice(p) => p
                 .world
@@ -724,16 +870,143 @@ impl GameCore {
                     kind: pr.weapon.0,
                     owner: pr.owner.0.min(254) as u8,
                     // One tick behind like the ships, then forward by alpha.
-                    pos: pr.pos + pr.vel * ((self.step.alpha() - 1.0) / HZ),
+                    pos: pr.pos + pr.vel * ((alpha - 1.0) / HZ),
                     vel: pr.vel,
+                    visual: 0,
+                    state: (pr.flags & 0xff) as u8,
+                })
+                .collect(),
+        };
+        for p in &mut out {
+            p.visual = self.visuals.projectile(WeaponId(p.kind)).0;
+        }
+        out
+    }
+
+    /// Replicated entities (pickups, scrap piles, wrecks, debris, decoys,
+    /// ghosts, dust clouds, markers) at the render time: online the newest
+    /// snapshot moved along the velocities to the estimated server time, in
+    /// practice between the last two ticks like the ships.
+    pub fn entities(&self) -> Vec<EntityDraw> {
+        match &self.mode {
+            Mode::Online(o) => o
+                .session
+                .entities()
+                .iter()
+                .map(EntityDraw::from_net)
+                .collect(),
+            Mode::Practice(p) => {
+                let back = (self.step.alpha() - 1.0) / HZ;
+                p.world
+                    .entity_views()
+                    .iter()
+                    .map(|v| {
+                        let radius = p
+                            .world
+                            .entities()
+                            .iter()
+                            .find(|e| e.id == v.id)
+                            .map_or(0.0, |e| e.radius);
+                        let mut d = EntityDraw::from_view(v, radius);
+                        d.pos += v.vel * back;
+                        d
+                    })
+                    .collect()
+            }
+        }
+    }
+
+    /// Every player (the local one included): names, teams, ship types.
+    pub fn players(&self) -> Vec<PlayerInfo> {
+        match &self.mode {
+            Mode::Online(o) => {
+                let s = &o.session;
+                let mut out: Vec<PlayerInfo> = s.players().iter().map(player_info).collect();
+                if !out.iter().any(|p| p.id == s.player()) {
+                    out.push(PlayerInfo {
+                        id: s.player(),
+                        team: s.team(),
+                        ship_type: s.ship_type().index(),
+                        gadget: u8::MAX,
+                        name: "You".into(),
+                    });
+                }
+                out
+            }
+            Mode::Practice(p) => p
+                .world
+                .ships()
+                .map(|s| PlayerInfo {
+                    id: s.player.0.min(254) as u8,
+                    team: s.team,
+                    ship_type: s.ship_type.index(),
+                    gadget: s.gadget.map_or(u8::MAX, |g| g.0),
+                    name: practice_name(s.player, p.me),
                 })
                 .collect(),
         }
     }
 
+    /// Carried weapons and the gadget for the weapon HUD (online: the
+    /// client's mirror, see [`crate::inventory`]).
+    pub fn loadout(&self) -> LoadoutView {
+        match &self.mode {
+            Mode::Online(o) => {
+                let s = &o.session;
+                let own = s
+                    .latest_snapshot()
+                    .and_then(|snap| snap.ships.iter().find(|x| x.id == s.player()));
+                let (energy, scrap) = own.and_then(|x| x.status).map_or((0.0, 0.0), |st| {
+                    let (_, energy, _, scrap) = s.conv().status_values(&st);
+                    (energy, scrap)
+                });
+                let inv = &o.inventory;
+                let mut view = LoadoutView::build(
+                    &self.weapons,
+                    &inv.states(),
+                    inv.primary,
+                    inv.secondary,
+                    |def, n| ammo_text(def, energy, scrap, Some(n)),
+                );
+                let gadget = s
+                    .players()
+                    .iter()
+                    .find(|p| p.id == s.player())
+                    .map_or(inv.gadget.map(|g| g.0), |p| {
+                        (p.gadget != u8::MAX).then_some(p.gadget)
+                    });
+                view.gadget = self.gadget_name(gadget);
+                view.gadget_active = own.is_some_and(|x| x.flags & ship_flags::GADGET_ACTIVE != 0);
+                view
+            }
+            Mode::Practice(p) => {
+                let Some(ship) = p.world.ship(p.me) else {
+                    return LoadoutView::default();
+                };
+                let mut view = LoadoutView::build(
+                    &self.weapons,
+                    &ship.weapons,
+                    ship.primary,
+                    ship.secondary,
+                    |def, n| ammo_text(def, ship.energy, ship.scrap, Some(n)),
+                );
+                view.gadget = self.gadget_name(ship.gadget.map(|g| g.0));
+                view.gadget_active = ship.gadget_active;
+                view
+            }
+        }
+    }
+
+    fn gadget_name(&self, g: Option<u8>) -> String {
+        g.filter(|&g| (g as usize) < self.gadgets.len())
+            .map_or_else(String::new, |g| {
+                self.gadgets.get(ls_sim::GadgetId(g)).name.clone()
+            })
+    }
+
     /// HUD values.
     pub fn hud(&self) -> HudState {
-        let t = &self.tuning;
+        let t = self.tuning();
         let mut hud = HudState {
             hull: t.hull_max,
             hull_max: t.hull_max,
@@ -779,18 +1052,20 @@ impl GameCore {
             hud.boost = ship.boost;
         }
         hud.alive = own.is_none_or(|o| o.flags & ship_flags::ALIVE != 0);
-        if let Some(own) = own {
-            let w = WeaponId(ship_flags::weapon(own.flags));
-            if (w.0 as usize) < self.weapons.len() {
-                let def = self.weapons.get(w);
-                hud.weapon = def.name.clone();
-                hud.ammo = ammo_text(def, hud.energy, hud.scrap, None);
-            }
+        let inv = &o.inventory;
+        let primary = inv
+            .primary
+            .or_else(|| own.map(|o| WeaponId(ship_flags::weapon(o.flags))));
+        if let Some(w) = primary.filter(|w| (w.0 as usize) < self.weapons.len()) {
+            let def = self.weapons.get(w);
+            hud.weapon = def.name.clone();
+            hud.ammo = ammo_text(def, hud.energy, hud.scrap, Some(inv.ammo(w)));
         }
-        if let Some((w, _)) = o.secondary {
-            if (w.0 as usize) < self.weapons.len() {
-                hud.secondary = format!("{} ×{}", self.weapons.get(w).name, o.ammo_estimate);
-            }
+        if let Some(w) = inv
+            .secondary
+            .filter(|w| (w.0 as usize) < self.weapons.len())
+        {
+            hud.secondary = format!("{} ×{}", self.weapons.get(w).name, inv.ammo(w));
         }
         if let [a, b, surface, ..] = snap.scores[..] {
             if surface > 0 {
@@ -886,6 +1161,7 @@ impl GameCore {
                         let (kills, deaths) = o.tally.get(&s.id).copied().unwrap_or_default();
                         ScoreRow {
                             id: s.id,
+                            name: online_name(&o.session, s.id),
                             team: ship_flags::team(s.flags),
                             alive: s.flags & ship_flags::ALIVE != 0,
                             kills,
@@ -898,6 +1174,7 @@ impl GameCore {
                     let (kills, deaths) = o.tally.get(&me).copied().unwrap_or_default();
                     rows.push(ScoreRow {
                         id: me,
+                        name: online_name(&o.session, me),
                         team: o.session.team(),
                         alive: true,
                         kills,
@@ -912,6 +1189,7 @@ impl GameCore {
                 .ships()
                 .map(|s| ScoreRow {
                     id: s.player.0.min(254) as u8,
+                    name: practice_name(s.player, p.me),
                     team: s.team,
                     alive: s.alive,
                     kills: s.kills,
@@ -977,13 +1255,17 @@ impl GameCore {
         }
     }
 
+    /// Name for the kill feed ("You" for the local player).
     fn name(&self, id: u8) -> String {
         if id == self.player() {
             "You".into()
         } else if id == u8::MAX {
             "The level".into()
         } else {
-            format!("Player {}", id as u32 + 1)
+            match &self.mode {
+                Mode::Online(o) => online_name(&o.session, id),
+                Mode::Practice(p) => practice_name(PlayerId(id as u16), p.me),
+            }
         }
     }
 
@@ -1012,56 +1294,12 @@ impl GameCore {
                     }
                     Some(match_over_text(winner_team, self.team()))
                 }
-                NetEvent::Hit { .. } | NetEvent::Respawn { .. } => None,
+                NetEvent::Hit { .. } | NetEvent::Respawn { .. } | NetEvent::Cue { .. } => None,
             };
             if let Some(l) = line {
                 push_feed(&mut self.feed, l);
             }
         }
-    }
-
-    /// Online secondary ammo estimate: reset to the loadout count on spawn,
-    /// minus the player's own projectiles of that weapon.
-    fn track_online_ammo(&mut self) {
-        let Mode::Online(o) = &mut self.mode else {
-            return;
-        };
-        let Some(snap) = o.session.latest_snapshot() else {
-            return;
-        };
-        if o.last_snapshot == Some(snap.tick) {
-            return;
-        }
-        o.last_snapshot = Some(snap.tick);
-        let me = o.session.player();
-        let alive = snap
-            .ships
-            .iter()
-            .find(|s| s.id == me)
-            .is_some_and(|s| s.flags & ship_flags::ALIVE != 0);
-        if alive && !o.was_alive {
-            o.ammo_estimate = o.secondary.map_or(0, |s| s.1);
-        }
-        o.was_alive = alive;
-        let Some((sec, _)) = o.secondary else {
-            return;
-        };
-        let current: BTreeSet<u16> = snap
-            .projectiles
-            .iter()
-            .filter(|p| p.owner == me)
-            .map(|p| p.id)
-            .collect();
-        for p in snap
-            .projectiles
-            .iter()
-            .filter(|p| p.owner == me && p.kind == sec.0)
-        {
-            if !o.seen_own.contains(&p.id) {
-                o.ammo_estimate = o.ammo_estimate.saturating_sub(1);
-            }
-        }
-        o.seen_own = current;
     }
 
     fn practice_event(&mut self, e: Event) {
@@ -1172,7 +1410,12 @@ fn leader([a, b]: [u64; 2]) -> Option<u8> {
     }
 }
 
-fn net_ship_view(s: &NetShip) -> ShipView {
+fn net_ship_view(s: &NetShip, players: &[NetPlayer], ships: &ShipTable) -> ShipView {
+    let ship_type = players
+        .iter()
+        .find(|p| p.id == s.id)
+        .and_then(|p| ShipType::from_index(p.ship_type))
+        .unwrap_or(ShipType::Tinker);
     ShipView {
         id: s.id,
         team: ship_flags::team(s.flags),
@@ -1180,6 +1423,44 @@ fn net_ship_view(s: &NetShip) -> ShipView {
         boosting: s.flags & ship_flags::BOOSTING != 0,
         pos: s.pos,
         rot: s.rot,
+        ship_type: ship_type.index(),
+        radius: ships.get(ship_type).radius,
+        gadget_active: s.flags & ship_flags::GADGET_ACTIVE != 0,
+    }
+}
+
+fn player_info(p: &NetPlayer) -> PlayerInfo {
+    PlayerInfo {
+        id: p.id,
+        team: p.team,
+        ship_type: p.ship_type,
+        gadget: p.gadget,
+        name: if p.name.is_empty() {
+            fallback_name(p.id)
+        } else {
+            p.name.clone()
+        },
+    }
+}
+
+/// Name for ids without a known name.
+pub fn fallback_name(id: u8) -> String {
+    format!("Player {}", id as u32 + 1)
+}
+
+/// A player's name online (from the newest snapshot's player list).
+fn online_name(s: &ClientSession, id: u8) -> String {
+    s.player_name(id)
+        .filter(|n| !n.is_empty())
+        .map_or_else(|| fallback_name(id), str::to_string)
+}
+
+/// Practice names: the local player and numbered target dummies.
+fn practice_name(id: PlayerId, me: PlayerId) -> String {
+    if id == me {
+        "You".into()
+    } else {
+        format!("Dummy {}", id.0)
     }
 }
 
@@ -1193,6 +1474,28 @@ fn blend(prev: &ShipState, cur: &ShipState, alpha: f32) -> (Vec3, Quat) {
         prev.orientation.nlerp(cur.orientation, alpha).normalize(),
     )
 }
+
+/// Surface state bits per chunk-mesh vertex (`ChunkMesh::surface`, drawn
+/// by the web client's terrain shader; M2 plan: hot, charged, glow).
+pub const SURFACE_HOT: u8 = 1 << 0;
+pub const SURFACE_CHARGED: u8 = 1 << 1;
+pub const SURFACE_GLOW: u8 = 1 << 2;
+
+/// Per-vertex surface state bits of a chunk mesh (`Mesh::states`, the same
+/// bits as `SURFACE_*`, active at the terrain's display tick), or empty when
+/// the mesh carries none (meshes built from a bare sample grid).
+pub fn surface_flags(mesh: &Mesh) -> Vec<u8> {
+    if mesh.states.len() != mesh.positions.len() {
+        return Vec::new();
+    }
+    let all = SURFACE_HOT | SURFACE_CHARGED | SURFACE_GLOW;
+    mesh.states.iter().map(|s| s & all).collect()
+}
+
+// The wire bits are `ls_math::terrain::SurfaceStates`.
+const _: () = assert!(SURFACE_HOT == ls_math::terrain::SurfaceStates::HOT.bits());
+const _: () = assert!(SURFACE_CHARGED == ls_math::terrain::SurfaceStates::CHARGED.bits());
+const _: () = assert!(SURFACE_GLOW == ls_math::terrain::SurfaceStates::GLOW.bits());
 
 #[cfg(test)]
 mod tests;

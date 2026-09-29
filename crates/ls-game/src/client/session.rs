@@ -6,8 +6,14 @@ use std::collections::VecDeque;
 
 use ls_math::terrain::TerrainEdit;
 use ls_math::{Quat, Vec3};
-use ls_net::{Message, NetEvent, NetProjectile, NetShip, Snapshot, SnapshotHistory, Welcome};
-use ls_sim::{InputCmd, RuleSet, ShipState, ShipTuning, WeaponTable};
+use ls_net::{
+    InventoryMsg, Message, NetEntity, NetEvent, NetPlayer, NetProjectile, NetShip, Snapshot,
+    SnapshotHistory, Welcome,
+};
+use ls_sim::{
+    GadgetTable, GameData, InputCmd, RuleSet, ShipState, ShipTable, ShipTuning, ShipType,
+    WeaponTable,
+};
 use ls_worldgen::{Generator, ShareCode};
 
 use super::clock::ClientClock;
@@ -24,6 +30,9 @@ pub const INITIAL_LEAD_TICKS: u64 = 3;
 pub const PING_INTERVAL_TICKS: u32 = 30;
 /// Most `Input` messages one frame sends (see [`ClientSession::run_ticks`]).
 pub const MAX_BURST_INPUTS: usize = 8;
+/// `NetProjectile::state` bit of a projectile its owner guides
+/// (`ls_sim::world::proj_flags::CONTROLS_OWNER`).
+pub const GUIDED_STATE_BIT: u8 = ls_sim::world::proj_flags::CONTROLS_OWNER as u8;
 
 /// What a received message did.
 #[derive(Debug, Clone, PartialEq)]
@@ -45,6 +54,8 @@ pub enum Incoming {
     },
     /// The server closed the session.
     Disconnected(String),
+    /// The own inventory changed ([`ClientSession::inventory`]).
+    Inventory,
     /// Anything else (ignored).
     Ignored,
 }
@@ -67,8 +78,12 @@ pub struct ClientSession {
     conv: NetConv,
     rules: RuleSet,
     weapons: WeaponTable,
+    gadgets: GadgetTable,
     player: u8,
     team: u8,
+    /// Ship type of the local ship (from `Welcome`, then from the players
+    /// list of each snapshot).
+    ship_type: ShipType,
     inputs: InputSequencer,
     predictor: Predictor,
     interp: InterpolationBuffer,
@@ -85,28 +100,64 @@ pub struct ClientSession {
     pickup_points: Vec<Vec3>,
     /// Server tick at which the match timer runs out (from snapshots).
     match_end_tick: Option<u64>,
+    /// Entities of the last few snapshots (tick, list), oldest first, for
+    /// interpolation at the render tick.
+    entity_history: VecDeque<(u32, Vec<NetEntity>)>,
+    /// The own ship's inventory as the server last sent it.
+    inventory: Option<InventoryMsg>,
 }
 
+/// Snapshots of entities kept for interpolation.
+const ENTITY_HISTORY: usize = 6;
+
 impl ClientSession {
-    /// Builds the session from the server's `Welcome`: regenerates the level
-    /// from the share code, replays the edit log and parses the rule set.
-    /// `weapons` and `tuning` are the client's data tables (built-in for M1).
+    /// Builds the session from the server's `Welcome` with the built-in
+    /// ship and gadget data: `weapons` is the weapon table and `tuning`
+    /// replaces the Tinker's numbers (the other ship types are built in).
+    /// Prefer [`ClientSession::from_welcome_with`].
     pub fn from_welcome(
         welcome: &Welcome,
         weapons: WeaponTable,
         tuning: ShipTuning,
     ) -> Result<Self, GameError> {
+        let data = GameData {
+            weapons,
+            ships: ShipTable::builtin().with(ShipType::Tinker, tuning),
+            gadgets: GadgetTable::builtin(),
+        };
+        Self::from_welcome_with(welcome, data)
+    }
+
+    /// Builds the session from the server's `Welcome`: regenerates the level
+    /// from the share code, replays the edit log and parses the rule set.
+    /// `data` is the client's game data; with the built-in data the
+    /// `Welcome`'s data hash must match `ls_sim::data_hash()`.
+    pub fn from_welcome_with(welcome: &Welcome, data: GameData) -> Result<Self, GameError> {
+        if data == GameData::builtin() && welcome.data_hash != ls_sim::data_hash() {
+            return Err(GameError::Protocol(format!(
+                "game data mismatch: server {:016x}, client {:016x}",
+                welcome.data_hash,
+                ls_sim::data_hash()
+            )));
+        }
+        let GameData {
+            weapons,
+            ships,
+            gadgets,
+        } = data;
         let code = ShareCode::decode(&welcome.share_code)?;
         let terrain = GameTerrain::replay(Generator::from_code(&code)?, &welcome.edit_log);
         let text = std::str::from_utf8(&welcome.ruleset)
             .map_err(|_| GameError::Protocol("rule set is not UTF-8".into()))?;
         let rules = RuleSet::from_ron(&welcome.ruleset_name, text)?;
-        rules.resolve(&weapons)?;
-        let conv = NetConv::new(welcome.quant, tuning.clone())?;
+        rules.resolve_with(&weapons, &gadgets)?;
+        let ship_type = ShipType::from_index(welcome.ship_type).unwrap_or(ShipType::Tinker);
+        let conv = NetConv::new(welcome.quant, ships.clone())?;
         let config = PredictionConfig::for_conv(&conv);
         // Spawn points come from the pristine level, like on the server.
         let setup = match_setup(&code, &rules, &GameTerrain::from_code(&code)?)?;
-        let mut predictor = Predictor::new(tuning, config);
+        let mut predictor = Predictor::new(ships.get(ship_type).clone(), config);
+        predictor.set_ship_type(ship_type, ships.get(ship_type).clone());
         predictor.set_spawn_poses(
             setup
                 .spawns
@@ -118,8 +169,10 @@ impl ClientSession {
             terrain,
             rules,
             weapons,
+            gadgets,
             player: welcome.player_id,
             team: welcome.team,
+            ship_type,
             inputs: InputSequencer::new(welcome.server_tick as u64 + 1 + INITIAL_LEAD_TICKS),
             predictor,
             interp: InterpolationBuffer::default(),
@@ -133,6 +186,8 @@ impl ClientSession {
             ticks_since_ping: PING_INTERVAL_TICKS,
             pickup_points: setup.pickup_points,
             match_end_tick: None,
+            entity_history: VecDeque::new(),
+            inventory: None,
             conv,
         })
     }
@@ -161,6 +216,73 @@ impl ClientSession {
     }
     pub fn weapons(&self) -> &WeaponTable {
         &self.weapons
+    }
+    pub fn gadgets(&self) -> &GadgetTable {
+        &self.gadgets
+    }
+    /// Ship type of the local ship.
+    pub fn ship_type(&self) -> ShipType {
+        self.ship_type
+    }
+
+    /// Players of the newest snapshot (names, teams, ship types, gadgets).
+    pub fn players(&self) -> &[NetPlayer] {
+        self.latest.as_ref().map_or(&[], |s| &s.players)
+    }
+
+    /// Name of a ship id, if known.
+    pub fn player_name(&self, id: u8) -> Option<&str> {
+        self.players()
+            .iter()
+            .find(|p| p.id == id)
+            .map(|p| p.name.as_str())
+    }
+
+    /// Entities (debris, pickups, scrap, wrecks, decoys, ghosts, dust)
+    /// interpolated at [`ClientSession::render_tick`], like remote ships:
+    /// the entity set of the first snapshot at or after that tick, positions
+    /// interpolated from the snapshot before it (debris is sent without
+    /// velocity, so it never runs ahead of the ships that push it).
+    pub fn entities(&self) -> Vec<NetEntity> {
+        self.entities_at(self.render_tick())
+    }
+
+    /// [`ClientSession::entities`] at an explicit server tick.
+    pub fn entities_at(&self, tick: f64) -> Vec<NetEntity> {
+        let h = &self.entity_history;
+        let Some(later) = h.iter().position(|(t, _)| *t as f64 >= tick) else {
+            // Past the newest snapshot: hold it.
+            return h.back().map(|(_, e)| e.clone()).unwrap_or_default();
+        };
+        let (tb, b) = &h[later];
+        if later == 0 {
+            return b.clone();
+        }
+        let (ta, a) = &h[later - 1];
+        let f = ((tick - *ta as f64) / (*tb as f64 - *ta as f64)).clamp(0.0, 1.0) as f32;
+        b.iter()
+            .map(|e| match a.binary_search_by_key(&e.id, |x| x.id) {
+                Ok(i) if a[i].kind == e.kind => NetEntity {
+                    pos: a[i].pos.lerp(e.pos, f),
+                    ..*e
+                },
+                _ => *e,
+            })
+            .collect()
+    }
+
+    /// The own ship's carried weapons, ammo, levels, selection and gadget as
+    /// the server last reported them (`Message::Inventory`).
+    pub fn inventory(&self) -> Option<&InventoryMsg> {
+        self.inventory.as_ref()
+    }
+
+    /// The message that picks the ship type for the next respawn (send it
+    /// reliably). The server ignores types the rule set does not allow.
+    pub fn select_ship(&self, ship_type: ShipType) -> Message {
+        Message::SelectShip {
+            ship_type: ship_type.index(),
+        }
     }
     pub fn clock(&self) -> &ClientClock {
         &self.clock
@@ -320,7 +442,25 @@ impl ClientSession {
             InputCmd::idle(0)
         };
         let cmd = self.inputs.next(controls);
-        self.predictor.predict(cmd, &self.terrain);
+        // While the own ship guides a projectile (Eyeball) the server gives
+        // it no thrust or look (the look steers the missile): predict that.
+        let guiding = self.latest.as_ref().is_some_and(|s| {
+            s.projectiles
+                .iter()
+                .any(|p| p.owner == self.player && p.state & GUIDED_STATE_BIT != 0)
+        });
+        let predicted = if guiding {
+            InputCmd {
+                thrust: Vec3::ZERO,
+                look_pitch: 0.0,
+                look_yaw: 0.0,
+                roll: 0.0,
+                ..cmd
+            }
+        } else {
+            cmd
+        };
+        self.predictor.predict(predicted, &self.terrain);
         let ack = self.newest_tick();
         Message::Input(self.inputs.message(ack).expect("a command was just added"))
     }
@@ -374,6 +514,17 @@ impl ClientSession {
                     server_tick,
                 })
             }
+            Message::Inventory(inv) => {
+                // Reliable and in order; keep the newest anyway.
+                if self
+                    .inventory
+                    .as_ref()
+                    .is_none_or(|old| inv.tick >= old.tick)
+                {
+                    self.inventory = Some(inv);
+                }
+                Ok(Incoming::Inventory)
+            }
             Message::Disconnect { reason } => Ok(Incoming::Disconnected(reason)),
             Message::Reject(r) => Ok(Incoming::Disconnected(r.message)),
             _ => Ok(Incoming::Ignored),
@@ -412,6 +563,18 @@ impl ClientSession {
         if let Some(end) = end {
             self.predictor.freeze_after(end, &self.terrain);
         }
+        if let Some(t) = snap
+            .players
+            .iter()
+            .find(|p| p.id == self.player)
+            .and_then(|p| ShipType::from_index(p.ship_type))
+        {
+            if t != self.ship_type {
+                self.ship_type = t;
+                self.predictor
+                    .set_ship_type(t, self.conv.tuning_for(t).clone());
+            }
+        }
         let reconcile = snap.ships.iter().find(|s| s.id == self.player).map(|own| {
             self.team = ls_net::ship_flags::team(own.flags);
             self.predictor
@@ -424,6 +587,10 @@ impl ClientSession {
             .copied()
             .collect();
         self.interp.push(tick, remote);
+        if self.entity_history.len() >= ENTITY_HISTORY {
+            self.entity_history.pop_front();
+        }
+        self.entity_history.push_back((tick, snap.entities.clone()));
         self.clock
             .on_snapshot(tick, snap.ack_input, self.inputs.next_tick());
         self.latest = Some(snap);

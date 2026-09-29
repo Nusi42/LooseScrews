@@ -1,5 +1,6 @@
 // Scrap Laser: energy primary, the laser-speed baseline (30 u/s, 3 s lifetime).
 // Design doc: "Straight bolts at 30 u/s; 6 upgrade levels found as pickups. Malus: weak at level 1."
+// Behaviour: crates/ls-sim/src/weapons/energy/scrap_laser.rs (implemented: the generic hooks are the M1 behaviour).
 WeaponDef(
     id: "scrap_laser",
     name: "Scrap Laser",
@@ -14,8 +15,9 @@ WeaponDef(
     splash: None,
     knockback: 1.0,
     terrain: (crater_radius: 0.0, paint_radius: 0.0),
-    shield: WearsDown,
+    shield: Wears(1.0),
     // Level 1 is weak; each pickup adds a level (up to 6), +30% base damage per level.
     max_level: 6,
     damage_per_level: 0.3,
+    visual: (shape: Bolt, color: (255, 70, 50), scale: 1.0),
 )

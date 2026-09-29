@@ -10,7 +10,7 @@ use ls_game::client::ClientSession;
 use ls_game::ls_math::terrain::TerrainQuery;
 use ls_game::ls_math::{Quat, Vec3};
 use ls_game::ls_net::{
-    check_welcome, Channel, Hello, LinkConditions, MemoryTransport, Message, Transport,
+    check_welcome, Channel, LinkConditions, MemoryTransport, Message, Transport,
 };
 use ls_game::ls_sim::{Buttons, Event, InputCmd, PlayerId, ShipTuning, WeaponTable};
 use ls_game::ls_worldgen::{ShareCode, Sliders};
@@ -108,7 +108,9 @@ impl Harness {
             backlog: Vec::new(),
             built_at: 0,
         };
-        let hello = Message::Hello(Hello::new(name, None)).encode().unwrap();
+        let hello = Message::Hello(ls_game::client_hello(name, None, None))
+            .encode()
+            .unwrap();
         c.up.push(self.now, Channel::Reliable, hello);
         self.clients.push(c);
         self.clients.len() - 1
@@ -189,6 +191,15 @@ impl Harness {
     fn run(&mut self, ticks: u64) {
         for _ in 0..ticks {
             self.step();
+        }
+    }
+
+    /// Every client leaves (the room drops its ships and queued packets).
+    fn disconnect_all(&mut self) {
+        for c in self.clients.drain(..) {
+            if let Some(id) = c.id {
+                self.room.leave(id);
+            }
         }
     }
 
@@ -379,6 +390,101 @@ fn slow_setup_client_syncs_within_a_few_round_trips() {
     );
 }
 
+/// Full snapshots, starvation reports and prediction snaps of one session.
+fn join_costs(s: &ClientSession) -> (u64, u64, u64) {
+    (
+        s.stats().full_snapshots,
+        s.clock().starved,
+        s.prediction_stats().snapped,
+    )
+}
+
+/// M1 issue B: in a 1 h soak every join cost ~8 full snapshots, ~8
+/// starvation reports and ~8 prediction snaps. The server sent snapshots
+/// while the bot was still generating its level (~250 ms after the
+/// `Welcome`); all of them were full (nothing acknowledged yet) and were
+/// handled in one burst once the session existed. Now a join costs one full
+/// snapshot (plus one per snapshot interval of round trip before the first
+/// acknowledgement arrives), at most one starvation and one snap, also after a
+/// rejoin that reuses wire ids and after a match restart (a fresh room), and
+/// nothing more once the join has settled.
+#[test]
+fn a_join_costs_one_full_snapshot_and_starves_once() {
+    let code = ShareCode::new(0x5eed_1234, Sliders::new(40, 30));
+    let paint = WeaponTable::builtin().find("paint_thrower").unwrap().0;
+    let mut h = Harness::new(code, RoomConfig::default());
+    let interval = h.room.config().snapshot_interval;
+    for round in 0..3 {
+        if round == 2 {
+            // Match restart: the server builds a fresh room (tick 0 again).
+            h.room = Room::new(MatchConfig::paint_the_void(code), RoomConfig::default()).unwrap();
+        }
+        // Like the soak: bots on a local link whose level takes 250-350 ms
+        // to generate, plus (first round) one client with an 8-tick RTT.
+        let mut links = vec![(1, 15), (1, 18), (1, 21)];
+        if round == 0 {
+            links.push((4, 15));
+        }
+        for (n, &(delay, setup)) in links.iter().enumerate() {
+            let i = h.connect(&format!("r{round}c{n}"), delay, perfect(), gunner(paint));
+            h.clients[i].setup_delay = setup;
+        }
+        let late_before = h.room.stats().late_inputs;
+        while h.clients.iter().any(|c| c.session.is_none()) {
+            h.step();
+        }
+        // Let the joins settle, then play on.
+        h.run(90);
+        let settled: Vec<_> = (0..h.clients.len())
+            .map(|i| join_costs(h.session(i)))
+            .collect();
+        let late_settled = h.room.stats().late_inputs;
+        // Joining clients catch up from behind the server (the pong and
+        // snapshot catch-ups), which costs a few late inputs each, not a
+        // steady trickle (measured: 3 per local client, 30 in round 0).
+        let per_client = if round == 0 { 10 } else { 4 };
+        assert!(
+            late_settled - late_before <= per_client * links.len() as u64,
+            "round {round}: {} late inputs while joining",
+            late_settled - late_before
+        );
+        h.run(300);
+        // A synced clock keeps its inputs early: nothing arrives late in
+        // steady state (a late input is a repeat the client paid for).
+        assert_eq!(
+            h.room.stats().late_inputs,
+            late_settled,
+            "late inputs after the joins settled"
+        );
+        for (i, &(delay, _)) in links.iter().enumerate() {
+            let s = h.session(i);
+            let name = &h.clients[i].name;
+            let (full, starved, snapped) = settled[i];
+            // Snapshots sent before the first acknowledgement arrives are full.
+            let max_full = 1 + (2 * delay - 1) / interval;
+            assert!(
+                (1..=max_full).contains(&full),
+                "{name}: {full} full snapshots (at most {max_full})"
+            );
+            assert!(
+                starved <= 1,
+                "{name}: {starved} starvation reports while joining"
+            );
+            assert!(snapped <= 1, "{name}: {snapped} snaps while joining");
+            assert_eq!(
+                join_costs(s),
+                settled[i],
+                "{name}: full snapshots / starvation / snaps after the join settled"
+            );
+            assert!(s.stats().delta_snapshots > 140, "{name}: {:?}", s.stats());
+            if delay == 1 {
+                assert_eq!(full, 1, "{name}: local link");
+            }
+        }
+        h.disconnect_all();
+    }
+}
+
 /// Finds a shooter/target pair of positions 12 u apart with a clear line of
 /// fire and open space above the target.
 fn duel_positions(h: &Harness) -> (Vec3, Vec3, Vec3) {
@@ -456,7 +562,7 @@ fn duel(lag_compensation: bool) -> (bool, u64) {
     h.run(FIRE_AT + 60 - h.now);
     let hit = h.events.iter().any(|(_, e)| {
         matches!(e, Event::Damaged { target, attacker, direct: true, .. }
-            if *target == t && *attacker == s)
+            if *target == t && *attacker == Some(s))
     });
     (hit, h.room.stats().compensated_hits)
 }

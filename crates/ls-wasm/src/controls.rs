@@ -18,7 +18,7 @@ pub const LOOK_STEP: f32 = 1.0 / 8192.0;
 /// the simulation does not try to catch up on lost wall-clock time.
 pub const MAX_TICKS_PER_FRAME: u32 = 8;
 /// Length of the flat controls array passed from JavaScript.
-pub const CONTROLS_LEN: usize = 8;
+pub const CONTROLS_LEN: usize = 11;
 
 /// One frame of player controls in browser terms.
 ///
@@ -38,13 +38,22 @@ pub struct Controls {
     pub pitch_up: f32,
     /// `ls_sim::Buttons` bits.
     pub buttons: u16,
-    /// Weapon id + 1, 0 = keep the current selection.
+    /// Weapon id + 1, 0 = keep the current selection (a direct pick; the
+    /// key scheme below is resolved by `GameCore` into this).
     pub weapon_select: u8,
+    /// Number key pressed this frame: 1-9, 10 for the `0` key, 0 = none.
+    /// Selects the n-th carried primary in design-doc order.
+    pub weapon_key: u8,
+    /// Mouse wheel this frame: +1 next primary, -1 previous, 0 none.
+    pub cycle_primary: i8,
+    /// X pressed this frame: +1 next secondary, 0 none.
+    pub cycle_secondary: i8,
 }
 
 impl Controls {
     /// Parses `[forward, right, up, rollRight, yawRight, pitchUp, buttons,
-    /// weaponSelect]`; missing or non-finite entries count as zero.
+    /// weaponSelect, weaponKey, cyclePrimary, cycleSecondary]`; missing or
+    /// non-finite entries count as zero.
     pub fn from_slice(v: &[f32]) -> Controls {
         let at = |i: usize| v.get(i).copied().filter(|x| x.is_finite()).unwrap_or(0.0);
         Controls {
@@ -56,6 +65,18 @@ impl Controls {
             pitch_up: at(5),
             buttons: at(6).clamp(0.0, u16::MAX as f32) as u16,
             weapon_select: at(7).clamp(0.0, u8::MAX as f32) as u8,
+            weapon_key: at(8).clamp(0.0, crate::inventory::WEAPON_KEYS as f32) as u8,
+            cycle_primary: at(9).signum() as i8 * (at(9) != 0.0) as i8,
+            cycle_secondary: at(10).signum() as i8 * (at(10) != 0.0) as i8,
+        }
+    }
+
+    /// The key / wheel / X part of the controls.
+    pub fn select_request(&self) -> crate::inventory::SelectRequest {
+        crate::inventory::SelectRequest {
+            key: self.weapon_key,
+            cycle_primary: self.cycle_primary,
+            cycle_secondary: self.cycle_secondary,
         }
     }
 
@@ -288,6 +309,18 @@ mod tests {
         let c = Controls::from_slice(&[1.0, -1.0, 0.5, 1.0, 0.1, -0.2, 3.0, 4.0]);
         assert_eq!(c.buttons, 3);
         assert_eq!(c.weapon_select, 4);
+        assert!(
+            c.select_request().is_empty(),
+            "older 8-float arrays still parse"
+        );
+        let k = Controls::from_slice(&[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 64.0, 0.0, 10.0, -3.0, 1.0]);
+        assert_eq!(k.buttons, Buttons::GADGET.0);
+        assert_eq!(
+            (k.weapon_key, k.cycle_primary, k.cycle_secondary),
+            (10, -1, 1)
+        );
+        let clamp = Controls::from_slice(&[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 99.0, 0.0, 0.0]);
+        assert_eq!(clamp.weapon_key, 10);
         let cmd = c.to_cmd(0.0, 0.0);
         assert!(cmd.buttons.contains(Buttons::BOOST));
         assert!(cmd.buttons.contains(Buttons::FIRE_PRIMARY));

@@ -1,0 +1,15 @@
+// Cloak: enemies do not receive your ship in snapshots unless they are within
+// `reveal_distance` or you fired in the last `reveal_after_fire_secs`; teammates see a shimmer.
+// Malus: drains energy 3x while you are moving (faster than `moving_speed`).
+// Toggle with G. Behaviour: crates/ls-sim/src/gadgets/cloak.rs. Schema: `ls_sim::GadgetDef`.
+GadgetDef(
+    id: "cloak",
+    name: "Cloak",
+    activation: Toggle,
+    energy_cost: 5.0,
+    drain_per_sec: 3.0,
+    moving_drain_mult: 3.0,
+    cooldown_secs: 1.0,
+    visual: (shape: Gadget, color: (160, 160, 200), scale: 1.0),
+    params: { "reveal_distance": 6.0, "reveal_after_fire_secs": 0.5, "moving_speed": 1.0 },
+)

@@ -1,0 +1,21 @@
+// Magnet Sneeze: special secondary. Cone pulls loose debris and enemies toward you; great for
+// scavenging. Malus: also pulls in mines thrown at you. Lasting effect: rips loose chunks off
+// weak walls.
+// Behaviour: crates/ls-sim/src/weapons/specials/magnet_sneeze.rs (TODO(wave-B): generic fallback until implemented).
+// `params` are read by the weapon module (`WeaponDef::param`); numbers are tuning starting points.
+WeaponDef(
+    id: "magnet_sneeze",
+    name: "Magnet Sneeze",
+    family: Special,
+    slot: Secondary,
+    speed: 40.0,
+    lifetime_secs: 0.5,
+    damage: 0.0,
+    fire_interval_secs: 1.5,
+    cost: Count(1),
+    projectile_radius: 0.3,
+    shield: Blocked,
+    max_ammo: 5,
+    visual: (shape: Blob, color: (150, 150, 255), scale: 1.0),
+    params: { "cone_deg": 45.0, "range": 20.0, "pull_speed": 15.0, "chunk_radius": 0.6 },
+)

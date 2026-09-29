@@ -1,5 +1,11 @@
 // HTML/CSS heads-up display. Call `update()` with any subset of values each
 // frame; DOM writes only happen for values that actually changed.
+//
+// The weapon panel lists the carried primaries with their number keys
+// (1-9, 0), the secondaries (X cycles) and the gadget (G), per the M2 key
+// scheme; the selected ones are highlighted.
+
+import { emptyLoadout, type LoadoutState } from "../game/views.ts";
 
 export interface HudValues {
   hull: number;
@@ -24,6 +30,8 @@ export interface HudValues {
   status: string;
   /** Free-form debug line (fps, chunk counts); empty hides it. */
   debug: string;
+  /** Carried weapons and gadget (weapon panel). */
+  loadout: LoadoutState;
 }
 
 export const DEFAULT_HUD: Readonly<HudValues> = {
@@ -43,7 +51,39 @@ export const DEFAULT_HUD: Readonly<HudValues> = {
   scavenging: false,
   status: "",
   debug: "",
+  loadout: emptyLoadout(),
 };
+
+/** One line of the weapon panel. */
+export interface LoadoutLine {
+  /** Key hint: "1".."9", "0", "X", "G" or "" (primaries beyond ten). */
+  key: string;
+  name: string;
+  /** Ammo text, level ("L2/6") for upgradable weapons, "on"/"off" for the gadget. */
+  detail: string;
+  selected: boolean;
+  kind: "primary" | "secondary" | "gadget";
+}
+
+/** Weapon panel lines: primaries (key order), secondaries, then the gadget. */
+export function loadoutLines(l: LoadoutState): LoadoutLine[] {
+  const detail = (ammo: string, level: number, maxLevel: number): string =>
+    maxLevel > 1 ? `L${level}/${maxLevel} · ${ammo}` : ammo;
+  const lines: LoadoutLine[] = l.primaries.map((w) => ({
+    key: w.key > 0 ? String(w.key % 10) : "",
+    name: w.name,
+    detail: detail(w.ammo, w.level, w.maxLevel),
+    selected: w.selected,
+    kind: "primary",
+  }));
+  for (const w of l.secondaries) {
+    lines.push({ key: "X", name: w.name, detail: detail(w.ammo, w.level, w.maxLevel), selected: w.selected, kind: "secondary" });
+  }
+  if (l.gadget) {
+    lines.push({ key: "G", name: l.gadget, detail: l.gadgetActive ? "on" : "off", selected: l.gadgetActive, kind: "gadget" });
+  }
+  return lines;
+}
 
 /** How long a kill-feed line stays visible (ms). */
 export const FEED_MS = 6000;
@@ -103,6 +143,7 @@ export class Hud {
   private readonly weapon: HTMLElement;
   private readonly ammo: HTMLElement;
   private readonly secondary: HTMLElement;
+  private readonly loadoutEl: HTMLElement;
   private readonly status: HTMLElement;
   private readonly feedEl: HTMLElement;
   private feed: FeedEntry[] = [];
@@ -115,6 +156,7 @@ export class Hud {
   private readonly prompt: HTMLElement;
 
   constructor(parent: HTMLElement, teamCount = 2) {
+    this.values.loadout = emptyLoadout();
     this.root = el("div", "hud hidden", parent);
     el("div", "hud-crosshair", this.root);
 
@@ -147,6 +189,7 @@ export class Hud {
     this.weapon = el("div", "hud-weapon", right);
     this.ammo = el("div", "hud-ammo", right);
     this.secondary = el("div", "hud-secondary", right);
+    this.loadoutEl = el("div", "hud-loadout", right);
     const scrapRow = el("div", "hud-scrap", right);
     el("span", "hud-meter-name", scrapRow).textContent = "Scrap";
     this.scrap = el("span", "hud-scrap-value", scrapRow);
@@ -240,6 +283,19 @@ export class Hud {
     this.write("secondary", v.secondary, () => {
       this.secondary.textContent = v.secondary;
       this.secondary.classList.toggle("hidden", v.secondary === "");
+    });
+    const lines = loadoutLines(v.loadout);
+    this.write("loadout", JSON.stringify(lines), () => {
+      this.loadoutEl.replaceChildren(
+        ...lines.map((line) => {
+          const row = el("div", `hud-slot ${line.kind}${line.selected ? " selected" : ""}`);
+          el("span", "hud-slot-key", row).textContent = line.key;
+          el("span", "hud-slot-name", row).textContent = line.name;
+          el("span", "hud-slot-detail", row).textContent = line.detail;
+          return row;
+        }),
+      );
+      this.loadoutEl.classList.toggle("hidden", lines.length === 0);
     });
     this.write("status", v.status, () => {
       this.status.textContent = v.status;

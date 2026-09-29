@@ -40,9 +40,20 @@ declared with `default-features = false`; `ls-server` enables `features = ["serv
   below tick 30 (the first score update) turn that off.
 - The store sits in a `RefCell` because `paint_coverage(&self)` must generate chunks. The type
   is `Send`, not `Sync`: keep it on the thread that steps the world.
+- Every path applies edits verbatim (`SimTerrain::apply_edit`, `apply`, `apply_sequence`,
+  `replay`). Rock strength is applied earlier, by the simulation (`ls_sim::Ctx::crater` reads
+  `SimTerrain::material_at`, which `GameTerrain` implements from the material field), so the
+  logged and sent edit is already scaled. `SimTerrain::surface_states_near` is implemented too
+  (charged rock drains ships that scrape it, a framework step in `World::step`).
+- Surface states: stored as expiry ticks by the edit log. `surface_states_near(center,
+  radius, tick)` / `surface_states_at(p, tick)` answer for any tick. `advance_to(tick)` sets
+  the display tick used by `mesh_chunk` (mesh `states`) and marks chunks whose states expired
+  dirty; whoever owns the terrain calls it once per tick (server: optional, it does not mesh;
+  client: with its display tick).
 - Dirty chunks accumulate until `take_dirty_chunks()`; `mesh_chunk(c)` runs surface nets.
-- `state_hash()` = edit log hash + SDF on a 4 u lattice + paint cells around every edit. It
-  needs no full generation and is the desync check between peers.
+- `state_hash()` = edit log hash + SDF on a 4 u lattice + paint and stored surface state
+  expiry ticks of the cells around every edit. The display tick is not part of it. It needs no
+  full generation and is the desync check between peers.
 
 ## Match setup
 
@@ -84,24 +95,38 @@ implement them.
 | Ticks | Input for tick `k` is applied by the server step that produces tick `k`; `Snapshot::tick` is the server tick after that step |
 | `ack_input` | Newest *real* (not repeated) input tick of that client applied so far; `< tick` means the server ran out of input |
 | Missing input | The server repeats the client's last command; late inputs (tick already simulated) are dropped |
-| Quantization | `quant_config_for(bounds, weapons)`: level bounds + 2 u, ships ±64 u/s, projectiles ±max(256, fastest weapon) |
-| Ship flags | `ALIVE`, `BOOSTING`, team bits, weapon bits = primary weapon id (0-15) |
+| Quantization | `quant_config_for(bounds, weapons)`: level bounds + 2 u, ships ±64 u/s, projectiles ±max(320, fastest weapon) |
+| Ship flags | `ALIVE`, `BOOSTING`, `GADGET_ACTIVE` (= `SHIELDED`), team bits, weapon bits = primary weapon id (0-31, bits 10-14) |
 | `ShipStatus` | Own ship only; each byte `ceil(value / max * 255)` of hull, energy, boost, scrap |
 | Inputs | Thrust/roll to 1/127, look to 1/8192 rad; button bits identical to `ls_sim::Buttons`; `weapon` = `InputCmd::weapon_select` |
-| Projectiles | `id` = sim id truncated to u16, `kind` = weapon id, `owner` = wire id or 255 |
+| Projectiles | `id` = sim id truncated to u16 (unique among live projectiles: the sim's allocator skips live wire ids), `kind` = weapon id, `owner` = wire id or 255, `state` = `Projectile::net_state` (low byte of `proj_flags`) |
+| Entities | `World::entity_views` -> `entity_to_net`: `id` = entity id & 0x7fff, `kind` = `ReplicatedKind`, `visual` = `VisualId`, `owner` = wire id or 255, debris without velocity (see [arsenal-framework.md](arsenal-framework.md)) |
+| Inventory | `Message::Inventory` (reliable, own client only, whenever it changes): weapons (id, ammo clamped to u16, level), selected primary and secondary, gadget (255 = none) |
+| Players | Every connected client: wire id, team, ship type index, gadget id (255 none), name (at most 32 bytes); sorted by id |
+| Relevance | `Snapshot::retain_relevant(viewer, &SimRelevance)`: ships hidden by `World::ship_visible_to` (Cloak) are left out, and moving debris more than 100 u from the viewer's ship; the own ship always stays |
+| Handshake | `Hello` carries `ls_sim::data_hash()` (build it with `ls_game::client_hello(name, team, ship)`) and an optional ship type; a different hash gets `Reject { reason: DataMismatch }`. `Welcome` carries the ship type and the data hash |
+| Ship choice | `Message::SelectShip { ship_type }` (reliable, `ClientSession::select_ship`) sets the type for the next respawn; types the rule set does not allow are ignored |
 | Scores | `[team 0 cells, team 1 cells, surface cells]` (raw counts; percent = cells / surface) |
 | Edits | Each snapshot carries up to 64 edits starting at the client's acknowledged edit count (`edit_end` of its newest acked snapshot); resent until acked |
-| Events | `Damaged` -> `Hit` (pos = impact point), `Killed` -> `Kill` (255 = none), `Respawned`, `MatchEnded`; batched per snapshot, reliable |
+| Events | `Damaged` -> `Hit` (pos = impact point), `Killed` -> `Kill` (255 = none), `Respawned`, `MatchEnded`, `Cue` -> `Cue` (kind byte, source, target, pos, value); batched per snapshot, reliable |
 | Ping | Send right after the input for tick `c`; `Pong::server_tick - c` measures input slack |
 | Match end | After the timer runs out (`match_ticks_left == 0`) the server stops stepping the world: ships freeze at the end tick, snapshots continue |
 | Match restart | A host that replaces a finished match sends every client `Disconnect { reason: ls_game::MATCH_RESTART_REASON }`; clients rejoin (a new `Welcome`) instead of reporting an error |
 
 ## Client core
 
-`ClientSession::from_welcome(welcome, weapons, tuning)` regenerates the level from the share code,
-replays the edit log, parses and resolves the rule set, and computes the spawn poses and pickup
-points (`pickup_points()`, which bots use). Per frame the host calls `frame(due_ticks, controls)`
-and sends the returned messages; every received packet goes to `handle_packet`.
+`ClientSession::from_welcome_with(welcome, GameData)` (or the older `from_welcome(welcome,
+weapons, tinker_tuning)`, which uses the built-in ships and gadgets) checks the data hash,
+regenerates the level from the share code, replays the edit log, parses and resolves the rule
+set, and computes the spawn poses and pickup points (`pickup_points()`, which bots use). The
+predictor simulates the own ship type from the `Welcome` and follows the players list of each
+snapshot when it changes (ship choice at a respawn). `players()`, `player_name(id)` and
+`entities()` (interpolated at the render tick like remote ships, `entities_at(tick)`) expose
+the new snapshot sections, and `inventory()` the own ship's inventory from the last
+`Message::Inventory` (`Incoming::Inventory` when one arrives). While the newest snapshot shows
+an own projectile with `GUIDED_STATE_BIT` (Eyeball), the predictor gets the command without
+thrust or look, as the server applies it. Per frame the host calls `frame(due_ticks,
+controls)` and sends the returned messages; every received packet goes to `handle_packet`.
 
 `frame` is `plan_ticks(due)` (advances the clock, returns how many ticks to run: `due` plus up to
 4 while catching up, 64 before sync, or one fewer when skipping) followed by `run_ticks(n, due,
@@ -120,10 +145,13 @@ catch-up sends only the newest 8 `Input` messages (older ones would be late anyw
   missing ticks (at most 30 per report; reports about inputs sent before that catch-up are
   ignored). A client whose next input tick is not past the snapshot tick at all (slow level
   generation in WASM) jumps to `tick + 1 + 1 + 3 + 8` in one go, whatever the distance; such
-  reports only raise the target, so a backlog of snapshots handled at once is fine. Ping slack
-  below 1 tick runs ahead, a minimum above 4 ticks over four pongs skips one tick; pongs for
-  pings sent before a starvation catch-up are ignored. The server time estimate follows the
-  newest snapshot tick and local time.
+  reports only raise the target, so a backlog of snapshots handled at once (a stalled tab) is
+  fine and counts as one starvation (`ClientClock::starved`). Before sync, a negative ping
+  slack (behind the server altogether; the first pong after slow level generation comes
+  before the first snapshot) jumps to the same 12-tick slack; once synced it is an ordinary
+  slack sample. Ping slack below 1 tick runs ahead, a minimum above 4 ticks over four pongs
+  skips one tick; pongs for pings sent before a starvation catch-up are ignored. The server
+  time estimate follows the newest snapshot tick and local time.
 - **Prediction** (`Predictor`): `ls_sim::simulate_movement` for each input on the local
   terrain, keeping the state after every tick. A snapshot's own-ship state for tick `T` is
   compared with the prediction for `T` within quantization tolerances (position 1.5 steps,
@@ -172,7 +200,12 @@ catch-up sends only the newest 8 `Input` messages (older ones would be late anyw
 2. passes packets to `handle_packet(id, bytes)` (inputs, pings, disconnect);
 3. calls `step()` at 60 Hz; every `snapshot_interval` ticks (2 = 30 Hz) it queues a snapshot per
    client, delta-encoded against the client's newest acknowledged snapshot
-   (`SnapshotHistory::choose_baseline`), plus pending events;
+   (`SnapshotHistory::choose_baseline`), plus pending events. A client gets snapshots only
+   once its first `Input` arrived: until then it is still generating its level (~0.25 s for a
+   bot, longer in WASM), nothing can be acknowledged, and every snapshot would be full and
+   handled in one burst later (M1 issue B: ~8 full snapshots, starvation reports and
+   prediction snaps per join). So a join costs one full snapshot, plus one per snapshot
+   interval of round trip until the first acknowledgement arrives;
 4. sends `take_outgoing()` (`Outgoing { client, channel, bytes }`; a host may send a too-large
    unreliable packet reliably, as `ls_net::send_message` does).
 
@@ -217,9 +250,10 @@ rewound target positions for projectile tests would remove the displacement tric
 | --- | --- |
 | `tests/netplay.rs::prediction_converges_snapshots_decode_and_terrain_replicates` | Room + 4 clients over `MemoryTransport` with 2-5 tick latency (one with 10 % loss, reordering and duplication, one joining late): snapshots decode (deltas after the first), craters and paint replicate so every client's `state_hash` equals the server's, the prediction for the newest snapshot tick is within 0.02 u of the server's exact state, no corrections or snaps during the last 1.5 s for the perfect links, remote ships interpolated near the server's past positions |
 | `tests/netplay.rs::lag_compensation_hits_target_that_moved_after_the_shot` | 5-tick latency each way; the target starts climbing as the shot is fired. Without compensation the shot misses on the server, with it the rewound target takes a direct hit |
-| `tests/netplay.rs::slow_setup_client_syncs_within_a_few_round_trips` | A client that builds its session 240 ticks after the `Welcome` (with the snapshot backlog) synchronizes within 3 round trips |
-| `server::tests` | join/leave/team balance, full room, late/duplicate/missing inputs (repeat last), no missing inputs before the first input, 30 Hz snapshots with deltas after acks, 250 ms history, `leave` drops queued packets before the id is reused, per-command rewind, unencodable `Welcome` rejects without a ghost ship |
-| `client::*::tests` | input redundancy, prediction without corrections against a delayed server, misprediction correction and smoothing, replay of inputs sent before the first snapshot, frozen prediction after the match end, interpolation, clock (including catching up from far behind) |
+| `tests/netplay.rs::slow_setup_client_syncs_within_a_few_round_trips` | A client that builds its session 240 ticks after the `Welcome` synchronizes within 3 round trips |
+| `tests/netplay.rs::a_join_costs_one_full_snapshot_and_starves_once` | M1 issue B regression: bots with 250-350 ms level generation on 1-tick links, joining, rejoining with reused wire ids and after a match restart (fresh room): exactly 1 full snapshot per join (at most `1 + (RTT - 1) / 2` on an 8-tick RTT), at most 1 starvation report and 1 prediction snap, and none of the three after the join settled; a few late inputs per client while joining (the catch-up) and none after the join settled |
+| `server::tests` | join/leave/team balance, full room, late/duplicate/missing inputs (repeat last), no missing inputs before the first input, no snapshots before the first input, 30 Hz snapshots with deltas after acks, 250 ms history, `leave` drops queued packets before the id is reused, per-command rewind, unencodable `Welcome` rejects without a ghost ship, inventory messages only on change, far moving debris culled and sent without velocity, guided-projectile prediction and entity interpolation in a `ClientSession` |
+| `client::*::tests` | input redundancy, prediction without corrections against a delayed server, misprediction correction and smoothing, replay of inputs sent before the first snapshot, frozen prediction after the match end, interpolation, clock (including catching up from far behind, a snapshot backlog counting as one starvation) |
 | `ls-wasm` `game::tests::online_client_under_latency_applies_look_exactly_once` | The browser core over a 4-7 tick jittery link with a delay spike (clock catch-up) and uneven frames: synced, converged, every mouse delta sent exactly once, `Disconnect` reason reported |
 | `ls-bots` `tests/room_play.rs` | A full room of 8 bots plays a (60 s) match to its end and 5 s beyond: no desyncs or protocol errors, terrain identical to the server's, no corrections after the match end |
 | `setup`, `terrain`, `convert` tests | deterministic setup in open space, steppable world, edits/dirty chunks/gaps/coverage, round trips |

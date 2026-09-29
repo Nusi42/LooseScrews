@@ -17,12 +17,21 @@ import {
   type ScoreRow,
 } from "./stats.ts";
 import {
+  emptyLoadout,
+  loadoutState,
+  parseEntities,
+  parsePlayers,
   parsePose,
   parseProjectiles,
   parseShips,
+  parseVisuals,
+  type EntityState,
+  type LoadoutState,
   type LocalPose,
+  type PlayerState,
   type ProjectileState,
   type ShipState,
+  type VisualDef,
 } from "./views.ts";
 
 /** What the session needs from a transport (WebSocketTransport / WebTransportTransport, or a fake in tests). */
@@ -56,6 +65,8 @@ export interface FrameResult {
   pose: LocalPose | null;
   ships: ShipState[];
   projectiles: ProjectileState[];
+  entities: EntityState[];
+  players: PlayerState[];
   hud: Partial<HudValues>;
   /** New kill-feed lines. */
   feed: string[];
@@ -91,6 +102,18 @@ export function hudValues(h: HudStateHandle): Partial<HudValues> {
   }
 }
 
+/** Name tables from ls-wasm that decode the entity and visual arrays. */
+export interface SceneNames {
+  /** `entityKindNames()`: entity kind names by wire byte. */
+  entityKinds: readonly string[];
+  /** `visualShapeNames()`: shape names by shape index. */
+  shapes: readonly string[];
+}
+
+export function sceneNames(api: Pick<WasmApi, "entityKindNames" | "visualShapeNames">): SceneNames {
+  return { entityKinds: api.entityKindNames(), shapes: api.visualShapeNames() };
+}
+
 /** A random 64-bit value for practice share codes (the WASM side never touches OS RNG). */
 export function entropy(): [number, number] {
   const v = new Uint32Array(2);
@@ -102,7 +125,9 @@ export class GameSession {
   readonly game: GameHandle;
   readonly link: PacketLink | null;
   readonly controls: ControlState;
-  readonly weaponIds: readonly string[];
+  readonly names: SceneNames;
+  /** The match's visual table (constant for a match; indexed by visual id). */
+  readonly visuals: readonly VisualDef[];
   /** Server `Disconnect` reason that means "match over, rejoin" (see ls_game::MATCH_RESTART_REASON). */
   readonly restartReason: string | null;
   private ended: string | null = null;
@@ -113,22 +138,23 @@ export class GameSession {
   constructor(
     game: GameHandle,
     link: PacketLink | null,
-    weaponIds: readonly string[],
+    names: SceneNames,
     horizonAssist = true,
     restartReason: string | null = null,
   ) {
     this.game = game;
     this.link = link;
-    this.weaponIds = weaponIds;
+    this.names = names;
+    this.visuals = parseVisuals(game.visuals(), names.shapes);
     this.restartReason = restartReason;
-    this.controls = new ControlState(weaponIds, horizonAssist);
+    this.controls = new ControlState(horizonAssist);
   }
 
   /** Offline practice on `code` (null = a fresh random level). */
   static practice(api: WasmApi, code: string | null, horizonAssist = true): GameSession {
     const [lo, hi] = entropy();
     const level = code ?? api.randomShareCode(lo, hi, 45, 35);
-    return new GameSession(api.Game.practice(level, PRACTICE_DUMMIES), null, api.weaponIds(), horizonAssist);
+    return new GameSession(api.Game.practice(level, PRACTICE_DUMMIES), null, sceneNames(api), horizonAssist);
   }
 
   /**
@@ -148,7 +174,7 @@ export class GameSession {
       link.send(api.helloPacket(name, -1));
       const welcome = await link.nextPacket();
       const game = api.Game.fromWelcome(welcome);
-      const session = new GameSession(game, link, api.weaponIds(), horizonAssist, api.matchRestartReason());
+      const session = new GameSession(game, link, sceneNames(api), horizonAssist, api.matchRestartReason());
       if (controls) session.controls.settings = { ...controls };
       return session;
     } catch (err) {
@@ -177,9 +203,14 @@ export class GameSession {
     return parseDebugStats(this.disposed ? [] : this.game.debugStats());
   }
 
-  /** Scoreboard rows (sorted by team, then kills). */
+  /** Scoreboard rows (sorted by team, then kills) with player names. */
   scoreboard(): ScoreRow[] {
-    return this.disposed ? [] : parseScoreboard(this.game.scoreboard());
+    return this.disposed ? [] : parseScoreboard(this.game.scoreboard(), this.game.scoreboardNames());
+  }
+
+  /** Carried weapons and gadget for the weapon panel. */
+  loadout(): LoadoutState {
+    return this.disposed ? emptyLoadout() : loadoutState(this.game.loadout());
   }
 
   /** Match result and team paint cells. */
@@ -231,7 +262,9 @@ export class GameSession {
       pose: parsePose(this.game.localPose()),
       ships: parseShips(this.game.remoteShips()),
       projectiles: parseProjectiles(this.game.projectiles()),
-      hud: { ...hudValues(this.game.hud()), horizonAssist: this.controls.horizonAssist },
+      entities: parseEntities(this.game.entities(), this.names.entityKinds),
+      players: parsePlayers(this.game.playerInfo(), this.game.playerNames()),
+      hud: { ...hudValues(this.game.hud()), horizonAssist: this.controls.horizonAssist, loadout: this.loadout() },
       feed: this.game.takeFeed(),
       disconnected,
       matchRestart,

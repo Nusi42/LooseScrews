@@ -23,7 +23,10 @@
 use ls_math::rng::mix64;
 use ls_math::terrain::TerrainQuery;
 use ls_math::{Aabb, Pcg32, Quat, Vec3};
-use ls_sim::{MatchSetup, RuleSet, ShipTuning, SpawnPoint, WeaponTable, World, WorldConfig};
+use ls_sim::{
+    GadgetTable, GameData, MatchSetup, RuleSet, ShipTable, SpawnPoint, WeaponTable, World,
+    WorldConfig,
+};
 use ls_worldgen::{Generator, ShareCode};
 
 use crate::{GameError, GameTerrain};
@@ -77,18 +80,73 @@ pub struct MatchConfig {
     pub code: ShareCode,
     pub rules: RuleSet,
     pub weapons: WeaponTable,
-    pub tuning: ShipTuning,
+    /// Tuning of every ship type.
+    pub ships: ShipTable,
+    pub gadgets: GadgetTable,
 }
 
 impl MatchConfig {
-    /// Built-in weapons, Tinker tuning and the default Paint the Void rules.
+    /// Built-in data (`ls_sim::GameData::builtin`) and the default Paint the
+    /// Void rules.
     pub fn paint_the_void(code: ShareCode) -> Self {
         MatchConfig {
             code,
             rules: RuleSet::paint_the_void(),
             weapons: WeaponTable::builtin(),
-            tuning: ShipTuning::tinker(),
+            ships: ShipTable::builtin(),
+            gadgets: GadgetTable::builtin(),
         }
+    }
+
+    /// The simulation config for this match with a computed setup.
+    pub fn world_config(&self, setup: MatchSetup) -> WorldConfig {
+        WorldConfig {
+            seed: self.match_seed(),
+            weapons: self.weapons.clone(),
+            ships: self.ships.clone(),
+            gadgets: self.gadgets.clone(),
+            rules: self.rules.clone(),
+            setup,
+        }
+    }
+
+    /// Hash of this match's data tables, as sent in `Hello`/`Welcome`. For
+    /// the built-in tables this is `ls_sim::data_hash()`; custom tables
+    /// (tests, tools) hash their serialized form.
+    pub fn data_hash(&self) -> u64 {
+        let builtin = GameData::builtin();
+        if self.weapons == builtin.weapons
+            && self.ships == builtin.ships
+            && self.gadgets == builtin.gadgets
+        {
+            return ls_sim::data_hash();
+        }
+        let weapons: Vec<String> = self
+            .weapons
+            .iter()
+            .map(|(_, d)| ron::to_string(d).unwrap_or_default())
+            .collect();
+        let ships: Vec<String> = self
+            .ships
+            .iter()
+            .map(|(_, t)| ron::to_string(t).unwrap_or_default())
+            .collect();
+        let gadgets: Vec<String> = self
+            .gadgets
+            .iter()
+            .map(|(_, d)| ron::to_string(d).unwrap_or_default())
+            .collect();
+        let files: Vec<(String, &str)> = weapons
+            .iter()
+            .map(|t| ("weapons".to_string(), t.as_str()))
+            .chain(ships.iter().map(|t| ("ships".to_string(), t.as_str())))
+            .chain(gadgets.iter().map(|t| ("gadgets".to_string(), t.as_str())))
+            .enumerate()
+            .map(|(i, (k, t))| (format!("{k}/{i:03}"), t))
+            .collect();
+        ls_sim::with_behavior_version(ls_sim::data::hash_files(
+            files.iter().map(|(p, t)| (p.as_str(), *t)),
+        ))
     }
 
     /// The simulation's match seed (pickup rolls), derived from the world seed.
@@ -233,6 +291,7 @@ pub fn match_setup(
     Ok(MatchSetup {
         spawns,
         pickup_points: pickups,
+        instability: code.sliders.instability,
     })
 }
 
@@ -241,13 +300,7 @@ pub fn match_setup(
 pub fn build_match(cfg: &MatchConfig) -> Result<(World, GameTerrain), GameError> {
     let terrain = GameTerrain::from_code(&cfg.code)?;
     let setup = match_setup(&cfg.code, &cfg.rules, &terrain)?;
-    let world = World::new(WorldConfig {
-        seed: cfg.match_seed(),
-        weapons: cfg.weapons.clone(),
-        rules: cfg.rules.clone(),
-        tuning: cfg.tuning.clone(),
-        setup,
-    })?;
+    let world = World::new(cfg.world_config(setup))?;
     Ok((world, terrain))
 }
 
@@ -406,7 +459,8 @@ mod tests {
 
     /// Checks everything a playable setup needs.
     fn check_setup(c: &ShareCode, t: &GameTerrain, s: &MatchSetup) {
-        let tuning = ShipTuning::tinker();
+        // Every ship type fits (the Hauler has the largest hitbox).
+        let radius = ShipTable::builtin().max_radius();
         let mid = t.bounds().center().x;
         let room = t.generator().room();
         for team in 0..2u8 {
@@ -421,7 +475,7 @@ mod tests {
                 t.sdf(sp.pos) >= MIN_CLEARANCE,
                 "{c}: spawn {sp:?} too tight"
             );
-            assert!(!t.sphere_overlap(sp.pos, tuning.radius), "{c}: {sp:?}");
+            assert!(!t.sphere_overlap(sp.pos, radius), "{c}: {sp:?}");
             assert!(room.contains(sp.pos));
             // Team 0 low x, team 1 high x, both facing inwards.
             assert_eq!(sp.pos.x < mid, sp.team == 0, "{c}: {sp:?}");
@@ -506,14 +560,8 @@ mod tests {
                         .unwrap_or_else(|err| panic!("{c}: {err}"));
                     check_setup(&c, &terrain, &setup);
                     // What build_match does with it.
-                    let world = World::new(WorldConfig {
-                        seed: cfg.match_seed(),
-                        weapons: cfg.weapons.clone(),
-                        rules: cfg.rules.clone(),
-                        tuning: cfg.tuning.clone(),
-                        setup,
-                    })
-                    .unwrap_or_else(|err| panic!("{c}: {err}"));
+                    let world = World::new(cfg.world_config(setup))
+                        .unwrap_or_else(|err| panic!("{c}: {err}"));
                     assert_eq!(world.tick(), 0);
                 }
             }

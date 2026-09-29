@@ -19,6 +19,14 @@ export type Action =
   | "weapon2"
   | "weapon3"
   | "weapon4"
+  | "weapon5"
+  | "weapon6"
+  | "weapon7"
+  | "weapon8"
+  | "weapon9"
+  | "weapon10"
+  | "cycleSecondary"
+  | "gadget"
   // Interface keys (work with or without pointer lock).
   | "scoreboard"
   | "toggleDebug";
@@ -42,11 +50,21 @@ export const KEY_BINDINGS: Readonly<Record<string, Action>> = {
   // Overdrive gamble: hold to pay missing weapon energy with hull (2 hull per 1 energy).
   KeyF: "overdrive",
   KeyH: "toggleHorizonAssist",
-  // Weapon selection (see WEAPON_KEYS in game/controls.ts for the order).
+  // Weapon selection (M2 plan): 1-9 and 0 pick the n-th carried primary in
+  // design-doc order, the mouse wheel cycles primaries, X cycles
+  // secondaries, G uses the gadget.
   Digit1: "weapon1",
   Digit2: "weapon2",
   Digit3: "weapon3",
   Digit4: "weapon4",
+  Digit5: "weapon5",
+  Digit6: "weapon6",
+  Digit7: "weapon7",
+  Digit8: "weapon8",
+  Digit9: "weapon9",
+  Digit0: "weapon10",
+  KeyX: "cycleSecondary",
+  KeyG: "gadget",
   // Hold for the scoreboard; F3 toggles the debug overlay.
   Tab: "scoreboard",
   F3: "toggleDebug",
@@ -55,8 +73,34 @@ export const KEY_BINDINGS: Readonly<Record<string, Action>> = {
 /** Actions handled even while the pointer is not locked (overlays, not flying). */
 export const UI_ACTIONS: ReadonlySet<Action> = new Set<Action>(["scoreboard", "toggleDebug"]);
 
-/** Weapon-slot actions in key order (Digit1 = index 0). */
-export const WEAPON_ACTIONS: readonly Action[] = ["weapon1", "weapon2", "weapon3", "weapon4"];
+/** Weapon-slot actions in key order (Digit1 = index 0, Digit0 = index 9). */
+export const WEAPON_ACTIONS: readonly Action[] = [
+  "weapon1",
+  "weapon2",
+  "weapon3",
+  "weapon4",
+  "weapon5",
+  "weapon6",
+  "weapon7",
+  "weapon8",
+  "weapon9",
+  "weapon10",
+];
+
+/** Wheel movement (deltaY, pixels) that counts as one weapon step. */
+export const WHEEL_STEP = 50;
+
+/**
+ * Turns accumulated wheel movement into one step per sample: +1 (wheel
+ * down / towards the user = next weapon), -1 (up = previous) or 0. Returns
+ * the step and the remaining accumulation (at most one step per frame, the
+ * rest is dropped so a fast flick does not queue many steps).
+ */
+export function wheelStep(accum: number, step = WHEEL_STEP): [number, number] {
+  if (accum >= step) return [1, 0];
+  if (accum <= -step) return [-1, 0];
+  return [0, accum];
+}
 
 /** Mouse buttons (MouseEvent.button): 0 = left = primary, 2 = right = secondary. */
 export const MOUSE_PRIMARY = 0;

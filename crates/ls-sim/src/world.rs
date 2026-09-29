@@ -1,24 +1,48 @@
-//! The deterministic match simulation: ships, projectiles, pickups, scrap and
-//! the Paint the Void mode, advanced one 60 Hz tick at a time by [`World::step`].
+//! The deterministic match simulation: ships, projectiles, entities, pickups,
+//! scrap and the Paint the Void mode, advanced one 60 Hz tick at a time by
+//! [`World::step`].
+//!
+//! Weapons and gadgets are data plus behaviour modules
+//! ([`crate::weapons`], [`crate::gadgets`]); this file is the framework that
+//! calls their hooks and applies the [`Command`]s they queue. The order of a
+//! tick (see `docs/architecture/arsenal-framework.md`):
+//!
+//! 1. respawns (with the ship type chosen for the next life);
+//! 2. per ship in id order: weapon selection, gadget key, movement (frozen
+//!    while the ship guides a projectile), scavenging (and Tug scrap passing),
+//!    gadget drain, then firing (primary, secondary);
+//! 3. projectiles (fuse, lifetime, `update`, swept move and hit hooks);
+//! 4. entities (debris physics, decoys, entity hooks, expiry);
+//! 5. scrap piles and pickups;
+//! 6. ship trails (Borrowed Time history);
+//! 7. mode: scores and timer.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
 
-use ls_math::terrain::TerrainEdit;
-use ls_math::{Pcg32, Quat, Vec3, DT};
+use ls_math::terrain::{RayHit, SurfaceStates, TerrainEdit, TerrainQuery};
+use ls_math::{Aabb, Pcg32, Quat, Vec3, DT};
 use serde::{Deserialize, Serialize};
 
+use crate::behavior::{Command, Ctx, Cue, CueKind, DamageSource, View};
+use crate::entity::{
+    state_byte, step_debris, Entity, EntityKind, EntitySpawn, EntityView, ReplicatedKind, Source,
+    DEBRIS_PUSH, MAX_DEBRIS, NO_TEAM, WIRE_ID_MASK,
+};
+use crate::gadgets::{GadgetActivation, GadgetBehavior, GadgetUse, IncomingHit};
 use crate::hash::StateHasher;
 use crate::mode::{MatchPhase, PaintTheVoid, SCORE_INTERVAL_TICKS};
 use crate::ruleset::{PickupKind, ResolvedRules};
-use crate::ship::{simulate_movement, PlayerId, ShipState, WeaponState};
-use crate::terrain::{paint_team_id, segment_sphere, SimTerrain};
+use crate::ship::{move_sphere, simulate_movement, ChargeState, PlayerId, ShipState, WeaponState};
+use crate::terrain::{segment_sphere, SimTerrain, TerrainLayers};
+use crate::visual::{BuiltinVisual, VisualId, VisualTable};
+use crate::weapons::{ChargeAction, EntityHit, HitResponse, ShipHit, Shot, WeaponBehavior};
 use crate::{
-    Buttons, InputCmd, RuleSet, ShipTuning, ShipType, SimError, WeaponCost, WeaponId, WeaponSlot,
-    WeaponTable,
+    Buttons, GadgetId, GadgetTable, InputCmd, RuleSet, ShieldInteraction, ShipTable, ShipTuning,
+    ShipType, SimError, WeaponCost, WeaponDef, WeaponId, WeaponSlot, WeaponTable,
 };
 
-/// Distance (added to the ship radius) within which a ship collects a weapon pickup.
+/// Distance (added to the ship radius) within which a ship collects a pickup.
 pub const PICKUP_RADIUS: f32 = 1.0;
 /// Maximum number of wreck scrap piles; the oldest wreck is removed past this.
 pub const MAX_WRECKS: usize = 64;
@@ -26,6 +50,15 @@ pub const MAX_WRECKS: usize = 64;
 pub const RNG_STREAM_PICKUPS: u64 = 0x5349_4d5f_5049_434b; // "SIM_PICK"
 /// Number of teams in Paint the Void.
 pub const TEAMS: u8 = 2;
+/// Ticks of position/velocity/hull history kept per ship (3 s, Borrowed Time).
+pub const TRAIL_TICKS: usize = 180;
+/// Hit iterations per projectile and tick (pierce and pass-through chains).
+const MAX_HITS_PER_TICK: usize = 8;
+/// Energy drained per second from a ship scraping a charged surface, unless
+/// the Leech Arc data sets `charged_drain_per_sec` (M2 plan: 5 energy/s).
+pub const CHARGED_DRAIN_PER_SEC: f32 = 5.0;
+/// Wire ids of projectiles are `id & PROJECTILE_WIRE_MASK` (16 bits).
+pub const PROJECTILE_WIRE_MASK: u32 = 0xffff;
 
 /// A team spawn point.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -40,28 +73,34 @@ pub struct SpawnPoint {
 pub struct MatchSetup {
     pub spawns: Vec<SpawnPoint>,
     pub pickup_points: Vec<Vec3>,
+    /// The level's Instability slider (0-100; scales Tectonic Charge
+    /// collapses). Hooks read it as `ctx.view.instability`.
+    #[serde(default)]
+    pub instability: u8,
 }
 
 /// Everything needed to start a match.
 #[derive(Debug, Clone)]
 pub struct WorldConfig {
-    /// Match seed (pickup rolls). Usually derived from the world seed.
+    /// Match seed (pickup rolls, module RNG). Usually derived from the world seed.
     pub seed: u64,
     pub weapons: WeaponTable,
+    /// Tuning of every ship type.
+    pub ships: ShipTable,
+    pub gadgets: GadgetTable,
     pub rules: RuleSet,
-    /// Tuning for the Tinker (the only ship type in M1).
-    pub tuning: ShipTuning,
     pub setup: MatchSetup,
 }
 
 impl WorldConfig {
-    /// Built-in M1 weapons and the default Paint the Void rule set.
+    /// Built-in data and the default Paint the Void rule set.
     pub fn paint_the_void(seed: u64, setup: MatchSetup) -> WorldConfig {
         WorldConfig {
             seed,
             weapons: WeaponTable::builtin(),
+            ships: ShipTable::builtin(),
+            gadgets: GadgetTable::builtin(),
             rules: RuleSet::paint_the_void(),
-            tuning: ShipTuning::tinker(),
             setup,
         }
     }
@@ -70,15 +109,60 @@ impl WorldConfig {
 /// Immutable per-match configuration shared by clones of a world.
 #[derive(Debug)]
 struct SimConfig {
+    seed: u64,
     weapons: WeaponTable,
+    ships: ShipTable,
+    gadgets: GadgetTable,
     rules: RuleSet,
     resolved: ResolvedRules,
-    tuning: ShipTuning,
     setup: MatchSetup,
+    visuals: VisualTable,
+    /// Indexed by [`WeaponId`].
+    behaviors: Vec<&'static dyn WeaponBehavior>,
+    /// Indexed by [`GadgetId`].
+    gadget_behaviors: Vec<&'static dyn GadgetBehavior>,
+    /// Energy per second a charged surface drains from a ship touching it.
+    charged_drain_per_sec: f32,
 }
 
-/// A projectile in flight. Its velocity is the muzzle velocity only; it never
-/// inherits the shooter's velocity.
+impl SimConfig {
+    fn behavior(&self, w: WeaponId) -> &'static dyn WeaponBehavior {
+        self.behaviors[w.0 as usize]
+    }
+
+    fn tuning(&self, t: ShipType) -> &ShipTuning {
+        self.ships.get(t)
+    }
+}
+
+/// Bits of [`Projectile::flags`]. The low 8 bits are replicated to clients
+/// (`Projectile::net_state`).
+pub mod proj_flags {
+    /// Stuck to terrain (does not move).
+    pub const STUCK: u16 = 1 << 0;
+    /// Armed (mines).
+    pub const ARMED: u16 = 1 << 1;
+    /// Can hit its owner (ricochets, returning echoes).
+    pub const HITS_OWNER: u16 = 1 << 2;
+    /// The owner steers it: the owner's ship gets no thrust or look input
+    /// while it lives (Eyeball).
+    pub const CONTROLS_OWNER: u16 = 1 << 3;
+    /// On its way back (Echo Cannon).
+    pub const RETURNING: u16 = 1 << 4;
+    /// Passes through ships (hits only terrain and entities).
+    pub const NO_SHIP_HITS: u16 = 1 << 5;
+    /// Module-defined replicated bits.
+    pub const CUSTOM_A: u16 = 1 << 6;
+    pub const CUSTOM_B: u16 = 1 << 7;
+    /// Replicated bits.
+    pub const NET_MASK: u16 = 0x00ff;
+    /// Removed by a hook (not replicated; the projectile is gone after the hook).
+    pub const REMOVED: u16 = 1 << 15;
+}
+
+/// A projectile in flight (bolts, rounds, missiles, mines, charges). Its
+/// velocity is the muzzle velocity only; it never inherits the shooter's
+/// velocity. Fields after `knockback` are generic state for weapon modules.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Projectile {
     pub id: u32,
@@ -89,16 +173,63 @@ pub struct Projectile {
     pub vel: Vec3,
     /// The projectile is removed at the start of this tick.
     pub expires_tick: u64,
-    /// Direct-hit damage (level and ship multipliers applied).
+    /// Direct-hit damage (all multipliers applied).
     pub damage: f32,
-    /// Splash damage at the center (level and ship multipliers applied).
+    /// Splash damage at the center (all multipliers applied).
     pub splash_damage: f32,
-    /// Knockback impulse (u/s) of a direct hit, scaled like damage (level and
-    /// ship multipliers applied); splash knockback scales it by the falloff.
+    /// Knockback impulse (u/s) of a direct hit, scaled like damage; splash
+    /// knockback scales it by the falloff.
     pub knockback: f32,
+    pub spawn_tick: u64,
+    /// Collision radius (the weapon's `projectile_radius` by default).
+    pub radius: f32,
+    pub visual: VisualId,
+    /// Charge fraction the shot was fired with (0..=1).
+    pub charge: f32,
+    /// 0 for fired projectiles, parent + 1 for sub-projectiles.
+    pub generation: u8,
+    /// Bounces so far (ricochets).
+    pub bounces: u8,
+    /// See [`proj_flags`].
+    pub flags: u16,
+    /// Tick from which a mine is armed (modules decide what arming means).
+    pub arm_tick: u64,
+    /// `on_fuse` runs at this tick (`u64::MAX` = no fuse).
+    pub fuse_tick: u64,
+    /// Locked target (homing).
+    pub target: Option<PlayerId>,
+    /// Free per-module state.
+    pub vars: [f32; 4],
+    /// Recorded path points (Echo Cannon), kept small by the module.
+    pub path: Vec<Vec3>,
+    /// The ship (`(0, player id)`) or entity (`(1, entity id)`) a `Continue`
+    /// hit last passed through: it is not hit again until the projectile
+    /// has left its sphere (set by the framework).
+    #[serde(default)]
+    pub passed: Option<(u8, u32)>,
 }
 
-/// Scavengeable scrap: wrecks of destroyed ships and scrap pickups.
+impl Projectile {
+    /// Removes the projectile after the current hook.
+    pub fn remove(&mut self) {
+        self.flags |= proj_flags::REMOVED;
+    }
+
+    pub fn is_removed(&self) -> bool {
+        self.flags & proj_flags::REMOVED != 0
+    }
+
+    pub fn is_stuck(&self) -> bool {
+        self.flags & proj_flags::STUCK != 0
+    }
+
+    /// Replicated state byte (low bits of `flags`).
+    pub fn net_state(&self) -> u8 {
+        (self.flags & proj_flags::NET_MASK) as u8
+    }
+}
+
+/// Scavengeable scrap: wrecks of destroyed ships, scrap pickups and level junk.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ScrapPile {
     pub id: u32,
@@ -106,6 +237,8 @@ pub struct ScrapPile {
     pub amount: f32,
     /// Pickup spawn index if this pile is a scrap pickup (respawns when empty).
     pub spawn: Option<u16>,
+    /// Left by a destroyed ship.
+    pub wreck: bool,
 }
 
 /// A pickup spawn point and what it currently holds.
@@ -115,17 +248,20 @@ pub struct PickupSpawn {
     /// Pickup table entry index and content, or `None` while respawning.
     pub content: Option<(u16, PickupKind)>,
     pub respawn_tick: u64,
+    /// Entity id of the current content (replication).
+    pub id: u32,
 }
 
 /// Things that happened during a tick, for clients, the server and tests.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Event {
+    /// A projectile left a gun (sub-projectiles do not count).
     Fired {
         player: PlayerId,
         weapon: WeaponId,
         projectile: u32,
     },
-    /// A projectile hit a ship or terrain (or exploded).
+    /// A projectile hit a ship, an entity or terrain (or exploded).
     Impact {
         projectile: u32,
         weapon: WeaponId,
@@ -134,8 +270,10 @@ pub enum Event {
     },
     Damaged {
         target: PlayerId,
-        attacker: PlayerId,
-        weapon: WeaponId,
+        /// `None` for damage without an attacker (environment).
+        attacker: Option<PlayerId>,
+        /// `None` for damage not caused by a weapon (decoy return hit, ...).
+        weapon: Option<WeaponId>,
         amount: f32,
         direct: bool,
     },
@@ -148,7 +286,9 @@ pub enum Event {
         player: PlayerId,
         pos: Vec3,
     },
-    /// A terrain edit (crater or paint), already applied to the terrain.
+    /// A terrain edit (crater, growth or paint) exactly as applied to the
+    /// terrain and logged (craters already scaled by rock strength, see
+    /// [`Ctx::crater`]).
     TerrainEdit(TerrainEdit),
     PickupSpawned {
         spawn: u16,
@@ -167,6 +307,64 @@ pub enum Event {
         winner: Option<u8>,
         team_cells: [u64; 2],
     },
+    /// Something for clients to show or play (warnings, blinding, chimes).
+    Cue(Cue),
+}
+
+/// Recent history of one ship (newest last).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) struct Trail {
+    points: VecDeque<(Vec3, Vec3, f32)>,
+}
+
+impl Trail {
+    /// `(pos, vel, hull)` `ticks_ago` ticks before the newest record (the
+    /// oldest record if the history is shorter).
+    pub(crate) fn get(&self, ticks_ago: u64) -> Option<(Vec3, Vec3, f32)> {
+        let n = self.points.len();
+        if n == 0 {
+            return None;
+        }
+        let i = (n - 1).saturating_sub(ticks_ago.min(n as u64) as usize);
+        self.points.get(i).copied()
+    }
+
+    fn push(&mut self, p: (Vec3, Vec3, f32)) {
+        if self.points.len() > TRAIL_TICKS {
+            self.points.pop_front();
+        }
+        self.points.push_back(p);
+    }
+}
+
+/// Terrain reference usable as `&dyn TerrainQuery` for any (unsized) terrain.
+struct TerrainRef<'a, T: ?Sized>(&'a T);
+
+impl<T: SimTerrain + ?Sized> TerrainLayers for TerrainRef<'_, T> {
+    fn surface_states_near(&self, center: Vec3, radius: f32, now: u64) -> SurfaceStates {
+        self.0.surface_states_near(center, radius, now)
+    }
+    fn material_at(&self, p: Vec3) -> u8 {
+        self.0.material_at(p)
+    }
+}
+
+impl<T: TerrainQuery + ?Sized> TerrainQuery for TerrainRef<'_, T> {
+    fn sdf(&self, p: Vec3) -> f32 {
+        self.0.sdf(p)
+    }
+    fn normal(&self, p: Vec3) -> Vec3 {
+        self.0.normal(p)
+    }
+    fn raycast(&self, origin: Vec3, dir: Vec3, max_dist: f32) -> Option<RayHit> {
+        self.0.raycast(origin, dir, max_dist)
+    }
+    fn bounds(&self) -> Aabb {
+        self.0.bounds()
+    }
+    fn sphere_overlap(&self, center: Vec3, radius: f32) -> bool {
+        self.0.sphere_overlap(center, radius)
+    }
 }
 
 /// The simulation state of one match. Cloning is cheap enough for client-side
@@ -177,21 +375,31 @@ pub struct World {
     tick: u64,
     ships: BTreeMap<PlayerId, ShipState>,
     projectiles: Vec<Projectile>,
+    entities: Vec<Entity>,
     scrap: Vec<ScrapPile>,
     pickups: Vec<PickupSpawn>,
     mode: PaintTheVoid,
     rng: Pcg32,
     next_player: u16,
     next_projectile: u32,
-    next_scrap: u32,
+    next_entity: u32,
     spawn_cursor: [u32; 2],
+    trails: BTreeMap<PlayerId, Trail>,
+    /// This tick's sanitized inputs (hooks read them through the view).
+    inputs: BTreeMap<PlayerId, InputCmd>,
+    /// While projectiles are stepped: the ones not stepped yet (in reverse
+    /// order) and the ones already stepped this tick. Empty otherwise.
+    stepping: Vec<Projectile>,
+    stepped: Vec<Projectile>,
 }
 
 impl World {
     /// Validates the configuration and starts a match at tick 0. Pickups are
     /// rolled immediately.
     pub fn new(config: WorldConfig) -> Result<World, SimError> {
-        let resolved = config.rules.resolve(&config.weapons)?;
+        let resolved = config
+            .rules
+            .resolve_with(&config.weapons, &config.gadgets)?;
         for s in &config.setup.spawns {
             if s.team >= TEAMS {
                 return Err(SimError::InvalidTeam(s.team));
@@ -207,20 +415,26 @@ impl World {
                 )));
             }
         }
-        // Reject loadouts the ship cannot carry instead of trimming them at respawn.
-        let slots = config.tuning.secondary_slots as usize;
+        // Reject loadouts an allowed ship type cannot carry instead of
+        // trimming them at respawn.
+        let slots = resolved
+            .allowed_ship_types
+            .iter()
+            .map(|t| config.ships.get(*t).secondary_slots as usize)
+            .min()
+            .unwrap_or(0);
         if resolved.loadout_secondaries.len() > slots {
             return Err(SimError::InvalidRuleSet(format!(
-                "starting loadout has {} secondaries, the ship has {slots} slots",
+                "starting loadout has {} secondaries, an allowed ship type has {slots} slots",
                 resolved.loadout_secondaries.len()
             )));
         }
         for &(w, count) in &resolved.loadout_secondaries {
-            let def = config.weapons.get(w);
-            if count > def.max_ammo {
+            let max = resolved.max_ammo(w);
+            if count > max {
                 return Err(SimError::InvalidRuleSet(format!(
-                    "starting loadout gives {count} {}, max_ammo is {}",
-                    def.id, def.max_ammo
+                    "starting loadout gives {count} {}, max_ammo is {max}",
+                    config.weapons.get(w).id
                 )));
             }
         }
@@ -233,27 +447,57 @@ impl World {
                 pos,
                 content: None,
                 respawn_tick: 0,
+                id: 0,
             })
             .collect();
+        let behaviors = config
+            .weapons
+            .iter()
+            .map(|(_, d)| crate::weapons::behavior(&d.id))
+            .collect();
+        let gadget_behaviors = config
+            .gadgets
+            .iter()
+            .map(|(_, d)| crate::gadgets::behavior(&d.id))
+            .collect();
+        let visuals = VisualTable::new(&config.weapons, &config.gadgets);
+        let charged_drain_per_sec = config
+            .weapons
+            .iter()
+            .find(|(_, d)| d.id == "leech_arc")
+            .map_or(CHARGED_DRAIN_PER_SEC, |(_, d)| {
+                d.param("charged_drain_per_sec", CHARGED_DRAIN_PER_SEC)
+            });
         let mut world = World {
             rng: Pcg32::from_seed(config.seed, RNG_STREAM_PICKUPS),
             config: Arc::new(SimConfig {
+                seed: config.seed,
                 weapons: config.weapons,
+                ships: config.ships,
+                gadgets: config.gadgets,
                 rules: config.rules,
                 resolved,
-                tuning: config.tuning,
                 setup: config.setup,
+                visuals,
+                behaviors,
+                gadget_behaviors,
+                charged_drain_per_sec,
             }),
             tick: 0,
             ships: BTreeMap::new(),
             projectiles: Vec::new(),
+            entities: Vec::new(),
             scrap: Vec::new(),
             pickups,
             mode,
             next_player: 0,
             next_projectile: 0,
-            next_scrap: 0,
+            next_entity: 0,
             spawn_cursor: [0; 2],
+            trails: BTreeMap::new(),
+            inputs: BTreeMap::new(),
+            stepping: Vec::new(),
+            stepped: Vec::new(),
         };
         let mut events = Vec::new();
         world.update_pickup_spawns(&mut events);
@@ -269,14 +513,28 @@ impl World {
     pub fn weapons(&self) -> &WeaponTable {
         &self.config.weapons
     }
+    pub fn gadgets(&self) -> &GadgetTable {
+        &self.config.gadgets
+    }
+    pub fn ship_types(&self) -> &ShipTable {
+        &self.config.ships
+    }
     pub fn rules(&self) -> &RuleSet {
         &self.config.rules
     }
     pub fn resolved_rules(&self) -> &ResolvedRules {
         &self.config.resolved
     }
+    pub fn visuals(&self) -> &VisualTable {
+        &self.config.visuals
+    }
+    /// Tuning of the standard ship type (Tinker).
     pub fn tuning(&self) -> &ShipTuning {
-        &self.config.tuning
+        self.config.ships.get(ShipType::Tinker)
+    }
+    /// Tuning of a ship type.
+    pub fn tuning_for(&self, t: ShipType) -> &ShipTuning {
+        self.config.ships.get(t)
     }
     pub fn ships(&self) -> impl Iterator<Item = &ShipState> {
         self.ships.values()
@@ -291,6 +549,10 @@ impl World {
     }
     pub fn projectiles(&self) -> &[Projectile] {
         &self.projectiles
+    }
+    /// Generic entities (debris, decoys, ghosts, dust clouds, markers).
+    pub fn entities(&self) -> &[Entity] {
+        &self.entities
     }
     pub fn scrap_piles(&self) -> &[ScrapPile] {
         &self.scrap
@@ -309,15 +571,25 @@ impl World {
 
     /// Adds a scrap pile (level junk placed by the generator, tests).
     pub fn add_scrap_pile(&mut self, pos: Vec3, amount: f32) -> u32 {
-        let id = self.next_scrap;
-        self.next_scrap = self.next_scrap.wrapping_add(1);
+        let id = self.alloc_entity_id();
         self.scrap.push(ScrapPile {
             id,
             pos,
             amount,
             spawn: None,
+            wreck: false,
         });
         id
+    }
+
+    #[cfg(test)]
+    pub(crate) fn remove_last_scrap_for_test(&mut self) {
+        self.scrap.pop();
+    }
+
+    /// Spawns an entity directly (tests, tools, level setup). Returns its id.
+    pub fn spawn_entity(&mut self, spawn: EntitySpawn) -> u32 {
+        self.insert_entity(spawn)
     }
 
     // ----- players ---------------------------------------------------------
@@ -330,9 +602,6 @@ impl World {
     ) -> Result<PlayerId, SimError> {
         if !self.config.resolved.allowed_ship_types.contains(&ship_type) {
             return Err(SimError::ShipTypeNotAllowed(ship_type));
-        }
-        if ShipTuning::for_type(ship_type).is_none() {
-            return Err(SimError::ShipTypeUnavailable(ship_type));
         }
         let team = match team {
             Some(t) if t >= TEAMS => return Err(SimError::InvalidTeam(t)),
@@ -355,7 +624,7 @@ impl World {
             id,
             team,
             ship_type,
-            &self.config.tuning,
+            self.config.tuning(ship_type),
             Vec3::ZERO,
             Quat::IDENTITY,
         );
@@ -366,7 +635,19 @@ impl World {
 
     /// Removes a player. Their projectiles stay in flight.
     pub fn remove_player(&mut self, id: PlayerId) -> bool {
+        self.trails.remove(&id);
         self.ships.remove(&id).is_some()
+    }
+
+    /// Ship choice: the type `id` flies from its next respawn on (the rule
+    /// set must allow it).
+    pub fn set_ship_type(&mut self, id: PlayerId, ship_type: ShipType) -> Result<(), SimError> {
+        if !self.config.resolved.allowed_ship_types.contains(&ship_type) {
+            return Err(SimError::ShipTypeNotAllowed(ship_type));
+        }
+        let ship = self.ships.get_mut(&id).ok_or(SimError::UnknownPlayer(id))?;
+        ship.next_ship_type = (ship.ship_type != ship_type).then_some(ship_type);
+        Ok(())
     }
 
     /// Gives a weapon to a ship as if picked up, enforcing the rule set: banned
@@ -390,11 +671,41 @@ impl World {
         }
     }
 
-    /// Picks the next spawn point for the ship's team and resets it with the loadout.
+    /// Puts a gadget into a ship's slot as if picked up (rule set enforced).
+    pub fn give_gadget(&mut self, id: PlayerId, gadget: &str) -> Result<(), SimError> {
+        let cfg = Arc::clone(&self.config);
+        let g = cfg.gadgets.require(gadget)?;
+        if cfg.resolved.gadget_availability(g).is_banned() {
+            return Err(SimError::GadgetBanned(gadget.to_string()));
+        }
+        let ship = self.ships.get_mut(&id).ok_or(SimError::UnknownPlayer(id))?;
+        ship.gadget = Some(g);
+        ship.gadget_active = false;
+        Ok(())
+    }
+
+    /// Whether `viewer` may see `target` (snapshot relevance): false only for
+    /// a gadget that hides it (Cloak). Unknown players are visible.
+    pub fn ship_visible_to(&self, viewer: PlayerId, target: PlayerId) -> bool {
+        let (Some(v), Some(t)) = (self.ships.get(&viewer), self.ships.get(&target)) else {
+            return true;
+        };
+        match t.gadget {
+            Some(g) if t.gadget_active && t.alive => {
+                let def = self.config.gadgets.get(g);
+                self.config.gadget_behaviors[g.0 as usize].visible_to(def, t, v, self.tick)
+            }
+            _ => true,
+        }
+    }
+
+    /// Picks the next spawn point for the ship's team and resets it with the
+    /// loadout, as the ship type chosen for this life.
     fn respawn(&mut self, id: PlayerId) -> Option<Vec3> {
         let cfg = Arc::clone(&self.config);
         let old = self.ships.get(&id)?;
         let team = old.team;
+        let ship_type = old.next_ship_type.unwrap_or(old.ship_type);
         let candidates: Vec<&SpawnPoint> =
             cfg.setup.spawns.iter().filter(|s| s.team == team).collect();
         // `World::new` guarantees every team has a spawn point; the fallback only
@@ -407,7 +718,8 @@ impl World {
             *cursor = cursor.wrapping_add(1);
             (sp.pos, sp.orientation)
         };
-        let mut ship = ShipState::new(id, team, old.ship_type, &cfg.tuning, pos, orientation);
+        let tuning = cfg.tuning(ship_type);
+        let mut ship = ShipState::new(id, team, ship_type, tuning, pos, orientation);
         ship.kills = old.kills;
         ship.deaths = old.deaths;
         ship.horizon_assist = old.horizon_assist;
@@ -416,20 +728,23 @@ impl World {
                 weapon: w,
                 ammo: 0,
                 level: 1,
+                shots: 0,
             });
             ship.primary.get_or_insert(w);
         }
-        let slots = cfg.tuning.secondary_slots as usize;
+        let slots = tuning.secondary_slots as usize;
         for &(w, count) in cfg.resolved.loadout_secondaries.iter().take(slots) {
-            let max = cfg.weapons.get(w).max_ammo;
             ship.add_weapon(WeaponState {
                 weapon: w,
-                ammo: count.min(max),
+                ammo: count.min(cfg.resolved.max_ammo(w)),
                 level: 1,
+                shots: 0,
             });
             ship.secondary.get_or_insert(w);
         }
+        ship.gadget = cfg.resolved.loadout_gadget;
         self.ships.insert(id, ship);
+        self.trails.remove(&id);
         Some(pos)
     }
 
@@ -455,6 +770,7 @@ impl World {
         for (p, c) in inputs {
             cmds.insert(*p, c.sanitized());
         }
+        self.inputs = cmds;
         let ids: Vec<PlayerId> = self.ships.keys().copied().collect();
 
         // 1. Respawns.
@@ -470,9 +786,18 @@ impl World {
             }
         }
 
-        // 2. Ships: selection, movement, scavenging, firing.
+        // Ships steering a projectile (Eyeball) get no thrust or look.
+        let controlled: BTreeSet<PlayerId> = self
+            .projectiles
+            .iter()
+            .filter(|p| p.flags & proj_flags::CONTROLS_OWNER != 0)
+            .map(|p| p.owner)
+            .collect();
+
+        // 2. Ships: selection, gadget, movement, scavenging, firing.
         for &id in &ids {
-            let cmd = cmds
+            let cmd = self
+                .inputs
                 .get(&id)
                 .copied()
                 .unwrap_or_else(|| InputCmd::idle(now));
@@ -480,56 +805,76 @@ impl World {
                 continue;
             };
             if !ship.alive {
+                ship.prev_buttons = cmd.buttons;
                 continue;
             }
             select_weapon(ship, cmd.weapon_select, &cfg.weapons);
-            simulate_movement(ship, &cmd, &cfg.tuning, &*terrain);
-            if cmd.buttons.contains(Buttons::SCAVENGE) {
-                scavenge(ship, &mut self.scrap, &cfg.tuning);
+            let tuning = cfg.tuning(ship.ship_type);
+            let move_cmd = if controlled.contains(&id) {
+                InputCmd {
+                    thrust: Vec3::ZERO,
+                    look_pitch: 0.0,
+                    look_yaw: 0.0,
+                    roll: 0.0,
+                    ..cmd
+                }
+            } else {
+                cmd
+            };
+            simulate_movement(ship, &move_cmd, tuning, &*terrain);
+            // Charged surfaces (Leech Arc) drain ships scraping them.
+            if ship.in_contact
+                && cfg.charged_drain_per_sec > 0.0
+                && terrain
+                    .surface_states_near(ship.pos, tuning.radius + 0.2, now)
+                    .contains(SurfaceStates::CHARGED)
+            {
+                ship.energy = (ship.energy - cfg.charged_drain_per_sec * DT).max(0.0);
             }
+            if cmd.buttons.contains(Buttons::SCAVENGE) {
+                scavenge(ship, &mut self.scrap, &mut self.entities, tuning);
+            }
+            let gadget_pressed = cmd.buttons.contains(Buttons::GADGET)
+                && !ship.prev_buttons.contains(Buttons::GADGET);
+            if cmd.buttons.contains(Buttons::SCAVENGE) && tuning.can_pass_scrap {
+                self.pass_scrap(&cfg, id);
+            }
+            self.gadget_step(&cfg, terrain, id, gadget_pressed, &mut events);
             let overdrive = cmd.buttons.contains(Buttons::OVERDRIVE);
             for (slot, button) in [
                 (WeaponSlot::Primary, Buttons::FIRE_PRIMARY),
                 (WeaponSlot::Secondary, Buttons::FIRE_SECONDARY),
             ] {
-                if !cmd.buttons.contains(button) {
-                    continue;
-                }
-                if let Some(shot) = try_fire(ship, slot, now, overdrive, &cfg) {
-                    let def = cfg.weapons.get(shot.weapon);
-                    let fwd = ship.orientation.forward();
-                    let id_p = self.next_projectile;
-                    self.next_projectile = self.next_projectile.wrapping_add(1);
-                    self.projectiles.push(Projectile {
-                        id: id_p,
-                        owner: ship.player,
-                        team: ship.team,
-                        weapon: shot.weapon,
-                        pos: ship.pos + fwd * (cfg.tuning.radius + def.projectile_radius + 0.05),
-                        vel: fwd * def.speed,
-                        expires_tick: now + def.lifetime_ticks(),
-                        damage: shot.damage,
-                        splash_damage: shot.splash_damage,
-                        knockback: shot.knockback,
-                    });
-                    events.push(Event::Fired {
-                        player: ship.player,
-                        weapon: shot.weapon,
-                        projectile: id_p,
-                    });
-                }
+                let pressed = cmd.buttons.contains(button);
+                self.trigger(&cfg, terrain, id, slot, pressed, overdrive, &mut events);
+            }
+            if let Some(ship) = self.ships.get_mut(&id) {
+                ship.prev_buttons = cmd.buttons;
             }
         }
 
         // 3. Projectiles.
         self.step_projectiles(&cfg, terrain, now, &mut events);
 
-        // 4. Scrap piles and pickups.
+        // 4. Entities.
+        self.step_entities(&cfg, terrain, now, &mut events);
+
+        // 5. Scrap piles and pickups.
         self.cleanup_scrap(&cfg, now);
         self.collect_pickups(&cfg, now, &mut events);
         self.update_pickup_spawns(&mut events);
 
-        // 5. Mode: scores and timer.
+        // 6. Trails.
+        for s in self.ships.values() {
+            if s.alive {
+                self.trails
+                    .entry(s.player)
+                    .or_default()
+                    .push((s.pos, s.vel, s.hull));
+            }
+        }
+
+        // 7. Mode: scores and timer.
         if now % SCORE_INTERVAL_TICKS == 0 || now >= self.mode.end_tick {
             let cov = terrain.paint_coverage().unwrap_or_default();
             if cov != self.mode.coverage {
@@ -551,6 +896,336 @@ impl World {
         events
     }
 
+    /// Runs a hook with a fresh context and applies the commands it queued.
+    fn run_hook<T, R>(
+        &mut self,
+        cfg: &SimConfig,
+        terrain: &mut T,
+        events: &mut Vec<Event>,
+        f: impl FnOnce(&mut Ctx) -> R,
+    ) -> R
+    where
+        T: SimTerrain + ?Sized,
+    {
+        let (r, cmds) = self.collect_hook(cfg, &*terrain, f);
+        self.apply_commands(cfg, terrain, cmds, events);
+        r
+    }
+
+    /// Runs a hook with a fresh context; returns its result and commands
+    /// (not applied yet).
+    fn collect_hook<T, R>(
+        &self,
+        cfg: &SimConfig,
+        terrain: &T,
+        f: impl FnOnce(&mut Ctx) -> R,
+    ) -> (R, Vec<Command>)
+    where
+        T: SimTerrain + ?Sized,
+    {
+        let tref = TerrainRef(terrain);
+        let view = View {
+            now: self.tick,
+            seed: cfg.seed,
+            weapons: &cfg.weapons,
+            gadgets: &cfg.gadgets,
+            ship_types: &cfg.ships,
+            rules: &cfg.resolved,
+            visuals: &cfg.visuals,
+            instability: cfg.setup.instability,
+            ships: &self.ships,
+            projectiles: &self.projectiles,
+            projectiles_stepping: &self.stepping,
+            projectiles_stepped: &self.stepped,
+            entities: &self.entities,
+            terrain: &tref,
+            layers: &tref,
+            inputs: &self.inputs,
+            trails: &self.trails,
+        };
+        let mut ctx = Ctx::new(view);
+        let r = f(&mut ctx);
+        (r, ctx.into_commands())
+    }
+
+    /// Gadget key, drain and per-tick hook for ship `id`.
+    fn gadget_step<T: SimTerrain + ?Sized>(
+        &mut self,
+        cfg: &SimConfig,
+        terrain: &mut T,
+        id: PlayerId,
+        pressed: bool,
+        events: &mut Vec<Event>,
+    ) {
+        let now = self.tick;
+        let Some(ship) = self.ships.get_mut(&id) else {
+            return;
+        };
+        let Some(g) = ship.gadget else {
+            return;
+        };
+        if cfg.resolved.gadget_availability(g).is_banned() {
+            ship.gadget_active = false;
+            return;
+        }
+        let def = cfg.gadgets.get(g);
+        let beh = cfg.gadget_behaviors[g.0 as usize];
+        enum Action {
+            None,
+            On,
+            Off,
+            Use,
+        }
+        let mut action = Action::None;
+        if pressed {
+            match def.activation {
+                GadgetActivation::Toggle if ship.gadget_active => {
+                    ship.gadget_active = false;
+                    ship.gadget_ready_tick = now + def.cooldown_ticks();
+                    action = Action::Off;
+                }
+                _ if now >= ship.gadget_ready_tick && ship.energy >= def.energy_cost => {
+                    ship.energy -= def.energy_cost;
+                    match def.activation {
+                        GadgetActivation::Toggle => {
+                            ship.gadget_active = true;
+                            action = Action::On;
+                        }
+                        GadgetActivation::Instant => {
+                            ship.gadget_ready_tick = now + def.cooldown_ticks();
+                            action = Action::Use;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        if ship.gadget_active {
+            let moving = ship.vel.length() > def.param("moving_speed", 1.0);
+            let mult = if moving { def.moving_drain_mult } else { 1.0 };
+            ship.energy -= def.drain_per_sec * mult * DT;
+            if ship.energy <= 0.0 {
+                ship.energy = 0.0;
+                ship.gadget_active = false;
+                action = Action::Off;
+            }
+        }
+        let active = ship.gadget_active;
+        let pos = ship.pos;
+        let cue = |value: u16| {
+            Event::Cue(Cue {
+                kind: CueKind::Gadget,
+                source: Some(id),
+                target: None,
+                pos,
+                value,
+            })
+        };
+        match action {
+            Action::On => events.push(cue(g.0 as u16)),
+            Action::Off => events.push(cue(u8::MAX as u16)),
+            _ => {}
+        }
+        let call = |w: &mut World, which: u8, terrain: &mut T, events: &mut Vec<Event>| {
+            w.run_hook(cfg, terrain, events, |ctx| {
+                let Some(ship) = ctx.view.ships.get(&id) else {
+                    return;
+                };
+                let u = GadgetUse {
+                    gadget: g,
+                    def,
+                    ship,
+                };
+                match which {
+                    0 => beh.on_activate(ctx, &u),
+                    1 => beh.on_deactivate(ctx, &u),
+                    _ => beh.tick(ctx, &u),
+                }
+            });
+        };
+        match action {
+            Action::On | Action::Use => call(self, 0, terrain, events),
+            Action::Off => call(self, 1, terrain, events),
+            Action::None => {}
+        }
+        if active {
+            call(self, 2, terrain, events);
+        }
+    }
+
+    /// Trigger handling for one slot of ship `id` (see `crate::weapons`).
+    #[allow(clippy::too_many_arguments)]
+    fn trigger<T: SimTerrain + ?Sized>(
+        &mut self,
+        cfg: &SimConfig,
+        terrain: &mut T,
+        id: PlayerId,
+        slot: WeaponSlot,
+        pressed: bool,
+        overdrive: bool,
+        events: &mut Vec<Event>,
+    ) {
+        let now = self.tick;
+        let Some(ship) = self.ships.get_mut(&id) else {
+            return;
+        };
+        if !ship.alive {
+            return;
+        }
+        let selected = match slot {
+            WeaponSlot::Primary => ship.primary,
+            WeaponSlot::Secondary => ship.secondary,
+        };
+        // A charge on this slot whose weapon is no longer selected is dropped.
+        if ship
+            .charge
+            .is_some_and(|c| c.slot == slot && Some(c.weapon) != selected)
+        {
+            ship.charge = None;
+        }
+        let Some(w) = selected else {
+            return;
+        };
+        if now < ship.weapons_offline_until {
+            if ship.charge.is_some_and(|c| c.slot == slot) {
+                ship.charge = None;
+            }
+            return;
+        }
+        let def = cfg.weapons.get(w);
+        let beh = cfg.behavior(w);
+        let Some(charge_def) = def.charge else {
+            if pressed {
+                self.fire(cfg, terrain, id, slot, overdrive, 0.0, 0, events);
+            }
+            return;
+        };
+        let charging = ship.charge.filter(|c| c.slot == slot);
+        match (charging, pressed) {
+            (None, true) => {
+                if ship.charge.is_some() || !can_fire(ship, slot, w, now, overdrive, cfg) {
+                    return;
+                }
+                ship.charge = Some(ChargeState {
+                    slot,
+                    weapon: w,
+                    start_tick: now,
+                });
+                let full = WeaponDef::charge_ticks(charge_def.max_secs);
+                events.push(Event::Cue(Cue {
+                    kind: CueKind::ChargeStart,
+                    source: Some(id),
+                    target: None,
+                    pos: ship.pos,
+                    value: full.min(u16::MAX as u64) as u16,
+                }));
+                self.run_hook(cfg, terrain, events, |ctx| {
+                    if let Some(s) = ctx.view.ships.get(&id) {
+                        beh.charge_start(ctx, s, w);
+                    }
+                });
+            }
+            (Some(c), true) => {
+                let held = now - c.start_tick;
+                let action = self.run_hook(cfg, terrain, events, |ctx| {
+                    ctx.view
+                        .ships
+                        .get(&id)
+                        .map_or(ChargeAction::Cancel, |s| beh.charge_hold(ctx, s, w, held))
+                });
+                match action {
+                    ChargeAction::Hold => {}
+                    ChargeAction::Cancel => {
+                        if let Some(s) = self.ships.get_mut(&id) {
+                            s.charge = None;
+                        }
+                    }
+                    ChargeAction::Release => {
+                        self.release(cfg, terrain, id, slot, overdrive, held, events)
+                    }
+                }
+            }
+            (Some(c), false) => {
+                let held = now - c.start_tick;
+                self.release(cfg, terrain, id, slot, overdrive, held, events);
+            }
+            (None, false) => {}
+        }
+    }
+
+    /// Releases a charge: fires with the charge fraction if held long enough.
+    #[allow(clippy::too_many_arguments)]
+    fn release<T: SimTerrain + ?Sized>(
+        &mut self,
+        cfg: &SimConfig,
+        terrain: &mut T,
+        id: PlayerId,
+        slot: WeaponSlot,
+        overdrive: bool,
+        held: u64,
+        events: &mut Vec<Event>,
+    ) {
+        let Some(ship) = self.ships.get_mut(&id) else {
+            return;
+        };
+        let Some(c) = ship.charge.take() else {
+            return;
+        };
+        let Some(cd) = cfg.weapons.get(c.weapon).charge else {
+            return;
+        };
+        if held < ls_math::Tick::ticks_for_secs(cd.min_secs) {
+            return;
+        }
+        let full = WeaponDef::charge_ticks(cd.max_secs);
+        let charge = (held as f32 / full as f32).min(1.0);
+        self.fire(cfg, terrain, id, slot, overdrive, charge, held, events);
+    }
+
+    /// Pays for and fires the selected weapon of `slot` (cooldown and cost
+    /// permitting), calling the weapon's `fire` hook.
+    #[allow(clippy::too_many_arguments)]
+    fn fire<T: SimTerrain + ?Sized>(
+        &mut self,
+        cfg: &SimConfig,
+        terrain: &mut T,
+        id: PlayerId,
+        slot: WeaponSlot,
+        overdrive: bool,
+        charge: f32,
+        held: u64,
+        events: &mut Vec<Event>,
+    ) {
+        let now = self.tick;
+        let Some(ship) = self.ships.get_mut(&id) else {
+            return;
+        };
+        let Some(stats) = try_fire(ship, slot, now, overdrive, charge, cfg) else {
+            return;
+        };
+        ship.last_fired_tick = Some(now);
+        let beh = cfg.behavior(stats.weapon);
+        let def = cfg.weapons.get(stats.weapon);
+        self.run_hook(cfg, terrain, events, |ctx| {
+            let Some(shooter) = ctx.view.ships.get(&id) else {
+                return;
+            };
+            let shot = Shot {
+                shooter,
+                weapon: stats.weapon,
+                def,
+                level: stats.level,
+                shots: stats.shots,
+                damage: stats.damage,
+                splash_damage: stats.splash_damage,
+                knockback: stats.knockback,
+                charge,
+                held_ticks: held,
+            };
+            beh.fire(ctx, &shot);
+        });
+    }
+
     fn step_projectiles<T: SimTerrain + ?Sized>(
         &mut self,
         cfg: &SimConfig,
@@ -558,135 +1233,616 @@ impl World {
         now: u64,
         events: &mut Vec<Event>,
     ) {
-        let projectiles = std::mem::take(&mut self.projectiles);
-        let mut keep = Vec::with_capacity(projectiles.len());
+        // The lists live in the world while stepping so commands
+        // (`ImpulseProjectile`, `RemoveProjectile`) and hooks
+        // (`View::all_projectiles`) reach every projectile.
+        let mut list = std::mem::take(&mut self.projectiles);
+        list.reverse();
+        self.stepped = Vec::with_capacity(list.len());
+        self.stepping = list;
         let bounds = terrain.bounds();
-        for mut p in projectiles {
-            if now >= p.expires_tick {
-                continue;
-            }
-            let def = cfg.weapons.get(p.weapon);
-            let speed = p.vel.length();
-            let dir = p.vel / speed;
-            let len = speed * DT;
-
-            let terrain_hit = terrain.raycast(p.pos, dir, len);
-            let mut ship_hit: Option<(f32, PlayerId)> = None;
-            let hit_radius = cfg.tuning.radius + def.projectile_radius;
-            for (id, s) in &self.ships {
-                if !s.alive || *id == p.owner {
+        while let Some(mut p) = self.stepping.pop() {
+            let beh = cfg.behavior(p.weapon);
+            if now >= p.fuse_tick {
+                let fuse = p.fuse_tick;
+                self.run_hook(cfg, terrain, events, |ctx| beh.on_fuse(ctx, &mut p));
+                if p.fuse_tick <= fuse || p.is_removed() {
                     continue;
                 }
-                if let Some(t) = segment_sphere(p.pos, dir, len, s.pos, hit_radius) {
-                    if ship_hit.is_none_or(|(bt, _)| t < bt) {
-                        ship_hit = Some((t, *id));
-                    }
-                }
             }
-            match (ship_hit, terrain_hit) {
-                (Some((t, target)), th) if th.is_none_or(|h| t <= h.distance) => {
-                    let point = p.pos + dir * t;
-                    self.impact(cfg, terrain, &p, point, Some(target), false, now, events);
-                }
-                (_, Some(h)) => {
-                    self.impact(cfg, terrain, &p, h.point, None, true, now, events);
-                }
-                _ => {
-                    p.pos += p.vel * DT;
-                    if bounds.contains(p.pos) {
-                        keep.push(p);
-                    }
-                }
+            if now >= p.expires_tick {
+                self.run_hook(cfg, terrain, events, |ctx| beh.on_expire(ctx, &mut p));
+                continue;
+            }
+            self.run_hook(cfg, terrain, events, |ctx| beh.update(ctx, &mut p));
+            if p.is_removed() {
+                continue;
+            }
+            if !p.is_stuck() && !self.move_projectile(cfg, terrain, &mut p, events) {
+                continue;
+            }
+            if bounds.contains(p.pos) {
+                self.stepped.push(p);
             }
         }
-        // Projectiles spawned during impacts (none in M1) would be appended here.
+        // Projectiles spawned by hooks during this stage start moving next tick.
+        let mut keep = std::mem::take(&mut self.stepped);
         keep.append(&mut self.projectiles);
         self.projectiles = keep;
     }
 
-    /// Resolves a projectile impact: direct damage, splash, knockback and terrain edits.
-    #[allow(clippy::too_many_arguments)]
-    fn impact<T: SimTerrain + ?Sized>(
+    /// Centre and radius (without the projectile's) of the ship or entity a
+    /// projectile passed through (see [`Projectile::passed`]).
+    fn passed_sphere(&self, cfg: &SimConfig, passed: (u8, u32)) -> Option<(Vec3, f32)> {
+        match passed {
+            (0, id) => {
+                let s = self.ships.get(&PlayerId(id as u16))?;
+                s.alive.then(|| (s.pos, cfg.tuning(s.ship_type).radius))
+            }
+            (_, id) => self
+                .entities
+                .iter()
+                .find(|e| e.id == id)
+                .map(|e| (e.pos, e.radius)),
+        }
+    }
+
+    /// Swept move of one projectile for this tick with hit hooks. Returns
+    /// false if the projectile ended.
+    fn move_projectile<T: SimTerrain + ?Sized>(
         &mut self,
         cfg: &SimConfig,
         terrain: &mut T,
-        p: &Projectile,
-        point: Vec3,
-        target: Option<PlayerId>,
-        hit_terrain: bool,
+        p: &mut Projectile,
+        events: &mut Vec<Event>,
+    ) -> bool {
+        let beh = cfg.behavior(p.weapon);
+        let speed = p.vel.length();
+        if speed <= 0.0 {
+            return true;
+        }
+        let mut dir = p.vel / speed;
+        let mut remaining = speed * DT;
+        // A ship or entity passed through on an earlier tick is skipped until
+        // the projectile has left it (else a slow projectile would hit it
+        // again every tick it spends inside).
+        if let Some(passed) = p.passed {
+            let inside = self.passed_sphere(cfg, passed).is_some_and(|(c, r)| {
+                (p.pos - c).length_squared() <= (r + p.radius) * (r + p.radius)
+            });
+            if !inside {
+                p.passed = None;
+            }
+        }
+        let mut skip_ships: Vec<PlayerId> = Vec::new();
+        let mut skip_entities: Vec<u32> = Vec::new();
+        if let Some((kind, id)) = p.passed {
+            if kind == 0 {
+                skip_ships.push(PlayerId(id as u16));
+            } else {
+                skip_entities.push(id);
+            }
+        }
+        for _ in 0..MAX_HITS_PER_TICK {
+            enum Hit {
+                Ship(f32, PlayerId, Vec3),
+                Entity(f32, u32, EntityKind, Vec3),
+                Terrain(RayHit),
+            }
+            let terrain_hit = terrain.raycast(p.pos, dir, remaining);
+            let mut best: Option<Hit> = None;
+            let mut best_t = f32::INFINITY;
+            if p.flags & proj_flags::NO_SHIP_HITS == 0 {
+                let hits_owner = p.flags & proj_flags::HITS_OWNER != 0;
+                for (id, s) in &self.ships {
+                    if !s.alive || (*id == p.owner && !hits_owner) || skip_ships.contains(id) {
+                        continue;
+                    }
+                    let r = cfg.tuning(s.ship_type).radius + p.radius;
+                    if let Some(t) = segment_sphere(p.pos, dir, remaining, s.pos, r) {
+                        if t < best_t {
+                            best_t = t;
+                            best = Some(Hit::Ship(t, *id, s.pos));
+                        }
+                    }
+                }
+            }
+            for e in &self.entities {
+                if !e.blocks_projectiles() || skip_entities.contains(&e.id) {
+                    continue;
+                }
+                if e.kind == EntityKind::Decoy && e.owner == Some(p.owner) {
+                    continue;
+                }
+                let r = e.radius + p.radius;
+                if let Some(t) = segment_sphere(p.pos, dir, remaining, e.pos, r) {
+                    if t < best_t {
+                        best_t = t;
+                        best = Some(Hit::Entity(t, e.id, e.kind, e.pos));
+                    }
+                }
+            }
+            // Ships win ties with terrain (M1 rule).
+            let hit = match (best, terrain_hit) {
+                (Some(h), None) => h,
+                (Some(h), Some(th)) if best_t <= th.distance => h,
+                (_, Some(th)) => Hit::Terrain(th),
+                (None, None) => {
+                    p.pos += dir * remaining;
+                    return true;
+                }
+            };
+            let (t, point, normal, resp) = match hit {
+                Hit::Ship(t, target, center) => {
+                    let point = p.pos + dir * t;
+                    let normal = (point - center).try_normalize().unwrap_or(-dir);
+                    let h = ShipHit {
+                        target,
+                        point,
+                        normal,
+                    };
+                    let resp =
+                        self.run_hook(cfg, terrain, events, |ctx| beh.on_ship_hit(ctx, p, &h));
+                    if resp == HitResponse::Continue {
+                        skip_ships.push(target);
+                        p.passed = Some((0, target.0 as u32));
+                    }
+                    (t, point, normal, resp)
+                }
+                Hit::Entity(t, id, kind, center) => {
+                    let point = p.pos + dir * t;
+                    let normal = (point - center).try_normalize().unwrap_or(-dir);
+                    let h = EntityHit {
+                        id,
+                        kind,
+                        point,
+                        normal,
+                    };
+                    let resp =
+                        self.run_hook(cfg, terrain, events, |ctx| beh.on_entity_hit(ctx, p, &h));
+                    if resp == HitResponse::Continue {
+                        skip_entities.push(id);
+                        p.passed = Some((1, id));
+                    }
+                    (t, point, normal, resp)
+                }
+                Hit::Terrain(h) => {
+                    let resp =
+                        self.run_hook(cfg, terrain, events, |ctx| beh.on_terrain_hit(ctx, p, &h));
+                    let resp = if resp == HitResponse::Continue {
+                        HitResponse::Stop
+                    } else {
+                        resp
+                    };
+                    (h.distance, h.point, h.normal, resp)
+                }
+            };
+            if p.is_removed() {
+                return false;
+            }
+            match resp {
+                HitResponse::Stop => return false,
+                HitResponse::Continue => {
+                    p.pos = point;
+                    remaining -= t;
+                }
+                HitResponse::Pierce { exit } => {
+                    remaining -= t + point.distance(exit);
+                    p.pos = exit;
+                    if remaining <= 0.0 {
+                        return true;
+                    }
+                }
+                HitResponse::Bounce => {
+                    p.vel = p.vel.reflect(normal);
+                    p.pos = point + normal * (p.radius + 0.01);
+                    p.bounces = p.bounces.saturating_add(1);
+                    return true;
+                }
+                HitResponse::Stick => {
+                    p.pos = point + normal * p.radius;
+                    p.vel = Vec3::ZERO;
+                    p.flags |= proj_flags::STUCK;
+                    return true;
+                }
+            }
+            let speed = p.vel.length();
+            if speed <= 0.0 || remaining <= 0.0 {
+                return true;
+            }
+            dir = p.vel / speed;
+        }
+        true
+    }
+
+    fn step_entities<T: SimTerrain + ?Sized>(
+        &mut self,
+        cfg: &SimConfig,
+        terrain: &mut T,
         now: u64,
         events: &mut Vec<Event>,
     ) {
-        let def = cfg.weapons.get(p.weapon);
-        let dir = p.vel.normalize_or_zero();
-        events.push(Event::Impact {
-            projectile: p.id,
-            weapon: p.weapon,
-            point,
-            target,
-        });
-        if let Some(t) = target {
-            self.hit_ship(cfg, now, t, p, p.damage, dir * p.knockback, true, events);
+        if self.entities.is_empty() {
+            return;
         }
-        if let Some(splash) = def.splash {
-            let victims: Vec<(PlayerId, Vec3)> = self
-                .ships
-                .values()
-                .filter(|s| s.alive && Some(s.player) != target)
-                .filter(|s| splash.hits_owner || s.player != p.owner)
-                .map(|s| (s.player, s.pos))
-                .collect();
-            for (id, pos) in victims {
-                let d = pos.distance(point);
-                if d >= splash.radius {
+        let mut expired: Vec<u32> = Vec::new();
+        for e in &mut self.entities {
+            if now >= e.expires_tick {
+                expired.push(e.id);
+                continue;
+            }
+            if e.kinematic {
+                // Driven by its module: no terrain collision.
+                e.pos += e.vel * DT;
+                continue;
+            }
+            match e.kind {
+                EntityKind::Debris => {
+                    step_debris(e, &*terrain);
+                }
+                EntityKind::Decoy => {
+                    move_sphere(&*terrain, &mut e.pos, &mut e.vel, e.radius, 0.3);
+                }
+                _ => e.pos += e.vel * DT,
+            }
+        }
+        // Ships push debris out of their way.
+        for s in self.ships.values() {
+            if !s.alive {
+                continue;
+            }
+            let sr = cfg.tuning(s.ship_type).radius;
+            for e in &mut self.entities {
+                if e.kind != EntityKind::Debris {
                     continue;
                 }
-                let falloff = 1.0 - d / splash.radius;
-                let push = (pos - point).try_normalize().unwrap_or(dir);
-                self.hit_ship(
-                    cfg,
-                    now,
-                    id,
-                    p,
-                    p.splash_damage * falloff,
-                    push * (p.knockback * falloff),
-                    false,
-                    events,
-                );
+                let d = e.pos - s.pos;
+                let min = sr + e.radius;
+                let dist2 = d.length_squared();
+                if dist2 >= min * min {
+                    continue;
+                }
+                let n = d.try_normalize().unwrap_or(Vec3::Y);
+                let dist = dist2.max(0.0).sqrt();
+                e.pos += n * (min - dist);
+                let closing = (s.vel - e.vel).dot(n);
+                if closing > 0.0 {
+                    e.vel += n * (closing * DEBRIS_PUSH);
+                }
+                e.resting = false;
             }
         }
-        if hit_terrain {
-            if def.terrain.crater_radius > 0.0 {
-                let edit = TerrainEdit::SubtractSphere {
-                    center: point,
-                    radius: def.terrain.crater_radius,
-                };
-                terrain.apply_edit(&edit);
-                events.push(Event::TerrainEdit(edit));
+        // Module hooks for entities spawned by a weapon or gadget.
+        let hooked: Vec<(u32, Source, bool)> = self
+            .entities
+            .iter()
+            .filter(|e| e.source != Source::None)
+            .map(|e| (e.id, e.source, expired.contains(&e.id)))
+            .collect();
+        for (id, source, is_expired) in hooked {
+            let Some(idx) = self.entities.iter().position(|e| e.id == id) else {
+                continue;
+            };
+            let mut e = self.entities[idx].clone();
+            let cmds = match source {
+                Source::Weapon(w) if (w.0 as usize) < cfg.behaviors.len() => {
+                    let beh = cfg.behavior(w);
+                    self.collect_hook(cfg, &*terrain, |ctx| {
+                        if is_expired {
+                            beh.entity_expired(ctx, &mut e)
+                        } else {
+                            beh.entity_tick(ctx, &mut e)
+                        }
+                    })
+                    .1
+                }
+                Source::Gadget(g) if (g.0 as usize) < cfg.gadget_behaviors.len() => {
+                    let beh = cfg.gadget_behaviors[g.0 as usize];
+                    let def = cfg.gadgets.get(g);
+                    self.collect_hook(cfg, &*terrain, |ctx| {
+                        if is_expired {
+                            beh.entity_expired(ctx, def, &mut e)
+                        } else {
+                            beh.entity_tick(ctx, def, &mut e)
+                        }
+                    })
+                    .1
+                }
+                _ => continue,
+            };
+            // The hook's own changes first (its id and source stay), then its
+            // commands. An expiry hook may keep the entity by moving
+            // `expires_tick` later; `hp <= 0` removes it.
+            e.id = id;
+            e.source = source;
+            if is_expired && e.expires_tick > now {
+                expired.retain(|x| *x != id);
             }
-            if def.terrain.paint_radius > 0.0 {
-                let edit = TerrainEdit::Paint {
-                    center: point,
-                    radius: def.terrain.paint_radius,
-                    team: paint_team_id(p.team),
-                };
-                terrain.apply_edit(&edit);
-                events.push(Event::TerrainEdit(edit));
+            if e.hp <= 0.0 {
+                self.entities.remove(idx);
+            } else {
+                self.entities[idx] = e;
+            }
+            self.apply_commands(cfg, terrain, cmds, events);
+        }
+        self.entities.retain(|e| !expired.contains(&e.id));
+    }
+
+    // ----- commands ----------------------------------------------------------
+
+    /// Applies commands queued by a hook, in order.
+    fn apply_commands<T: SimTerrain + ?Sized>(
+        &mut self,
+        cfg: &SimConfig,
+        terrain: &mut T,
+        cmds: Vec<Command>,
+        events: &mut Vec<Event>,
+    ) {
+        let now = self.tick;
+        for c in cmds {
+            match c {
+                Command::Damage {
+                    target,
+                    amount,
+                    knockback,
+                    source,
+                    direct,
+                } => self.apply_damage(cfg, now, target, amount, knockback, source, direct, events),
+                Command::Splash {
+                    center,
+                    radius,
+                    damage,
+                    knockback,
+                    source,
+                    hits_owner,
+                    exclude,
+                    dir,
+                } => {
+                    if radius.is_nan() || radius <= 0.0 {
+                        continue;
+                    }
+                    let victims: Vec<(PlayerId, Vec3)> = self
+                        .ships
+                        .values()
+                        .filter(|s| s.alive && Some(s.player) != exclude)
+                        .filter(|s| hits_owner || Some(s.player) != source.attacker)
+                        .map(|s| (s.player, s.pos))
+                        .collect();
+                    for (id, pos) in victims {
+                        let d = pos.distance(center);
+                        if d >= radius {
+                            continue;
+                        }
+                        let falloff = 1.0 - d / radius;
+                        let push = (pos - center).try_normalize().unwrap_or(dir);
+                        self.apply_damage(
+                            cfg,
+                            now,
+                            id,
+                            damage * falloff,
+                            push * (knockback * falloff),
+                            source,
+                            false,
+                            events,
+                        );
+                    }
+                    self.push_debris(center, radius, knockback);
+                }
+                Command::Shockwave {
+                    center,
+                    radius,
+                    strength,
+                } => {
+                    if radius.is_nan() || radius <= 0.0 {
+                        continue;
+                    }
+                    for s in self.ships.values_mut() {
+                        let d = s.pos.distance(center);
+                        if s.alive && d < radius {
+                            let push = (s.pos - center).try_normalize().unwrap_or(Vec3::Y);
+                            s.vel += push * (strength * (1.0 - d / radius));
+                        }
+                    }
+                    self.push_debris(center, radius, strength);
+                    events.push(Event::Cue(Cue {
+                        kind: CueKind::Shockwave,
+                        source: None,
+                        target: None,
+                        pos: center,
+                        value: radius.clamp(0.0, u16::MAX as f32) as u16,
+                    }));
+                }
+                Command::Edit(edit) => {
+                    terrain.apply_edit(&edit);
+                    if edit.changes_geometry() {
+                        let (c, r) = (edit.center(), edit.radius());
+                        for e in &mut self.entities {
+                            let reach = r + e.radius + 1.0;
+                            if e.resting && e.pos.distance_squared(c) <= reach * reach {
+                                e.resting = false;
+                            }
+                        }
+                    }
+                    events.push(Event::TerrainEdit(edit));
+                }
+                Command::SpawnProjectile(p) => {
+                    let mut p = *p;
+                    p.id = self.alloc_projectile_id();
+                    p.flags &= !proj_flags::REMOVED;
+                    p.passed = None;
+                    if p.generation == 0 {
+                        events.push(Event::Fired {
+                            player: p.owner,
+                            weapon: p.weapon,
+                            projectile: p.id,
+                        });
+                    }
+                    self.projectiles.push(p);
+                }
+                Command::SpawnEntity(s) => {
+                    self.insert_entity(*s);
+                }
+                Command::ImpulseShip { target, dv } => {
+                    if let Some(s) = self.ships.get_mut(&target) {
+                        if s.alive {
+                            s.vel += dv;
+                        }
+                    }
+                }
+                Command::ImpulseEntity { id, dv } => {
+                    if let Some(e) = self.entities.iter_mut().find(|e| e.id == id) {
+                        e.vel += dv / e.mass();
+                        e.resting = false;
+                    }
+                }
+                Command::DamageEntity { id, amount, .. } => {
+                    if let Some(i) = self.entities.iter().position(|e| e.id == id) {
+                        self.entities[i].hp -= amount;
+                        if self.entities[i].hp <= 0.0 {
+                            self.entities.remove(i);
+                        }
+                    }
+                }
+                Command::RemoveEntity { id } => self.entities.retain(|e| e.id != id),
+                Command::ImpulseProjectile { id, dv } => {
+                    if let Some(p) = self
+                        .projectiles
+                        .iter_mut()
+                        .chain(self.stepping.iter_mut())
+                        .chain(self.stepped.iter_mut())
+                        .find(|p| p.id == id)
+                    {
+                        p.vel += dv;
+                        if dv != Vec3::ZERO {
+                            // Pulled loose (a stuck mine).
+                            p.flags &= !proj_flags::STUCK;
+                        }
+                    }
+                }
+                Command::RemoveProjectile { id } => {
+                    for list in [&mut self.projectiles, &mut self.stepping, &mut self.stepped] {
+                        list.retain(|p| p.id != id);
+                    }
+                }
+                Command::DrainEnergy { from, to, amount } => {
+                    let Some(src) = self.ships.get_mut(&from) else {
+                        continue;
+                    };
+                    let taken = amount.clamp(0.0, src.energy.max(0.0));
+                    src.energy -= taken;
+                    if let Some(dst) = to.and_then(|t| self.ships.get_mut(&t)) {
+                        let max = cfg.tuning(dst.ship_type).energy_max;
+                        dst.energy = (dst.energy + taken).min(max);
+                    }
+                }
+                Command::Blind { target, ticks } => {
+                    if let Some(s) = self.ships.get_mut(&target) {
+                        s.blind_until = s.blind_until.max(now + ticks);
+                        events.push(Event::Cue(Cue {
+                            kind: CueKind::Blinded,
+                            source: None,
+                            target: Some(target),
+                            pos: s.pos,
+                            value: ticks.min(u16::MAX as u64) as u16,
+                        }));
+                    }
+                }
+                Command::Swap { a, b } => {
+                    if a == b {
+                        continue;
+                    }
+                    let (Some(sa), Some(sb)) = (self.ships.get(&a), self.ships.get(&b)) else {
+                        continue;
+                    };
+                    let (pa, va, pb, vb) = (sa.pos, sa.vel, sb.pos, sb.vel);
+                    if let Some(s) = self.ships.get_mut(&a) {
+                        s.pos = pb;
+                        s.vel = vb;
+                    }
+                    if let Some(s) = self.ships.get_mut(&b) {
+                        s.pos = pa;
+                        s.vel = va;
+                    }
+                }
+                Command::Rewind { player, ticks } => {
+                    let Some((pos, vel, hull)) =
+                        self.trails.get(&player).and_then(|t| t.get(ticks))
+                    else {
+                        continue;
+                    };
+                    if let Some(s) = self.ships.get_mut(&player) {
+                        if s.alive {
+                            s.pos = pos;
+                            s.vel = vel;
+                            s.hull = hull.max(s.hull.min(1.0));
+                        }
+                    }
+                    self.trails.remove(&player);
+                }
+                Command::DisableWeapons { player, ticks } => {
+                    if let Some(s) = self.ships.get_mut(&player) {
+                        s.weapons_offline_until = s.weapons_offline_until.max(now + ticks);
+                        s.charge = None;
+                    }
+                }
+                Command::AdjustHull {
+                    target,
+                    delta,
+                    can_kill,
+                } => {
+                    let Some(s) = self.ships.get_mut(&target) else {
+                        continue;
+                    };
+                    if !s.alive {
+                        continue;
+                    }
+                    let max = cfg.tuning(s.ship_type).hull_max;
+                    let floor = if can_kill {
+                        f32::NEG_INFINITY
+                    } else {
+                        s.hull.min(1.0)
+                    };
+                    s.hull = (s.hull + delta).min(max).max(floor);
+                    if s.hull <= 0.0 {
+                        self.kill(cfg, now, target, None, None, events);
+                    }
+                }
+                Command::Emit(e) => events.push(e),
             }
         }
     }
 
-    /// Applies damage and knockback from projectile `p` to ship `target`,
-    /// scaling both by the friendly-fire percentage between teammates.
+    /// Pushes debris away from `center` with linear falloff to `radius`.
+    fn push_debris(&mut self, center: Vec3, radius: f32, strength: f32) {
+        if strength <= 0.0 {
+            return;
+        }
+        for e in &mut self.entities {
+            if e.kind != EntityKind::Debris {
+                continue;
+            }
+            let d = e.pos.distance(center);
+            if d >= radius {
+                continue;
+            }
+            let push = (e.pos - center).try_normalize().unwrap_or(Vec3::Y);
+            e.vel += push * (strength * (1.0 - d / radius) / e.mass());
+            e.resting = false;
+        }
+    }
+
+    /// Applies damage and knockback to ship `target`: friendly-fire scaling
+    /// between teammates, then the target's active gadget (Shield), then
+    /// hull, events and kill.
     #[allow(clippy::too_many_arguments)]
-    fn hit_ship(
+    fn apply_damage(
         &mut self,
         cfg: &SimConfig,
         now: u64,
         target: PlayerId,
-        p: &Projectile,
         damage: f32,
         knockback: Vec3,
+        source: DamageSource,
         direct: bool,
         events: &mut Vec<Event>,
     ) {
@@ -696,29 +1852,45 @@ impl World {
         if !ship.alive {
             return;
         }
-        let scale = if ship.team == p.team && ship.player != p.owner {
+        let scale = if ship.team == source.team && Some(ship.player) != source.attacker {
             cfg.resolved.friendly_fire_scale()
         } else {
             1.0
         };
-        ship.vel += knockback * scale;
-        let amount = damage * scale;
+        let mut kb = knockback * scale;
+        let mut amount = damage * scale;
+        if let Some(g) = ship.gadget.filter(|_| ship.gadget_active) {
+            let mut hit = IncomingHit {
+                amount,
+                knockback: kb,
+                attacker: source.attacker,
+                weapon: source.weapon,
+                shield: source.weapon.map_or(ShieldInteraction::Wears(1.0), |w| {
+                    cfg.resolved.shield_interaction(w)
+                }),
+                self_inflicted: source.attacker == Some(target),
+            };
+            cfg.gadget_behaviors[g.0 as usize].on_damage(cfg.gadgets.get(g), ship, &mut hit);
+            amount = hit.amount;
+            kb = hit.knockback;
+        }
+        ship.vel += kb;
         if amount <= 0.0 {
             return;
         }
         ship.hull -= amount;
-        if ship.player != p.owner {
-            ship.last_attacker = Some(p.owner);
+        if let Some(a) = source.attacker.filter(|a| *a != target) {
+            ship.last_attacker = Some(a);
         }
         events.push(Event::Damaged {
             target,
-            attacker: p.owner,
-            weapon: p.weapon,
+            attacker: source.attacker,
+            weapon: source.weapon,
             amount,
             direct,
         });
         if ship.hull <= 0.0 {
-            self.kill(cfg, now, target, Some(p.owner), Some(p.weapon), events);
+            self.kill(cfg, now, target, source.attacker, source.weapon, events);
         }
     }
 
@@ -739,9 +1911,11 @@ impl World {
         ship.deaths += 1;
         ship.respawn_tick = now + cfg.resolved.respawn_ticks.max(1);
         ship.vel = Vec3::ZERO;
+        ship.gadget_active = false;
+        ship.charge = None;
         let team = ship.team;
         let wreck_pos = ship.pos;
-        let wreck_amount = cfg.tuning.wreck_scrap + ship.scrap * 0.5;
+        let wreck_amount = cfg.tuning(ship.ship_type).wreck_scrap + ship.scrap * 0.5;
         if let Some(k) = killer.filter(|k| *k != victim) {
             if let Some(ks) = self.ships.get_mut(&k) {
                 if ks.team != team {
@@ -749,19 +1923,73 @@ impl World {
                 }
             }
         }
+        self.trails.remove(&victim);
         events.push(Event::Killed {
             victim,
             killer,
             weapon,
         });
         if wreck_amount > 0.0 {
-            self.add_scrap_pile(wreck_pos, wreck_amount);
-            let wrecks = self.scrap.iter().filter(|s| s.spawn.is_none()).count();
+            let id = self.alloc_entity_id();
+            self.scrap.push(ScrapPile {
+                id,
+                pos: wreck_pos,
+                amount: wreck_amount,
+                spawn: None,
+                wreck: true,
+            });
+            let wrecks = self.scrap.iter().filter(|s| s.wreck).count();
             if wrecks > MAX_WRECKS {
-                if let Some(i) = self.scrap.iter().position(|s| s.spawn.is_none()) {
+                if let Some(i) = self.scrap.iter().position(|s| s.wreck) {
                     self.scrap.remove(i);
                 }
             }
+        }
+    }
+
+    /// Tug support: passes scrap to the nearest teammate in reach that has
+    /// room (hull first, like scavenging).
+    fn pass_scrap(&mut self, cfg: &SimConfig, id: PlayerId) {
+        let Some(me) = self.ships.get(&id) else {
+            return;
+        };
+        let t = cfg.tuning(me.ship_type);
+        let budget = (t.scrap_pass_rate * DT).min(me.scrap);
+        if budget <= 0.0 {
+            return;
+        }
+        let reach = t.scavenge_radius;
+        let mut best: Option<(PlayerId, f32)> = None;
+        for s in self.ships.values() {
+            if s.player == id || !s.alive || s.team != me.team {
+                continue;
+            }
+            let st = cfg.tuning(s.ship_type);
+            let room = (st.hull_max - s.hull).max(0.0) + (st.scrap_max - s.scrap).max(0.0);
+            let d = s.pos.distance_squared(me.pos);
+            if room > 0.0 && d <= reach * reach && best.is_none_or(|(_, bd)| d < bd) {
+                best = Some((s.player, d));
+            }
+        }
+        let Some((mate, _)) = best else {
+            return;
+        };
+        let Some(m) = self.ships.get_mut(&mate) else {
+            return;
+        };
+        let mt = cfg.tuning(m.ship_type);
+        let hull_room = if mt.hull_per_scrap > 0.0 {
+            (mt.hull_max - m.hull).max(0.0) / mt.hull_per_scrap
+        } else {
+            0.0
+        };
+        let store_room = (mt.scrap_max - m.scrap).max(0.0);
+        let give = budget.min(hull_room + store_room);
+        let to_hull = give.min(hull_room);
+        m.hull = (m.hull + to_hull * mt.hull_per_scrap).min(mt.hull_max);
+        m.scrap = (m.scrap + (give - to_hull)).min(mt.scrap_max);
+        if let Some(me) = self.ships.get_mut(&id) {
+            me.scrap -= give;
         }
     }
 
@@ -784,21 +2012,27 @@ impl World {
         });
     }
 
-    /// Ships touching weapon pickups collect them (lowest player id first).
+    /// Ships touching pickups collect them (lowest player id first).
     fn collect_pickups(&mut self, cfg: &SimConfig, now: u64, events: &mut Vec<Event>) {
-        let reach = PICKUP_RADIUS + cfg.tuning.radius;
         for (i, sp) in self.pickups.iter_mut().enumerate() {
             let Some((entry, kind)) = sp.content else {
                 continue;
             };
-            let PickupKind::Weapon { weapon, ammo } = kind else {
+            if matches!(kind, PickupKind::Scrap { .. }) {
                 continue;
-            };
+            }
             for ship in self.ships.values_mut() {
+                let reach = PICKUP_RADIUS + cfg.tuning(ship.ship_type).radius;
                 if !ship.alive || ship.pos.distance_squared(sp.pos) > reach * reach {
                     continue;
                 }
-                if collect_weapon(ship, weapon, ammo, cfg) {
+                let taken = match kind {
+                    PickupKind::Weapon { weapon, ammo } => collect_weapon(ship, weapon, ammo, cfg),
+                    PickupKind::Upgrade { weapon } => collect_upgrade(ship, weapon, cfg),
+                    PickupKind::Gadget { gadget } => collect_gadget(ship, gadget, cfg),
+                    PickupKind::Scrap { .. } => false,
+                };
+                if taken {
                     sp.content = None;
                     sp.respawn_tick = now + cfg.resolved.pickup_table[entry as usize].respawn_ticks;
                     events.push(Event::PickupTaken {
@@ -816,39 +2050,65 @@ impl World {
     fn update_pickup_spawns(&mut self, events: &mut Vec<Event>) {
         let cfg = Arc::clone(&self.config);
         let table = &cfg.resolved.pickup_table;
-        let weights: Vec<f32> = table
-            .iter()
-            .map(|e| match e.kind {
-                // Defensive: never spawn a weapon the rule set does not allow as a pickup.
-                PickupKind::Weapon { weapon, .. }
-                    if !cfg.resolved.availability(weapon).as_pickup() =>
-                {
-                    0.0
-                }
-                _ => e.weight,
-            })
-            .collect();
         for i in 0..self.pickups.len() {
             let sp = &self.pickups[i];
             if sp.content.is_some() || self.tick < sp.respawn_tick {
                 continue;
             }
+            // Weights depend on what is on the map (per-map caps).
+            let weights: Vec<f32> = table
+                .iter()
+                .enumerate()
+                .map(|(entry, e)| {
+                    // Defensive: never spawn something the rule set does not
+                    // allow as a pickup.
+                    let allowed = match e.kind {
+                        PickupKind::Weapon { weapon, .. } | PickupKind::Upgrade { weapon } => {
+                            cfg.resolved.availability(weapon).as_pickup()
+                        }
+                        PickupKind::Gadget { gadget } => {
+                            cfg.resolved.gadget_availability(gadget).as_pickup()
+                        }
+                        PickupKind::Scrap { .. } => true,
+                    };
+                    let capped = e.max_on_map > 0
+                        && self
+                            .pickups
+                            .iter()
+                            .filter(|p| p.content.is_some_and(|(x, _)| x as usize == entry))
+                            .count()
+                            >= e.max_on_map as usize;
+                    if allowed && !capped {
+                        e.weight
+                    } else {
+                        0.0
+                    }
+                })
+                .collect();
             let Some(entry) = self.rng.weighted_index(&weights) else {
-                // Nothing can spawn here; never retry.
-                self.pickups[i].respawn_tick = u64::MAX;
+                // Nothing can spawn here. If only per-map caps are in the way,
+                // retry later; otherwise never.
+                let capped_only = table.iter().any(|e| e.weight > 0.0 && e.max_on_map > 0);
+                self.pickups[i].respawn_tick = if capped_only {
+                    let retry = table.iter().map(|e| e.respawn_ticks).min().unwrap_or(1);
+                    self.tick + retry.max(1)
+                } else {
+                    u64::MAX
+                };
                 continue;
             };
             let kind = table[entry].kind;
             let pos = self.pickups[i].pos;
+            let id = self.alloc_entity_id();
             self.pickups[i].content = Some((entry as u16, kind));
+            self.pickups[i].id = id;
             if let PickupKind::Scrap { amount } = kind {
-                let id = self.next_scrap;
-                self.next_scrap = self.next_scrap.wrapping_add(1);
                 self.scrap.push(ScrapPile {
                     id,
                     pos,
                     amount,
                     spawn: Some(i as u16),
+                    wreck: false,
                 });
             }
             events.push(Event::PickupSpawned {
@@ -856,6 +2116,204 @@ impl World {
                 kind,
             });
         }
+    }
+
+    // ----- entities ----------------------------------------------------------
+
+    /// Sets the projectile id counter (tests of id wrapping).
+    #[cfg(test)]
+    pub(crate) fn set_next_projectile_for_test(&mut self, next: u32) {
+        self.next_projectile = next;
+    }
+
+    /// Next projectile id whose wire id (low 16 bits) no live projectile
+    /// uses (a long-lived mine must not share its wire id with a new shot
+    /// after the counter passed 65536).
+    fn alloc_projectile_id(&mut self) -> u32 {
+        if self.next_projectile <= PROJECTILE_WIRE_MASK {
+            // The counter has not wrapped the wire range yet: ids are unique.
+            let id = self.next_projectile;
+            self.next_projectile += 1;
+            return id;
+        }
+        let live: BTreeSet<u32> = self
+            .projectiles
+            .iter()
+            .chain(&self.stepping)
+            .chain(&self.stepped)
+            .map(|p| p.id & PROJECTILE_WIRE_MASK)
+            .collect();
+        for _ in 0..=PROJECTILE_WIRE_MASK {
+            let id = self.next_projectile;
+            self.next_projectile = self.next_projectile.wrapping_add(1);
+            if !live.contains(&(id & PROJECTILE_WIRE_MASK)) {
+                return id;
+            }
+        }
+        self.next_projectile
+    }
+
+    /// Next entity id whose wire id (low 15 bits) no live entity uses.
+    fn alloc_entity_id(&mut self) -> u32 {
+        let live: BTreeSet<u32> = self
+            .entities
+            .iter()
+            .map(|e| e.id)
+            .chain(self.scrap.iter().map(|s| s.id))
+            .chain(
+                self.pickups
+                    .iter()
+                    .filter(|p| p.content.is_some())
+                    .map(|p| p.id),
+            )
+            .map(|id| id & WIRE_ID_MASK)
+            .collect();
+        for _ in 0..=WIRE_ID_MASK {
+            let id = self.next_entity;
+            self.next_entity = self.next_entity.wrapping_add(1);
+            if !live.contains(&(id & WIRE_ID_MASK)) {
+                return id;
+            }
+        }
+        // 32768 live entities: cannot happen with the caps; reuse the id.
+        self.next_entity
+    }
+
+    fn insert_entity(&mut self, s: EntitySpawn) -> u32 {
+        let id = self.alloc_entity_id();
+        if s.kind == EntityKind::Debris {
+            let debris = self
+                .entities
+                .iter()
+                .filter(|e| e.kind == EntityKind::Debris)
+                .count();
+            if debris >= MAX_DEBRIS {
+                if let Some(i) = self
+                    .entities
+                    .iter()
+                    .position(|e| e.kind == EntityKind::Debris)
+                {
+                    self.entities.remove(i);
+                }
+            }
+        }
+        self.entities.push(Entity {
+            id,
+            kind: s.kind,
+            source: s.source,
+            visual: s.visual,
+            pos: s.pos,
+            vel: s.vel,
+            rot: s.rot,
+            radius: s.radius,
+            owner: s.owner,
+            team: s.team,
+            spawn_tick: self.tick,
+            expires_tick: s
+                .lifetime_ticks
+                .map_or(u64::MAX, |t| self.tick.saturating_add(t.max(1))),
+            hp: s.hp,
+            scrap: s.scrap,
+            resting: false,
+            kinematic: s.kinematic,
+            vars: s.vars,
+            state: s.state,
+        });
+        id
+    }
+
+    /// Generic replication view of every entity-like thing (debris, decoys,
+    /// ghosts, dust, markers, pickups, scrap piles and wrecks), sorted by
+    /// wire id. Projectiles and ships are replicated separately.
+    pub fn entity_views(&self) -> Vec<EntityView> {
+        let cfg = &self.config;
+        let mut out: Vec<EntityView> = Vec::new();
+        for e in &self.entities {
+            let state = match e.kind {
+                // Radius in tenths of a unit (3..=15).
+                EntityKind::Debris => [
+                    state_byte(e.scrap),
+                    e.resting as u8,
+                    state_byte(e.radius * 10.0),
+                    0,
+                ],
+                // Radius in whole units (the volume that cuts visibility).
+                EntityKind::DustCloud => [state_byte(e.radius), e.state[1], e.state[2], e.state[3]],
+                EntityKind::Decoy => {
+                    let max = e
+                        .owner
+                        .and_then(|o| self.ships.get(&o))
+                        .map_or(100.0, |s| cfg.tuning(s.ship_type).hull_max);
+                    [state_byte(e.hp * 100.0 / max.max(1.0)), e.state[0], 0, 0]
+                }
+                _ => e.state,
+            };
+            out.push(EntityView {
+                id: e.id,
+                kind: e.kind.into(),
+                visual: e.visual,
+                pos: e.pos,
+                vel: e.vel,
+                rot: e.rot,
+                owner: e.owner,
+                team: e.team,
+                state,
+            });
+        }
+        for sp in &self.pickups {
+            let Some((_, kind)) = sp.content else {
+                continue;
+            };
+            let (kind, visual, state) = match kind {
+                PickupKind::Weapon { weapon, ammo } => (
+                    ReplicatedKind::WeaponPickup,
+                    cfg.visuals.weapon_pickup(weapon),
+                    [weapon.0, ammo.min(255) as u8, 0, 0],
+                ),
+                PickupKind::Upgrade { weapon } => (
+                    ReplicatedKind::UpgradePickup,
+                    BuiltinVisual::UpgradePickup.id(),
+                    [weapon.0, 0, 0, 0],
+                ),
+                PickupKind::Gadget { gadget } => (
+                    ReplicatedKind::GadgetPickup,
+                    cfg.visuals.gadget_pickup(gadget),
+                    [gadget.0, 0, 0, 0],
+                ),
+                PickupKind::Scrap { .. } => continue,
+            };
+            out.push(EntityView {
+                id: sp.id,
+                kind,
+                visual,
+                pos: sp.pos,
+                vel: Vec3::ZERO,
+                rot: Quat::IDENTITY,
+                owner: None,
+                team: NO_TEAM,
+                state,
+            });
+        }
+        for s in &self.scrap {
+            let (kind, visual) = if s.wreck {
+                (ReplicatedKind::Wreck, BuiltinVisual::Wreck.id())
+            } else {
+                (ReplicatedKind::ScrapPile, BuiltinVisual::ScrapPile.id())
+            };
+            out.push(EntityView {
+                id: s.id,
+                kind,
+                visual,
+                pos: s.pos,
+                vel: Vec3::ZERO,
+                rot: Quat::IDENTITY,
+                owner: None,
+                team: NO_TEAM,
+                state: [state_byte(s.amount), 0, 0, 0],
+            });
+        }
+        out.sort_by_key(|v| v.wire_id());
+        out
     }
 
     // ----- hashing ---------------------------------------------------------
@@ -870,7 +2328,7 @@ impl World {
         h.write_u64(rng.next_u64());
         h.write_u16(self.next_player);
         h.write_u32(self.next_projectile);
-        h.write_u32(self.next_scrap);
+        h.write_u32(self.next_entity);
         h.write_u32(self.spawn_cursor[0]);
         h.write_u32(self.spawn_cursor[1]);
 
@@ -880,16 +2338,11 @@ impl World {
         }
         h.write_u32(self.projectiles.len() as u32);
         for p in &self.projectiles {
-            h.write_u32(p.id);
-            h.write_u16(p.owner.0);
-            h.write_u8(p.team);
-            h.write_u8(p.weapon.0);
-            h.write_vec3(p.pos);
-            h.write_vec3(p.vel);
-            h.write_u64(p.expires_tick);
-            h.write_f32(p.damage);
-            h.write_f32(p.splash_damage);
-            h.write_f32(p.knockback);
+            hash_projectile(&mut h, p);
+        }
+        h.write_u32(self.entities.len() as u32);
+        for e in &self.entities {
+            hash_entity(&mut h, e);
         }
         h.write_u32(self.scrap.len() as u32);
         for s in &self.scrap {
@@ -897,11 +2350,13 @@ impl World {
             h.write_vec3(s.pos);
             h.write_f32(s.amount);
             h.write_u32(s.spawn.map_or(u32::MAX, |x| x as u32));
+            h.write_bool(s.wreck);
         }
         h.write_u32(self.pickups.len() as u32);
         for sp in &self.pickups {
             h.write_vec3(sp.pos);
             h.write_u64(sp.respawn_tick);
+            h.write_u32(sp.id);
             match sp.content {
                 None => h.write_u8(0),
                 Some((entry, kind)) => {
@@ -909,12 +2364,34 @@ impl World {
                     h.write_u16(entry);
                     match kind {
                         PickupKind::Weapon { weapon, ammo } => {
+                            h.write_u8(0);
                             h.write_u8(weapon.0);
                             h.write_u32(ammo);
                         }
-                        PickupKind::Scrap { amount } => h.write_f32(amount),
+                        PickupKind::Upgrade { weapon } => {
+                            h.write_u8(1);
+                            h.write_u8(weapon.0);
+                        }
+                        PickupKind::Gadget { gadget } => {
+                            h.write_u8(2);
+                            h.write_u8(gadget.0);
+                        }
+                        PickupKind::Scrap { amount } => {
+                            h.write_u8(3);
+                            h.write_f32(amount);
+                        }
                     }
                 }
+            }
+        }
+        h.write_u32(self.trails.len() as u32);
+        for (id, t) in &self.trails {
+            h.write_u16(id.0);
+            h.write_u32(t.points.len() as u32);
+            for (p, v, hull) in &t.points {
+                h.write_vec3(*p);
+                h.write_vec3(*v);
+                h.write_f32(*hull);
             }
         }
         h.write_u64(self.mode.end_tick);
@@ -951,6 +2428,7 @@ fn hash_ship(h: &mut StateHasher, s: &ShipState) {
         h.write_u8(w.weapon.0);
         h.write_u32(w.ammo);
         h.write_u8(w.level);
+        h.write_u32(w.shots);
     }
     h.write_u16(s.primary.map_or(u16::MAX, |w| w.0 as u16));
     h.write_u16(s.secondary.map_or(u16::MAX, |w| w.0 as u16));
@@ -962,6 +2440,92 @@ fn hash_ship(h: &mut StateHasher, s: &ShipState) {
     h.write_u16(s.last_attacker.map_or(u16::MAX, |p| p.0));
     h.write_u32(s.kills);
     h.write_u32(s.deaths);
+    h.write_u16(s.gadget.map_or(u16::MAX, |g| g.0 as u16));
+    h.write_bool(s.gadget_active);
+    h.write_u64(s.gadget_ready_tick);
+    match s.charge {
+        None => h.write_u8(0),
+        Some(c) => {
+            h.write_u8(1 + (c.slot == WeaponSlot::Secondary) as u8);
+            h.write_u8(c.weapon.0);
+            h.write_u64(c.start_tick);
+        }
+    }
+    h.write_u16(s.prev_buttons.0);
+    h.write_u64(s.blind_until);
+    h.write_u64(s.weapons_offline_until);
+    h.write_u64(s.last_fired_tick.unwrap_or(u64::MAX));
+    h.write_u8(s.next_ship_type.map_or(u8::MAX, |t| t.index()));
+}
+
+fn hash_projectile(h: &mut StateHasher, p: &Projectile) {
+    h.write_u32(p.id);
+    h.write_u16(p.owner.0);
+    h.write_u8(p.team);
+    h.write_u8(p.weapon.0);
+    h.write_vec3(p.pos);
+    h.write_vec3(p.vel);
+    h.write_u64(p.expires_tick);
+    h.write_f32(p.damage);
+    h.write_f32(p.splash_damage);
+    h.write_f32(p.knockback);
+    h.write_u64(p.spawn_tick);
+    h.write_f32(p.radius);
+    h.write_u16(p.visual.0);
+    h.write_f32(p.charge);
+    h.write_u8(p.generation);
+    h.write_u8(p.bounces);
+    h.write_u16(p.flags);
+    h.write_u64(p.arm_tick);
+    h.write_u64(p.fuse_tick);
+    h.write_u16(p.target.map_or(u16::MAX, |t| t.0));
+    for v in p.vars {
+        h.write_f32(v);
+    }
+    h.write_u32(p.path.len() as u32);
+    for v in &p.path {
+        h.write_vec3(*v);
+    }
+    match p.passed {
+        None => h.write_u8(u8::MAX),
+        Some((kind, id)) => {
+            h.write_u8(kind);
+            h.write_u32(id);
+        }
+    }
+}
+
+fn hash_entity(h: &mut StateHasher, e: &Entity) {
+    h.write_u32(e.id);
+    h.write_u8(ReplicatedKind::from(e.kind) as u8);
+    match e.source {
+        Source::None => h.write_u8(0),
+        Source::Weapon(w) => {
+            h.write_u8(1);
+            h.write_u8(w.0);
+        }
+        Source::Gadget(g) => {
+            h.write_u8(2);
+            h.write_u8(g.0);
+        }
+    }
+    h.write_u16(e.visual.0);
+    h.write_vec3(e.pos);
+    h.write_vec3(e.vel);
+    h.write_quat(e.rot);
+    h.write_f32(e.radius);
+    h.write_u16(e.owner.map_or(u16::MAX, |p| p.0));
+    h.write_u8(e.team);
+    h.write_u64(e.spawn_tick);
+    h.write_u64(e.expires_tick);
+    h.write_f32(e.hp);
+    h.write_f32(e.scrap);
+    h.write_bool(e.resting);
+    h.write_bool(e.kinematic);
+    for v in e.vars {
+        h.write_f32(v);
+    }
+    h.write_bytes(&e.state);
 }
 
 /// Applies a weapon selection from input (`0` = keep).
@@ -979,9 +2543,15 @@ fn select_weapon(ship: &mut ShipState, select: u8, weapons: &WeaponTable) {
     }
 }
 
-/// Draws scrap from piles within reach: repairs hull first, the rest goes to
-/// the scrap store. This is the only way hull is ever restored.
-fn scavenge(ship: &mut ShipState, piles: &mut [ScrapPile], t: &ShipTuning) {
+/// Draws scrap from piles (then debris) within reach: repairs hull first,
+/// the rest goes to the scrap store. This is the only way hull is ever
+/// restored. Debris emptied by scavenging is removed.
+fn scavenge(
+    ship: &mut ShipState,
+    piles: &mut [ScrapPile],
+    entities: &mut Vec<Entity>,
+    t: &ShipTuning,
+) {
     let hull_room = if t.hull_per_scrap > 0.0 {
         (t.hull_max - ship.hull).max(0.0) / t.hull_per_scrap
     } else {
@@ -1003,6 +2573,30 @@ fn scavenge(ship: &mut ShipState, piles: &mut [ScrapPile], t: &ShipTuning) {
         budget -= take;
         gained += take;
     }
+    if budget > 0.0 {
+        let mut emptied = Vec::new();
+        for e in entities.iter_mut() {
+            if budget <= 0.0 {
+                break;
+            }
+            if e.kind != EntityKind::Debris
+                || e.scrap <= 0.0
+                || e.pos.distance_squared(ship.pos) > r2
+            {
+                continue;
+            }
+            let take = budget.min(e.scrap);
+            e.scrap -= take;
+            budget -= take;
+            gained += take;
+            if e.scrap <= 1e-4 {
+                emptied.push(e.id);
+            }
+        }
+        if !emptied.is_empty() {
+            entities.retain(|e| !emptied.contains(&e.id));
+        }
+    }
     if gained <= 0.0 {
         return;
     }
@@ -1011,84 +2605,120 @@ fn scavenge(ship: &mut ShipState, piles: &mut [ScrapPile], t: &ShipTuning) {
     ship.scrap = (ship.scrap + (gained - to_hull)).min(t.scrap_max);
 }
 
-/// A shot that was paid for.
-struct Shot {
+/// Stats of a paid shot.
+#[derive(Debug, Clone, Copy)]
+struct ShotStats {
     weapon: WeaponId,
+    level: u8,
+    shots: u32,
     damage: f32,
     splash_damage: f32,
     knockback: f32,
 }
 
-/// Checks rules, cooldown and cost for the selected weapon in `slot`; pays the
-/// cost and starts the cooldown if the shot goes off.
-fn try_fire(
-    ship: &mut ShipState,
+/// Rule set, cooldown and cost checks for the selected weapon in `slot`,
+/// without paying.
+fn can_fire(
+    ship: &ShipState,
     slot: WeaponSlot,
+    w: WeaponId,
     now: u64,
     overdrive: bool,
     cfg: &SimConfig,
-) -> Option<Shot> {
-    let w = match slot {
-        WeaponSlot::Primary => ship.primary?,
-        WeaponSlot::Secondary => ship.secondary?,
-    };
-    // The rule set is enforced here too: a banned weapon never fires, even if
-    // it somehow ended up in the inventory.
+) -> bool {
     if cfg.resolved.availability(w).is_banned() {
-        return None;
+        return false;
     }
     let def = cfg.weapons.get(w);
     if def.slot != slot {
-        return None;
+        return false;
     }
     let ready = match slot {
         WeaponSlot::Primary => ship.primary_ready_tick,
         WeaponSlot::Secondary => ship.secondary_ready_tick,
     };
     if now < ready {
+        return false;
+    }
+    let Some(st) = ship.weapon(w) else {
+        return false;
+    };
+    let t = cfg.tuning(ship.ship_type);
+    match def.cost {
+        WeaponCost::Energy(c) => {
+            ship.energy >= c
+                || (overdrive && ship.hull - (c - ship.energy) * t.overdrive_hull_per_energy >= 1.0)
+        }
+        WeaponCost::Scrap(c) => ship.scrap >= c,
+        WeaponCost::Count(n) => st.ammo >= n,
+    }
+}
+
+/// Checks rules, cooldown and cost for the selected weapon in `slot`; pays the
+/// cost and starts the cooldown if the shot goes off. The rule set is
+/// enforced here too: a banned weapon never fires, even if it somehow ended
+/// up in the inventory.
+fn try_fire(
+    ship: &mut ShipState,
+    slot: WeaponSlot,
+    now: u64,
+    overdrive: bool,
+    charge: f32,
+    cfg: &SimConfig,
+) -> Option<ShotStats> {
+    let w = match slot {
+        WeaponSlot::Primary => ship.primary?,
+        WeaponSlot::Secondary => ship.secondary?,
+    };
+    if !can_fire(ship, slot, w, now, overdrive, cfg) {
         return None;
     }
+    let def = cfg.weapons.get(w);
     let level = ship.weapon(w)?.level;
-    let t = &cfg.tuning;
+    let shots = ship.weapon(w)?.shots;
+    ship.weapon_mut(w)?.shots = shots.wrapping_add(1);
+    let t = cfg.tuning(ship.ship_type);
     match def.cost {
         WeaponCost::Energy(c) => {
             if ship.energy >= c {
                 ship.energy -= c;
-            } else if overdrive {
+            } else {
                 // Overdrive gamble: drain the rest of the energy, pay the
                 // deficit with hull at 2:1. Never self-destructs.
                 let hull_cost = (c - ship.energy) * t.overdrive_hull_per_energy;
-                if ship.hull - hull_cost < 1.0 {
-                    return None;
-                }
                 ship.energy = 0.0;
                 ship.hull -= hull_cost;
-            } else {
-                return None;
             }
         }
-        WeaponCost::Scrap(c) => {
-            if ship.scrap < c {
-                return None;
-            }
-            ship.scrap -= c;
-        }
-        WeaponCost::Count(n) => {
-            let st = ship.weapon_mut(w)?;
-            if st.ammo < n {
-                return None;
-            }
-            st.ammo -= n;
-        }
+        WeaponCost::Scrap(c) => ship.scrap -= c,
+        WeaponCost::Count(n) => ship.weapon_mut(w)?.ammo -= n,
     }
-    let next = now + def.fire_interval_ticks();
+    let tuning = cfg.resolved.tuning(w);
+    let interval = if tuning.fire_rate == 1.0 {
+        def.fire_interval_ticks()
+    } else {
+        ls_math::Tick::ticks_for_secs(def.fire_interval_secs / tuning.fire_rate).max(1)
+    };
+    let next = now + interval;
     match slot {
         WeaponSlot::Primary => ship.primary_ready_tick = next,
         WeaponSlot::Secondary => ship.secondary_ready_tick = next,
     }
-    let mult = def.level_multiplier(level) * t.damage_mult;
-    Some(Shot {
+    let charge_mult = match def.charge {
+        Some(c) if charge > 0.0 => 1.0 + (c.damage_mult - 1.0) * charge,
+        _ => 1.0,
+    };
+    let mut mult = def.level_multiplier(level) * t.damage_mult;
+    if tuning.damage != 1.0 {
+        mult *= tuning.damage;
+    }
+    if charge_mult != 1.0 {
+        mult *= charge_mult;
+    }
+    Some(ShotStats {
         weapon: w,
+        level,
+        shots,
         damage: def.damage * mult,
         splash_damage: def.splash.map_or(0.0, |s| s.damage * mult),
         // "Every hit applies knockback in proportion to its damage."
@@ -1103,13 +2733,14 @@ fn collect_weapon(ship: &mut ShipState, w: WeaponId, ammo: u32, cfg: &SimConfig)
         return false;
     }
     let def = cfg.weapons.get(w);
+    let max_ammo = cfg.resolved.max_ammo(w);
     if let Some(st) = ship.weapon_mut(w) {
         return match def.cost {
             WeaponCost::Count(_) => {
-                if st.ammo >= def.max_ammo {
+                if st.ammo >= max_ammo {
                     false
                 } else {
-                    st.ammo = st.ammo.saturating_add(ammo.max(1)).min(def.max_ammo);
+                    st.ammo = st.ammo.saturating_add(ammo.max(1)).min(max_ammo);
                     true
                 }
             }
@@ -1124,7 +2755,7 @@ fn collect_weapon(ship: &mut ShipState, w: WeaponId, ammo: u32, cfg: &SimConfig)
         };
     }
     if def.slot == WeaponSlot::Secondary {
-        let slots = cfg.tuning.secondary_slots as usize;
+        let slots = cfg.tuning(ship.ship_type).secondary_slots as usize;
         if slots == 0 {
             return false;
         }
@@ -1142,13 +2773,14 @@ fn collect_weapon(ship: &mut ShipState, w: WeaponId, ammo: u32, cfg: &SimConfig)
         }
     }
     let ammo = match def.cost {
-        WeaponCost::Count(_) => ammo.max(1).min(def.max_ammo),
+        WeaponCost::Count(_) => ammo.max(1).min(max_ammo),
         _ => 0,
     };
     ship.add_weapon(WeaponState {
         weapon: w,
         ammo,
         level: 1,
+        shots: 0,
     });
     match def.slot {
         WeaponSlot::Primary => {
@@ -1158,5 +2790,30 @@ fn collect_weapon(ship: &mut ShipState, w: WeaponId, ammo: u32, cfg: &SimConfig)
             ship.secondary.get_or_insert(w);
         }
     }
+    true
+}
+
+/// Upgrade pickup: +1 level of a carried weapon below its max level.
+fn collect_upgrade(ship: &mut ShipState, w: WeaponId, cfg: &SimConfig) -> bool {
+    if !cfg.resolved.availability(w).as_pickup() {
+        return false;
+    }
+    let max = cfg.weapons.get(w).max_level;
+    match ship.weapon_mut(w) {
+        Some(st) if st.level < max => {
+            st.level += 1;
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Gadget pickup: fills an empty slot or replaces a different gadget.
+fn collect_gadget(ship: &mut ShipState, g: GadgetId, cfg: &SimConfig) -> bool {
+    if !cfg.resolved.gadget_availability(g).as_pickup() || ship.gadget == Some(g) {
+        return false;
+    }
+    ship.gadget = Some(g);
+    ship.gadget_active = false;
     true
 }

@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use ls_game::ls_math::TICK_HZ;
-use ls_game::ls_net::{check_welcome, Hello, Message, RejectReason};
+use ls_game::ls_net::{check_welcome, Message, RejectReason};
 use ls_game::MATCH_RESTART_REASON;
 
 use crate::bot::{BotCore, Flow};
@@ -189,7 +189,7 @@ async fn play_session(
         Ok(Err(e)) => return SessionEnd::ConnectFailed(e),
         Err(_) => return SessionEnd::ConnectFailed("connect timed out".into()),
     };
-    let hello = Message::Hello(Hello::new(cfg.name.as_str(), None));
+    let hello = Message::Hello(ls_game::client_hello(cfg.name.as_str(), None, None));
     let bytes = match hello.encode() {
         Ok(b) => b,
         Err(e) => return protocol_error(stats, format!("cannot encode Hello: {e}")),

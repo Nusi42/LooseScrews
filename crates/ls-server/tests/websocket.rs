@@ -8,7 +8,7 @@
 //! shutdown.
 
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -45,7 +45,9 @@ struct TestClient {
 impl TestClient {
     async fn connect(addr: SocketAddr, name: &str) -> TestClient {
         let (mut ws, _) = connect_async(format!("ws://{addr}/ws")).await.unwrap();
-        let hello = Message::Hello(Hello::new(name, None)).encode().unwrap();
+        let hello = Message::Hello(ls_game::client_hello(name, None, None))
+            .encode()
+            .unwrap();
         ws.send(WsMessage::Binary(hello.into())).await.unwrap();
         let welcome = loop {
             match tokio::time::timeout(Duration::from_secs(120), ws.next())
@@ -352,17 +354,31 @@ async fn websocket_clients_exchange_inputs_snapshots_and_terrain_edits() {
             .pos
     };
     let bravo_start = bravo_seen_by_alpha(&a);
+    // Farthest bravo got from its start in alpha's snapshots during phase 1
+    // (f32 bits: monotonic for non-negative values). The flyer's pattern is
+    // a loop, so its final position can be close to the start again.
+    let bravo_moved = Arc::new(AtomicU32::new(0));
 
     // Phase 1: alpha shoots the terrain, bravo flies around, until alpha's
     // craters and paint have come back in snapshots.
     let paint = WeaponTable::builtin().find("paint_thrower").unwrap().0;
+    let moved = bravo_moved.clone();
     let (a, _, ok_a, b, _, ok_b) = drive_pair(
         a,
         gunner(paint),
         b,
         flyer(),
         Duration::from_secs(180),
-        |c| {
+        move |c| {
+            if c.name == "alpha" {
+                let seen = c
+                    .session
+                    .latest_snapshot()
+                    .and_then(|s| s.ships.iter().find(|s| s.id == bravo_id).map(|s| s.pos));
+                if let Some(p) = seen {
+                    moved.fetch_max(p.distance(bravo_start).to_bits(), Ordering::SeqCst);
+                }
+            }
             let s = c.session.stats();
             s.snapshots > 90 && (c.name != "alpha" || c.session.edit_count() >= 4)
         },
@@ -377,7 +393,7 @@ async fn websocket_clients_exchange_inputs_snapshots_and_terrain_edits() {
         server.stats()
     );
     // Bravo's flying is visible to alpha.
-    let moved = bravo_seen_by_alpha(&a).distance(bravo_start);
+    let moved = f32::from_bits(bravo_moved.load(Ordering::SeqCst));
     assert!(
         moved > 2.0,
         "bravo moved only {moved} u in alpha's snapshots"

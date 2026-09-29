@@ -210,6 +210,12 @@ impl Generator {
         }
     }
 
+    /// Rock material (strength class) at `p`; see [`crate::material`].
+    /// Separate from the SDF: it does not change [`Generator::sample`].
+    pub fn material_at(&self, p: Vec3) -> crate::Material {
+        crate::MaterialField::new(self.code.seed).at(p)
+    }
+
     /// The terrain without the sealing walls (negative in rock).
     pub fn terrain(&self, p: Vec3) -> f32 {
         self.terrain_with(self, p)

@@ -184,7 +184,7 @@ mod tests {
     use std::sync::{mpsc, Arc};
     use std::time::Duration;
 
-    use ls_net::{Hello, Message, Transport};
+    use ls_net::{Message, Transport};
     use tokio::io::DuplexStream;
     use tokio_tungstenite::tungstenite::protocol::Role;
 
@@ -230,7 +230,9 @@ mod tests {
     }
 
     async fn hello(client: &mut WebSocketStream<DuplexStream>) {
-        let bytes = Message::Hello(Hello::new("pilot", None)).encode().unwrap();
+        let bytes = Message::Hello(ls_game::client_hello("pilot", None, None))
+            .encode()
+            .unwrap();
         client.send(WsMessage::Binary(bytes.into())).await.unwrap();
     }
 

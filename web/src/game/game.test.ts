@@ -3,37 +3,39 @@ import { test } from "node:test";
 import { emptyInput, type InputState } from "../input/input.ts";
 import * as q from "../math/quat.ts";
 import type { MeshData } from "../renderer/mesh.ts";
-import type { ChunkMeshHandle, GameHandle, HudStateHandle } from "../wasm/api.ts";
+import type { ChunkMeshHandle, GameHandle, HudStateHandle, LoadoutHandle } from "../wasm/api.ts";
+import { stubLoadout } from "../wasm/stub.ts";
 import { boundsCenter, ShipCamera } from "./camera.ts";
 import { ChunkLoader, takeMesh } from "./chunks.ts";
-import { BUTTONS, ControlState, WEAPON_KEYS } from "./controls.ts";
+import { BUTTONS, ControlState } from "./controls.ts";
+import { buildScene, TEAM_HULL } from "./scene.ts";
 import { GameSession, hudValues, type PacketLink } from "./session.ts";
-import { parsePose, parseProjectiles, parseShips, projectileInstances, shipInstances, TEAM_HULL } from "./views.ts";
+import { parsePose, parseProjectiles, parseShips } from "./views.ts";
 
-// ls-sim weapon ids are sorted by string id.
-const WEAPON_IDS = ["bolt_rocket", "paint_thrower", "rivet_gun", "scrap_laser"];
+const NAMES = { entityKinds: ["debris", "weaponPickup"], shapes: ["bolt", "paint"] };
 
 function input(over: Partial<InputState>): InputState {
   return { ...emptyInput(), pointerLocked: true, ...over };
 }
 
-test("controls: axes, look signs, buttons and sticky weapon selection", () => {
-  const c = new ControlState(WEAPON_IDS, true);
+test("controls: axes, look signs, buttons and weapon-selection intents", () => {
+  const c = new ControlState(true);
   const out = Array.from(
     c.update(input({ thrustForward: 1, thrustRight: -1, thrustUp: 2, roll: 1, lookX: 100, lookY: -50, boost: true, firePrimary: true })),
   );
+  assert.equal(out.length, 11);
   assert.deepEqual(out.slice(0, 4), [1, -1, 1, 1]);
   assert.ok(out[4]! > 0, "mouse right = yaw right (positive)");
   assert.ok(out[5]! > 0, "mouse up = pitch up (positive)");
   assert.equal(out[6], BUTTONS.boost | BUTTONS.firePrimary | BUTTONS.horizonAssist);
-  assert.equal(out[7], 0, "no weapon picked yet");
+  assert.deepEqual(out.slice(7), [0, 0, 0, 0], "no weapon intent");
 
-  // Key 2 = paint thrower (WEAPON_KEYS order), mapped to its ls-sim id + 1.
-  assert.equal(WEAPON_KEYS[1], "paint_thrower");
-  let o = c.update(input({ weaponKey: 2 }));
-  assert.equal(o[7], WEAPON_IDS.indexOf("paint_thrower") + 1);
+  // Number keys, wheel steps and X are passed through for ls-wasm to resolve.
+  let o = c.update(input({ weaponKey: 10, cyclePrimary: -3, cycleSecondary: true, gadget: true }));
+  assert.deepEqual(Array.from(o.slice(7)), [0, 10, -1, 1]);
+  assert.equal((o[6] ?? 0) & BUTTONS.gadget, BUTTONS.gadget, "G sets the gadget button");
   o = c.update(input({}));
-  assert.equal(o[7], WEAPON_IDS.indexOf("paint_thrower") + 1, "selection is sticky");
+  assert.deepEqual(Array.from(o.slice(7)), [0, 0, 0, 0], "intents are one-shot");
 
   // H toggles horizon assist off; overdrive and scavenge map to their bits.
   o = c.update(input({ toggleHorizonAssist: true, overdrive: true, scavenge: true, fireSecondary: true }));
@@ -57,7 +59,12 @@ test("views: flat arrays decode into poses, ships and projectiles", () => {
   assert.deepEqual(pose.velocity, { x: 4, y: 5, z: 6 });
   assert.equal(pose.alive, true);
 
-  const ships = parseShips(new Float32Array([3, 1, 1, 0, 10, 20, 30, 0, 0, 0, 1, 4, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1]));
+  const ships = parseShips(
+    new Float32Array([
+      3, 1, 1, 0, 10, 20, 30, 0, 0, 0, 1, 2, 0.65, 1,
+      4, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 1, 0.5, 0,
+    ]),
+  );
   assert.equal(ships.length, 2);
   assert.deepEqual(ships[0], {
     id: 3,
@@ -66,25 +73,28 @@ test("views: flat arrays decode into poses, ships and projectiles", () => {
     boosting: false,
     position: { x: 10, y: 20, z: 30 },
     orientation: { x: 0, y: 0, z: 0, w: 1 },
+    shipType: 2,
+    radius: ships[0]!.radius,
+    gadgetActive: true,
   });
+  assert.ok(Math.abs(ships[0]!.radius - 0.65) < 1e-6);
   assert.equal(ships[1]!.alive, false);
-  const inst = shipInstances(ships);
-  assert.equal(inst.length, 1, "dead ships are not drawn");
-  assert.deepEqual(inst[0]!.color, TEAM_HULL[1]);
+  const scene = buildScene(ships, [], [], [], () => undefined, 0);
+  const hulls = scene.opaque.ship ?? [];
+  assert.equal(hulls.length, 1, "dead ships are not drawn");
+  assert.deepEqual(hulls[0]!.color, TEAM_HULL[1]);
+  assert.ok(Math.abs(hulls[0]!.scale - 1.3) < 1e-6, "Hauler hull drawn at its hitbox size");
+  assert.equal(scene.translucent.sphere?.length, 1, "active gadget shimmer");
 
-  const shots = parseProjectiles(new Float32Array([1, 3, 0, 0, 0, 0, 10, 0, 3, 7, 0, 0, 0, 0, 0, -5]));
+  const shots = parseProjectiles(
+    new Float32Array([1, 3, 0, 0, 0, 0, 10, 0, 9, 0, 3, 7, 0, 0, 0, 0, 0, -5, 8, 0]),
+  );
   assert.equal(shots.length, 2);
   assert.equal(shots[0]!.kind, 1);
-  const teamOf = (id: number): number | undefined => (id === 3 ? 1 : undefined);
-  const pi = projectileInstances(shots, WEAPON_IDS, teamOf);
-  assert.deepEqual(pi[0]!.color, TEAM_HULL[1], "paint blobs take the shooter's team colour");
-  // Oriented along the velocity (forward = -Z of the instance).
-  const f0 = q.forward(pi[0]!.rotation);
-  assert.ok(f0.y > 0.99, JSON.stringify(f0));
-  const f1 = q.forward(pi[1]!.rotation);
-  assert.ok(f1.z < -0.99, JSON.stringify(f1));
+  assert.equal(shots[0]!.visual, 9);
+  assert.equal(shots[1]!.visual, 8);
   // A truncated trailing record is ignored.
-  assert.equal(parseShips(new Float32Array(15)).length, 1);
+  assert.equal(parseShips(new Float32Array(20)).length, 1);
 });
 
 function fakeMesh(key: string, triangles: number, log: string[]): ChunkMeshHandle {
@@ -94,6 +104,7 @@ function fakeMesh(key: string, triangles: number, log: string[]): ChunkMeshHandl
     normals: () => new Float32Array(9 * Math.max(1, triangles)),
     indices: () => new Uint32Array(3 * triangles),
     teams: () => new Uint8Array(3 * Math.max(1, triangles)),
+    surface: () => new Uint8Array(0),
     aabb: () => new Float32Array(6),
     free: () => log.push(`free ${key}`),
   };
@@ -202,7 +213,7 @@ class FakeGame implements GameHandle {
     return [new Uint8Array([4, 1]), new Uint8Array([7])];
   }
   localPose(): Float32Array | undefined { return new Float32Array([1, 2, 3, 0, 0, 0, 1, 0, 0, 0, 1]); }
-  remoteShips(): Float32Array { return new Float32Array([5, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1]); }
+  remoteShips(): Float32Array { return new Float32Array([5, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0.5, 0]); }
   projectiles(): Float32Array { return new Float32Array(0); }
   hud(): HudStateHandle { return fakeHud(); }
   setClockMs(): void {}
@@ -214,6 +225,16 @@ class FakeGame implements GameHandle {
   takeUnloads(): string[] { return []; }
   pendingChunks(): number { return 0; }
   setViewRadius(): void {}
+  entities(): Float32Array {
+    return new Float32Array([7, 1, 1, 255, 255, 1, 2, 3, 0, 0, 0, 0, 0, 0, 1, 4, 10, 0, 0, 0]);
+  }
+  visuals(): Float32Array { return new Float32Array([0, 1, 0, 0, 1, 1, 0.5, 0.5, 0.5, 2]); }
+  playerInfo(): Float64Array { return new Float64Array([2, 1, 1, 255, 5, 0, 3, 0]); }
+  playerNames(): string[] { return ["Ada", "Bob"]; }
+  loadout(): LoadoutHandle {
+    return stubLoadout({ names: ["Scrap Laser", "Bolt Rocket"], ammo: ["∞", "3"], info: new Uint8Array([0, 1, 1, 2, 1, 1, 0, 1]), maxLevels: new Uint8Array([6, 1]), gadget: "Shield" });
+  }
+  scoreboardNames(): string[] { return ["Ada", "Bob"]; }
   resetMeshes(): void {}
   free(): void {}
 }
@@ -231,7 +252,7 @@ class FakeLink implements PacketLink {
 test("session: packets in, controls to the game, packets out, state back", () => {
   const game = new FakeGame();
   const link = new FakeLink();
-  const s = new GameSession(game, link, WEAPON_IDS, true);
+  const s = new GameSession(game, link, NAMES, true);
   link.inbox.push(new Uint8Array([5]), new Uint8Array([6]));
   const r = s.frame(1 / 60, input({ thrustForward: 1 }));
   assert.deepEqual(game.handled, [5, 6]);
@@ -244,6 +265,18 @@ test("session: packets in, controls to the game, packets out, state back", () =>
   assert.deepEqual(r.hud.paint, [0.25, 0.5]);
   assert.equal(r.hud.horizonAssist, true);
   assert.deepEqual(r.feed, ["You destroyed Player 6"]);
+  // M2: entities, players, visuals and the weapon panel come with every frame.
+  assert.equal(r.entities.length, 1);
+  assert.equal(r.entities[0]!.kind, "weaponPickup");
+  assert.deepEqual(r.entities[0]!.state, [4, 10, 0, 0]);
+  assert.deepEqual(r.players.map((p) => p.name), ["Ada", "Bob"]);
+  assert.deepEqual(s.visuals.map((v) => v.shape), ["bolt", "paint"]);
+  assert.equal(s.visuals[1]!.scale, 2);
+  const loadout = r.hud.loadout!;
+  assert.deepEqual(loadout.primaries.map((w) => [w.name, w.key, w.level, w.selected]), [["Scrap Laser", 1, 2, true]]);
+  assert.equal(loadout.secondaries[0]!.ammo, "3");
+  assert.equal(loadout.gadget, "Shield");
+  assert.deepEqual(s.scoreboard().map((row) => row.name), ["Ada", "Bob"]);
   const teamOf = s.teamOf(r.ships);
   assert.equal(teamOf(2), 1, "own ship");
   assert.equal(teamOf(5), 0);
@@ -254,7 +287,7 @@ test("session: server disconnects, desyncs and dropped connections end the sessi
   const game = new FakeGame();
   game.disconnectOn = 9;
   const link = new FakeLink();
-  const s = new GameSession(game, link, WEAPON_IDS);
+  const s = new GameSession(game, link, NAMES);
   link.inbox.push(new Uint8Array([9]), new Uint8Array([10]));
   const r = s.frame(1 / 60, input({}));
   assert.match(r.disconnected ?? "", /match closed/);
@@ -268,12 +301,12 @@ test("session: server disconnects, desyncs and dropped connections end the sessi
   const g2 = new FakeGame();
   g2.throwOn = 1;
   const l2 = new FakeLink();
-  const s2 = new GameSession(g2, l2, WEAPON_IDS);
+  const s2 = new GameSession(g2, l2, NAMES);
   l2.inbox.push(new Uint8Array([1]));
   assert.match(s2.frame(0.016, input({})).disconnected ?? "", /Lost sync.*edit gap/);
 
   const l3 = new FakeLink();
-  const s3 = new GameSession(new FakeGame(), l3, WEAPON_IDS);
+  const s3 = new GameSession(new FakeGame(), l3, NAMES);
   l3.isOpen = false;
   l3.closeReason = "server went away";
   assert.match(s3.frame(0.016, input({})).disconnected ?? "", /server went away/);
@@ -282,7 +315,7 @@ test("session: server disconnects, desyncs and dropped connections end the sessi
 test("practice sessions have no link and never disconnect", () => {
   const game = new FakeGame();
   game.isOnline = false;
-  const s = new GameSession(game, null, WEAPON_IDS);
+  const s = new GameSession(game, null, NAMES);
   assert.equal(s.isOnline, false);
   const r = s.frame(1 / 60, input({}));
   assert.equal(r.disconnected, null);

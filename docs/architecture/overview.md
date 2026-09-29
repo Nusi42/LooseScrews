@@ -15,10 +15,10 @@ Details live in the other pages: [contracts.md](contracts.md) (types shared acro
 
 | Crate | Kind | Responsibility | Deterministic |
 | --- | --- | --- | --- |
-| `ls-math` | lib | `Vec3`, `Quat`, `Mat3`, `Aabb`, `Tick` (60 Hz, `DT`), `det` (libm transcendentals), `SplitMix64` / `Pcg32`, and the terrain contracts (`TerrainEdit`, `TerrainQuery`, `RayHit`, test terrains) | yes |
-| `ls-worldgen` | lib | `Sliders`, `ShareCode`, the SDF `Generator`, `ChunkStore` (32³ cells, lazy generation, edit log, paint layer), `surface_nets` and `dual_contouring` meshers, golden hashes | yes |
-| `ls-sim` | lib | `World::step`: flight model, resources, data-driven weapons (`WeaponTable`) and rule sets (`RuleSet`), projectiles, splash, craters and paint, pickups, respawns, Paint the Void; `state_hash`. Sees terrain only through `TerrainQuery` + `SimTerrain` | yes |
-| `ls-net` | lib | Wire protocol: bit packing, quantization (18 B ship state), `Message`s and handshake, full and delta snapshots, `SnapshotHistory`, the poll-based `Transport` trait and `MemoryTransport` | pure encoding |
+| `ls-math` | lib | `Vec3`, `Quat`, `Mat3`, `Aabb`, `Tick` (60 Hz, `DT`), `det` (libm transcendentals), `SplitMix64` / `Pcg32`, and the terrain contracts (`TerrainEdit`, `SurfaceStates`, `TerrainQuery`, `RayHit`, test terrains) | yes |
+| `ls-worldgen` | lib | `Sliders`, `ShareCode`, the SDF `Generator`, `ChunkStore` (32³ cells, lazy generation, edit log, surface layers: paint and timed surface states), rock material field (`material`: weak/rock/hard, crater strength), `surface_nets` and `dual_contouring` meshers, golden hashes | yes |
+| `ls-sim` | lib | `World::step`: flight model, ship types (`ShipTable`), resources, data-driven weapons (`WeaponTable`) with one behaviour module per weapon, gadgets, entities (debris, decoys, ghosts, dust), rule sets v2 and codes (`RuleSet`), projectiles, splash, craters and paint, pickups, respawns, Paint the Void; `state_hash`, `data_hash`. Sees terrain only through `TerrainQuery` + `SimTerrain` ([arsenal-framework.md](arsenal-framework.md)) | yes |
+| `ls-net` | lib | Wire protocol: bit packing, quantization (18 B ship state), `Message`s and handshake (data hash, ship choice), full and delta snapshots (ships, projectiles, generic entities, players), per-client `Relevance`, `SnapshotHistory`, the poll-based `Transport` trait and `MemoryTransport` | pure encoding |
 | `ls-game` | lib | Glue with no I/O: `GameTerrain`, deterministic match setup (spawn and pickup points), sim <-> net conversion, `ClientSession` (prediction, reconciliation, interpolation, clock), and (feature `server`) the authoritative `Room` with lag compensation | uses the above |
 | `ls-server` | bin + lib | Hosts one `Room`: 60 Hz sim thread, tokio I/O, HTTP static files, WebSocket `/ws`, WebTransport over UDP, `/cert-hash`, match restart, stats logging | no |
 | `ls-wasm` | cdylib | wasm-bindgen API for the browser: share-code checks, `Game` (online `ClientSession` or offline practice `World`), chunk streaming and meshing, shot prediction, HUD and overlay data as flat arrays | no |
@@ -33,7 +33,7 @@ Non-Rust parts:
 
 | Path | Contents |
 | --- | --- |
-| `data/weapons/*.ron`, `data/rulesets/*.ron`, `data/ships/*.ron` | Gameplay numbers. Embedded into `ls-sim` with `include_str!` (no file system in WASM); the server can also load a rule set file with `--ruleset` |
+| `data/weapons/*.ron`, `data/ships/*.ron`, `data/gadgets/*.ron`, `data/rulesets/*.ron` | Gameplay numbers. Embedded into `ls-sim` with `include_str!` (no file system in WASM) and hashed for the handshake; the server can also load a rule set file with `--ruleset` |
 | `web/` | TypeScript (strict) + Vite client: `renderer/` (WebGPU), `input/`, `net/` (WebSocket and WebTransport transports), `game/` (session, chunk loader, camera, views), `ui/` (start screen, HUD, scoreboard, overlays), `wasm/` (loader and typed API over the wasm-bindgen package in `web/src/wasm/pkg`, generated and gitignored) |
 | `tools/` | `ci.ps1` / `ci.sh` (full check), `determinism-check.mjs` (WASM vs native golden hashes), `e2e.mjs` + `e2e.ps1` / `e2e.sh` (server + bots soak run) |
 

@@ -1,0 +1,22 @@
+// Leech Arc: energy primary. Short arc (12 u) that locks the nearest target and drains its
+// energy into yours. Malus: useless beyond 12 u. Lasting effect: surfaces stay charged for 15
+// s and drain energy from ships that scrape them. The only instant weapon (M2 plan); the
+// fallback fires a short-lived fast bolt with the same reach.
+// Behaviour: crates/ls-sim/src/weapons/energy/leech_arc.rs (TODO(wave-B): generic fallback until implemented).
+// `params` are read by the weapon module (`WeaponDef::param`); numbers are tuning starting points.
+WeaponDef(
+    id: "leech_arc",
+    name: "Leech Arc",
+    family: Energy,
+    slot: Primary,
+    speed: 90.0,
+    lifetime_secs: 0.134,
+    damage: 2.0,
+    fire_interval_secs: 0.1,
+    cost: Energy(0.5),
+    projectile_radius: 0.2,
+    knockback: 0.2,
+    shield: PassThrough(0.5),
+    visual: (shape: Arc, color: (120, 255, 255), scale: 1.0),
+    params: { "range": 12.0, "lock_cone_deg": 60.0, "drain_per_sec": 20.0, "charged_secs": 15.0, "charged_drain_per_sec": 5.0 },
+)

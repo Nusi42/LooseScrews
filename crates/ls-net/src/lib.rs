@@ -5,8 +5,9 @@
 //! - [`quant`]: quantization of positions (3 x 16 bit in level bounds),
 //!   velocities (3 x 16 bit) and orientations (smallest-three, 32 bit).
 //! - [`wire`]: wire-level structs ([`NetShip`], [`NetProjectile`],
-//!   [`NetInput`], [`NetEvent`], [`Snapshot`]) and their packed forms. They
-//!   do not depend on `ls-sim`; the server and client convert.
+//!   [`NetEntity`], [`NetPlayer`], [`NetInput`], [`NetEvent`], [`Snapshot`])
+//!   and their packed forms, plus the per-client [`Relevance`] hook. They do
+//!   not depend on `ls-sim`; the server and client convert.
 //! - [`snapshot`]: full and delta snapshot encoding, [`SnapshotHistory`].
 //! - [`message`]: every protocol [`Message`], the handshake and version checks.
 //! - [`transport`]: the poll-based [`Transport`] trait (native and wasm32)
@@ -27,15 +28,19 @@ pub use ls_math;
 
 pub use error::{DecodeError, EncodeError, HandshakeError, TransportError};
 pub use message::{
-    accept_hello, check_hello, check_welcome, peek_hello_version, Channel, Hello, InputMsg,
-    Message, Reject, RejectReason, SnapshotMsg, Welcome, MAGIC, PROTOCOL_VERSION,
+    accept_hello, check_data_hash, check_hello, check_welcome, peek_hello_version, Channel, Hello,
+    InputMsg, InventoryMsg, Message, NetWeapon, Reject, RejectReason, SnapshotMsg, Welcome, MAGIC,
+    PROTOCOL_VERSION,
 };
-pub use quant::{pack_quat, unpack_quat, PackedVec3, QuantConfig, Quantizer};
+pub use quant::{
+    pack_quat, unpack_quat, PackedVec3, QuantConfig, Quantizer, ENTITY_POS_MAX, ENTITY_POS_SHIFT,
+};
 pub use snapshot::{Baselines, NoBaselines, SnapshotHistory};
 pub use transport::{
     recv_message, send_message, LinkConditions, MemoryTransport, NetError, Packet, Transport,
 };
 pub use wire::{
-    buttons, ship_flags, NetEvent, NetInput, NetProjectile, NetShip, PackedProjectile, PackedShip,
-    PackedSnapshot, ShipStatus, Snapshot, TerrainEditBits, MAX_SHIPS, SHIP_CORE_BITS,
+    buttons, ship_flags, AllRelevant, NetEntity, NetEvent, NetInput, NetPlayer, NetProjectile,
+    NetShip, PackedEntity, PackedProjectile, PackedShip, PackedSnapshot, Relevance, ShipStatus,
+    Snapshot, TerrainEditBits, MAX_PLAYER_NAME, MAX_SHIPS, SHIP_CORE_BITS,
 };

@@ -1,0 +1,23 @@
+// Eyeball: ordnance secondary. You steer it through its camera, 25 u/s. Malus: your ship is
+// exposed while you steer (it drifts without thrust). Lasting effect: 4 u crater.
+// Behaviour: crates/ls-sim/src/weapons/ordnance/eyeball.rs (TODO(wave-B): generic fallback until implemented).
+// `params` are read by the weapon module (`WeaponDef::param`); numbers are tuning starting points.
+WeaponDef(
+    id: "eyeball",
+    name: "Eyeball",
+    family: Ordnance,
+    slot: Secondary,
+    speed: 25.0,
+    lifetime_secs: 8.0,
+    damage: 40.0,
+    fire_interval_secs: 1.0,
+    cost: Count(1),
+    projectile_radius: 0.25,
+    splash: Some((radius: 3.0, damage: 25.0, hits_owner: true)),
+    knockback: 8.0,
+    terrain: (crater_radius: 2.0),
+    shield: Wears(1.0),
+    max_ammo: 3,
+    visual: (shape: Missile, color: (255, 255, 255), scale: 1.3),
+    params: { "turn_rate": 3.0 },
+)

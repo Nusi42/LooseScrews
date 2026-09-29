@@ -352,6 +352,8 @@ mod tests {
             protocol_version: PROTOCOL_VERSION,
             player_id: 0,
             team: 0,
+            ship_type: 1,
+            data_hash: 7,
             share_code: "LS-TEST".into(),
             ruleset_name: "paint_the_void".into(),
             ruleset: vec![],

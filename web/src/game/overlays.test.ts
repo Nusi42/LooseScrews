@@ -5,7 +5,8 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { DebugOverlay, formatDebugLines, FpsMeter, type DebugInfo } from "../ui/debugOverlay.ts";
 import { endScreenModel, scoreboardModel } from "../ui/scoreboard.ts";
-import type { ChunkMeshHandle, GameHandle, HudStateHandle } from "../wasm/api.ts";
+import type { ChunkMeshHandle, GameHandle, HudStateHandle, LoadoutHandle } from "../wasm/api.ts";
+import { stubLoadout } from "../wasm/stub.ts";
 import { rejoin, rejoinDelay, RejoinCancelled } from "./rejoin.ts";
 import { transportLabel } from "../net/connect.ts";
 import { GameSession, type PacketLink } from "./session.ts";
@@ -21,7 +22,7 @@ import {
   type MatchInfo,
 } from "./stats.ts";
 
-const WEAPONS = ["bolt_rocket", "paint_thrower", "rivet_gun", "scrap_laser"];
+const NAMES = { entityKinds: [], shapes: [] };
 
 test("stats: flat arrays decode; short or broken arrays are safe", () => {
   const d = parseDebugStats([42.5, 100, 3, 1, 0.25, 9, 8, 1, 0, 1]);
@@ -41,10 +42,10 @@ test("stats: flat arrays decode; short or broken arrays are safe", () => {
   assert.equal(parseDebugStats([]).pingMs, null);
   assert.equal(parseDebugStats([Number.NaN, 0, 0, 0, 0, 0, 0, 0, 0, 0]).pingMs, 0);
 
-  const rows = parseScoreboard([3, 1, 1, 4, 2, 0, 0, 0, 0, 1, 3, 1, 9]);
+  const rows = parseScoreboard([3, 1, 1, 4, 2, 0, 0, 0, 0, 1, 3, 1, 9], ["Ada"]);
   assert.equal(rows.length, 2, "a truncated trailing row is ignored");
-  assert.deepEqual(rows[0], { id: 3, team: 1, alive: true, kills: 4, deaths: 2, isYou: false });
-  assert.deepEqual(rows[1], { id: 0, team: 0, alive: false, kills: 1, deaths: 3, isYou: true });
+  assert.deepEqual(rows[0], { id: 3, name: "Ada", team: 1, alive: true, kills: 4, deaths: 2, isYou: false });
+  assert.deepEqual(rows[1], { id: 0, name: "", team: 0, alive: false, kills: 1, deaths: 3, isYou: true });
 
   const m = parseMatchInfo([1, 0, 30, 10, 200, 2.5]);
   assert.deepEqual(m, { over: true, winner: 0, teamCells: [30, 10], surfaceCells: 200, secsSinceEnd: 2.5 });
@@ -55,6 +56,9 @@ test("stats: flat arrays decode; short or broken arrays are safe", () => {
 test("stats: names, paint share, intermission countdown and team grouping", () => {
   assert.equal(playerName({ id: 4, isYou: false }), "Player 5");
   assert.equal(playerName({ id: 4, isYou: true }), "You");
+  assert.equal(playerName({ id: 4, isYou: false, name: "Ada" }), "Ada", "names from the server");
+  assert.equal(playerName({ id: 4, isYou: true, name: "Ada" }), "Ada (you)");
+  assert.equal(playerName({ id: 4, isYou: true, name: "You" }), "You", "practice names the player You");
   assert.equal(teamName(0), "Orange");
   assert.equal(teamName(1), "Blue");
   const info: MatchInfo = { over: true, winner: 1, teamCells: [25, 50], surfaceCells: 200, secsSinceEnd: 3.2 };
@@ -218,6 +222,12 @@ class Game implements GameHandle {
   takeUnloads(): string[] { return []; }
   pendingChunks(): number { return 0; }
   setViewRadius(): void {}
+  entities(): Float32Array { return new Float32Array(0); }
+  visuals(): Float32Array { return new Float32Array(0); }
+  playerInfo(): Float64Array { return new Float64Array(0); }
+  playerNames(): string[] { return []; }
+  loadout(): LoadoutHandle { return stubLoadout(); }
+  scoreboardNames(): string[] { return []; }
   resetMeshes(): void {}
   free(): void {}
 }
@@ -246,7 +256,7 @@ class BufferedLink implements PacketLink {
 test("session: overlay data, transport name and send backpressure", () => {
   const game = new Game();
   const link = new BufferedLink();
-  const s = new GameSession(game, link, WEAPONS);
+  const s = new GameSession(game, link, NAMES);
   s.clock = () => 1234.5;
   assert.equal(s.transportName, "WebTransport");
   assert.equal(s.debugStats().pingMs, 30);
@@ -259,7 +269,7 @@ test("session: overlay data, transport name and send backpressure", () => {
   s.frame(1 / 60, {
     thrustForward: 0, thrustRight: 0, thrustUp: 0, roll: 0, lookX: 0, lookY: 0, boost: false,
     firePrimary: false, fireSecondary: false, scavenge: false, overdrive: false,
-    toggleHorizonAssist: false, weaponKey: 0, pointerLocked: true, scoreboard: false, toggleDebug: false,
+    toggleHorizonAssist: false, weaponKey: 0, cyclePrimary: 0, cycleSecondary: false, gadget: false, pointerLocked: true, scoreboard: false, toggleDebug: false,
   });
   assert.deepEqual(link.sent, [0, 1]);
   assert.equal(s.droppedSends, 1);
@@ -275,7 +285,7 @@ test("session: overlay data, transport name and send backpressure", () => {
   assert.equal(s.matchInfo().over, false);
   assert.equal(s.debugStats().pingMs, null);
 
-  const practice = new GameSession(new Game(), null, WEAPONS);
+  const practice = new GameSession(new Game(), null, NAMES);
   assert.equal(practice.transportName, null);
   assert.equal(practice.droppedSends, null);
 });

@@ -194,9 +194,11 @@ pub fn summary(stats: &[BotStats], elapsed_secs: f64, policy: DisconnectPolicy) 
     );
     let _ = writeln!(
         out,
-        "        combat: {} kills, {} hits; trigger ticks laser {} rivet {} rocket {} paint {}; scavenge ticks {}",
+        "        combat: {} kills, {} hits; mode ticks combat {} hunt {}; trigger ticks laser {} rivet {} rocket {} paint {}; scavenge ticks {}",
         total.kills,
         total.hits_dealt,
+        b.combat_ticks,
+        b.hunt_ticks,
         b.laser_triggers,
         b.rivet_triggers,
         b.rocket_triggers,

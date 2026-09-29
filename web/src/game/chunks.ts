@@ -34,7 +34,14 @@ export function takeMesh(m: ChunkMeshHandle): { key: string; mesh: MeshData } {
   try {
     return {
       key: m.key,
-      mesh: { positions: m.positions(), normals: m.normals(), indices: m.indices(), team: m.teams() },
+      mesh: {
+        positions: m.positions(),
+        normals: m.normals(),
+        indices: m.indices(),
+        team: m.teams(),
+        // Surface states (hot, charged, glow) when the terrain layer provides them.
+        surface: m.surface?.() ?? new Uint8Array(0),
+      },
     };
   } finally {
     m.free();

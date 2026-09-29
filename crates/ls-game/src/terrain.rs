@@ -4,11 +4,11 @@
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeSet;
 
-use ls_math::terrain::{TerrainEdit, TerrainQuery};
+use ls_math::terrain::{SurfaceStates, TerrainEdit, TerrainQuery};
 use ls_math::{Aabb, Vec3};
 use ls_net::TerrainEditBits;
 use ls_sim::{SimTerrain, StateHasher};
-use ls_worldgen::{ChunkCoord, ChunkStore, Generator, Mesh, ShareCode};
+use ls_worldgen::{ChunkCoord, ChunkStore, Generator, Material, Mesh, ShareCode};
 
 use crate::GameError;
 
@@ -16,6 +16,15 @@ use crate::GameError;
 ///
 /// - Implements [`TerrainQuery`] (physics) and [`SimTerrain`] (edits from the
 ///   simulation, Paint the Void coverage).
+/// - Material strength: the simulation scales craters by the rock material
+///   at their centre itself (`ls_sim::Ctx::crater`, reading
+///   [`SimTerrain::material_at`]), so every edit, from the simulation
+///   ([`SimTerrain::apply_edit`]) or from a log ([`GameTerrain::apply`],
+///   [`GameTerrain::apply_sequence`], [`GameTerrain::replay`]), is applied
+///   and logged verbatim.
+/// - Surface states (hot, charged, glow) are stored as expiry ticks by the
+///   edit log; [`GameTerrain::advance_to`] moves the display tick of meshes
+///   and marks chunks whose states expired dirty.
 /// - Every edit handed to it is logged, including ones the chunk store rejects
 ///   as invalid, so the log index is the edit's **sequence number** on the wire
 ///   (`Snapshot::edit_base`, `Welcome::edit_log`) on every peer.
@@ -84,7 +93,8 @@ impl GameTerrain {
         &self.log
     }
 
-    /// Applies and logs an edit; returns the chunks whose meshes may have changed.
+    /// Applies and logs an edit verbatim; returns the chunks whose meshes may
+    /// have changed.
     pub fn apply(&mut self, edit: TerrainEdit) -> Vec<ChunkCoord> {
         self.log.push(edit);
         let dirty = self.store.get_mut().apply(edit);
@@ -118,6 +128,38 @@ impl GameTerrain {
     ) -> Result<usize, GameError> {
         let edits: Vec<TerrainEdit> = edits.iter().map(|e| TerrainEdit::from(*e)).collect();
         self.apply_sequence(base, &edits)
+    }
+
+    /// Moves the display tick of meshes to `tick` (surface states active at
+    /// it are meshed) and marks the chunks whose states expired since the
+    /// last call dirty. Does not change the terrain state or its hashes.
+    pub fn advance_to(&mut self, tick: u64) {
+        let now = tick.min(u32::MAX as u64) as u32;
+        let dirty = self.store.get_mut().advance_to(now);
+        self.dirty.extend(dirty);
+    }
+
+    /// Display tick of meshes (see [`GameTerrain::advance_to`]).
+    pub fn display_tick(&self) -> u64 {
+        self.store.borrow().now() as u64
+    }
+
+    /// Surface states active at `tick` on the cells within `radius` of
+    /// `center` (e.g. a charged wall under a scraping ship).
+    pub fn surface_states_near(&self, center: Vec3, radius: f32, tick: u64) -> SurfaceStates {
+        let now = tick.min(u32::MAX as u64) as u32;
+        self.store.borrow().surface_states_near(center, radius, now)
+    }
+
+    /// Surface states active at `tick` on the cell containing `p`.
+    pub fn surface_states_at(&self, p: Vec3, tick: u64) -> SurfaceStates {
+        let now = tick.min(u32::MAX as u64) as u32;
+        self.store.borrow().surface_states_at(p, now)
+    }
+
+    /// Rock material (strength class) at `p`.
+    pub fn material_at(&self, p: Vec3) -> Material {
+        self.store.borrow().material_at(p)
     }
 
     /// Chunks whose meshes changed since the last call (sorted, unique).
@@ -176,6 +218,9 @@ impl GameTerrain {
             }
             h.write_u32(b.radius);
             h.write_u8(b.team);
+            if b.kind == 3 {
+                h.write_u32(b.until);
+            }
         }
         h.finish()
     }
@@ -208,9 +253,11 @@ impl GameTerrain {
         h.finish()
     }
 
-    /// FNV-1a hash of the paint layer around every edit in the log (the
-    /// cells in each edit's bounding box). Cheap: it only reads cells edits
-    /// could have touched, so it needs no chunk generation.
+    /// FNV-1a hash of the surface layers around every edit in the log (the
+    /// cells in each edit's bounding box): paint team, plus the stored expiry
+    /// ticks of cells with surface states. Cheap: it only reads cells edits
+    /// could have touched, so it needs no chunk generation. The ticks depend
+    /// only on the log, not on the display tick, so peers agree at any time.
     pub fn paint_hash(&self) -> u64 {
         let store = self.store.borrow();
         let mut h = StateHasher::new();
@@ -225,6 +272,13 @@ impl GameTerrain {
                 for y in lo[1]..=hi[1] {
                     for x in lo[0]..=hi[0] {
                         h.write_u8(store.team_at_cell([x, y, z]));
+                        let ticks = store.surface_state_ticks_at_cell([x, y, z]);
+                        if ticks != [0; SurfaceStates::COUNT] {
+                            h.write_u8(0x5e);
+                            for t in ticks {
+                                h.write_u32(t);
+                            }
+                        }
                     }
                 }
             }
@@ -233,7 +287,7 @@ impl GameTerrain {
     }
 
     /// Hash of the terrain state for desync checks: edit log, SDF on a 4 u
-    /// lattice and the paint layer around every edit.
+    /// lattice and the surface layers (paint, surface states) around every edit.
     pub fn state_hash(&self) -> u64 {
         let mut h = StateHasher::new();
         h.write_u64(self.edit_log_hash());
@@ -254,8 +308,18 @@ impl TerrainQuery for GameTerrain {
 }
 
 impl SimTerrain for GameTerrain {
+    /// Applies and logs the edit verbatim (craters come already scaled by
+    /// rock strength, see the type docs).
     fn apply_edit(&mut self, edit: &TerrainEdit) {
         self.apply(*edit);
+    }
+
+    fn surface_states_near(&self, center: Vec3, radius: f32, now: u64) -> SurfaceStates {
+        GameTerrain::surface_states_near(self, center, radius, now)
+    }
+
+    fn material_at(&self, p: Vec3) -> u8 {
+        GameTerrain::material_at(self, p).id()
     }
 
     /// Coverage for simulation teams 0 and 1, cached until the next edit.
@@ -355,6 +419,87 @@ mod tests {
         let replayed = GameTerrain::replay(t.generator(), t.edit_log());
         assert_eq!(replayed.edit_log_hash(), t.edit_log_hash());
         assert_eq!(replayed.sdf_hash(4.0), t.sdf_hash(4.0));
+    }
+
+    #[test]
+    fn sim_edits_apply_verbatim_and_materials_reach_the_sim() {
+        let mut t = small_terrain(11);
+        let p = rock_point(&t);
+        let m = t.material_at(p);
+        assert_eq!(SimTerrain::material_at(&t, p), m.id());
+        assert_eq!(
+            ls_math::terrain::material_crater_scale(m.id()),
+            m.crater_scale()
+        );
+        // The simulation scales craters itself (`Ctx::crater`); the terrain
+        // applies and logs what it is given.
+        t.apply_edit(&TerrainEdit::SubtractSphere {
+            center: p,
+            radius: 2.0,
+        });
+        let logged = t.edit_log()[0];
+        assert_eq!(logged.radius(), 2.0);
+        assert_eq!(logged.center(), p);
+        // Other edits pass through unchanged.
+        let paint = TerrainEdit::Paint {
+            center: p,
+            radius: 3.0,
+            team: 0,
+        };
+        t.apply_edit(&paint);
+        assert_eq!(t.edit_log()[1], paint);
+        // Replaying the log (late join, wire) gives the same terrain.
+        let r = GameTerrain::replay(t.generator(), t.edit_log());
+        assert_eq!(r.edit_log(), t.edit_log());
+        assert_eq!(r.state_hash(), t.state_hash());
+        // Every material scales differently somewhere in the level.
+        let b = t.bounds();
+        let mut seen = [false; 3];
+        for i in 0..512 {
+            let q = Vec3::new(
+                b.min.x + (i * 37 % 64) as f32,
+                b.min.y + (i * 11 % 64) as f32,
+                b.min.z + (i * 23 % 64) as f32,
+            );
+            seen[t.material_at(q).id() as usize] = true;
+        }
+        assert_eq!(seen, [true; 3]);
+    }
+
+    #[test]
+    fn surface_states_expire_mark_dirty_and_enter_the_state_hash() {
+        let mut t = small_terrain(7);
+        let p = rock_point(&t);
+        let base = t.state_hash();
+        let paint_only = t.paint_hash();
+        t.apply_edit(&TerrainEdit::surface_for_default(
+            p,
+            2.5,
+            SurfaceStates::CHARGED,
+            60,
+        ));
+        assert_eq!(t.edit_count(), 1);
+        let dirty = t.take_dirty_chunks();
+        assert!(!dirty.is_empty());
+        assert_ne!(t.paint_hash(), paint_only);
+        assert_ne!(t.state_hash(), base);
+        assert_eq!(t.surface_states_near(p, 1.0, 100), SurfaceStates::CHARGED);
+        assert_eq!(t.surface_states_near(p, 1.0, 960), SurfaceStates::NONE);
+        // Expiry: nothing before tick 960, then the same chunks again.
+        t.advance_to(959);
+        assert!(t.take_dirty_chunks().is_empty());
+        let hash = t.state_hash();
+        t.advance_to(960);
+        assert_eq!(t.take_dirty_chunks(), dirty);
+        assert_eq!(t.display_tick(), 960);
+        // The display tick is not terrain state.
+        assert_eq!(t.state_hash(), hash);
+        // Wire round trip keeps the expiry tick.
+        let wire: Vec<TerrainEditBits> = t.edit_log().iter().map(|e| (*e).into()).collect();
+        let mut r = small_terrain(7);
+        r.apply_wire_sequence(0, &wire).unwrap();
+        assert_eq!(r.state_hash(), t.state_hash());
+        assert_eq!(r.edit_log_hash(), t.edit_log_hash());
     }
 
     #[test]

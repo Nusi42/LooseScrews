@@ -1,0 +1,28 @@
+// Tectonic Charge: ordnance secondary. Earthshaker-class, 15 u/s (the slowest projectile).
+// Sticks where it hits, 1.5 s fuse, main blast then 6 sub-charges that scatter up to 20 u and
+// explode 0.5 s later. Zones: core 4 u instant kill, damage 25 u (falloff), collapse 35 u
+// (terrain caves in, Instability sets how far cracks spread), shockwave 60 u (knockback, no
+// damage). Dust cloud 20 s, large debris field. One per map, 90 s respawn, a ship carries one;
+// damages its owner. The fallback is a plain slow rocket with a small crater (the real zones
+// are wave B).
+// Behaviour: crates/ls-sim/src/weapons/ordnance/tectonic_charge.rs (TODO(wave-B): generic fallback until implemented).
+// `params` are read by the weapon module (`WeaponDef::param`); numbers are tuning starting points.
+WeaponDef(
+    id: "tectonic_charge",
+    name: "Tectonic Charge",
+    family: Ordnance,
+    slot: Secondary,
+    speed: 15.0,
+    lifetime_secs: 10.0,
+    damage: 100.0,
+    fire_interval_secs: 2.0,
+    cost: Count(1),
+    projectile_radius: 0.4,
+    splash: Some((radius: 25.0, damage: 80.0, hits_owner: true)),
+    knockback: 20.0,
+    terrain: (crater_radius: 2.0),
+    shield: PassThrough(1.0),
+    max_ammo: 1,
+    visual: (shape: Charge, color: (255, 120, 0), scale: 2.0),
+    params: { "core_radius": 4.0, "damage_radius": 25.0, "collapse_radius": 35.0, "shockwave_radius": 60.0, "fuse_secs": 1.5, "sub_charges": 6.0, "sub_scatter": 20.0, "sub_delay_secs": 0.5, "dust_secs": 20.0 },
+)

@@ -4,8 +4,10 @@
 // connect (WebSocket, Hello/Welcome) or build a local practice world -> frame loop.
 // Each frame: feed received packets to ls-wasm, step with the sampled controls
 // (prediction online, local simulation in practice), send inputs, stream and
-// remesh terrain chunks within a time budget, draw, update the HUD and the
-// overlays (Tab scoreboard, F3 debug overlay, end-of-match screen).
+// remesh terrain chunks within a time budget, draw ships, projectiles and
+// entities from the data-driven visual table (game/scene.ts), place name
+// tags, update the HUD (with the weapon panel) and the overlays (Tab
+// scoreboard, F3 debug overlay, end-of-match screen).
 // While the tab is hidden (no animation frames) a timer keeps the online
 // session alive with idle input, so the server neither drops the player
 // after its idle timeout nor keeps repeating held buttons.
@@ -14,18 +16,19 @@
 
 import { InputController } from "./input/input.ts";
 import { GpuUnavailableError } from "./renderer/gpu.ts";
-import { Renderer, type FrameStats } from "./renderer/renderer.ts";
+import { DEFAULT_SETTINGS, Renderer, type FrameStats } from "./renderer/renderer.ts";
 import { boundsCenter, ShipCamera } from "./game/camera.ts";
 import { ChunkLoader, LOADING_BUDGET, PLAY_BUDGET, type ChunkStats } from "./game/chunks.ts";
 import { DEFAULT_CONTROL_SETTINGS } from "./game/controls.ts";
 import { rejoin, RejoinCancelled, type PlayerPrefs } from "./game/rejoin.ts";
 import { GameSession, type FrameResult } from "./game/session.ts";
-import { projectileInstances, shipInstances } from "./game/views.ts";
+import { buildScene, dustDensityAt, dustFog } from "./game/scene.ts";
 import { connectTransport, transportPreference } from "./net/connect.ts";
 import { serverUrl } from "./net/transport.ts";
 import { DebugOverlay, formatDebugLines, FpsMeter } from "./ui/debugOverlay.ts";
 import { showErrorScreen } from "./ui/errorScreen.ts";
 import { Hud } from "./ui/hud.ts";
+import { NameTags, nameTagModel } from "./ui/nameTags.ts";
 import { EndScreen, endScreenModel, Scoreboard, scoreboardModel } from "./ui/scoreboard.ts";
 import { showLoading, showStartScreen, type StartOptions } from "./ui/startScreen.ts";
 import { loadWasm } from "./wasm/load.ts";
@@ -173,6 +176,7 @@ function runGame(
     const endScreen = new EndScreen(ui);
     const overlay = new DebugOverlay(ui);
     if (prefs.debugOverlay) overlay.toggle();
+    const nameTags = new NameTags(ui);
     const fpsMeter = new FpsMeter();
     const input = new InputController(canvas);
     input.onLockChange = (locked) => hud.showPrompt(!locked);
@@ -206,10 +210,12 @@ function runGame(
       if (!renderer.isLost) {
         // The next match builds its own meshes and instances.
         chunks.clear();
-        renderer.setInstances("ships", []);
-        renderer.setInstances("projectiles", []);
+        renderer.clearInstances();
+        renderer.settings.fogDensity = DEFAULT_SETTINGS.fogDensity;
+        renderer.settings.fogColor = DEFAULT_SETTINGS.fogColor;
       }
       hud.root.remove();
+      nameTags.dispose();
       scoreboard.dispose();
       endScreen.dispose();
       overlay.dispose();
@@ -265,9 +271,24 @@ function runGame(
       chunkStats = chunks.update(game, view.position, initialLoad ? LOADING_BUDGET : PLAY_BUDGET);
       if (initialLoad && chunkStats.pending === 0) initialLoad = false;
 
-      renderer.setInstances("ships", shipInstances(r.ships));
-      renderer.setInstances("projectiles", projectileInstances(r.projectiles, session.weaponIds, session.teamOf(r.ships)));
+      const time = now / 1000;
+      renderer.setScene(buildScene(r.ships, r.projectiles, r.entities, session.visuals, session.teamOf(r.ships), time));
+      // Inside a dust cloud the fog closes in (visibility is cut).
+      const fog = dustFog(DEFAULT_SETTINGS, dustDensityAt(view.position, r.entities, session.visuals));
+      renderer.settings.fogDensity = fog.fogDensity;
+      renderer.settings.fogColor = fog.fogColor;
       frameStats = renderer.render(view);
+      nameTags.update(
+        nameTagModel(
+          r.ships,
+          r.players,
+          view.position,
+          renderer.viewProjection(view),
+          canvas.clientWidth,
+          canvas.clientHeight,
+          game.team,
+        ),
+      );
 
       // End-of-match screen replaces the Tab scoreboard while the result shows.
       const info = session.matchInfo();

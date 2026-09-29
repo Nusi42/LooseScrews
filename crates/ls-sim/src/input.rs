@@ -23,6 +23,9 @@ impl Buttons {
     pub const OVERDRIVE: Buttons = Buttons(1 << 4);
     /// Horizon assist (slowly levels the roll). A client setting sent every tick.
     pub const HORIZON_ASSIST: Buttons = Buttons(1 << 5);
+    /// G: use the gadget (acts on the press edge: toggles Shield and Cloak,
+    /// launches the Decoy).
+    pub const GADGET: Buttons = Buttons(1 << 6);
 
     #[inline]
     pub fn contains(self, other: Buttons) -> bool {

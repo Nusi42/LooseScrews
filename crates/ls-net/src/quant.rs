@@ -25,6 +25,11 @@ use crate::error::EncodeError;
 pub type PackedVec3 = [u16; 3];
 
 const POS_MAX: f32 = 65535.0;
+/// Entity positions are this many bits coarser than ship positions
+/// ([`Quantizer::pack_entity_position`]).
+pub const ENTITY_POS_SHIFT: u32 = 3;
+/// Largest packed entity position component.
+pub const ENTITY_POS_MAX: u16 = (65535u32 >> ENTITY_POS_SHIFT) as u16;
 const VEL_MAX: f32 = 32767.0;
 /// Largest value of a 10-bit smallest-three component; 511 is zero.
 const ROT_MAX: f32 = 511.0;
@@ -48,13 +53,13 @@ impl Default for QuantConfig {
     /// The ls-worldgen level box `[0,256] x [0,128] x [0,256]` u (min corner at
     /// the origin, see `Generator::bounds`) plus a 2 u margin on every side,
     /// ships up to 64 u/s per axis (cruise 12, boost 16.5, plus knockback
-    /// headroom), projectiles up to 256 u/s (Rivet Gun 180 u/s). The server
+    /// headroom), projectiles up to 320 u/s (Railspike 270 u/s). The server
     /// should still fill `Welcome.quant.bounds` from the real level bounds.
     fn default() -> Self {
         QuantConfig {
             bounds: Aabb::new(Vec3::splat(-2.0), Vec3::new(258.0, 130.0, 258.0)),
             max_ship_speed: 64.0,
-            max_projectile_speed: 256.0,
+            max_projectile_speed: 320.0,
         }
     }
 }
@@ -146,6 +151,44 @@ impl Quantizer {
             min.y + q[1] as f32 * self.pos_step.y,
             min.z + q[2] as f32 * self.pos_step.z,
         )
+    }
+
+    /// Packs an entity position: [`ENTITY_POS_SHIFT`] bits coarser than a
+    /// ship position (steps of 8 position steps, about 0.03 u across a 256 u
+    /// level), so a drifting debris piece moves only a few steps between
+    /// snapshots and its diffs stay small.
+    pub fn pack_entity_position(&self, p: Vec3) -> PackedVec3 {
+        let min = self.config.bounds.min;
+        let f = (1u32 << ENTITY_POS_SHIFT) as f32;
+        let max = ENTITY_POS_MAX as f32;
+        let c = |d: f32, scale: f32| {
+            let v = det::round(d * (scale / f));
+            if v.is_nan() {
+                0
+            } else {
+                v.clamp(0.0, max) as u16
+            }
+        };
+        [
+            c(p.x - min.x, self.pos_scale.x),
+            c(p.y - min.y, self.pos_scale.y),
+            c(p.z - min.z, self.pos_scale.z),
+        ]
+    }
+
+    pub fn unpack_entity_position(&self, q: PackedVec3) -> Vec3 {
+        let min = self.config.bounds.min;
+        let f = (1u32 << ENTITY_POS_SHIFT) as f32;
+        Vec3::new(
+            min.x + q[0].min(ENTITY_POS_MAX) as f32 * (self.pos_step.x * f),
+            min.y + q[1].min(ENTITY_POS_MAX) as f32 * (self.pos_step.y * f),
+            min.z + q[2].min(ENTITY_POS_MAX) as f32 * (self.pos_step.z * f),
+        )
+    }
+
+    /// Size of one entity position step per axis.
+    pub fn entity_position_step(&self) -> Vec3 {
+        self.pos_step * (1u32 << ENTITY_POS_SHIFT) as f32
     }
 
     pub fn pack_ship_velocity(&self, v: Vec3) -> PackedVec3 {

@@ -9,7 +9,8 @@ use ls_game::ls_math::terrain::TerrainQuery;
 use ls_game::ls_math::Vec3;
 use ls_game::ls_net::{ship_flags, Message, NetEvent, Welcome};
 use ls_game::ls_sim::{Buttons, InputCmd, ShipTuning, WeaponTable};
-use ls_game::GameError;
+use ls_game::ls_worldgen::ShareCode;
+use ls_game::{match_setup, GameError, GameTerrain};
 use thiserror::Error;
 
 use crate::brain::{Arsenal, Brain, BrainConfig, Perception};
@@ -50,6 +51,8 @@ pub struct BotCore {
     last_life_event: Option<u64>,
     prev_starved: u64,
     last_starved_tick: Option<u64>,
+    /// Terrain edits already passed to the brain's navigation grid.
+    edits_seen: usize,
 }
 
 impl BotCore {
@@ -58,11 +61,14 @@ impl BotCore {
     ///
     /// Scrap pickups spawn on the match's pickup points, which every peer
     /// derives from the pristine level (see `docs/architecture/game-glue.md`);
-    /// the session computes them while it builds the match setup.
+    /// the session computes them while it builds the match setup. The bot
+    /// derives the spawn points the same way (hunting near enemy spawns).
     pub fn from_welcome(welcome: &Welcome, seed: u64) -> Result<BotCore, GameError> {
         let session =
             ClientSession::from_welcome(welcome, WeaponTable::builtin(), ShipTuning::tinker())?;
-        let brain = Brain::new(
+        let code = ShareCode::decode(&welcome.share_code)?;
+        let setup = match_setup(&code, session.rules(), &GameTerrain::from_code(&code)?)?;
+        let mut brain = Brain::new(
             BrainConfig::default(),
             Arsenal::from_table(session.weapons()),
             session.conv().tuning().clone(),
@@ -70,6 +76,10 @@ impl BotCore {
             session.pickup_points().to_vec(),
             seed,
         );
+        brain.set_spawn_points(setup.spawns.iter().map(|s| (s.team, s.pos)).collect());
+        // The grid is built from the session's terrain, which already holds
+        // the edits from the `Welcome`.
+        let edits_seen = session.terrain().edit_log().len();
         Ok(BotCore {
             session,
             brain,
@@ -77,6 +87,7 @@ impl BotCore {
             last_life_event: None,
             prev_starved: 0,
             last_starved_tick: None,
+            edits_seen,
         })
     }
 
@@ -136,6 +147,7 @@ impl BotCore {
             }) => {
                 stats.snapshots += 1;
                 stats.edits_applied += new_edits as u64;
+                self.forward_edits();
                 if stale {
                     stats.stale_snapshots += 1;
                 } else {
@@ -153,7 +165,7 @@ impl BotCore {
                 Ok(Flow::Continue)
             }
             Ok(Incoming::Disconnected(reason)) => Ok(Flow::Disconnected(reason)),
-            Ok(Incoming::Ignored) => Ok(Flow::Continue),
+            Ok(Incoming::Inventory | Incoming::Ignored) => Ok(Flow::Continue),
         }
     }
 
@@ -163,6 +175,17 @@ impl BotCore {
         let s = self.session.stats();
         stats.full_snapshots += s.full_snapshots;
         stats.delta_snapshots += s.delta_snapshots;
+    }
+
+    /// Passes terrain edits the brain has not seen to its navigation grid.
+    fn forward_edits(&mut self) {
+        let log = self.session.terrain().edit_log();
+        for e in log.iter().skip(self.edits_seen) {
+            if e.changes_geometry() {
+                self.brain.on_terrain_edit(e);
+            }
+        }
+        self.edits_seen = log.len();
     }
 
     fn on_fresh_snapshot(&mut self, tick: u64, reconcile: Option<Reconcile>, stats: &mut BotStats) {
@@ -261,6 +284,7 @@ impl BotCore {
                     }
                 }
                 NetEvent::MatchOver { .. } => stats.matches_over += 1,
+                NetEvent::Cue { .. } => {}
             }
         }
     }

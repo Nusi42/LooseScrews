@@ -11,7 +11,7 @@ them, and what to do when you change generator or simulation output on purpose.
 | Crate | Deterministic | Notes |
 | --- | --- | --- |
 | `ls-math` | yes | Geometry, `det`, RNGs, terrain contracts |
-| `ls-worldgen` | yes | SDF, chunk store, edits, paint, meshers |
+| `ls-worldgen` | yes | SDF, chunk store, edits, paint, surface states, material field, meshers |
 | `ls-sim` | yes | `World::step`, `simulate_movement`, weapons, rule sets |
 | `ls-net` | encoding only | Integer bit packing; clients quantize inputs exactly as the server decodes them |
 | `ls-game` | by construction | Pure logic on top of the above, no clocks or threads; match setup reads only the pristine level |
@@ -71,24 +71,37 @@ A mismatch names the share code and which of the four hashes changed, which narr
 `sdf` means the generator, `surface_nets`/`dual_contouring` only the mesher, `edited` only the
 edit and paint path.
 
+The rock material field (`ls_worldgen::material`) is not part of the SDF, so it is not in the
+golden fixture: `material::tests::material_field_hash_is_pinned` pins it with a constant and
+runs in the wasm32 unit tests too. Changing the field changes crater sizes (gameplay): update
+the constant deliberately; no generator version bump is needed because share codes still
+produce the same geometry. `Mesh::hash` covers surface states only when a vertex has one, and
+not materials, so the golden meshes are unaffected by both layers.
+
 ### Simulation (`ls-sim`)
 
 `World::state_hash()` is an FNV-1a hash over the exact bit patterns of the world state
 (`crates/ls-sim/src/hash.rs`). `crates/ls-sim/src/tests.rs` replays a scripted 4-player match
-for 1800 ticks (firing, damage, craters, kills, respawns) and compares the final hash with
-`REPLAY_GOLDEN_HASH`:
+(one ship of each type, debris in the arena) for 1800 ticks (firing with random weapon
+selection, damage, craters, kills, respawns, pickups, gadget use) and compares the final hash
+with `REPLAY_GOLDEN_HASH`:
 
 ```sh
 cargo test -p ls-sim replay_golden_hash
 ```
+
+When a behaviour change re-blesses `REPLAY_GOLDEN_HASH` without a `data/` change, also bump
+`ls_sim::SIM_BEHAVIOR_VERSION` (`crates/ls-sim/src/data.rs`): it is mixed into the data hash
+that `Hello` carries, so a cached client with older behaviour code is rejected instead of
+desyncing silently.
 
 Sibling tests prove the replay is repeatable, that a cloned world continues identically, and
 that one changed input diverges the hash from that tick on.
 
 ### Between peers at run time
 
-`GameTerrain::state_hash()` (`ls-game`: edit log hash, SDF on a 4 u lattice, paint cells
-around every edit) needs no full generation and is the terrain desync check. The `ls-game`
+`GameTerrain::state_hash()` (`ls-game`: edit log hash, SDF on a 4 u lattice, paint cells and
+stored surface state expiry ticks around every edit) needs no full generation and is the terrain desync check. The `ls-game`
 netplay tests and the `ls-bots` room test assert that every client's hash equals the server's;
 the browser exposes it as `Game.terrainHash()` for debugging. Bots also count a prediction snap
 without a respawn, or a terrain edit gap, as a desync (exit code 1).

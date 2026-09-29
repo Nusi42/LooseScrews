@@ -1,0 +1,45 @@
+// Skitter: light hull. Design doc: top speed 98% of laser, damage 0.85x, hull 70, 1 secondary
+// type; hit and run, smallest hitbox, fastest turning.
+// Speeds in u/s, accelerations in u/s^2, rates per second, angles in radians.
+// Schema: `ls_sim::ShipTuning`. Changing a number changes the sim replay golden hash.
+ShipTuning(
+    radius: 0.4,
+    // Per-axis caps in ship space: 12.35 cruise, 16.97 boost (29.39 u/s = 98% of laser on the diagonal).
+    cruise_speed: 12.35,
+    boost_speed: 16.97,
+    thrust_accel: 30.0,
+    brake_accel: 40.0,
+    damping_decel: 8.0,
+    overspeed_decel: 20.0,
+    restitution: 0.2,
+    max_turn_rate: 14.0,
+    roll_rate: 3.0,
+    horizon_gain: 1.5,
+    horizon_max_rate: 0.8,
+
+    hull_max: 70.0,
+    energy_max: 100.0,
+    boost_max: 100.0,
+    scrap_max: 100.0,
+    spawn_energy: 100.0,
+    spawn_boost: 50.0,
+    spawn_scrap: 20.0,
+    energy_regen: 10.0,
+    boost_drain: 20.0,
+    brake_refill_per_speed: 0.6,
+    hard_brake_min_speed: 6.0,
+    scrape_distance: 0.6,
+    scrape_min_speed: 8.0,
+    scrape_refill: 30.0,
+    scavenge_radius: 3.0,
+    scavenge_rate: 20.0,
+    hull_per_scrap: 1.0,
+    // Overdrive gamble: 2 hull per missing energy point.
+    overdrive_hull_per_energy: 2.0,
+    damage_mult: 0.85,
+    secondary_slots: 1,
+    wreck_scrap: 20.0,
+    // Support: passing scrap to teammates (Tug only).
+    can_pass_scrap: false,
+    scrap_pass_rate: 0.0,
+)

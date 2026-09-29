@@ -1,6 +1,6 @@
 # Milestone 2 — Arsenal and physics
 
-Status: in progress · Design source: [design/game-design-doc.md](design/game-design-doc.md) · M1 plan: [implementation-plan.md](implementation-plan.md)
+Status: in progress (wave A integrated, wave B next) · Design source: [design/game-design-doc.md](design/game-design-doc.md) · M1 plan: [implementation-plan.md](implementation-plan.md)
 
 Milestone 2 turns the four-weapon vertical slice into the full combat sandbox from the design doc: every weapon, all four ship types, gadgets, lasting physical effects (debris, surface states, dust) and configurable match rules. It also fixes two M1 issues found in soak testing and closes the M1 gaps that M2 depends on.
 
@@ -55,6 +55,36 @@ The design doc gives behavior but not every number; these defaults live in `data
 | B | Content in parallel, each package fills its own weapon modules + data: energy; kinetic + ordnance I; ordnance II incl. Tectonic Charge; specials; gadgets + ship types; rule set editor + codes + ban list | per-module files |
 | C | Client mechanics UI (eyeball camera, charge meters, blind, cloak, ghost, decoy, shield, dust, tectonic warning, ship/loadout selection, weapon selection HUD); bots use all weapons and ship types; scenario tests for design numbers; e2e with mixed ships and all weapons | `web/` + `crates/ls-wasm`; `crates/ls-bots`; `crates/ls-sim/tests` + `tools/` |
 | D | Review, fix, full CI + e2e; docs/ and userDocs/ updates | all |
+
+### Wave A status (integrated)
+
+Done: issue A (bot navigation: `crates/ls-bots/src/nav.rs`, Hunt mode, `tests/nav_sweep.rs`
+over the soak world and 9 random worlds plus a 5-minute soak-world match; stall blocks no
+longer wear out links, edit updates are resumable within the per-tick budget), issue B (no
+snapshots before a client's first input; pong catch-up only before sync; regression test with
+late-input bounds), the framework (weapon and gadget modules with generic fallbacks, ship
+types, entities and debris, rule set v2 and codes with module counts, data hash with
+`SIM_BEHAVIOR_VERSION`, generic entity replication with id lists and coarse entity positions,
+`Message::Inventory`), surface states and rock strength (craters scaled in `ls_sim::Ctx::crater`,
+`crater_exact` for exact zones, surface states drawn in the browser and expiring), and the
+generic client rendering. Hook API additions from the wave A review: `&mut Entity` in entity
+hooks (write-back, expiry extension, `kinematic` entities), `ImpulseProjectile` /
+`RemoveProjectile` and `ctx.projectiles()`, `ctx.surface_states_near` / `ctx.material_at`,
+`ctx.view.instability`, `Shot::shots`, a charged-rock energy drain step, pass-through hits
+counted once per ship (`Projectile::passed`).
+
+Wave B must fill: the 23 weapon modules still marked `TODO(wave-B)` and the Decoy return hit
+(see `docs/architecture/arsenal-framework.md`); Tectonic Charge collapse with
+`ctx.crater_exact` scaled by `ctx.view.instability`; Leech Arc charged surfaces as
+`TerrainEdit::Surface` edits (the drain is already a framework step); Magnet Sneeze with
+`ctx.impulse_projectile` and `ctx.material_at`; Scatter Laser / Corkscrew fans from
+`Shot::shots`. Data numbers still at the M1 values that differ from the table above: Scrap
+Laser 8 per bolt at level 1 (+30 % per level, 20 at level 6; plan: 6 to 14, i.e. `damage: 6.0`,
+`damage_per_level: 0.2667`) and Bolt Rocket 35 direct (plan: 30); changing them re-blesses
+`REPLAY_GOLDEN_HASH` and needs the M1 tests that pin 8.0 / 35.0 updated. Open: busy 32-ship
+deltas (every ship turning and thrusting) reach about 515 B per snapshot on their own, above
+the 17 KB/s budget at 30 Hz (ship rotation deltas are the next saving); `userDocs/` does not
+describe the new bot behaviour yet (wave D).
 
 ## 4. Acceptance criteria
 

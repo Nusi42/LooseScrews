@@ -3,10 +3,11 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { ChunkMeshHandle, GameHandle, HudStateHandle } from "../wasm/api.ts";
+import type { ChunkMeshHandle, GameHandle, HudStateHandle, LoadoutHandle } from "../wasm/api.ts";
+import { stubLoadout } from "../wasm/stub.ts";
 import { GameSession, type PacketLink } from "./session.ts";
 
-const WEAPONS = ["scrap_laser", "rivet_gun", "bolt_rocket", "paint_thrower"];
+const NAMES = { entityKinds: [], shapes: [] };
 const RESTART = "match over; a new match is starting";
 
 function hud(): HudStateHandle {
@@ -46,6 +47,12 @@ class Game implements GameHandle {
   takeUnloads(): string[] { return []; }
   pendingChunks(): number { return 0; }
   setViewRadius(): void {}
+  entities(): Float32Array { return new Float32Array(0); }
+  visuals(): Float32Array { return new Float32Array(0); }
+  playerInfo(): Float64Array { return new Float64Array(0); }
+  playerNames(): string[] { return []; }
+  loadout(): LoadoutHandle { return stubLoadout(); }
+  scoreboardNames(): string[] { return []; }
   resetMeshes(): void {}
   free(): void { this.freed += 1; }
 }
@@ -66,12 +73,12 @@ test("a match restart is reported as such, not as an error", () => {
   game.reasons.set(7, RESTART);
   game.reasons.set(8, "kicked");
   const link = new Link();
-  const s = new GameSession(game, link, WEAPONS, true, RESTART);
+  const s = new GameSession(game, link, NAMES, true, RESTART);
   link.inbox.push(new Uint8Array([7]));
   const r = s.frame(1 / 60, {
     thrustForward: 0, thrustRight: 0, thrustUp: 0, roll: 0, lookX: 0, lookY: 0, boost: false,
     firePrimary: false, fireSecondary: false, scavenge: false, overdrive: false,
-    toggleHorizonAssist: false, weaponKey: 0, pointerLocked: true, scoreboard: false, toggleDebug: false,
+    toggleHorizonAssist: false, weaponKey: 0, cyclePrimary: 0, cycleSecondary: false, gadget: false, pointerLocked: true, scoreboard: false, toggleDebug: false,
   });
   assert.equal(r.matchRestart, true);
   assert.match(r.disconnected ?? "", /new match/);
@@ -79,7 +86,7 @@ test("a match restart is reported as such, not as an error", () => {
   const other = new Game();
   other.reasons.set(8, "kicked");
   const l2 = new Link();
-  const s2 = new GameSession(other, l2, WEAPONS, true, RESTART);
+  const s2 = new GameSession(other, l2, NAMES, true, RESTART);
   l2.inbox.push(new Uint8Array([8]));
   const r2 = s2.idleFrame(0.25);
   assert.ok(r2);
@@ -90,7 +97,7 @@ test("a match restart is reported as such, not as an error", () => {
 test("the hidden-tab frame sends idle input as droppable packets", () => {
   const game = new Game();
   const link = new Link();
-  const s = new GameSession(game, link, WEAPONS, true, RESTART);
+  const s = new GameSession(game, link, NAMES, true, RESTART);
   assert.equal(s.idleFrame(0.25), null, "still connected");
   assert.equal(game.controls.length, 1);
   // Idle controls: no thrust, look, buttons or weapon change (horizon assist
@@ -101,14 +108,14 @@ test("the hidden-tab frame sends idle input as droppable packets", () => {
   assert.deepEqual(link.sent, [{ bytes: [1], droppable: true }]);
 
   // Practice sessions and ended sessions have nothing to keep alive.
-  const practice = new GameSession(new Game(), null, WEAPONS);
+  const practice = new GameSession(new Game(), null, NAMES);
   assert.equal(practice.idleFrame(0.25), null);
 });
 
 test("dispose closes the link and frees the game once", () => {
   const game = new Game();
   const link = new Link();
-  const s = new GameSession(game, link, WEAPONS, true, RESTART);
+  const s = new GameSession(game, link, NAMES, true, RESTART);
   s.dispose();
   s.dispose();
   assert.equal(game.freed, 1);

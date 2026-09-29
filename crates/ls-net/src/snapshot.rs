@@ -12,9 +12,26 @@
 //! ships               u32 presence mask (bit i = ship id i), then per ship
 //!                     in id order: full core state, or (delta, ship in
 //!                     baseline) a change bit + per-field diffs
-//! projectiles         varint count, then per projectile: u16 id,
-//!                     [delta: 1 bit "in baseline"], full state or diffs
+//! projectiles         id list (below) of projectiles: full state (kind,
+//!                     owner, state byte, position, velocity) or diffs
+//! entities            id list of entities: full state (kind, visual, owner,
+//!                     team, position, velocity and rotation with presence
+//!                     bits, 4 state bytes) or diffs
+//! players             full: varint count, then per player: u8 id, u8 team,
+//!                     u8 ship type, u8 gadget, name. Delta: 1 bit
+//!                     "changed"; if changed a u32 presence mask, then per
+//!                     present player in id order [in baseline: 1 bit
+//!                     "changed"] and, if changed or new, team, ship type,
+//!                     gadget, name
 //! ```
+//!
+//! An **id list** (projectiles, entities) in a full snapshot is a varint
+//! count, then per item its id as a varint gap (the first id, then `id -
+//! previous - 1`) and its full state. Against a baseline it is, per item of
+//! the baseline's list in id order, 1 bit "present and unchanged" (not sent
+//! again) or, if not, 1 bit "still present" followed by the item's diffs;
+//! then the new items (ids not in the baseline) as a full id list. Resting
+//! debris, pickups and wrecks therefore cost one bit per snapshot.
 //!
 //! A full ship is exactly [`SHIP_CORE_BITS`] = 144 bits (18 bytes):
 //! position 3 x 16, orientation 32, velocity 3 x 16, flags 16. Flag bit 15
@@ -30,16 +47,20 @@ use std::collections::VecDeque;
 
 use crate::bits::{unzigzag16, zigzag16, BitReader, BitWriter};
 use crate::error::{DecodeError, EncodeError};
+use crate::quant::pack_quat;
 use crate::quant::PackedVec3;
 use crate::wire::{
-    read_edit, ship_flags, write_edit, PackedProjectile, PackedShip, PackedSnapshot, ShipStatus,
-    TerrainEditBits, EDIT_MIN_BITS, MAX_SHIPS, PROJECTILE_BITS,
+    read_edit, ship_flags, write_edit, NetPlayer, PackedEntity, PackedProjectile, PackedShip,
+    PackedSnapshot, ShipStatus, TerrainEditBits, EDIT_MIN_BITS, ENTITY_MIN_BITS, MAX_PLAYER_NAME,
+    MAX_SHIPS, PROJECTILE_BITS,
 };
 
 /// Upper bound on edits in one snapshot (the rest wait for the next one).
 pub const MAX_EDITS_PER_SNAPSHOT: usize = 1024;
 /// Upper bound on projectiles in one snapshot.
 pub const MAX_PROJECTILES_PER_SNAPSHOT: usize = 1024;
+/// Upper bound on entities in one snapshot.
+pub const MAX_ENTITIES_PER_SNAPSHOT: usize = 1024;
 /// Upper bound on score entries.
 pub const MAX_SCORES: usize = 64;
 /// Baselines must be at most this many ticks older than the snapshot.
@@ -168,6 +189,30 @@ fn check_lists(s: &PackedSnapshot) -> Result<(), EncodeError> {
     if s.projectiles.len() > MAX_PROJECTILES_PER_SNAPSHOT {
         return Err(EncodeError::OutOfRange("too many projectiles"));
     }
+    let mut prev: Option<u16> = None;
+    for e in &s.entities {
+        if prev.is_some_and(|q| q >= e.id) {
+            return Err(EncodeError::OutOfRange(
+                "entities must be sorted by id and unique",
+            ));
+        }
+        prev = Some(e.id);
+    }
+    if s.entities.len() > MAX_ENTITIES_PER_SNAPSHOT {
+        return Err(EncodeError::OutOfRange("too many entities"));
+    }
+    let mut prev: Option<u8> = None;
+    for p in &s.players {
+        if p.id >= MAX_SHIPS || prev.is_some_and(|q| q >= p.id) {
+            return Err(EncodeError::OutOfRange(
+                "players must be sorted by id and unique",
+            ));
+        }
+        if p.name.len() > MAX_PLAYER_NAME {
+            return Err(EncodeError::OutOfRange("player name too long"));
+        }
+        prev = Some(p.id);
+    }
     if s.edits.len() > MAX_EDITS_PER_SNAPSHOT {
         return Err(EncodeError::OutOfRange("too many edits"));
     }
@@ -186,7 +231,7 @@ pub(crate) fn check_edit(e: &TerrainEditBits) -> Result<(), EncodeError> {
         .iter()
         .chain(core::iter::once(&e.radius))
         .all(|&b| f32::from_bits(b).is_finite());
-    if e.kind > 2 || !finite || f32::from_bits(e.radius) < 0.0 {
+    if e.kind > 3 || !finite || f32::from_bits(e.radius) < 0.0 {
         return Err(EncodeError::OutOfRange("invalid terrain edit"));
     }
     Ok(())
@@ -377,6 +422,7 @@ fn read_ship_delta(r: &mut BitReader, b: &PackedShip) -> Result<PackedShip, Deco
 fn write_projectile_full(w: &mut BitWriter, p: &PackedProjectile) {
     w.write_u8(p.kind);
     w.write_u8(p.owner);
+    w.write_u8(p.state);
     write_vec16(w, p.pos);
     write_vec16(w, p.vel);
 }
@@ -386,22 +432,20 @@ fn read_projectile_full(r: &mut BitReader, id: u16) -> Result<PackedProjectile, 
         id,
         kind: r.read_u8()?,
         owner: r.read_u8()?,
+        state: r.read_u8()?,
         pos: read_vec16(r)?,
         vel: read_vec16(r)?,
     })
 }
 
+/// Diffs of a changed projectile against its baseline state.
 fn write_projectile_delta(w: &mut BitWriter, p: &PackedProjectile, b: &PackedProjectile) {
-    let changed = p != b;
-    w.write_bool(changed);
-    if !changed {
-        return;
-    }
-    let meta = p.kind != b.kind || p.owner != b.owner;
+    let meta = p.kind != b.kind || p.owner != b.owner || p.state != b.state;
     w.write_bool(meta);
     if meta {
         w.write_u8(p.kind);
         w.write_u8(p.owner);
+        w.write_u8(p.state);
     }
     write_vec_diff(w, p.pos, b.pos);
     write_vec_diff(w, p.vel, b.vel);
@@ -411,21 +455,362 @@ fn read_projectile_delta(
     r: &mut BitReader,
     b: &PackedProjectile,
 ) -> Result<PackedProjectile, DecodeError> {
-    if !r.read_bool()? {
-        return Ok(*b);
-    }
-    let (kind, owner) = if r.read_bool()? {
-        (r.read_u8()?, r.read_u8()?)
+    let (kind, owner, state) = if r.read_bool()? {
+        (r.read_u8()?, r.read_u8()?, r.read_u8()?)
     } else {
-        (b.kind, b.owner)
+        (b.kind, b.owner, b.state)
     };
     Ok(PackedProjectile {
         id: b.id,
         kind,
         owner,
+        state,
         pos: read_vec_diff(r, b.pos)?,
         vel: read_vec_diff(r, b.vel)?,
     })
+}
+
+/// Packed zero velocity (signed quantization: zero is exact).
+const ZERO_VEL: PackedVec3 = [0, 0, 0];
+
+fn write_entity_full(w: &mut BitWriter, e: &PackedEntity) {
+    w.write_u8(e.kind);
+    w.write_u16(e.visual);
+    w.write_u8(e.owner);
+    w.write_u8(e.team);
+    write_vec16(w, e.pos);
+    let moving = e.vel != ZERO_VEL;
+    w.write_bool(moving);
+    if moving {
+        write_vec16(w, e.vel);
+    }
+    let rotated = e.rot != pack_quat(ls_math::Quat::IDENTITY);
+    w.write_bool(rotated);
+    if rotated {
+        w.write_u32(e.rot);
+    }
+    for b in e.state {
+        w.write_u8(b);
+    }
+}
+
+fn read_entity_full(r: &mut BitReader, id: u16) -> Result<PackedEntity, DecodeError> {
+    let kind = r.read_u8()?;
+    let visual = r.read_u16()?;
+    let owner = r.read_u8()?;
+    let team = r.read_u8()?;
+    let pos = read_vec16(r)?;
+    let vel = if r.read_bool()? {
+        read_vec16(r)?
+    } else {
+        ZERO_VEL
+    };
+    let rot = if r.read_bool()? {
+        r.read_u32()?
+    } else {
+        pack_quat(ls_math::Quat::IDENTITY)
+    };
+    let mut state = [0u8; 4];
+    for b in &mut state {
+        *b = r.read_u8()?;
+    }
+    Ok(PackedEntity {
+        id,
+        kind,
+        visual,
+        owner,
+        team,
+        pos,
+        vel,
+        rot,
+        state,
+    })
+}
+
+/// Diffs of a changed entity against its baseline state: 1 bit "only the
+/// position moved" (debris drifting: three component diffs), else every
+/// field group with a change bit.
+fn write_entity_delta(w: &mut BitWriter, e: &PackedEntity, b: &PackedEntity) {
+    let pos_only = PackedEntity { pos: e.pos, ..*b } == *e;
+    w.write_bool(pos_only);
+    if pos_only {
+        for i in 0..3 {
+            write_comp_diff(w, e.pos[i], b.pos[i]);
+        }
+        return;
+    }
+    let meta = e.kind != b.kind || e.visual != b.visual || e.owner != b.owner || e.team != b.team;
+    w.write_bool(meta);
+    if meta {
+        w.write_u8(e.kind);
+        w.write_u16(e.visual);
+        w.write_u8(e.owner);
+        w.write_u8(e.team);
+    }
+    write_vec_diff(w, e.pos, b.pos);
+    write_vec_diff(w, e.vel, b.vel);
+    w.write_bool(e.rot != b.rot);
+    if e.rot != b.rot {
+        w.write_u32(e.rot);
+    }
+    w.write_bool(e.state != b.state);
+    if e.state != b.state {
+        for x in e.state {
+            w.write_u8(x);
+        }
+    }
+}
+
+fn read_entity_delta(r: &mut BitReader, b: &PackedEntity) -> Result<PackedEntity, DecodeError> {
+    if r.read_bool()? {
+        let pos = [
+            read_comp_diff(r, b.pos[0])?,
+            read_comp_diff(r, b.pos[1])?,
+            read_comp_diff(r, b.pos[2])?,
+        ];
+        return Ok(PackedEntity { pos, ..*b });
+    }
+    let (kind, visual, owner, team) = if r.read_bool()? {
+        (r.read_u8()?, r.read_u16()?, r.read_u8()?, r.read_u8()?)
+    } else {
+        (b.kind, b.visual, b.owner, b.team)
+    };
+    let pos = read_vec_diff(r, b.pos)?;
+    let vel = read_vec_diff(r, b.vel)?;
+    let rot = if r.read_bool()? { r.read_u32()? } else { b.rot };
+    let state = if r.read_bool()? {
+        let mut s = [0u8; 4];
+        for x in &mut s {
+            *x = r.read_u8()?;
+        }
+        s
+    } else {
+        b.state
+    };
+    Ok(PackedEntity {
+        id: b.id,
+        kind,
+        visual,
+        owner,
+        team,
+        pos,
+        vel,
+        rot,
+        state,
+    })
+}
+
+fn write_player_fields(w: &mut BitWriter, p: &NetPlayer) {
+    w.write_u8(p.team);
+    w.write_u8(p.ship_type);
+    w.write_u8(p.gadget);
+    w.write_str(&p.name);
+}
+
+fn read_player_fields(r: &mut BitReader, id: u8) -> Result<NetPlayer, DecodeError> {
+    Ok(NetPlayer {
+        id,
+        team: r.read_u8()?,
+        ship_type: r.read_u8()?,
+        gadget: r.read_u8()?,
+        name: r.read_string(MAX_PLAYER_NAME)?,
+    })
+}
+
+fn write_players(w: &mut BitWriter, players: &[NetPlayer]) {
+    w.write_varint(players.len() as u64);
+    for p in players {
+        w.write_u8(p.id);
+        write_player_fields(w, p);
+    }
+}
+
+/// Players against a baseline: presence mask, then a change bit per player
+/// the baseline has; only changed or new players are sent.
+fn write_players_delta(w: &mut BitWriter, players: &[NetPlayer], base: &[NetPlayer]) {
+    let mask = players.iter().fold(0u32, |m, p| m | (1 << p.id));
+    w.write_u32(mask);
+    for p in players {
+        match base.iter().find(|b| b.id == p.id) {
+            Some(b) => {
+                w.write_bool(b != p);
+                if b != p {
+                    write_player_fields(w, p);
+                }
+            }
+            None => write_player_fields(w, p),
+        }
+    }
+}
+
+fn read_players_delta(
+    r: &mut BitReader,
+    base: &[NetPlayer],
+) -> Result<Vec<NetPlayer>, DecodeError> {
+    let mask = r.read_u32()?;
+    let mut out = Vec::with_capacity(mask.count_ones() as usize);
+    for id in 0..MAX_SHIPS {
+        if mask & (1 << id) == 0 {
+            continue;
+        }
+        let p = match base.iter().find(|b| b.id == id) {
+            Some(b) if !r.read_bool()? => b.clone(),
+            _ => read_player_fields(r, id)?,
+        };
+        out.push(p);
+    }
+    Ok(out)
+}
+
+/// An item of an id list (see the module docs).
+trait ListItem: Copy + PartialEq {
+    fn id(&self) -> u16;
+}
+
+impl ListItem for PackedProjectile {
+    fn id(&self) -> u16 {
+        self.id
+    }
+}
+
+impl ListItem for PackedEntity {
+    fn id(&self) -> u16 {
+        self.id
+    }
+}
+
+/// Writes items as a full id list (count, id gaps, full states).
+fn write_full_list<'a, T: ListItem + 'a>(
+    w: &mut BitWriter,
+    items: impl ExactSizeIterator<Item = &'a T>,
+    full: fn(&mut BitWriter, &T),
+) {
+    w.write_varint(items.len() as u64);
+    let mut next = 0u32;
+    for item in items {
+        let id = item.id() as u32;
+        w.write_varint((id - next) as u64);
+        next = id + 1;
+        full(w, item);
+    }
+}
+
+fn read_full_list<T: ListItem>(
+    r: &mut BitReader,
+    max: usize,
+    min_bits: usize,
+    out: &mut Vec<T>,
+    full: fn(&mut BitReader, u16) -> Result<T, DecodeError>,
+) -> Result<(), DecodeError> {
+    let n = r.read_len(max, min_bits)?;
+    let mut next = 0u32;
+    for _ in 0..n {
+        let id = next + r.read_varint_u32()?;
+        if id > u16::MAX as u32 {
+            return Err(DecodeError::Invalid("list id out of range"));
+        }
+        out.push(full(r, id as u16)?);
+        next = id + 1;
+    }
+    Ok(())
+}
+
+/// Writes `cur` (sorted, unique ids) as an id list, against `base` if given.
+fn write_list<T: ListItem>(
+    w: &mut BitWriter,
+    cur: &[T],
+    base: Option<&[T]>,
+    full: fn(&mut BitWriter, &T),
+    delta: fn(&mut BitWriter, &T, &T),
+) {
+    let Some(base) = base else {
+        write_full_list(w, cur.iter(), full);
+        return;
+    };
+    for b in base {
+        match cur.binary_search_by_key(&b.id(), |c| c.id()) {
+            Ok(i) if cur[i] == *b => w.write_bool(true),
+            Ok(i) => {
+                w.write_bool(false);
+                w.write_bool(true);
+                delta(w, &cur[i], b);
+            }
+            Err(_) => {
+                w.write_bool(false);
+                w.write_bool(false);
+            }
+        }
+    }
+    let new: Vec<&T> = cur
+        .iter()
+        .filter(|c| base.binary_search_by_key(&c.id(), |b| b.id()).is_err())
+        .collect();
+    write_full_list(w, new.into_iter(), full);
+}
+
+/// Reads an id list written by [`write_list`]; the result is sorted by id.
+fn read_list<T: ListItem>(
+    r: &mut BitReader,
+    base: Option<&[T]>,
+    max: usize,
+    min_bits: usize,
+    full: fn(&mut BitReader, u16) -> Result<T, DecodeError>,
+    delta: fn(&mut BitReader, &T) -> Result<T, DecodeError>,
+) -> Result<Vec<T>, DecodeError> {
+    let mut out: Vec<T> = Vec::new();
+    let Some(base) = base else {
+        read_full_list(r, max, min_bits, &mut out, full)?;
+        if out.windows(2).any(|p| p[0].id() >= p[1].id()) {
+            return Err(DecodeError::Invalid("list ids not ascending"));
+        }
+        return Ok(out);
+    };
+    for b in base {
+        if r.read_bool()? {
+            out.push(*b);
+        } else if r.read_bool()? {
+            let d = delta(r, b)?;
+            out.push(d);
+        }
+    }
+    let kept = out.len();
+    read_full_list(r, max.saturating_sub(kept), min_bits, &mut out, full)?;
+    for item in &out[kept..] {
+        if base.binary_search_by_key(&item.id(), |b| b.id()).is_ok() {
+            return Err(DecodeError::Invalid(
+                "new list item already in the baseline",
+            ));
+        }
+    }
+    out.sort_by_key(|x| x.id());
+    if out.windows(2).any(|p| p[0].id() >= p[1].id()) {
+        return Err(DecodeError::Invalid("list ids not unique"));
+    }
+    Ok(out)
+}
+
+/// Smallest size of a full projectile in an id list (8-bit id gap).
+const PROJECTILE_LIST_MIN_BITS: usize = PROJECTILE_BITS - 8;
+/// Smallest size of a full entity in an id list (8-bit id gap).
+const ENTITY_LIST_MIN_BITS: usize = ENTITY_MIN_BITS - 8;
+
+fn read_players(r: &mut BitReader) -> Result<Vec<NetPlayer>, DecodeError> {
+    let n = r.read_len(MAX_SHIPS as usize, 40)?;
+    let mut out: Vec<NetPlayer> = Vec::with_capacity(n);
+    for _ in 0..n {
+        let id = r.read_u8()?;
+        if id >= MAX_SHIPS || out.last().is_some_and(|p| p.id >= id) {
+            return Err(DecodeError::Invalid("player ids not ascending"));
+        }
+        out.push(NetPlayer {
+            id,
+            team: r.read_u8()?,
+            ship_type: r.read_u8()?,
+            gadget: r.read_u8()?,
+            name: r.read_string(MAX_PLAYER_NAME)?,
+        });
+    }
+    Ok(out)
 }
 
 /// Encodes `snap`, delta-compressed against `baseline` if given.
@@ -490,21 +875,29 @@ pub fn write_snapshot(
         }
     }
 
-    w.write_varint(snap.projectiles.len() as u64);
-    for p in &snap.projectiles {
-        w.write_u16(p.id);
-        match baseline {
-            Some(b) => match b.projectile(p.id) {
-                Some(bp) => {
-                    w.write_bool(true);
-                    write_projectile_delta(w, p, bp);
-                }
-                None => {
-                    w.write_bool(false);
-                    write_projectile_full(w, p);
-                }
-            },
-            None => write_projectile_full(w, p),
+    write_list(
+        w,
+        &snap.projectiles,
+        baseline.map(|b| &b.projectiles[..]),
+        write_projectile_full,
+        write_projectile_delta,
+    );
+    write_list(
+        w,
+        &snap.entities,
+        baseline.map(|b| &b.entities[..]),
+        write_entity_full,
+        write_entity_delta,
+    );
+
+    match baseline {
+        None => write_players(w, &snap.players),
+        Some(b) => {
+            let changed = b.players != snap.players;
+            w.write_bool(changed);
+            if changed {
+                write_players_delta(w, &snap.players, &b.players);
+            }
         }
     }
     Ok(())
@@ -572,29 +965,28 @@ pub fn read_snapshot(
         ships.push(ship);
     }
 
-    // Every projectile needs at least its 16-bit id plus a bit.
-    let n_proj = r.read_len(MAX_PROJECTILES_PER_SNAPSHOT, 17)?;
-    let mut projectiles: Vec<PackedProjectile> = Vec::with_capacity(n_proj);
-    for _ in 0..n_proj {
-        let id = r.read_u16()?;
-        if projectiles.last().is_some_and(|p| p.id >= id) {
-            return Err(DecodeError::Invalid("projectile ids not ascending"));
-        }
-        let p = match baseline {
-            Some(b) => {
-                if r.read_bool()? {
-                    let bp = b
-                        .projectile(id)
-                        .ok_or(DecodeError::Invalid("projectile not in baseline"))?;
-                    read_projectile_delta(r, bp)?
-                } else {
-                    read_projectile_full(r, id)?
-                }
-            }
-            None => read_projectile_full(r, id)?,
-        };
-        projectiles.push(p);
-    }
+    let projectiles = read_list(
+        r,
+        baseline.map(|b| &b.projectiles[..]),
+        MAX_PROJECTILES_PER_SNAPSHOT,
+        PROJECTILE_LIST_MIN_BITS,
+        read_projectile_full,
+        read_projectile_delta,
+    )?;
+    let entities = read_list(
+        r,
+        baseline.map(|b| &b.entities[..]),
+        MAX_ENTITIES_PER_SNAPSHOT,
+        ENTITY_LIST_MIN_BITS,
+        read_entity_full,
+        read_entity_delta,
+    )?;
+
+    let players = match baseline {
+        None => read_players(r)?,
+        Some(b) if r.read_bool()? => read_players_delta(r, &b.players)?,
+        Some(b) => b.players.clone(),
+    };
 
     Ok((
         PackedSnapshot {
@@ -604,6 +996,8 @@ pub fn read_snapshot(
             edits,
             ships,
             projectiles,
+            entities,
+            players,
             scores,
             match_ticks_left,
         },
@@ -613,13 +1007,14 @@ pub fn read_snapshot(
 
 // Keep the documented sizes honest at compile time.
 const _: () = assert!(crate::wire::SHIP_CORE_BITS == 18 * 8);
-const _: () = assert!(PROJECTILE_BITS == 16 * 8);
+const _: () = assert!(PROJECTILE_BITS == 17 * 8);
+const _: () = assert!(ENTITY_MIN_BITS == 17 * 8 + 2);
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::quant::{pack_quat, Quantizer};
-    use crate::wire::{NetShip, Snapshot, SHIP_CORE_BITS};
+    use crate::wire::{NetEntity, NetShip, Snapshot, SHIP_CORE_BITS};
     use ls_math::{Pcg32, Quat, TerrainEdit, Vec3};
     #[cfg(target_arch = "wasm32")]
     use wasm_bindgen_test::wasm_bindgen_test as test;
@@ -656,6 +1051,7 @@ mod tests {
             id,
             kind: rng.below(8) as u8,
             owner: rng.below(32) as u8,
+            state: rng.below(4) as u8,
             pos: [
                 rng.next_u32() as u16,
                 rng.next_u32() as u16,
@@ -667,6 +1063,53 @@ mod tests {
                 rng.next_u32() as u16,
             ],
         }
+    }
+
+    fn random_entity(rng: &mut Pcg32, id: u16) -> PackedEntity {
+        let moving = rng.chance(0.3);
+        PackedEntity {
+            id,
+            kind: rng.below(10) as u8,
+            visual: rng.below(80) as u16,
+            owner: if rng.chance(0.5) {
+                255
+            } else {
+                rng.below(32) as u8
+            },
+            team: rng.below(3) as u8,
+            pos: [
+                rng.next_u32() as u16,
+                rng.next_u32() as u16,
+                rng.next_u32() as u16,
+            ],
+            vel: if moving {
+                [rng.next_u32() as u16, 0, rng.next_u32() as u16]
+            } else {
+                ZERO_VEL
+            },
+            rot: if rng.chance(0.3) {
+                rng.next_u32()
+            } else {
+                pack_quat(Quat::IDENTITY)
+            },
+            state: [rng.next_u32() as u8, 0, rng.below(2) as u8, 0],
+        }
+    }
+
+    fn random_players(rng: &mut Pcg32) -> Vec<NetPlayer> {
+        let mut out = Vec::new();
+        for id in 0..MAX_SHIPS {
+            if rng.chance(0.3) {
+                out.push(NetPlayer {
+                    id,
+                    team: id % 2,
+                    ship_type: rng.below(4) as u8,
+                    gadget: rng.below(4) as u8,
+                    name: format!("pilot-{}", rng.below(1000)),
+                });
+            }
+        }
+        out
     }
 
     fn random_snapshot(rng: &mut Pcg32, tick: u32) -> PackedSnapshot {
@@ -692,6 +1135,12 @@ mod tests {
                 })
             })
             .collect();
+        let mut entities = Vec::new();
+        let mut id = rng.below(30_000) as u16;
+        for _ in 0..rng.below(30) {
+            entities.push(random_entity(rng, id));
+            id += 1 + rng.below(9) as u16;
+        }
         PackedSnapshot {
             tick,
             ack_input: tick.wrapping_add(rng.range_i32(-20, 20) as u32),
@@ -699,6 +1148,8 @@ mod tests {
             edits,
             ships,
             projectiles,
+            entities,
+            players: random_players(rng),
             scores: (0..rng.below(4)).map(|_| rng.below(70_000)).collect(),
             match_ticks_left: rng.below(18_000),
         }
@@ -785,6 +1236,33 @@ mod tests {
                 *s += 17;
             }
         }
+        next.entities.retain(|_| rng.chance(0.9));
+        for e in &mut next.entities {
+            if e.vel != ZERO_VEL {
+                for i in 0..3 {
+                    e.pos[i] = jitter(rng, e.pos[i], false);
+                }
+            }
+            if rng.chance(0.05) {
+                e.state[0] = e.state[0].wrapping_add(1);
+            }
+            if rng.chance(0.02) {
+                e.vel = ZERO_VEL;
+            }
+        }
+        let start = next
+            .entities
+            .last()
+            .map_or(Some(0), |e| e.id.checked_add(1));
+        if let Some(start) = start {
+            let n = rng.below(3) as u16;
+            for id in start..start.saturating_add(n) {
+                next.entities.push(random_entity(rng, id));
+            }
+        }
+        if rng.chance(0.05) {
+            next.players = random_players(rng);
+        }
         if rng.chance(0.3) {
             next.edits.push(
                 TerrainEdit::SubtractSphere {
@@ -857,11 +1335,15 @@ mod tests {
             .collect();
         base.projectiles.clear();
         base.edits.clear();
+        base.entities = (0..64).map(|i| random_entity(&mut rng, i)).collect();
+        base.players = random_players(&mut rng);
         let mut next = base.clone();
         next.tick += 2;
         let delta = encode(&next, Some(&base));
-        // header (4 + 1 + 1) + ack/time/edit/score varints + mask 4 + 32 bits.
-        assert!(delta.len() <= 24, "{} bytes", delta.len());
+        // header (4 + 1 + 1) + ack/time/edit/score varints + mask 4 + 32 bits
+        // for ships + 64 bits (unchanged) for entities + two empty new-item
+        // lists + 1 bit players.
+        assert!(delta.len() <= 24 + 4 + 8 + 2 + 1, "{} bytes", delta.len());
         assert_eq!(decode(&delta, &base).0, next);
     }
 
@@ -1029,6 +1511,141 @@ mod tests {
         // counts: about 18 B) comes on top of the ship data; stay under 18 KB/s.
         assert!(full_per_sec <= 18 * 1024, "{full_per_sec} B/s");
         assert!(full.len() <= 1200, "fits one datagram");
+    }
+
+    /// Delta snapshots with 32 moving ships, debris at its cap (64 pieces)
+    /// all drifting after an explosion, 40 pickups and 8 wrecks, against a
+    /// baseline two snapshots old: one datagram and within the 17 KB/s
+    /// budget at 30 Hz. Resting items cost one bit each.
+    #[test]
+    fn bandwidth_32_ships_64_debris() {
+        const BUDGET: usize = 17 * 1024;
+        let quant = Quantizer::default();
+        let mut rng = Pcg32::new(29, 0);
+        let players: Vec<NetPlayer> = (0..MAX_SHIPS)
+            .map(|id| NetPlayer {
+                id,
+                team: id % 2,
+                ship_type: id % 4,
+                gadget: 255,
+                name: format!("player{id}"),
+            })
+            .collect();
+        let mut ships: Vec<NetShip> = (0..MAX_SHIPS)
+            .map(|id| NetShip {
+                id,
+                pos: Vec3::new(
+                    rng.range_f32(20.0, 236.0),
+                    rng.range_f32(20.0, 108.0),
+                    rng.range_f32(20.0, 236.0),
+                ),
+                vel: Vec3::new(
+                    rng.range_f32(-20.0, 20.0),
+                    rng.range_f32(-20.0, 20.0),
+                    rng.range_f32(-20.0, 20.0),
+                ),
+                rot: Quat::from_axis_angle(Vec3::new(0.3, 1.0, -0.2), rng.range_f32(-3.0, 3.0)),
+                flags: ship_flags::with_team(ship_flags::ALIVE, id % 2),
+                status: None,
+            })
+            .collect();
+        let centre = Vec3::new(128.0, 64.0, 128.0);
+        // Debris: sent without velocity (clients interpolate positions).
+        let mut debris: Vec<(NetEntity, Vec3)> = (0..64u16)
+            .map(|i| {
+                let dir = Vec3::new(
+                    rng.range_f32(-1.0, 1.0),
+                    rng.range_f32(-1.0, 1.0),
+                    rng.range_f32(-1.0, 1.0),
+                )
+                .normalize_or_zero();
+                let e = NetEntity {
+                    id: 100 + i * 3,
+                    kind: 0,
+                    visual: 0,
+                    owner: 255,
+                    team: 255,
+                    pos: centre + dir * rng.range_f32(1.0, 8.0),
+                    vel: Vec3::ZERO,
+                    rot: Quat::IDENTITY,
+                    state: [3, 0, 8, 0],
+                };
+                (e, dir * rng.range_f32(0.5, 6.0))
+            })
+            .collect();
+        let fixed: Vec<NetEntity> = (0..48u16)
+            .map(|i| NetEntity {
+                id: 400 + i,
+                kind: if i < 40 { 1 } else { 5 },
+                visual: 12 + i % 20,
+                owner: 255,
+                team: 255,
+                pos: Vec3::new(5.0 * i as f32, 30.0, 200.0),
+                vel: Vec3::ZERO,
+                rot: Quat::IDENTITY,
+                state: [i as u8 % 27, 10, 0, 0],
+            })
+            .collect();
+        let snapshot = |tick: u32, ships: &[NetShip], debris: &[(NetEntity, Vec3)]| {
+            let mut entities: Vec<NetEntity> = debris.iter().map(|(e, _)| *e).collect();
+            entities.extend(fixed.iter().copied());
+            quant.pack_snapshot(&Snapshot {
+                tick,
+                ack_input: tick + 4,
+                ships: ships.to_vec(),
+                entities,
+                players: players.clone(),
+                scores: vec![31_000, 29_500],
+                match_ticks_left: 9_000,
+                ..Default::default()
+            })
+        };
+        let base = snapshot(1000, &ships, &debris);
+        let dt = 2.0 / 60.0;
+        for s in &mut ships {
+            let accel = Vec3::new(
+                rng.range_f32(-30.0, 30.0),
+                rng.range_f32(-30.0, 30.0),
+                rng.range_f32(-30.0, 30.0),
+            );
+            s.vel += accel * dt;
+            s.pos += s.vel * dt;
+            s.rot = Quat::from_axis_angle(Vec3::Y, 0.1) * s.rot;
+        }
+        for (e, v) in &mut debris {
+            e.pos += *v * dt;
+        }
+        let next = snapshot(1002, &ships, &debris);
+        let delta = encode(&next, Some(&base));
+        let (back, _) = decode(&delta, &base);
+        assert_eq!(back, next);
+        // The entity part: the same snapshots without entities.
+        let ships_only = {
+            let (mut b, mut n) = (base.clone(), next.clone());
+            b.entities.clear();
+            n.entities.clear();
+            encode(&n, Some(&b)).len()
+        };
+        let entity_bytes = delta.len() - ships_only;
+        println!(
+            "32 ships + 64 moving debris + 48 resting items: delta {} B ({} B/s at 30 Hz; ships {ships_only} B, entities {entity_bytes} B), full {} B",
+            delta.len(),
+            delta.len() * 30,
+            encode(&next, None).len()
+        );
+        assert!(delta.len() <= 1200, "fits one datagram: {} B", delta.len());
+        // M1 measured 377 B (11.3 KB/s) for 32 moving ships; the entities
+        // must fit in the rest of the 17 KB/s budget.
+        assert!(
+            (377 + entity_bytes) * 30 <= BUDGET,
+            "entities {entity_bytes} B per snapshot"
+        );
+        // Nothing moved: the whole entity list costs a bit per item.
+        let same = snapshot(1002, &ships, &debris);
+        let mut later = same.clone();
+        later.tick = 1004;
+        let idle = encode(&later, Some(&same));
+        assert!(idle.len() < 60, "unchanged snapshot {} B", idle.len());
     }
 
     #[test]

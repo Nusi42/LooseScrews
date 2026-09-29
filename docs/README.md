@@ -22,6 +22,7 @@ working on the repo are in [`CLAUDE.md`](../CLAUDE.md).
 | [architecture/determinism.md](architecture/determinism.md) | Determinism rules, golden hashes, re-blessing, the WASM cross-check |
 | [architecture/contracts.md](architecture/contracts.md) | Cross-crate contracts: axes, units, time, RNG streams, `TerrainEdit` / `TerrainQuery`, chunk meshes, share codes, quantization |
 | [architecture/game-glue.md](architecture/game-glue.md) | `ls-game` in detail: `GameTerrain`, match setup, wire conventions, `ClientSession`, `Room`, lag compensation, tests |
+| [architecture/arsenal-framework.md](architecture/arsenal-framework.md) | M2 arsenal framework: weapon and gadget modules and their hooks, hook order per tick, ship types, entities and debris, generic entity replication, data hash, rule set v2 and codes |
 | [architecture/server.md](architecture/server.md) | `ls-server` internals (endpoints, links, WebTransport mapping, sim thread policies, CLI), browser client lifecycle, `ls-bots` |
 
 ## Crate and folder map
@@ -30,7 +31,7 @@ working on the repo are in [`CLAUDE.md`](../CLAUDE.md).
 | --- | --- |
 | `crates/ls-math` | [contracts.md](architecture/contracts.md), [determinism.md](architecture/determinism.md) |
 | `crates/ls-worldgen` | [contracts.md](architecture/contracts.md), [determinism.md](architecture/determinism.md), plan section 4.2 |
-| `crates/ls-sim`, `data/` | plan section 4.3, [`data/README.md`](../data/README.md), [dev-guide.md](dev-guide.md#8-adding-a-weapon) |
+| `crates/ls-sim`, `data/` | plan section 4.3, [arsenal-framework.md](architecture/arsenal-framework.md), [`data/README.md`](../data/README.md), [dev-guide.md](dev-guide.md#8-adding-a-weapon) |
 | `crates/ls-net` | [netcode.md](architecture/netcode.md), plan section 4.4 |
 | `crates/ls-game` | [game-glue.md](architecture/game-glue.md), [netcode.md](architecture/netcode.md) |
 | `crates/ls-server`, `crates/ls-bots`, `tools/` | [server.md](architecture/server.md), [dev-guide.md](dev-guide.md) |

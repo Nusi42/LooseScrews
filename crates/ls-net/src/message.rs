@@ -8,11 +8,18 @@
 //!    protocol version) never change between versions, so a server can always
 //!    detect a version mismatch ([`DecodeError::VersionMismatch`]) and answer
 //!    with [`Reject`], whose layout is also frozen.
+//!    `Hello` also carries the client's game data hash (`ls_sim::data_hash`)
+//!    and preferred ship type; a server with different data answers
+//!    [`RejectReason::DataMismatch`].
 //! 2. Server answers [`Welcome`] (share code, rule set, player id, team,
-//!    quantization config, full terrain edit log) or [`Reject`].
+//!    ship type, data hash, quantization config, full terrain edit log) or
+//!    [`Reject`].
 //! 3. Then the client streams [`InputMsg`] (unreliable, 60 Hz, each carrying
 //!    the last three commands) and the server streams snapshots (unreliable,
-//!    30 Hz), [`Message::Events`] (reliable) and answers pings.
+//!    30 Hz), [`Message::Events`] (reliable) and answers pings. A client
+//!    picks its ship type for the next respawn with [`Message::SelectShip`].
+//!    The server sends a client its own ship's carried weapons, ammo, levels
+//!    and gadget with [`Message::Inventory`] (reliable) whenever they change.
 
 use ls_math::{Aabb, TerrainEdit, Vec3};
 
@@ -25,8 +32,9 @@ use crate::wire::{
     EVENT_MIN_BITS, MAX_SHIPS,
 };
 
-/// Bumped whenever the wire format changes incompatibly.
-pub const PROTOCOL_VERSION: u16 = 1;
+/// Bumped whenever the wire format changes incompatibly (2: M2 entities,
+/// players, cues, data hash, ship choice).
+pub const PROTOCOL_VERSION: u16 = 2;
 /// First bytes of a [`Hello`] body: ASCII `LSCR` when read as little-endian.
 pub const MAGIC: u32 = u32::from_le_bytes(*b"LSCR");
 
@@ -64,15 +72,34 @@ pub struct Hello {
     pub name: String,
     /// Team the player would like, `None` for auto-balance.
     pub preferred_team: Option<u8>,
+    /// Hash of the client's game data (`ls_sim::data_hash`); the server
+    /// rejects a mismatch. `ls_game::client_hello` fills it in.
+    pub data_hash: u64,
+    /// Ship type index the player would like (`None` = server default).
+    pub ship_type: Option<u8>,
 }
 
 impl Hello {
+    /// A hello without a data hash (0) or ship preference; use
+    /// [`Hello::with_data_hash`] (or `ls_game::client_hello`).
     pub fn new(name: impl Into<String>, preferred_team: Option<u8>) -> Self {
         Hello {
             protocol_version: PROTOCOL_VERSION,
             name: name.into(),
             preferred_team,
+            data_hash: 0,
+            ship_type: None,
         }
+    }
+
+    pub fn with_data_hash(mut self, hash: u64) -> Self {
+        self.data_hash = hash;
+        self
+    }
+
+    pub fn with_ship_type(mut self, ship_type: Option<u8>) -> Self {
+        self.ship_type = ship_type;
+        self
     }
 }
 
@@ -84,6 +111,11 @@ pub struct Welcome {
     /// Ship id of this player (`0..MAX_SHIPS`).
     pub player_id: u8,
     pub team: u8,
+    /// Ship type index the player spawned with.
+    pub ship_type: u8,
+    /// The server's game data hash (equal to the client's, or it would have
+    /// been rejected).
+    pub data_hash: u64,
     /// World share code, e.g. `LS-...`; the client regenerates the terrain from it.
     pub share_code: String,
     /// Name of the rule set (e.g. `paint_the_void`).
@@ -107,6 +139,8 @@ pub enum RejectReason {
     BadHandshake,
     Kicked,
     Other,
+    /// The client was built with different game data (`data/` files).
+    DataMismatch,
 }
 
 impl RejectReason {
@@ -117,6 +151,7 @@ impl RejectReason {
             RejectReason::BadHandshake => 2,
             RejectReason::Kicked => 3,
             RejectReason::Other => 4,
+            RejectReason::DataMismatch => 5,
         }
     }
 
@@ -126,6 +161,7 @@ impl RejectReason {
             1 => RejectReason::ServerFull,
             2 => RejectReason::BadHandshake,
             3 => RejectReason::Kicked,
+            5 => RejectReason::DataMismatch,
             _ => RejectReason::Other,
         }
     }
@@ -183,6 +219,39 @@ pub enum Message {
     Disconnect {
         reason: String,
     },
+    /// Client: fly this ship type (index) from the next respawn on.
+    SelectShip {
+        ship_type: u8,
+    },
+    /// Server: the receiving client's own inventory (sent when it changes).
+    Inventory(InventoryMsg),
+}
+
+/// Most weapons an [`InventoryMsg`] lists.
+pub const MAX_INVENTORY_WEAPONS: usize = 64;
+
+/// One carried weapon in an [`InventoryMsg`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NetWeapon {
+    /// Weapon id (index into the match's weapon table).
+    pub weapon: u8,
+    /// Ammo for count weapons (clamped to `u16::MAX`), else 0.
+    pub ammo: u16,
+    /// Upgrade level (1..).
+    pub level: u8,
+}
+
+/// The own ship's inventory as the simulation has it at `tick` (dead ships
+/// keep the last one until they respawn).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct InventoryMsg {
+    pub tick: u32,
+    pub weapons: Vec<NetWeapon>,
+    /// Selected primary and secondary weapon ids (255 = none).
+    pub primary: u8,
+    pub secondary: u8,
+    /// Gadget id (255 = none).
+    pub gadget: u8,
 }
 
 mod tag {
@@ -195,6 +264,8 @@ mod tag {
     pub const PING: u8 = 7;
     pub const PONG: u8 = 8;
     pub const DISCONNECT: u8 = 9;
+    pub const SELECT_SHIP: u8 = 10;
+    pub const INVENTORY: u8 = 11;
 }
 
 fn check_len(s: &str, max: usize, what: &'static str) -> Result<(), EncodeError> {
@@ -263,6 +334,11 @@ impl Message {
                 if let Some(t) = h.preferred_team {
                     w.write_u8(t);
                 }
+                w.write_bits(h.data_hash, 64);
+                w.write_bool(h.ship_type.is_some());
+                if let Some(t) = h.ship_type {
+                    w.write_u8(t);
+                }
             }
             Message::Welcome(wl) => {
                 check_len(&wl.share_code, MAX_SHARE_CODE_LEN, "share code too long")?;
@@ -285,6 +361,8 @@ impl Message {
                 w.write_u16(wl.protocol_version);
                 w.write_u8(wl.player_id);
                 w.write_u8(wl.team);
+                w.write_u8(wl.ship_type);
+                w.write_bits(wl.data_hash, 64);
                 w.write_str(&wl.share_code);
                 w.write_str(&wl.ruleset_name);
                 w.write_bytes(&wl.ruleset);
@@ -380,6 +458,26 @@ impl Message {
                 w.write_u8(tag::DISCONNECT);
                 w.write_str(reason);
             }
+            Message::SelectShip { ship_type } => {
+                w.write_u8(tag::SELECT_SHIP);
+                w.write_u8(*ship_type);
+            }
+            Message::Inventory(inv) => {
+                if inv.weapons.len() > MAX_INVENTORY_WEAPONS {
+                    return Err(EncodeError::OutOfRange("too many inventory weapons"));
+                }
+                w.write_u8(tag::INVENTORY);
+                w.write_u32(inv.tick);
+                w.write_varint(inv.weapons.len() as u64);
+                for x in &inv.weapons {
+                    w.write_u8(x.weapon);
+                    w.write_u16(x.ammo);
+                    w.write_u8(x.level);
+                }
+                w.write_u8(inv.primary);
+                w.write_u8(inv.secondary);
+                w.write_u8(inv.gadget);
+            }
         }
         Ok(w.finish())
     }
@@ -407,10 +505,18 @@ impl Message {
                 } else {
                     None
                 };
+                let data_hash = r.read_bits(64)?;
+                let ship_type = if r.read_bool()? {
+                    Some(r.read_u8()?)
+                } else {
+                    None
+                };
                 Message::Hello(Hello {
                     protocol_version: version,
                     name,
                     preferred_team,
+                    data_hash,
+                    ship_type,
                 })
             }
             tag::WELCOME => {
@@ -421,6 +527,8 @@ impl Message {
                     return Err(DecodeError::Invalid("player id"));
                 }
                 let team = r.read_u8()?;
+                let ship_type = r.read_u8()?;
+                let data_hash = r.read_bits(64)?;
                 let share_code = r.read_string(MAX_SHARE_CODE_LEN)?;
                 let ruleset_name = r.read_string(MAX_RULESET_NAME_LEN)?;
                 let ruleset = r.read_bytes(MAX_RULESET_BYTES)?;
@@ -435,6 +543,8 @@ impl Message {
                     protocol_version: version,
                     player_id,
                     team,
+                    ship_type,
+                    data_hash,
                     share_code,
                     ruleset_name,
                     ruleset,
@@ -503,6 +613,28 @@ impl Message {
             tag::DISCONNECT => Message::Disconnect {
                 reason: r.read_string(MAX_REASON_LEN)?,
             },
+            tag::SELECT_SHIP => Message::SelectShip {
+                ship_type: r.read_u8()?,
+            },
+            tag::INVENTORY => {
+                let tick = r.read_u32()?;
+                let n = r.read_len(MAX_INVENTORY_WEAPONS, 32)?;
+                let mut weapons = Vec::with_capacity(n);
+                for _ in 0..n {
+                    weapons.push(NetWeapon {
+                        weapon: r.read_u8()?,
+                        ammo: r.read_u16()?,
+                        level: r.read_u8()?,
+                    });
+                }
+                Message::Inventory(InventoryMsg {
+                    tick,
+                    weapons,
+                    primary: r.read_u8()?,
+                    secondary: r.read_u8()?,
+                    gadget: r.read_u8()?,
+                })
+            }
             other => return Err(DecodeError::UnknownTag(other)),
         };
         r.finish()?;
@@ -533,6 +665,20 @@ pub fn peek_hello_version(bytes: &[u8]) -> Result<u16, DecodeError> {
         return Err(DecodeError::BadMagic);
     }
     r.read_u16()
+}
+
+/// Server side: the `Reject` for a client whose data hash differs from
+/// `server_hash`, or `None` if they match.
+pub fn check_data_hash(h: &Hello, server_hash: u64) -> Option<Reject> {
+    (h.data_hash != server_hash).then(|| Reject {
+        reason: RejectReason::DataMismatch,
+        server_version: PROTOCOL_VERSION,
+        message: format!(
+            "game data mismatch: server data {server_hash:016x}, client data {:016x}; \
+             the client and server were built from different data/ files (update the client)",
+            h.data_hash
+        ),
+    })
 }
 
 /// Server side: validates a decoded `Hello`.
@@ -608,7 +754,9 @@ mod tests {
     use super::*;
     use crate::quant::Quantizer;
     use crate::snapshot::SnapshotHistory;
-    use crate::wire::{ship_flags, NetProjectile, NetShip, ShipStatus, Snapshot};
+    use crate::wire::{
+        ship_flags, NetEntity, NetPlayer, NetProjectile, NetShip, ShipStatus, Snapshot,
+    };
     use ls_math::{Pcg32, Quat};
     #[cfg(target_arch = "wasm32")]
     use wasm_bindgen_test::wasm_bindgen_test as test;
@@ -624,6 +772,8 @@ mod tests {
             protocol_version: PROTOCOL_VERSION,
             player_id: 3,
             team: 1,
+            ship_type: 2,
+            data_hash: 0x0123_4567_89ab_cdef,
             share_code: "LS-7K2M-9QXA-04RT-ZZ1C".into(),
             ruleset_name: "paint_the_void".into(),
             ruleset: b"(name: \"paint_the_void\", friendly_fire: 0)".to_vec(),
@@ -667,6 +817,35 @@ mod tests {
     fn hello_reject_ping_pong_disconnect_round_trip() {
         round_trip(&Message::Hello(Hello::new("Rivet Rita", Some(1))));
         round_trip(&Message::Hello(Hello::new("", None)));
+        round_trip(&Message::Hello(
+            Hello::new("Hauler Hank", None)
+                .with_data_hash(u64::MAX - 7)
+                .with_ship_type(Some(2)),
+        ));
+        round_trip(&Message::SelectShip { ship_type: 3 });
+        round_trip(&Message::Inventory(InventoryMsg {
+            tick: 1234,
+            weapons: vec![
+                NetWeapon {
+                    weapon: 0,
+                    ammo: 0,
+                    level: 3,
+                },
+                NetWeapon {
+                    weapon: 14,
+                    ammo: 7,
+                    level: 1,
+                },
+            ],
+            primary: 0,
+            secondary: 14,
+            gadget: 255,
+        }));
+        round_trip(&Message::Reject(Reject {
+            reason: RejectReason::DataMismatch,
+            server_version: PROTOCOL_VERSION,
+            message: "different data".into(),
+        }));
         round_trip(&Message::Reject(Reject {
             reason: RejectReason::ServerFull,
             server_version: PROTOCOL_VERSION,
@@ -794,6 +973,14 @@ mod tests {
                 tick: 18_000,
                 winner_team: None,
             },
+            NetEvent::Cue {
+                tick: 5,
+                kind: 1,
+                source: 255,
+                target: 4,
+                pos: Vec3::new(1.0, 2.0, 3.0),
+                value: 120,
+            },
         ];
         round_trip(&Message::Events(events));
         round_trip(&Message::Events(vec![]));
@@ -831,7 +1018,41 @@ mod tests {
                 owner: 3,
                 pos: Vec3::new(t + 10.0, 10.0, 10.0),
                 vel: Vec3::new(0.0, 0.0, -180.0),
+                state: 1,
             }],
+            entities: vec![
+                NetEntity {
+                    id: 5,
+                    kind: 4,
+                    visual: 1,
+                    owner: 255,
+                    team: 255,
+                    pos: Vec3::new(30.0, 20.0, 10.0),
+                    vel: Vec3::ZERO,
+                    rot: Quat::IDENTITY,
+                    state: [30, 0, 0, 0],
+                },
+                NetEntity {
+                    id: 9,
+                    kind: 0,
+                    visual: 0,
+                    owner: 255,
+                    team: 255,
+                    pos: Vec3::new(50.0 + t, 20.0, 10.0),
+                    vel: Vec3::new(3.0, 0.0, 0.0),
+                    rot: Quat::from_axis_angle(Vec3::Y, t),
+                    state: [2, 0, 0, 0],
+                },
+            ],
+            players: (0..8u8)
+                .map(|id| NetPlayer {
+                    id,
+                    team: id % 2,
+                    ship_type: 1,
+                    gadget: 255,
+                    name: format!("pilot {id}"),
+                })
+                .collect(),
             scores: vec![1200, 900],
             match_ticks_left: 9000 - tick,
         }
@@ -870,6 +1091,20 @@ mod tests {
                 assert_eq!((a.flags, a.status), (b.flags, b.status));
             }
             assert_eq!(view.edits, src.edits);
+            assert_eq!(view.players, src.players);
+            assert_eq!(view.projectiles[0].state, 1);
+            // Entity positions are 8 position steps coarse (about 0.03 u).
+            let half = quant.entity_position_step() * 0.5;
+            for (a, b) in view.entities.iter().zip(&src.entities) {
+                let d = a.pos - b.pos;
+                assert!(d.x.abs() <= half.x && d.y.abs() <= half.y && d.z.abs() <= half.z);
+                assert!((a.vel - b.vel).length() < 0.01);
+                assert!(a.rot.dot(b.rot).abs() > 0.99999);
+                assert_eq!(
+                    (a.id, a.kind, a.visual, a.state),
+                    (b.id, b.kind, b.visual, b.state)
+                );
+            }
             client.push(sm.snapshot);
             // Simulate losing every third ack.
             if step % 3 != 2 {
@@ -927,6 +1162,13 @@ mod tests {
             .encode()
             .unwrap();
         assert_eq!(accept_hello(&good).unwrap().name, "pilot");
+        // Data hash: equal passes, different is a clear DataMismatch reject.
+        let h = Hello::new("pilot", None).with_data_hash(42);
+        assert!(check_data_hash(&h, 42).is_none());
+        let rj = check_data_hash(&h, 43).unwrap();
+        assert_eq!(rj.reason, RejectReason::DataMismatch);
+        assert!(rj.message.contains("data"), "{}", rj.message);
+        assert!(rj.message.len() <= MAX_REASON_LEN);
         let empty = Message::Hello(Hello::new("  ", None)).encode().unwrap();
         assert!(accept_hello(&empty).is_err());
         let ping = Message::Ping {

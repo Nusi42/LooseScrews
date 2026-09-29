@@ -5,21 +5,33 @@
 //
 // Flat array layouts (see crates/ls-wasm/src/lib.rs):
 //   localPose():   [px, py, pz, qx, qy, qz, qw, vx, vy, vz, alive]
-//   remoteShips(): SHIP_STRIDE floats each  [id, team, alive, boosting, px, py, pz, qx, qy, qz, qw]
-//   projectiles(): PROJECTILE_STRIDE floats [kind, owner, px, py, pz, vx, vy, vz]
-//   frame() controls: CONTROLS_LEN floats   [forward, right, up, rollRight, yawRight, pitchUp, buttons, weaponSelect]
+//   remoteShips(): SHIP_STRIDE floats each  [id, team, alive, boosting, px, py, pz, qx, qy, qz, qw,
+//                                            shipType, radius, gadgetActive]
+//   projectiles(): PROJECTILE_STRIDE floats [kind, owner, px, py, pz, vx, vy, vz, visual, state]
+//   entities():    ENTITY_STRIDE floats     [id, kind, visual, owner, team, px, py, pz, vx, vy, vz,
+//                                            qx, qy, qz, qw, state0, state1, state2, state3, radius (0 = unknown)]
+//   visuals():     VISUAL_STRIDE floats per visual id [shapeIndex (into visualShapeNames()), r, g, b (0..1), scale]
+//   playerInfo():  PLAYER_STRIDE numbers each [id, team, shipType, gadget (255 = none)]; names: playerNames()
+//   frame() controls: CONTROLS_LEN floats   [forward, right, up, rollRight, yawRight, pitchUp, buttons, weaponSelect,
+//                                            weaponKey (1-10), cyclePrimary (±1), cycleSecondary (+1)]
 //   debugStats():  DEBUG_STATS_LEN numbers  [pingMs (-1 = unknown), accepted, corrected, snapped, lastError,
 //                                            shotsPredicted, shotsConfirmed, shotsDropped, shotsUnpredicted, synced]
-//   scoreboard():  SCORE_STRIDE numbers each [id, team, alive, kills, deaths, isYou]
+//   scoreboard():  SCORE_STRIDE numbers each [id, team, alive, kills, deaths, isYou]; names: scoreboardNames()
 //   matchInfo():   MATCH_INFO_LEN numbers   [over, winner (-1 = draw/none), team0Cells, team1Cells, surfaceCells, secsSinceEnd]
+//   loadout():     names[i], ammo[i], maxLevels[i] and LOADOUT_INFO_STRIDE bytes info[4i..4i+4] =
+//                  [slot (0 primary, 1 secondary), selected, key (1-10, 0 none), level], primaries first
 
 export const POSE_LEN = 11;
-export const SHIP_STRIDE = 11;
-export const PROJECTILE_STRIDE = 8;
-export const CONTROLS_LEN = 8;
+export const SHIP_STRIDE = 14;
+export const PROJECTILE_STRIDE = 10;
+export const ENTITY_STRIDE = 20;
+export const VISUAL_STRIDE = 5;
+export const PLAYER_STRIDE = 4;
+export const CONTROLS_LEN = 11;
 export const DEBUG_STATS_LEN = 10;
 export const SCORE_STRIDE = 6;
 export const MATCH_INFO_LEN = 6;
+export const LOADOUT_INFO_STRIDE = 4;
 
 export interface ChunkMeshHandle {
   readonly key: string;
@@ -27,6 +39,8 @@ export interface ChunkMeshHandle {
   normals(): Float32Array;
   indices(): Uint32Array;
   teams(): Uint8Array;
+  /** Surface state bits per vertex (hot 1, charged 2, glow 4), or empty when the terrain has none. */
+  surface?(): Uint8Array;
   aabb(): Float32Array;
   free(): void;
 }
@@ -52,6 +66,16 @@ export interface HudStateHandle {
   free(): void;
 }
 
+export interface LoadoutHandle {
+  readonly names: string[];
+  readonly ammo: string[];
+  readonly info: Uint8Array;
+  readonly maxLevels: Uint8Array;
+  readonly gadget: string;
+  readonly gadgetActive: boolean;
+  free(): void;
+}
+
 export interface GameHandle {
   readonly isOnline: boolean;
   readonly shareCode: string;
@@ -66,10 +90,17 @@ export interface GameHandle {
   localPose(): Float32Array | undefined;
   remoteShips(): Float32Array;
   projectiles(): Float32Array;
+  entities(): Float32Array;
+  /** The match's visual table (constant for a match). */
+  visuals(): Float32Array;
+  playerInfo(): Float64Array;
+  playerNames(): string[];
+  loadout(): LoadoutHandle;
   hud(): HudStateHandle;
   takeFeed(): string[];
   debugStats(): Float64Array;
   scoreboard(): Float64Array;
+  scoreboardNames(): string[];
   matchInfo(): Float64Array;
   meshNext(x: number, y: number, z: number): ChunkMeshHandle | undefined;
   takeUnloads(x: number, y: number, z: number): string[];
@@ -94,6 +125,10 @@ export interface WasmApi {
   matchRestartReason(): string;
   weaponIds(): string[];
   weaponNames(): string[];
+  /** Visual shape names in shape-index order (first number of each `visuals()` row). */
+  visualShapeNames(): string[];
+  /** Entity kind names in wire-byte order (`kind` of `entities()`). */
+  entityKindNames(): string[];
   goldenHashes(code: string): string[];
   tickHz(): number;
   Game: {

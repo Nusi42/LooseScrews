@@ -33,6 +33,7 @@ fn setup() -> MatchSetup {
             },
         ],
         pickup_points: vec![],
+        instability: 0,
     }
 }
 
@@ -126,20 +127,18 @@ fn players_spawn_with_loadout_and_balance_teams() {
         .weapon(w.weapons().find("paint_thrower").unwrap())
         .is_some());
 
-    assert!(matches!(
-        w.add_player(None, ShipType::Hauler),
-        Err(SimError::ShipTypeNotAllowed(_))
-    ));
+    assert_eq!(s.gadget, w.gadgets().find("shield"), "loadout gadget");
+    assert!(!s.gadget_active);
     assert!(matches!(
         w.add_player(Some(5), ShipType::Tinker),
         Err(SimError::InvalidTeam(5))
     ));
     let mut rules = RuleSet::paint_the_void();
-    rules.allowed_ship_types.push(ShipType::Hauler);
+    rules.allowed_ship_types = vec![ShipType::Tinker];
     let mut w2 = world_with(rules, setup());
     assert!(matches!(
         w2.add_player(None, ShipType::Hauler),
-        Err(SimError::ShipTypeUnavailable(_))
+        Err(SimError::ShipTypeNotAllowed(_))
     ));
 }
 
@@ -387,6 +386,7 @@ fn banned_weapon_cannot_be_fired() {
             weapon: rocket,
             ammo: 5,
             level: 1,
+            shots: 0,
         });
         s.secondary = Some(rocket);
     }
@@ -444,6 +444,7 @@ fn banned_weapon_cannot_be_picked_up() {
             weight: 1.0,
             respawn_secs: 10.0,
             ammo: 1,
+            max_on_map: 0,
         },
     );
     assert!(World::new(WorldConfig {
@@ -462,6 +463,7 @@ fn loadout_only_weapon_is_not_a_pickup() {
             weight: 1.0,
             respawn_secs: 1.0,
             ammo: 0,
+            max_on_map: 0,
         },
     );
     assert!(rules.resolve(&WeaponTable::builtin()).is_err());
@@ -478,6 +480,8 @@ fn weapon_pickup_collect_and_respawn() {
     let mut t = std_room();
     let mut rules = RuleSet::paint_the_void();
     rules.pickups.retain(|k, _| k == "bolt_rocket");
+    rules.upgrade_pickups.clear();
+    rules.gadget_pickups.clear();
     rules.scrap_pickup = None;
     let mut s = setup();
     s.pickup_points = vec![Vec3::new(0.0, 0.0, -1.0)];
@@ -683,6 +687,8 @@ fn scrap_pickup_spawns_and_respawns_when_emptied() {
     let mut t = std_room();
     let mut rules = RuleSet::paint_the_void();
     rules.pickups.clear();
+    rules.upgrade_pickups.clear();
+    rules.gadget_pickups.clear();
     let mut s = setup();
     s.pickup_points = vec![Vec3::new(0.0, 0.0, -2.0)];
     let mut w = world_with(rules, s);
@@ -763,6 +769,7 @@ fn scripted_inputs(
                 (Buttons::FIRE_SECONDARY, 0.05),
                 (Buttons::SCAVENGE, 0.2),
                 (Buttons::OVERDRIVE, 0.1),
+                (Buttons::GADGET, 0.03),
             ] {
                 buttons.set(b, rng.chance(p));
             }
@@ -777,8 +784,8 @@ fn scripted_inputs(
                     look_yaw: aim_yaw + rng.range_f32(-0.02, 0.02),
                     roll: rng.range_f32(-1.0, 1.0),
                     buttons,
-                    weapon_select: if rng.chance(0.02) {
-                        rng.below(5) as u8
+                    weapon_select: if rng.chance(0.03) {
+                        rng.below(w.weapons().len() as u32 + 1) as u8
                     } else {
                         0
                     },
@@ -828,9 +835,19 @@ fn replay(seed: u64, ticks: u64, tweak_at: Option<u64>) -> (Vec<u64>, Vec<Event>
         .collect();
     let mut w = World::new(WorldConfig::paint_the_void(seed, s)).unwrap();
     let mut t = std_room();
-    let ids: Vec<PlayerId> = (0..4)
-        .map(|_| w.add_player(None, ShipType::Tinker).unwrap())
+    // Every ship type, and some debris in the arena.
+    let ids: Vec<PlayerId> = ShipType::ALL
+        .iter()
+        .map(|&ty| w.add_player(None, ty).unwrap())
         .collect();
+    for i in 0..6 {
+        w.spawn_entity(EntitySpawn::debris(
+            Vec3::new(-10.0 + 4.0 * i as f32, 2.0, -4.0),
+            Vec3::new(0.5, 0.0, 0.25 * i as f32),
+            0.4 + 0.2 * i as f32,
+            5.0,
+        ));
+    }
     let mut rng = Pcg32::new(seed, 7);
     let mut hashes = Vec::new();
     let mut events = Vec::new();
@@ -859,6 +876,11 @@ fn replay_same_inputs_same_state_hash() {
     assert!(e1.iter().any(|e| matches!(e, Event::TerrainEdit(_))));
     assert!(e1.iter().any(|e| matches!(e, Event::Killed { .. })));
     assert!(e1.iter().any(|e| matches!(e, Event::Respawned { .. })));
+    // M2 systems take part too: gadgets and pickups.
+    assert!(e1
+        .iter()
+        .any(|e| matches!(e, Event::Cue(c) if c.kind == CueKind::Gadget)));
+    assert!(e1.iter().any(|e| matches!(e, Event::PickupTaken { .. })));
     // All hashes differ over time (the state evolves).
     let unique: std::collections::BTreeSet<_> = h1.iter().collect();
     assert_eq!(unique.len(), h1.len());
@@ -873,7 +895,7 @@ fn replay_same_inputs_same_state_hash() {
 /// (run the crate tests under `wasm-bindgen-test-runner`, see `CLAUDE.md`).
 /// Changing simulation behavior or tuning changes it: update the constant in
 /// the same change and say so in the commit.
-const REPLAY_GOLDEN_HASH: u64 = 0x477b_6a81_c673_30bb;
+const REPLAY_GOLDEN_HASH: u64 = 0x95fc_61f9_7ab2_1d34;
 
 #[test]
 fn replay_golden_hash() {
@@ -927,7 +949,7 @@ fn world_new_rejects_bad_setup_and_loadout() {
     // More loadout secondaries than the ship has slots.
     let mut cfg = WorldConfig::paint_the_void(1, setup());
     assert!(!cfg.rules.starting_loadout.secondaries.is_empty());
-    cfg.tuning.secondary_slots = 0;
+    cfg.ships.get_mut(ShipType::Tinker).secondary_slots = 0;
     assert!(matches!(World::new(cfg), Err(SimError::InvalidRuleSet(_))));
 
     // A starting count above the weapon's max_ammo.
@@ -941,7 +963,7 @@ fn knockback_scales_with_damage_multiplier() {
     // Same hit with a doubled ship damage multiplier pushes twice as hard.
     let push = |mult: f32| {
         let mut cfg = WorldConfig::paint_the_void(7, setup());
-        cfg.tuning.damage_mult = mult;
+        cfg.ships.get_mut(ShipType::Tinker).damage_mult = mult;
         let mut w = World::new(cfg).unwrap();
         let mut t = std_room();
         let a = w.add_player(Some(0), ShipType::Tinker).unwrap();

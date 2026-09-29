@@ -109,9 +109,43 @@ down 2 s after the last player left (scripted runs).
   kept, and the client rejoins on its own (`web/src/game/rejoin.ts`: 0.5 s, then 1, 2, 3, 4, 4,
   ... s, up to 12 attempts, then an error screen). Name, horizon assist, look settings and the
   F3 overlay state carry over.
-- Overlays: Tab holds the scoreboard (players by team, paint %); the end-of-match screen shows
-  the winner, paint per team and the scoreboard; F3 toggles the debug overlay (FPS, ping,
+- Overlays: Tab holds the scoreboard (player names by team, paint %); the end-of-match screen
+  shows the winner, paint per team and the scoreboard; F3 toggles the debug overlay (FPS, ping,
   transport, prediction corrections, shot prediction counters, chunks, skipped sends).
+
+### Drawing entities and projectiles (M2, data-driven)
+
+- ls-wasm exports the match's `VisualTable` once (`Game.visuals()`: shape index, colour, scale
+  per visual id; shape names from `visualShapeNames()`, `ls_sim::Shape::ALL` order), and every
+  frame the projectiles (with visual id and replicated `proj_flags` byte), the entities
+  (`Game.entities()`: kind, visual, pose, owner, team, 4 state bytes, radius when known: online
+  it is decoded from the state bytes for debris and dust clouds, `scene::net_radius`; kind
+  names from `entityKindNames()`). Online, entities are interpolated at the same render tick as
+  remote ships (`ClientSession::entities`),
+  the players (`playerInfo()` + `playerNames()`) and the weapon panel (`loadout()`). Layouts are
+  in `web/src/wasm/api.ts` and `crates/ls-wasm/src/lib.rs`.
+- `web/src/game/scene.ts` maps a shape name to a style (`SHAPE_STYLES`: mesh kind, size, glow,
+  trail, spin, bob, translucency) and builds the renderer's instances; meshes are procedural
+  (`web/src/renderer/primitives.ts`, `MESH_BUILDERS`). A new weapon or entity needs only a
+  `visual` in its data file; a new `Shape` variant needs one style entry (a test checks that
+  every ls-sim shape has one). Pickups bob and spin, scrap piles grow with their scrap, armed
+  mines blink, ghosts and dust clouds are translucent, decoys take their team's hull colour,
+  and inside a dust cloud the fog closes in (`dustFog`).
+- Name tags (`web/src/ui/nameTags.ts`) project a point above each ship; teammates are labelled
+  to 90 u, enemies to 45 u.
+- Terrain surface states: `ChunkMesh.surface()` gives per-vertex bits (hot 1, charged 2, glow
+  4; `game::surface_flags` from `ls_worldgen::Mesh::states`), packed above the paint byte into
+  the terrain's team attribute and drawn by the terrain shader. Every frame (`pull_dirty`) the
+  terrain's display tick moves to the match time (`GameTerrain::advance_to`: the server time
+  estimate online, the world tick in practice), so chunks whose states expired are remeshed.
+- Online the server sends the own inventory (`Message::Inventory`: carried weapons, ammo,
+  levels, selection, gadget) whenever it changes; `crates/ls-wasm/src/inventory.rs` keeps it
+  for the HUD and weapon selection, showing a local selection until the server has processed
+  it (`Online::select_tick`).
+- Keys: 1-9 and 0 select the n-th carried primary in design-doc order (registry order), the
+  mouse wheel cycles primaries, X cycles secondaries, G uses the gadget (`Buttons::GADGET`), F
+  stays overdrive. The browser sends these as intents (controls indexes 8-10); `GameCore`
+  resolves them against the carried weapons and holds a selection until a tick sends it.
 
 ## ls-bots
 
@@ -121,6 +155,40 @@ Each bot runs on its own thread with a current-thread tokio runtime and plays at
 trusts the certificate by that hash only. The `joined` log line names the transport.
 Every socket write has a 5 s limit and a session in which nothing arrives for 5 s is lost
 (`BotConfig::write_timeout`, `silence_timeout`), so a hung server cannot block `--duration`.
+
+`BotCore::from_welcome` builds the session and also derives the level's spawn points with
+`ls_game::match_setup` (about 190 ms per join on cave worlds: the level is generated a second
+time), so bots know where the other team starts.
+
+Behaviour (`src/brain.rs`), priorities every tick: **scavenge** when hull is low; **combat**
+when an enemy is in range with line of sight (orbit, lead aim, fire); **hunt** when an enemy is
+alive but out of sight: follow a navigation route to it (to the enemy spawn area when none is
+alive), painting on the way, with a break of `hunt_break_secs` (8 s) after `hunt_secs` (90 s)
+without a fight or at the end of a route that cannot reach it; otherwise **paint and
+wander**. `BehaviorCounters::hunt_ticks` counts ticks in Hunt mode.
+
+Global navigation (`src/nav.rs`, M1 issue A):
+
+- `NavGrid`: 2 u cells over the level; a cell is a node where some point in it has 0.55 u of
+  free space (terrain SDF, refined towards passage axes); 26-neighbour links keep 0.5 u along
+  the segment or a two-leg elbow. Built incrementally within 25k SDF evaluations per tick (a
+  256 x 128 x 256 u level takes 2-3 s of CPU in release builds, 5-10 s of play). Geometry edits
+  queue their region; updates are resumable cell by cell within the same budget (a 35 u
+  collapse or a merged barrage box spreads over ticks, the old data stays in use meanwhile).
+  Connected components are labelled after the build and at most once a second after changes;
+  a goal in another component gets only a short search (20k expansions) for the closest node.
+- `NavGrid::find_path`: weighted A* (narrow links cost extra), partial route to the closest
+  node when the goal is out of reach. Changed regions are remembered (`changed_near`), so a
+  route re-plans only when a change touches it.
+- `Navigator`: follows the route (skips ahead to waypoints in view, steps back after a push).
+  When the distance left stops shrinking for 2 s while it is followed every tick, the link
+  ahead is blocked and the route re-planned; a pause in following (combat orbit, holding still)
+  restarts the stall clock instead, and blocked links are re-tested after 30 s.
+
+Tests: `tests/nav_sweep.rs` (release only, about 20 s): three bots on the soak world
+`LS04-PNEY-V86Z-VXZM-K4M6-8001-8F8T` and nine random worlds must hit each other within 60 s,
+and a 5-minute match on the soak world must still see hits in its last minute. `LS_NAV_TRACE=1`
+prints positions, modes and routes.
 
 | Exit code | Meaning |
 | --- | --- |

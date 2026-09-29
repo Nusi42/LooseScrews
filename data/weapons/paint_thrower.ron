@@ -1,5 +1,6 @@
 // Paint Thrower: special. Deals no damage; paints terrain in the shooter's team color
 // (the core tool of Paint the Void). Surface effects of paint colors come in a later milestone.
+// Behaviour: crates/ls-sim/src/weapons/specials/paint_thrower.rs (implemented: the generic hooks are the M1 behaviour).
 WeaponDef(
     id: "paint_thrower",
     name: "Paint Thrower",
@@ -15,4 +16,5 @@ WeaponDef(
     knockback: 0.0,
     terrain: (crater_radius: 0.0, paint_radius: 2.0),
     shield: Blocked,
+    visual: (shape: Paint, color: (255, 255, 255), scale: 1.0),
 )

@@ -1,5 +1,6 @@
 //! The chunk store: lazily generated SDF chunks with the terrain edit log
-//! applied on top, a per-cell paint layer, and the physics queries.
+//! applied on top, per-cell surface layers (paint and timed surface states),
+//! and the physics queries.
 //!
 //! # The world SDF
 //!
@@ -35,15 +36,30 @@
 //! - Pristine samples come from a [`RegionSampler`] (feature tables plus
 //!   pruned per-block candidate lists, noise rows), bit-identical to
 //!   [`Generator::sample`].
+//!
+//! # Surface layers
+//!
+//! Surface cells (cells the surface passes through) carry a paint team and
+//! three timed surface states ([`SurfaceStates`]: hot, charged, glow). Each
+//! state is stored as its absolute expiry tick, set by
+//! [`TerrainEdit::Surface`], and is active while the tick is below it. The
+//! stored ticks depend only on the edit log (never on the time a peer looked
+//! at them), so state hashes agree between peers; queries take the tick
+//! explicitly. Meshes show the states active at the store's display tick
+//! ([`ChunkStore::advance_to`], which also reports the chunks whose states
+//! expired). Craters drop both layers from cells that stop being surface.
 
 use std::collections::BTreeMap;
 
-use ls_math::terrain::{TerrainEdit, TerrainQuery};
+use std::collections::BTreeSet;
+
+use ls_math::terrain::{SurfaceStates, TerrainEdit, TerrainQuery};
 use ls_math::{det, Aabb, Vec3};
 use serde::{Deserialize, Serialize};
 
 use crate::generator::floor_i32;
 use crate::grid::SampleGrid;
+use crate::material::{strengthen_edit, Material, MaterialField};
 use crate::mesh::{dual_contouring_with_sdf, surface_nets, Mesh};
 use crate::{Generator, RegionSampler, CHUNK_CELLS, NO_TEAM};
 
@@ -125,6 +141,9 @@ struct Chunk {
     samples: Samples,
     /// Painted cells: local cell index -> team. Only surface cells are kept.
     paint: BTreeMap<u16, u8>,
+    /// Surface states: local cell index -> expiry tick per state bit (hot,
+    /// charged, glow). Only surface cells with a non-zero tick are kept.
+    states: BTreeMap<u16, [u32; SurfaceStates::COUNT]>,
     /// Number of surface cells among the chunk's own cells.
     surface_cells: u32,
 }
@@ -153,6 +172,29 @@ impl Chunk {
             }
         }
         false
+    }
+
+    /// Drops paint and surface states from cells that are no longer surface.
+    fn drop_stale_layers(&mut self) {
+        let n = CHUNK_CELLS as usize;
+        let split = |idx: u16| {
+            let i = idx as usize;
+            (i % n, (i / n) % n, i / (n * n))
+        };
+        let stale: Vec<u16> = self
+            .paint
+            .keys()
+            .chain(self.states.keys())
+            .copied()
+            .filter(|&idx| {
+                let (i, j, k) = split(idx);
+                !self.is_surface_cell(i, j, k)
+            })
+            .collect();
+        for idx in stale {
+            self.paint.remove(&idx);
+            self.states.remove(&idx);
+        }
     }
 
     /// Counts surface cells in the (inclusive) cell range.
@@ -258,15 +300,33 @@ fn bin_of(v: f32, origin: i32) -> usize {
     (det::floor((v - origin as f32) / EDIT_BIN_SIZE) as i32).clamp(0, EDIT_BINS as i32 - 1) as usize
 }
 
+/// Surface states active at tick `now`, from per-state expiry ticks.
+#[inline]
+fn active_states(until: &[u32; SurfaceStates::COUNT], now: u32) -> SurfaceStates {
+    let mut bits = 0u8;
+    for (b, &u) in until.iter().enumerate() {
+        if u > now {
+            bits |= 1 << b;
+        }
+    }
+    SurfaceStates(bits)
+}
+
 /// Chunked, editable, paintable terrain for one level.
 #[derive(Debug, Clone)]
 pub struct ChunkStore {
     gen: Generator,
+    materials: MaterialField,
     dims: [i32; 3],
     chunks: Vec<Option<Chunk>>,
     /// The geometry edits that can affect each chunk.
     chunk_edits: Vec<ChunkEdits>,
     log: Vec<TerrainEdit>,
+    /// Display tick: meshes show the surface states active at this tick.
+    now: u32,
+    /// Expiry tick -> chunks with a surface state expiring then (for
+    /// remeshing in [`ChunkStore::advance_to`]).
+    expiry: BTreeMap<u32, BTreeSet<ChunkCoord>>,
 }
 
 impl ChunkStore {
@@ -275,11 +335,14 @@ impl ChunkStore {
         let dims = gen.size_chunks();
         let count = (dims[0] * dims[1] * dims[2]) as usize;
         ChunkStore {
+            materials: MaterialField::new(gen.code().seed),
             gen,
             dims,
             chunks: vec![None; count],
             chunk_edits: vec![ChunkEdits::default(); count],
             log: Vec::new(),
+            now: 0,
+            expiry: BTreeMap::new(),
         }
     }
 
@@ -294,6 +357,24 @@ impl ChunkStore {
 
     pub fn generator(&self) -> &Generator {
         &self.gen
+    }
+
+    /// The level's material (strength) field.
+    pub fn material_field(&self) -> &MaterialField {
+        &self.materials
+    }
+
+    /// Rock material at `p` (see [`crate::material`]).
+    pub fn material_at(&self, p: Vec3) -> Material {
+        self.materials.at(p)
+    }
+
+    /// `edit` with material strength applied (craters scaled by the material
+    /// at their centre, see [`strengthen_edit`]). Use it where the
+    /// simulation hands edits to the terrain, before they are logged; replays
+    /// apply logged edits verbatim.
+    pub fn strengthen(&self, edit: TerrainEdit) -> TerrainEdit {
+        strengthen_edit(&self.materials, edit)
     }
 
     /// Level size in chunks.
@@ -403,6 +484,7 @@ impl ChunkStore {
         let mut chunk = Chunk {
             samples,
             paint: BTreeMap::new(),
+            states: BTreeMap::new(),
             surface_cells: 0,
         };
         let m = CHUNK_CELLS as usize - 1;
@@ -422,7 +504,8 @@ impl ChunkStore {
         }
     }
 
-    /// The padded sample grid (and paint) of a chunk, ready for a mesher.
+    /// The padded sample grid (paint, and the surface states active at the
+    /// display tick) of a chunk, ready for a mesher.
     pub fn sample_grid(&mut self, c: ChunkCoord) -> SampleGrid {
         self.ensure_generated(c);
         let o = c.origin();
@@ -446,18 +529,45 @@ impl ChunkStore {
             }
         }
         let mut grid = SampleGrid::from_values(o, values);
-        // Paint of own cells and of the neighbouring cells at local -1.
+        // Paint and states of own cells and of the neighbouring cells at local -1.
         for k in -1..n {
             for j in -1..n {
                 for i in -1..n {
-                    let t = self.team_at_cell([o[0] + i, o[1] + j, o[2] + k]);
-                    if t != NO_TEAM {
+                    let Some((ch, idx)) = self.cell_ref([o[0] + i, o[1] + j, o[2] + k]) else {
+                        continue;
+                    };
+                    if let Some(&t) = ch.paint.get(&idx) {
                         grid.set_team(i, j, k, t);
+                    }
+                    if let Some(until) = ch.states.get(&idx) {
+                        grid.set_states(i, j, k, active_states(until, self.now).bits());
                     }
                 }
             }
         }
         grid
+    }
+
+    /// The generated chunk holding global cell `g`, and the cell's local index.
+    fn cell_ref(&self, g: [i32; 3]) -> Option<(&Chunk, u16)> {
+        let n = CHUNK_CELLS;
+        let c = ChunkCoord::new(g[0].div_euclid(n), g[1].div_euclid(n), g[2].div_euclid(n));
+        let ch = self.chunk_slot(c).and_then(|s| self.chunks[s].as_ref())?;
+        let l = [g[0].rem_euclid(n), g[1].rem_euclid(n), g[2].rem_euclid(n)];
+        Some((ch, cell_index(l[0] as usize, l[1] as usize, l[2] as usize)))
+    }
+
+    /// Per-vertex material ids for a mesh of chunk `c`.
+    fn mesh_materials(&self, c: ChunkCoord, mesh: &mut Mesh) {
+        if mesh.positions.is_empty() {
+            return;
+        }
+        let region = self.materials.region(mesh_region(c).expand(1.0));
+        mesh.materials = mesh
+            .positions
+            .iter()
+            .map(|p| region.at(Vec3::from_array(*p)).id())
+            .collect();
     }
 
     /// World SDF at an integer corner, from stored samples when available.
@@ -503,7 +613,9 @@ impl ChunkStore {
         if !self.contains_chunk(c) || self.is_uniform(c) {
             return Mesh::default();
         }
-        surface_nets(&self.sample_grid(c))
+        let mut mesh = surface_nets(&self.sample_grid(c));
+        self.mesh_materials(c, &mut mesh);
+        mesh
     }
 
     /// Dual-contouring mesh of a chunk (empty for chunks outside the level),
@@ -521,7 +633,10 @@ impl ChunkStore {
         }
         let grid = self.sample_grid(c);
         let sampler = self.chunk_sampler(c);
-        dual_contouring_with_sdf(&grid, &|p| self.eval_with(p, |q| sampler.terrain(q)))
+        let mut mesh =
+            dual_contouring_with_sdf(&grid, &|p| self.eval_with(p, |q| sampler.terrain(q)));
+        self.mesh_materials(c, &mut mesh);
+        mesh
     }
 
     /// True if the chunk (after generating it) is entirely rock or entirely open.
@@ -534,14 +649,75 @@ impl ChunkStore {
 
     /// Paint team of the global cell `g` (cell `g` spans `g .. g + 1`).
     pub fn team_at_cell(&self, g: [i32; 3]) -> u8 {
-        let n = CHUNK_CELLS;
-        let c = ChunkCoord::new(g[0].div_euclid(n), g[1].div_euclid(n), g[2].div_euclid(n));
-        let Some(ch) = self.chunk_slot(c).and_then(|s| self.chunks[s].as_ref()) else {
-            return NO_TEAM;
-        };
-        let l = [g[0].rem_euclid(n), g[1].rem_euclid(n), g[2].rem_euclid(n)];
-        let idx = cell_index(l[0] as usize, l[1] as usize, l[2] as usize);
-        ch.paint.get(&idx).copied().unwrap_or(NO_TEAM)
+        self.cell_ref(g)
+            .and_then(|(ch, idx)| ch.paint.get(&idx).copied())
+            .unwrap_or(NO_TEAM)
+    }
+
+    /// Stored expiry tick of each surface state (hot, charged, glow) of the
+    /// global cell `g`; 0 = never set or cleared. Depends only on the edit
+    /// log, so it is what state hashes read.
+    pub fn surface_state_ticks_at_cell(&self, g: [i32; 3]) -> [u32; SurfaceStates::COUNT] {
+        self.cell_ref(g)
+            .and_then(|(ch, idx)| ch.states.get(&idx).copied())
+            .unwrap_or([0; SurfaceStates::COUNT])
+    }
+
+    /// Surface states of the global cell `g` active at tick `now`.
+    pub fn surface_states_at_cell(&self, g: [i32; 3], now: u32) -> SurfaceStates {
+        active_states(&self.surface_state_ticks_at_cell(g), now)
+    }
+
+    /// Surface states of the cell containing `p`, active at tick `now`.
+    pub fn surface_states_at(&self, p: Vec3, now: u32) -> SurfaceStates {
+        self.surface_states_at_cell(cell_of_point(p), now)
+    }
+
+    /// Union of the surface states active at tick `now` on the cells whose
+    /// centre lies within `radius` of `center` (e.g. a ship scraping a
+    /// charged wall). Reads generated chunks only.
+    pub fn surface_states_near(&self, center: Vec3, radius: f32, now: u32) -> SurfaceStates {
+        if !center.is_finite() || !(0.0..=64.0).contains(&radius) {
+            return SurfaceStates::NONE;
+        }
+        let r2 = radius * radius;
+        let lo = cell_of_point(center - Vec3::splat(radius + 0.5));
+        let hi = cell_of_point(center + Vec3::splat(radius + 0.5));
+        let mut bits = 0u8;
+        for z in lo[2]..=hi[2] {
+            for y in lo[1]..=hi[1] {
+                for x in lo[0]..=hi[0] {
+                    let cc = Vec3::new(x as f32 + 0.5, y as f32 + 0.5, z as f32 + 0.5);
+                    if cc.distance_squared(center) <= r2 {
+                        bits |= self.surface_states_at_cell([x, y, z], now).bits();
+                    }
+                }
+            }
+        }
+        SurfaceStates(bits)
+    }
+
+    /// Display tick of meshes (see [`ChunkStore::advance_to`]).
+    pub fn now(&self) -> u32 {
+        self.now
+    }
+
+    /// Moves the display tick to `now` and returns the chunks (sorted,
+    /// unique) whose meshed surface states change because a state expired
+    /// (or, when moving backwards, becomes active again) in between. Does not
+    /// change any stored state: hashes and queries with an explicit tick are
+    /// unaffected.
+    pub fn advance_to(&mut self, now: u32) -> Vec<ChunkCoord> {
+        let (lo, hi) = (self.now.min(now), self.now.max(now));
+        self.now = now;
+        if lo == hi {
+            return Vec::new();
+        }
+        let mut dirty = BTreeSet::new();
+        for cs in self.expiry.range(lo + 1..=hi).map(|(_, cs)| cs) {
+            dirty.extend(cs.iter().copied());
+        }
+        dirty.into_iter().collect()
     }
 
     /// Paint team of the cell containing `p`.
@@ -582,7 +758,15 @@ impl ChunkStore {
                 radius,
                 team,
             } => self.apply_paint(center, radius, team),
-            _ => self.apply_geometry(edit, index),
+            TerrainEdit::Surface {
+                center,
+                radius,
+                states,
+                until,
+            } => self.apply_surface(center, radius, states, until),
+            TerrainEdit::SubtractSphere { .. } | TerrainEdit::AddSphere { .. } => {
+                self.apply_geometry(edit, index)
+            }
         }
     }
 
@@ -676,25 +860,73 @@ impl ChunkStore {
         }
         let after = chunk.count_surface(clo, chi);
         chunk.surface_cells = chunk.surface_cells + after - before;
-        // Paint lives on surfaces: drop paint from cells that stopped being surface.
-        let mut stale = Vec::new();
-        for &idx in chunk.paint.keys() {
-            let n = CHUNK_CELLS as usize;
-            let (i, j, k) = (
-                idx as usize % n,
-                (idx as usize / n) % n,
-                idx as usize / (n * n),
-            );
-            if !chunk.is_surface_cell(i, j, k) {
-                stale.push(idx);
-            }
-        }
-        for idx in stale {
-            chunk.paint.remove(&idx);
-        }
+        // Paint and states live on surfaces: drop them from cells that
+        // stopped being surface.
+        chunk.drop_stale_layers();
     }
 
     fn apply_paint(&mut self, center: Vec3, radius: f32, team: u8) -> Vec<ChunkCoord> {
+        self.edit_surface_cells(center, radius, |chunk, idx| {
+            let prev = chunk.paint.get(&idx).copied().unwrap_or(NO_TEAM);
+            if prev == team {
+                return false;
+            }
+            if team == NO_TEAM {
+                chunk.paint.remove(&idx);
+            } else {
+                chunk.paint.insert(idx, team);
+            }
+            true
+        })
+    }
+
+    /// Sets the expiry tick `until` of the state bits in `states` on the
+    /// surface cells in the sphere (unknown bits are ignored; `until = 0`
+    /// clears). Returns the chunks whose stored states changed.
+    fn apply_surface(
+        &mut self,
+        center: Vec3,
+        radius: f32,
+        states: u8,
+        until: u32,
+    ) -> Vec<ChunkCoord> {
+        let bits = states & SurfaceStates::ALL.bits();
+        if bits == 0 {
+            return Vec::new();
+        }
+        let dirty = self.edit_surface_cells(center, radius, |chunk, idx| {
+            let entry = chunk.states.entry(idx).or_insert([0; SurfaceStates::COUNT]);
+            let mut changed = false;
+            for (b, u) in entry.iter_mut().enumerate() {
+                if bits >> b & 1 == 1 && *u != until {
+                    *u = until;
+                    changed = true;
+                }
+            }
+            if *entry == [0; SurfaceStates::COUNT] {
+                chunk.states.remove(&idx);
+            }
+            changed
+        });
+        if until > 0 && !dirty.is_empty() {
+            self.expiry
+                .entry(until)
+                .or_default()
+                .extend(dirty.iter().copied());
+        }
+        dirty
+    }
+
+    /// Calls `f(chunk, local cell index)` for every surface cell whose centre
+    /// lies within `radius` of `center` (generating the chunks), in a fixed
+    /// order. `f` returns whether it changed the cell. Returns the chunks
+    /// whose meshes show a changed cell (sorted, unique).
+    fn edit_surface_cells(
+        &mut self,
+        center: Vec3,
+        radius: f32,
+        mut f: impl FnMut(&mut Chunk, u16) -> bool,
+    ) -> Vec<ChunkCoord> {
         let b = Aabb::from_center_half_extents(center, Vec3::splat(radius));
         let r2 = radius * radius;
         let mut changed_cells: Vec<[i32; 3]> = Vec::new();
@@ -728,17 +960,9 @@ impl ChunkStore {
                         if !chunk.is_surface_cell(iu, ju, ku) {
                             continue;
                         }
-                        let idx = cell_index(iu, ju, ku);
-                        let prev = chunk.paint.get(&idx).copied().unwrap_or(NO_TEAM);
-                        if prev == team {
-                            continue;
+                        if f(chunk, cell_index(iu, ju, ku)) {
+                            changed_cells.push([o[0] + i, o[1] + j, o[2] + k]);
                         }
-                        if team == NO_TEAM {
-                            chunk.paint.remove(&idx);
-                        } else {
-                            chunk.paint.insert(idx, team);
-                        }
-                        changed_cells.push([o[0] + i, o[1] + j, o[2] + k]);
                     }
                 }
             }
@@ -954,6 +1178,12 @@ fn bake_edit(
     changed
 }
 
+/// Global cell containing `p`.
+#[inline]
+fn cell_of_point(p: Vec3) -> [i32; 3] {
+    [floor_i32(p.x), floor_i32(p.y), floor_i32(p.z)]
+}
+
 /// World region whose corners feed a chunk's mesh (cells -1..32).
 fn mesh_region(c: ChunkCoord) -> Aabb {
     let b = c.aabb();
@@ -1071,6 +1301,12 @@ mod tests {
                 radius: 5.0,
                 team: 1,
             },
+            TerrainEdit::Surface {
+                center: hit,
+                radius: 5.0,
+                states: SurfaceStates::HOT.bits() | SurfaceStates::GLOW.bits(),
+                until: 700,
+            },
             TerrainEdit::SubtractSphere {
                 center: hit + Vec3::new(-1.0, 0.0, 1.0),
                 radius: 2.0,
@@ -1115,6 +1351,7 @@ mod tests {
                 b.chunks[slot].as_ref().unwrap(),
             );
             assert_eq!(ca.paint, cb.paint, "paint {c:?}");
+            assert_eq!(ca.states, cb.states, "states {c:?}");
             assert_eq!(ca.surface_cells, cb.surface_cells, "surface cells {c:?}");
             let m = CHUNK_CELLS as usize - 1;
             assert_eq!(ca.surface_cells, ca.count_surface([0; 3], [m; 3]));
@@ -1558,6 +1795,198 @@ mod tests {
             assert_eq!(ch.count_surface(lo, hi), n);
         }
         assert!(ch.surface_cells > 1000);
+    }
+
+    /// Global cells of the surface cells within `r` of `p` that hold states.
+    fn state_cells(s: &ChunkStore, p: Vec3, r: i32) -> Vec<[i32; 3]> {
+        let c = cell_of_point(p);
+        let mut out = Vec::new();
+        for z in -r..=r {
+            for y in -r..=r {
+                for x in -r..=r {
+                    let g = [c[0] + x, c[1] + y, c[2] + z];
+                    if s.surface_state_ticks_at_cell(g) != [0; 3] {
+                        out.push(g);
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn surface_states_set_expire_and_clear_per_bit() {
+        let mut s = ChunkStore::new(Generator::with_size(7, Sliders::new(50, 30), [2, 2, 2]));
+        let (hit, _) = surface_point(&s);
+        let hot = TerrainEdit::surface_for_default(hit, 3.0, SurfaceStates::HOT, 100);
+        let dirty = s.apply(hot);
+        assert!(!dirty.is_empty() && dirty.len() <= 8, "{dirty:?}");
+        let cells = state_cells(&s, hit, 4);
+        assert!(cells.len() > 5, "{}", cells.len());
+        for &g in &cells {
+            // Surface cells only, hot until tick 700.
+            let n = CHUNK_CELLS;
+            let c = ChunkCoord::new(g[0].div_euclid(n), g[1].div_euclid(n), g[2].div_euclid(n));
+            let ch = s.chunks[s.chunk_slot(c).unwrap()].as_ref().unwrap();
+            let l = g.map(|v| v.rem_euclid(n) as usize);
+            assert!(ch.is_surface_cell(l[0], l[1], l[2]));
+            assert_eq!(s.surface_state_ticks_at_cell(g), [700, 0, 0]);
+            assert_eq!(s.surface_states_at_cell(g, 699), SurfaceStates::HOT);
+            assert_eq!(s.surface_states_at_cell(g, 700), SurfaceStates::NONE);
+        }
+        // A second state on part of the area keeps the first.
+        s.apply(TerrainEdit::surface_for_default(
+            hit,
+            1.5,
+            SurfaceStates::CHARGED,
+            200,
+        ));
+        let both = s.surface_states_near(hit, 1.0, 650);
+        assert_eq!(both, SurfaceStates::HOT | SurfaceStates::CHARGED);
+        assert_eq!(s.surface_states_near(hit, 1.0, 800), SurfaceStates::CHARGED);
+        assert_eq!(s.surface_states_near(hit, 1.0, 1100), SurfaceStates::NONE);
+        assert_eq!(
+            s.surface_states_near(hit + Vec3::splat(20.0), 1.0, 0),
+            SurfaceStates::NONE
+        );
+        // Re-applying the same state and tick changes nothing.
+        assert!(s.apply(hot).is_empty());
+        // Unknown bits are ignored; no known bit means no change.
+        assert!(s
+            .apply(TerrainEdit::Surface {
+                center: hit,
+                radius: 3.0,
+                states: 0xf8,
+                until: 5000
+            })
+            .is_empty());
+        // `until = 0` clears one state and keeps the others.
+        s.apply(TerrainEdit::Surface {
+            center: hit,
+            radius: 10.0,
+            states: SurfaceStates::HOT.bits(),
+            until: 0,
+        });
+        assert_eq!(s.surface_states_near(hit, 1.0, 0), SurfaceStates::CHARGED);
+        s.apply(TerrainEdit::Surface {
+            center: hit,
+            radius: 10.0,
+            states: SurfaceStates::ALL.bits(),
+            until: 0,
+        });
+        assert!(state_cells(&s, hit, 12).is_empty());
+        assert!(s.chunks.iter().flatten().all(|ch| ch.states.is_empty()));
+        // Paint is a separate layer.
+        assert!(s.paint_coverage().team_cells.is_empty());
+    }
+
+    #[test]
+    fn meshes_show_states_at_the_display_tick_and_expiry_marks_dirty() {
+        let mut s = ChunkStore::new(Generator::with_size(9, Sliders::new(50, 30), [2, 2, 2]));
+        let (hit, _) = surface_point(&s);
+        let c = s.chunk_at(hit).unwrap();
+        let plain = s.mesh_surface_nets(c);
+        assert_eq!(plain.states.len(), plain.vertex_count());
+        assert!(plain.states.iter().all(|&b| b == 0));
+        let dirty = s.apply(TerrainEdit::Surface {
+            center: hit,
+            radius: 3.0,
+            states: SurfaceStates::GLOW.bits(),
+            until: 1800,
+        });
+        assert!(dirty.contains(&c));
+        let lit = s.mesh_surface_nets(c);
+        assert!(lit.states.contains(&SurfaceStates::GLOW.bits()));
+        assert_ne!(lit.hash(), plain.hash());
+        // Same geometry and paint: only the state layer differs.
+        assert_eq!(lit.positions, plain.positions);
+        assert_eq!(lit.teams, plain.teams);
+        // Nothing expires before tick 1800.
+        assert!(s.advance_to(1799).is_empty());
+        assert_eq!(s.mesh_surface_nets(c).hash(), lit.hash());
+        let expired = s.advance_to(1800);
+        assert_eq!(expired, dirty);
+        let dark = s.mesh_surface_nets(c);
+        assert_eq!(dark.hash(), plain.hash());
+        // Going back in time shows the state again (and reports it).
+        assert_eq!(s.advance_to(10), dirty);
+        assert_eq!(s.mesh_surface_nets(c).hash(), lit.hash());
+        assert_eq!(s.now(), 10);
+        // A late joiner replaying the log agrees on stored ticks.
+        let mut b = ChunkStore::replay(s.generator().clone(), s.edit_log());
+        b.advance_to(10);
+        assert_eq!(b.mesh_surface_nets(c).hash(), lit.hash());
+        for g in state_cells(&s, hit, 4) {
+            assert_eq!(
+                b.surface_state_ticks_at_cell(g),
+                s.surface_state_ticks_at_cell(g)
+            );
+        }
+    }
+
+    #[test]
+    fn craters_drop_states_from_vanished_surface() {
+        let mut s = ChunkStore::new(Generator::with_size(7, Sliders::new(50, 30), [2, 2, 2]));
+        let (hit, n) = surface_point(&s);
+        s.apply(TerrainEdit::surface_for_default(
+            hit,
+            4.0,
+            SurfaceStates::CHARGED,
+            0,
+        ));
+        let before = state_cells(&s, hit, 6).len();
+        s.apply(TerrainEdit::SubtractSphere {
+            center: hit - n * 0.5,
+            radius: 3.0,
+        });
+        let after = state_cells(&s, hit, 6);
+        assert!(after.len() < before, "{before} -> {}", after.len());
+        for ch in s.chunks.iter().flatten() {
+            for &idx in ch.states.keys() {
+                let m = CHUNK_CELLS as usize;
+                let i = idx as usize;
+                assert!(ch.is_surface_cell(i % m, (i / m) % m, i / (m * m)));
+            }
+        }
+    }
+
+    #[test]
+    fn meshes_carry_materials_and_craters_respect_strength() {
+        let mut s = store(50, 50);
+        let (hit, _) = surface_point(&s);
+        let c = s.chunk_at(hit).unwrap();
+        let m = s.mesh_surface_nets(c);
+        assert_eq!(m.materials.len(), m.vertex_count());
+        for (p, id) in m.positions.iter().zip(&m.materials).step_by(7) {
+            assert_eq!(*id, s.material_at(Vec3::from_array(*p)).id());
+        }
+        let dc = s.mesh_dual_contouring(c);
+        assert_eq!(dc.materials.len(), dc.vertex_count());
+        // Strengthened craters: weak rock yields a bigger hole than hard rock.
+        let mut weak = None;
+        let mut hard = None;
+        for i in 0..2000 {
+            let p = Vec3::new(
+                10.0 + (i * 37 % 236) as f32,
+                10.0 + (i * 11 % 108) as f32,
+                10.0 + (i * 53 % 236) as f32,
+            );
+            match s.material_at(p) {
+                Material::Weak if weak.is_none() => weak = Some(p),
+                Material::Hard if hard.is_none() => hard = Some(p),
+                _ => {}
+            }
+        }
+        let crater = |p: Vec3| TerrainEdit::SubtractSphere {
+            center: p,
+            radius: 2.0,
+        };
+        let w = s.strengthen(crater(weak.unwrap()));
+        let h = s.strengthen(crater(hard.unwrap()));
+        assert!(w.radius() > 2.0 && h.radius() < 2.0, "{w:?} {h:?}");
+        assert_eq!(s.generator().material_at(weak.unwrap()), Material::Weak);
+        // Strengthening does not log anything by itself.
+        assert!(s.edit_log().is_empty());
     }
 
     #[test]

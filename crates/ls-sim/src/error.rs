@@ -36,4 +36,12 @@ pub enum SimError {
     UnknownPlayer(crate::PlayerId),
     #[error("too many players")]
     TooManyPlayers,
+    #[error("invalid gadget `{id}`: {reason}")]
+    InvalidGadget { id: String, reason: String },
+    #[error("unknown gadget `{0}`")]
+    UnknownGadget(String),
+    #[error("gadget `{0}` is banned by the rule set")]
+    GadgetBanned(String),
+    #[error("rule set code: {0}")]
+    RuleSetCode(String),
 }

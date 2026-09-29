@@ -15,11 +15,18 @@ import type { Aabb } from "./frustum.ts";
 /** Paint id of an unpainted vertex (ls-worldgen `NO_TEAM`). */
 export const NO_TEAM = 255;
 
+/** Surface state bits per terrain vertex (ls-wasm `game::SURFACE_*`). */
+export const SURFACE_HOT = 1;
+export const SURFACE_CHARGED = 2;
+export const SURFACE_GLOW = 4;
+
 export interface MeshData {
   positions: Float32Array;
   normals: Float32Array;
   indices: Uint32Array;
   team: Uint8Array;
+  /** Optional surface state bits per vertex (empty or absent = none). */
+  surface?: Uint8Array;
 }
 
 export class MeshError extends Error {
@@ -33,6 +40,10 @@ export function validateMesh(mesh: MeshData): void {
   const vertexCount = positions.length / 3;
   if (normals.length !== positions.length) throw new MeshError("normals length differs from positions");
   if (team.length !== vertexCount) throw new MeshError("team must have one entry per vertex");
+  const surface = mesh.surface;
+  if (surface && surface.length > 0 && surface.length !== vertexCount) {
+    throw new MeshError("surface must be empty or have one entry per vertex");
+  }
   if (indices.length % 3 !== 0) throw new MeshError("indices length is not a multiple of 3");
   for (let i = 0; i < indices.length; i++) {
     if ((indices[i] ?? 0) >= vertexCount) throw new MeshError(`index ${i} out of range`);
@@ -59,11 +70,15 @@ export function computeAabb(positions: Float32Array): Aabb | null {
 /**
  * Widens the per-vertex team bytes to u32 for the GPU. WebGPU vertex buffers
  * need 4-byte strides and the single-byte `uint8` vertex format is not yet
- * universally supported, so one u32 per vertex is the portable choice.
+ * universally supported, so one u32 per vertex is the portable choice. The
+ * optional surface state bits go into bits 8-15 (shaders.ts SURFACE_SHIFT).
  */
-export function expandTeams(team: Uint8Array): Uint32Array {
+export function expandTeams(team: Uint8Array, surface?: Uint8Array): Uint32Array {
   const out = new Uint32Array(team.length);
   out.set(team);
+  if (surface && surface.length === team.length) {
+    for (let i = 0; i < out.length; i++) out[i] = (out[i] ?? 0) | ((surface[i] ?? 0) << 8);
+  }
   return out;
 }
 
@@ -119,7 +134,7 @@ export class GpuMesh {
     this.aabb = computeAabb(mesh.positions);
     this.positionBuffer = createBuffer(device, mesh.positions, GPUBufferUsage.VERTEX, `${label}.positions`);
     this.normalBuffer = createBuffer(device, mesh.normals, GPUBufferUsage.VERTEX, `${label}.normals`);
-    this.teamBuffer = createBuffer(device, expandTeams(mesh.team), GPUBufferUsage.VERTEX, `${label}.team`);
+    this.teamBuffer = createBuffer(device, expandTeams(mesh.team, mesh.surface), GPUBufferUsage.VERTEX, `${label}.team`);
     this.indexBuffer = createBuffer(device, mesh.indices, GPUBufferUsage.INDEX, `${label}.indices`);
   }
 

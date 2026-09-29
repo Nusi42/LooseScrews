@@ -1,9 +1,10 @@
 // Thin WebGPU renderer: world-space terrain chunks (frustum-culled per chunk
-// AABB) plus instanced ships and projectiles, all lit and fogged by the shaders
-// in shaders.ts.
+// AABB) plus instanced objects (ships, projectiles, pickups, debris, wrecks,
+// ...), one batch per mesh kind (primitives.ts MESH_BUILDERS) in an opaque
+// and a translucent pass, all lit and fogged by the shaders in shaders.ts.
 //
-// Wave 3 plugs in by calling `setChunk(key, mesh)` with meshes produced by
-// ls-wasm and `setInstances(...)` with interpolated ship/projectile state.
+// The game calls `setChunk(key, mesh)` with meshes produced by ls-wasm and
+// `setScene(...)` with the instances built by game/scene.ts each frame.
 
 import * as mat4 from "../math/mat4.ts";
 import type { Quat } from "../math/quat.ts";
@@ -12,8 +13,8 @@ import { CanvasSizer } from "./canvas.ts";
 import { Frustum } from "./frustum.ts";
 import { initGpu, type GpuContext } from "./gpu.ts";
 import { GpuMesh, type MeshData } from "./mesh.ts";
-import { projectileMesh, shipMesh } from "./primitives.ts";
-import { FRAME_UNIFORM_FLOATS, INSTANCED_WGSL, TEAM_SLOTS, TERRAIN_WGSL } from "./shaders.ts";
+import { MESH_BUILDERS, MESH_KINDS, type MeshKind } from "./primitives.ts";
+import { FRAME_UNIFORM_FLOATS, INSTANCED_WGSL, TEAM_SLOTS, TERRAIN_WGSL, TRANSLUCENT_WGSL } from "./shaders.ts";
 
 export type Rgb = readonly [number, number, number];
 
@@ -52,7 +53,7 @@ export const DEFAULT_SETTINGS: RenderSettings = {
   headlight: 0.9,
 };
 
-/** One instanced object (ship or projectile). */
+/** One instanced object (ship, projectile, pickup, debris, ...). */
 export interface Instance {
   position: Vec3;
   rotation: Quat;
@@ -60,12 +61,19 @@ export interface Instance {
   color: Rgb;
   /** 0 = fully lit, 1 = fully emissive (glowing bolts). */
   emissive: number;
+  /** Extra length factor along the local Z axis (trails); default 1. */
+  stretch?: number;
+  /** Opacity in the translucent pass (ignored when opaque); default 1. */
+  opacity?: number;
 }
 
-/** Floats per instance in the instance vertex buffer: offset+scale, rotation, colour+emissive. */
-export const INSTANCE_FLOATS = 12;
+/**
+ * Floats per instance in the instance vertex buffer: offset+scale,
+ * rotation, colour+emissive, stretch+opacity (+2 padding).
+ */
+export const INSTANCE_FLOATS = 16;
 
-/** Packs instances into the GPU layout used by INSTANCED_WGSL. */
+/** Packs instances into the GPU layout used by INSTANCED_WGSL / TRANSLUCENT_WGSL. */
 export function packInstances(instances: readonly Instance[], out?: Float32Array): Float32Array {
   const needed = instances.length * INSTANCE_FLOATS;
   const data = out && out.length >= needed ? out : new Float32Array(needed);
@@ -83,11 +91,26 @@ export function packInstances(instances: readonly Instance[], out?: Float32Array
     data[o + 9] = inst.color[1];
     data[o + 10] = inst.color[2];
     data[o + 11] = inst.emissive;
+    data[o + 12] = inst.stretch ?? 1;
+    data[o + 13] = inst.opacity ?? 1;
+    data[o + 14] = 0;
+    data[o + 15] = 0;
   });
   return data;
 }
 
-export type InstanceKind = "ships" | "projectiles";
+/** Opaque pass (depth-written) or translucent pass (blended, drawn after). */
+export type RenderPass = "opaque" | "translucent";
+
+/** Instances per mesh kind for each pass (built by game/scene.ts). */
+export interface SceneInstances {
+  opaque: Partial<Record<MeshKind, Instance[]>>;
+  translucent: Partial<Record<MeshKind, Instance[]>>;
+}
+
+export function emptyScene(): SceneInstances {
+  return { opaque: {}, translucent: {} };
+}
 
 export interface FrameStats {
   chunksTotal: number;
@@ -123,9 +146,11 @@ const INSTANCE_LAYOUT: GPUVertexBufferLayout = {
     { shaderLocation: 2, offset: 0, format: "float32x4" },
     { shaderLocation: 3, offset: 16, format: "float32x4" },
     { shaderLocation: 4, offset: 32, format: "float32x4" },
+    { shaderLocation: 5, offset: 48, format: "float32x4" },
   ],
 };
 
+/** Instances of one shared mesh (the batch does not own the mesh). */
 class InstanceBatch {
   readonly mesh: GpuMesh;
   private buffer: GPUBuffer | null = null;
@@ -165,7 +190,6 @@ class InstanceBatch {
 
   destroy(): void {
     this.buffer?.destroy();
-    this.mesh.destroy();
   }
 }
 
@@ -181,8 +205,13 @@ export class Renderer {
   private readonly bindGroup: GPUBindGroup;
   private readonly terrainPipeline: GPURenderPipeline;
   private readonly instancedPipeline: GPURenderPipeline;
+  private readonly translucentPipeline: GPURenderPipeline;
   private readonly chunks = new Map<string, GpuMesh>();
-  private readonly batches: Record<InstanceKind, InstanceBatch>;
+  private readonly meshes: Record<MeshKind, GpuMesh>;
+  private readonly batches: Record<RenderPass, Map<MeshKind, InstanceBatch>> = {
+    opaque: new Map(),
+    translucent: new Map(),
+  };
   private readonly frustum = new Frustum();
   private depthTexture: GPUTexture | null = null;
   private startTime = performance.now();
@@ -264,10 +293,36 @@ export class Renderer {
       depthStencil,
     });
 
-    this.batches = {
-      ships: new InstanceBatch(new GpuMesh(device, shipMesh(), "ship")),
-      projectiles: new InstanceBatch(new GpuMesh(device, projectileMesh(), "projectile")),
-    };
+    const translucentModule = device.createShaderModule({ label: "translucent", code: TRANSLUCENT_WGSL });
+    this.translucentPipeline = device.createRenderPipeline({
+      label: "translucent",
+      layout,
+      vertex: {
+        module: translucentModule,
+        entryPoint: "vs_main",
+        buffers: [POSITION_LAYOUT, NORMAL_LAYOUT, INSTANCE_LAYOUT],
+      },
+      fragment: {
+        module: translucentModule,
+        entryPoint: "fs_main",
+        targets: [
+          {
+            format: gpu.format,
+            blend: {
+              color: { srcFactor: "src-alpha", dstFactor: "one-minus-src-alpha", operation: "add" },
+              alpha: { srcFactor: "one", dstFactor: "one-minus-src-alpha", operation: "add" },
+            },
+          },
+        ],
+      },
+      // Both faces: the inside of a dust cloud is visible from within.
+      primitive: { topology: "triangle-list", cullMode: "none", frontFace: "ccw" },
+      depthStencil: { format: DEPTH_FORMAT, depthWriteEnabled: false, depthCompare: "less" },
+    });
+
+    const meshes = {} as Record<MeshKind, GpuMesh>;
+    for (const kind of MESH_KINDS) meshes[kind] = new GpuMesh(device, MESH_BUILDERS[kind](), kind);
+    this.meshes = meshes;
   }
 
   /** True once the GPU device is lost; the frame loop should stop. */
@@ -307,17 +362,42 @@ export class Renderer {
     return this.chunks.size;
   }
 
-  setInstances(kind: InstanceKind, instances: readonly Instance[]): void {
-    this.batches[kind].update(this.device, instances);
+  /** Replaces the instances of one mesh kind in one pass. */
+  setInstances(kind: MeshKind, instances: readonly Instance[], pass: RenderPass = "opaque"): void {
+    const batches = this.batches[pass];
+    let batch = batches.get(kind);
+    if (!batch) {
+      if (instances.length === 0) return;
+      batch = new InstanceBatch(this.meshes[kind]);
+      batches.set(kind, batch);
+    }
+    batch.update(this.device, instances);
+  }
+
+  /** Replaces every instance: kinds missing from `scene` are cleared. */
+  setScene(scene: SceneInstances): void {
+    for (const pass of ["opaque", "translucent"] as const) {
+      const wanted = scene[pass];
+      for (const kind of MESH_KINDS) this.setInstances(kind, wanted[kind] ?? [], pass);
+    }
+  }
+
+  /** Removes every instance (before a new match). */
+  clearInstances(): void {
+    this.setScene(emptyScene());
+  }
+
+  /** View-projection matrix of `camera` at the current canvas aspect (screen-space labels). */
+  viewProjection(camera: CameraView): mat4.Mat4 {
+    const proj = mat4.perspective(camera.fovY, this.sizer.aspect, camera.near, camera.far);
+    return mat4.multiply(proj, mat4.viewFromPose(camera.position, camera.orientation));
   }
 
   render(camera: CameraView): FrameStats {
     this.sizer.update();
     this.ensureDepthTexture();
 
-    const proj = mat4.perspective(camera.fovY, this.sizer.aspect, camera.near, camera.far);
-    const view = mat4.viewFromPose(camera.position, camera.orientation);
-    const viewProj = mat4.multiply(proj, view);
+    const viewProj = this.viewProjection(camera);
     this.frustum.setFromViewProj(viewProj);
     this.writeFrameUniforms(viewProj, camera.position);
 
@@ -354,11 +434,17 @@ export class Renderer {
       stats.triangles += mesh.indexCount / 3;
     }
 
-    pass.setPipeline(this.instancedPipeline);
-    for (const batch of Object.values(this.batches)) {
-      batch.draw(pass);
-      stats.instances += batch.count;
-      stats.triangles += (batch.mesh.indexCount / 3) * batch.count;
+    const passes: Array<[RenderPass, GPURenderPipeline]> = [
+      ["opaque", this.instancedPipeline],
+      ["translucent", this.translucentPipeline],
+    ];
+    for (const [kind, pipeline] of passes) {
+      pass.setPipeline(pipeline);
+      for (const batch of this.batches[kind].values()) {
+        batch.draw(pass);
+        stats.instances += batch.count;
+        stats.triangles += (batch.mesh.indexCount / 3) * batch.count;
+      }
     }
 
     pass.end();
@@ -368,7 +454,8 @@ export class Renderer {
 
   destroy(): void {
     this.clearChunks();
-    for (const batch of Object.values(this.batches)) batch.destroy();
+    for (const batches of Object.values(this.batches)) for (const batch of batches.values()) batch.destroy();
+    for (const mesh of Object.values(this.meshes)) mesh.destroy();
     this.depthTexture?.destroy();
     this.frameBuffer.destroy();
     this.sizer.dispose();

@@ -9,20 +9,30 @@
 //!    preferred distance, aim with lead for the equipped weapon's projectile
 //!    speed, fire the primary (Scrap Laser, or the Rivet Gun once picked up)
 //!    when the nose is on the lead point, and a Bolt Rocket now and then.
-//! 3. **Paint and wander** otherwise: fly between random open-space points
+//! 3. **Hunt** when an enemy is alive but out of sight or range: follow a
+//!    [`Navigator`] route to it across the level (to the enemy spawn area
+//!    when no enemy is alive), painting walls on the way. After
+//!    [`BrainConfig::hunt_secs`] without a fight, or at the end of a route
+//!    that cannot reach the enemy, the bot takes a break of
+//!    [`BrainConfig::hunt_break_secs`] to paint and wander.
+//! 4. **Paint and wander** otherwise: fly between random open-space points
 //!    (sometimes pickup points) and paint nearby walls with the Paint
 //!    Thrower.
 //!
-//! Every movement request goes through [`avoid_walls`], so bots stay clear
-//! of rock whatever the plan says.
+//! Long trips (hunting, wandering, travel to scrap) follow navigation routes
+//! once the bot's grid is built (see [`crate::nav`]); before that, or when no
+//! route exists, bots fly straight at the goal. Every movement request goes
+//! through [`avoid_walls`], so bots stay clear of rock whatever the plan
+//! says; in narrow passages the route lowers the wall clearance and speed.
 
 use ls_game::client::ClientSession;
-use ls_game::ls_math::terrain::TerrainQuery;
+use ls_game::ls_math::terrain::{TerrainEdit, TerrainQuery};
 use ls_game::ls_math::{Aabb, Pcg32, Quat, Vec3, DT, TICK_HZ};
 use ls_game::ls_net::ship_flags;
 use ls_game::ls_sim::{Buttons, InputCmd, ShipTuning, WeaponCost, WeaponId, WeaponTable};
 
 use crate::aim::{aim_tolerance, clear_shot, lead_point};
+use crate::nav::{NavConfig, NavSteer, Navigator};
 use crate::steering::{
     angle_between, arrive, avoid_walls, look_toward, random_open_point, random_unit,
     thrust_for_velocity, SteerConfig,
@@ -168,6 +178,7 @@ impl Arsenal {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BrainConfig {
     pub steer: SteerConfig,
+    pub nav: NavConfig,
     /// Enemies further than this (u) are ignored.
     pub engage_range: f32,
     /// Distance (u) the bot tries to keep from its target.
@@ -187,12 +198,17 @@ pub struct BrainConfig {
     pub rocket_range: (f32, f32),
     /// Seconds between rockets (plus up to one second of jitter).
     pub rocket_interval_secs: f32,
+    /// Hunt at most this long without a fight before a break.
+    pub hunt_secs: f32,
+    /// Length of a hunting break (paint and wander).
+    pub hunt_break_secs: f32,
 }
 
 impl Default for BrainConfig {
     fn default() -> Self {
         BrainConfig {
             steer: SteerConfig::default(),
+            nav: NavConfig::default(),
             engage_range: 55.0,
             preferred_range: 16.0,
             low_hull: 0.35,
@@ -202,6 +218,8 @@ impl Default for BrainConfig {
             paint_energy_reserve: 20.0,
             rocket_range: (7.0, 35.0),
             rocket_interval_secs: 1.5,
+            hunt_secs: 90.0,
+            hunt_break_secs: 8.0,
         }
     }
 }
@@ -214,6 +232,8 @@ pub enum Mode {
     Wander,
     Paint,
     Combat,
+    /// Travelling towards enemies out of sight (or their spawn area).
+    Hunt,
     Scavenge,
 }
 
@@ -225,6 +245,8 @@ pub struct BrainCounters {
     pub wander_ticks: u64,
     pub paint_ticks: u64,
     pub combat_ticks: u64,
+    /// Ticks spent flying towards enemies out of sight (global navigation).
+    pub hunt_ticks: u64,
     pub scavenge_ticks: u64,
     pub dead_ticks: u64,
     pub laser_triggers: u64,
@@ -240,6 +262,7 @@ impl BrainCounters {
         self.wander_ticks += o.wander_ticks;
         self.paint_ticks += o.paint_ticks;
         self.combat_ticks += o.combat_ticks;
+        self.hunt_ticks += o.hunt_ticks;
         self.scavenge_ticks += o.scavenge_ticks;
         self.dead_ticks += o.dead_ticks;
         self.laser_triggers += o.laser_triggers;
@@ -307,6 +330,15 @@ pub struct Brain {
     wrecks: Vec<(Vec3, u64)>,
     exhausted: Vec<(Vec3, u64)>,
     scavenge: Option<ScavengeJob>,
+
+    nav: Navigator,
+    /// Spawn points of all teams (team, position).
+    spawns: Vec<(u8, Vec3)>,
+    hunt_target: Option<u8>,
+    hunt_spawn: Option<Vec3>,
+    /// Tick the current hunt (without a fight) started.
+    hunt_since: Option<u64>,
+    hunt_break_until: u64,
 }
 
 const TICKS_PER_SEC: f32 = TICK_HZ as f32;
@@ -332,6 +364,9 @@ struct Plan {
     fire_primary: bool,
     fire_secondary: bool,
     scavenge: bool,
+    /// Wall clearance for [`avoid_walls`] instead of the configured one
+    /// (narrow passages on a route).
+    clearance: Option<f32>,
 }
 
 impl Plan {
@@ -345,6 +380,7 @@ impl Plan {
             fire_primary: false,
             fire_secondary: false,
             scavenge: false,
+            clearance: None,
         }
     }
 }
@@ -387,6 +423,12 @@ impl Brain {
             wrecks: Vec::new(),
             exhausted: Vec::new(),
             scavenge: None,
+            nav: Navigator::new(bounds, cfg.nav),
+            spawns: Vec::new(),
+            hunt_target: None,
+            hunt_spawn: None,
+            hunt_since: None,
+            hunt_break_until: 0,
         }
     }
 
@@ -418,6 +460,28 @@ impl Brain {
         &self.scrap_spots
     }
 
+    /// Sets the match's spawn points (team, position); bots with no enemy
+    /// alive hunt near the other teams' spawns.
+    pub fn set_spawn_points(&mut self, spawns: Vec<(u8, Vec3)>) {
+        self.spawns = spawns;
+    }
+
+    /// The navigation grid and route.
+    pub fn navigator(&self) -> &Navigator {
+        &self.nav
+    }
+
+    /// A terrain edit arrived: craters (and added rock) update the
+    /// navigation grid.
+    pub fn on_terrain_edit(&mut self, edit: &TerrainEdit) {
+        self.nav.on_edit(edit);
+    }
+
+    /// Wire id of the enemy being hunted.
+    pub fn hunt_target(&self) -> Option<u8> {
+        self.hunt_target
+    }
+
     /// A ship was destroyed at `pos` (tick `now`): its wreck holds scrap.
     pub fn on_wreck(&mut self, pos: Vec3, now: u64) {
         self.wrecks.push((pos, now + WRECK_TICKS));
@@ -435,6 +499,8 @@ impl Brain {
     ) -> InputCmd {
         let mut cmd = InputCmd::idle(p.tick);
         cmd.buttons = Buttons::HORIZON_ASSIST;
+        // The grid builds (and follows edits) in the background, dead or alive.
+        self.nav.update(terrain);
         if !p.alive {
             self.on_death();
             counters.dead_ticks += 1;
@@ -470,12 +536,17 @@ impl Brain {
             });
         }
 
+        if target.is_some() {
+            self.hunt_since = None;
+        }
         self.mode = if self.scavenge.is_some() {
-            self.plan_scavenge(p, &mut plan);
+            self.plan_scavenge(p, terrain, &mut plan);
             Mode::Scavenge
         } else if let Some(t) = target {
-            self.plan_orbit(p, &t, &mut plan);
+            self.plan_orbit(p, terrain, &t, &mut plan);
             Mode::Combat
+        } else if self.plan_hunt(p, terrain, &mut plan) {
+            Mode::Hunt
         } else {
             self.plan_wander(p, terrain, &mut plan);
             if self.paint.is_some() {
@@ -490,7 +561,7 @@ impl Brain {
             self.paint = None;
         } else if self.mode != Mode::Scavenge {
             self.plan_paint(p, terrain, &mut plan);
-            if self.paint.is_some() {
+            if self.paint.is_some() && self.mode == Mode::Wander {
                 self.mode = Mode::Paint;
             }
         }
@@ -499,6 +570,7 @@ impl Brain {
             Mode::Wander => counters.wander_ticks += 1,
             Mode::Paint => counters.paint_ticks += 1,
             Mode::Combat => counters.combat_ticks += 1,
+            Mode::Hunt => counters.hunt_ticks += 1,
             Mode::Scavenge => counters.scavenge_ticks += 1,
             Mode::Dead => counters.dead_ticks += 1,
         }
@@ -518,6 +590,9 @@ impl Brain {
         self.wander = None;
         // Respawning resets the loadout to the rule set's starting weapons.
         self.rivet = RivetProbe::default();
+        self.nav.clear_route();
+        self.hunt_target = None;
+        self.hunt_since = None;
     }
 
     fn on_spawn(&mut self, now: u64) {
@@ -575,10 +650,26 @@ impl Brain {
 
     // ----- movement plans ----------------------------------------------------
 
-    fn plan_orbit(&mut self, p: &Perception, t: &Contact, plan: &mut Plan) {
+    fn plan_orbit<T: TerrainQuery + ?Sized>(
+        &mut self,
+        p: &Perception,
+        terrain: &T,
+        t: &Contact,
+        plan: &mut Plan,
+    ) {
         let cruise = self.tuning.cruise_speed;
         let to = t.pos - p.pos;
         let dist = to.length().max(1e-3);
+        // Far away (in caves the straight way in is usually blocked): close
+        // in along a route, guns on the target.
+        if dist > self.cfg.preferred_range + 12.0
+            && self
+                .plan_travel(p, terrain, t.pos, cruise, false, plan)
+                .is_some()
+        {
+            plan.aim = Some(t.pos);
+            return;
+        }
         let radial = to / dist;
         if p.tick >= self.next_strafe_flip {
             self.strafe_sign = -self.strafe_sign;
@@ -630,9 +721,128 @@ impl Brain {
         } else {
             self.tuning.cruise_speed
         };
-        plan.boost = boost_ok;
-        plan.desired_vel = arrive(p.pos, goal, speed, 8.0);
-        plan.goal_dist = dist;
+        if self
+            .plan_travel(p, terrain, goal, speed, boost_ok, plan)
+            .is_none()
+        {
+            plan.boost = boost_ok;
+            plan.desired_vel = arrive(p.pos, goal, speed, 8.0);
+            plan.goal_dist = dist;
+        }
+    }
+
+    /// Flies along a navigation route to `goal` at up to `speed` (capped at
+    /// cruise speed and slower in narrow passages; boosting on long, wide
+    /// stretches if `boost`). `None`, with `plan` untouched, while there is
+    /// no route.
+    fn plan_travel<T: TerrainQuery + ?Sized>(
+        &mut self,
+        p: &Perception,
+        terrain: &T,
+        goal: Vec3,
+        speed: f32,
+        boost: bool,
+        plan: &mut Plan,
+    ) -> Option<NavSteer> {
+        let s = self.nav.steer(terrain, p.pos, goal, p.tick)?;
+        let t = &self.tuning;
+        let narrow = ((s.clearance - 0.3) / 0.9).clamp(0.4, 1.0);
+        let boosting = boost
+            && s.clearance >= 4.0
+            && s.dist > 20.0
+            && p.boost > 0.6 * t.boost_max
+            && p.vel.length() > 0.8 * t.cruise_speed;
+        let v = if boosting {
+            t.boost_speed
+        } else {
+            speed.min(t.cruise_speed) * narrow
+        };
+        plan.desired_vel = if s.last {
+            arrive(p.pos, s.waypoint, v, 8.0)
+        } else {
+            (s.waypoint - p.pos).normalize_or_zero() * v
+        };
+        plan.goal_dist = s.dist;
+        plan.boost = boosting;
+        plan.clearance = Some((s.clearance * 0.8).clamp(0.6, self.cfg.steer.clearance));
+        Some(s)
+    }
+
+    /// Hunting: travel towards the chosen enemy (or an enemy spawn point).
+    /// False if the bot should not or cannot hunt right now.
+    fn plan_hunt<T: TerrainQuery + ?Sized>(
+        &mut self,
+        p: &Perception,
+        terrain: &T,
+        plan: &mut Plan,
+    ) -> bool {
+        if p.tick < self.hunt_break_until || !self.nav.is_ready() {
+            return false;
+        }
+        let since = *self.hunt_since.get_or_insert(p.tick);
+        if p.tick > since + (self.cfg.hunt_secs * TICKS_PER_SEC) as u64 {
+            self.take_hunt_break(p.tick);
+            return false;
+        }
+        let Some((goal, is_spawn)) = self.hunt_goal(p) else {
+            return false;
+        };
+        let cruise = self.tuning.cruise_speed;
+        let Some(s) = self.plan_travel(p, terrain, goal, cruise, true, plan) else {
+            return false;
+        };
+        if s.last && s.dist < 4.0 {
+            if is_spawn {
+                // Nobody here: try another spawn point.
+                self.hunt_spawn = None;
+            } else if !s.complete {
+                // As close as the level allows: give up on it for a while.
+                self.take_hunt_break(p.tick);
+            }
+        }
+        true
+    }
+
+    fn take_hunt_break(&mut self, now: u64) {
+        self.hunt_break_until = now + (self.cfg.hunt_break_secs * TICKS_PER_SEC) as u64;
+        self.hunt_since = None;
+        self.hunt_target = None;
+        self.hunt_spawn = None;
+        self.nav.clear_route();
+    }
+
+    /// Where to hunt: the current or a much closer enemy, else an enemy
+    /// spawn point (`true` in the second field).
+    fn hunt_goal(&mut self, p: &Perception) -> Option<(Vec3, bool)> {
+        let dist = |c: &Contact| c.pos.distance(p.pos);
+        let enemies = || p.contacts.iter().filter(|c| c.team != p.team);
+        let current = self
+            .hunt_target
+            .and_then(|id| enemies().find(|c| c.id == id));
+        let nearest = enemies().min_by(|a, b| dist(a).total_cmp(&dist(b)));
+        let pick = match (current, nearest) {
+            (Some(c), Some(n)) if dist(n) < 0.6 * dist(c) => Some(n),
+            (Some(c), _) => Some(c),
+            (None, n) => n,
+        };
+        if let Some(e) = pick {
+            self.hunt_target = Some(e.id);
+            self.hunt_spawn = None;
+            return Some((e.pos, false));
+        }
+        self.hunt_target = None;
+        if self.hunt_spawn.is_none() {
+            let theirs: Vec<Vec3> = self
+                .spawns
+                .iter()
+                .filter(|(team, _)| *team != p.team)
+                .map(|(_, q)| *q)
+                .collect();
+            if !theirs.is_empty() {
+                self.hunt_spawn = Some(theirs[self.rng.below(theirs.len() as u32) as usize]);
+            }
+        }
+        self.hunt_spawn.map(|q| (q, true))
     }
 
     fn pick_wander_point<T: TerrainQuery + ?Sized>(
@@ -647,6 +857,16 @@ impl Brain {
         }
         // Prefer points some distance away so bots cross the level.
         let mut fallback = None;
+        if self.nav.is_ready() {
+            for _ in 0..4 {
+                let q = self.nav.grid().random_node(&mut self.rng)?;
+                if q.distance(p.pos) > 25.0 {
+                    return Some(q);
+                }
+                fallback = Some(q);
+            }
+            return fallback;
+        }
         for _ in 0..4 {
             let q = random_open_point(terrain, &mut self.rng, self.bounds, 8.0, 4.0, 16)?;
             if q.distance(p.pos) > 25.0 {
@@ -674,7 +894,12 @@ impl Brain {
             .copied()
     }
 
-    fn plan_scavenge(&mut self, p: &Perception, plan: &mut Plan) {
+    fn plan_scavenge<T: TerrainQuery + ?Sized>(
+        &mut self,
+        p: &Perception,
+        terrain: &T,
+        plan: &mut Plan,
+    ) {
         let Some(mut job) = self.scavenge else {
             return;
         };
@@ -682,8 +907,14 @@ impl Brain {
         let dist = job.spot.distance(p.pos);
         let mut give_up = false;
         if dist > reach {
-            plan.desired_vel = arrive(p.pos, job.spot, self.tuning.cruise_speed, 8.0);
-            plan.goal_dist = dist;
+            let cruise = self.tuning.cruise_speed;
+            if self
+                .plan_travel(p, terrain, job.spot, cruise, false, plan)
+                .is_none()
+            {
+                plan.desired_vel = arrive(p.pos, job.spot, cruise, 8.0);
+                plan.goal_dist = dist;
+            }
             plan.aim = Some(job.spot);
             job.check_tick = None;
             give_up = p.tick > job.started + SCAVENGE_TRAVEL_TICKS;
@@ -883,13 +1114,20 @@ impl Brain {
         counters: &mut BrainCounters,
     ) {
         let t = &self.tuning;
+        let mut steer_cfg = self.cfg.steer;
+        if let Some(c) = plan.clearance {
+            // On a route: the way to the waypoint is known to be clear, so
+            // brake for rock along the motion later than when roaming.
+            steer_cfg.clearance = c;
+            steer_cfg.brake_margin = steer_cfg.brake_margin.min(1.0);
+        }
         let steer = avoid_walls(
             terrain,
             p.pos,
             p.vel,
             plan.desired_vel,
             plan.goal_dist,
-            &self.cfg.steer,
+            &steer_cfg,
         );
         let want = plan.desired_vel.length();
         let vel = if want > 1e-3 {
@@ -1235,5 +1473,110 @@ mod tests {
         assert!(contacts < 10, "{contacts} ticks in contact with rock");
         assert!(max_travel > 20.0, "bot did not move: {max_travel}");
         assert!(c.wander_ticks + c.paint_ticks > 0);
+    }
+    /// Steps the bot through the flight model for up to `ticks` (until
+    /// `until` holds); returns the modes seen.
+    fn fly(
+        b: &mut Brain,
+        t: &BoxRoomTerrain,
+        p: &mut Perception,
+        ticks: u64,
+        mut until: impl FnMut(&Brain, &Perception) -> bool,
+    ) -> Vec<Mode> {
+        let mut s = ship(p);
+        let mut c = BrainCounters::default();
+        let mut modes = Vec::new();
+        for _ in 0..ticks {
+            let cmd = b.think(p, t, &mut c);
+            if !modes.contains(&b.mode()) {
+                modes.push(b.mode());
+            }
+            if until(b, p) {
+                break;
+            }
+            simulate_movement(&mut s, &cmd, &ShipTuning::tinker(), t);
+            p.pos = s.pos;
+            p.vel = s.vel;
+            p.orientation = s.orientation;
+            p.boost = s.boost;
+            p.energy = s.energy;
+            p.tick += 1;
+        }
+        modes
+    }
+
+    #[test]
+    fn hunts_an_enemy_out_of_sight_until_it_can_fight() {
+        // A rock ball between the bot and an enemy hovering behind it.
+        let mut t = room();
+        t.apply(ls_game::ls_math::TerrainEdit::AddSphere {
+            center: Vec3::ZERO,
+            radius: 12.0,
+        });
+        let mut b = brain(&t, vec![]);
+        let mut p = perception(Vec3::new(0.0, 0.0, -30.0));
+        let enemy = Contact {
+            id: 5,
+            team: 1,
+            pos: Vec3::new(0.0, 0.0, 30.0),
+            vel: Vec3::ZERO,
+        };
+        p.contacts = vec![enemy];
+        let modes = fly(&mut b, &t, &mut p, 60 * 30, |b, _| b.mode() == Mode::Combat);
+        assert!(modes.contains(&Mode::Hunt), "{modes:?}");
+        assert_eq!(
+            b.mode(),
+            Mode::Combat,
+            "never got the enemy in sight: {:?}",
+            p.pos
+        );
+        assert_eq!(b.target(), Some(5));
+        assert!(b.navigator().is_ready());
+    }
+
+    #[test]
+    fn hunts_near_enemy_spawns_when_no_enemy_is_alive() {
+        let t = room();
+        let mut b = brain(&t, vec![]);
+        let theirs = Vec3::new(30.0, 0.0, 30.0);
+        b.set_spawn_points(vec![(0, Vec3::new(-30.0, 0.0, -30.0)), (1, theirs)]);
+        let mut p = perception(Vec3::new(-30.0, 0.0, -30.0));
+        let mut closest = f32::MAX;
+        fly(&mut b, &t, &mut p, 60 * 15, |_, p| {
+            closest = closest.min(p.pos.distance(theirs));
+            closest < 5.0
+        });
+        assert!(closest < 5.0, "never reached the enemy spawn: {closest}");
+        // After a break the bot goes back to painting and wandering.
+        b.take_hunt_break(p.tick);
+        let mut c = BrainCounters::default();
+        b.think(&p, &t, &mut c);
+        assert!(
+            matches!(b.mode(), Mode::Wander | Mode::Paint),
+            "{:?}",
+            b.mode()
+        );
+    }
+
+    #[test]
+    fn craters_reach_the_navigation_grid() {
+        let t = room();
+        let mut b = brain(&t, vec![]);
+        let p = perception(Vec3::ZERO);
+        let mut c = BrainCounters::default();
+        while !b.navigator().is_ready() {
+            b.think(&p, &t, &mut c);
+        }
+        let mut t2 = room();
+        // Rock appears where the grid thought space was open.
+        let edit = ls_game::ls_math::TerrainEdit::AddSphere {
+            center: Vec3::new(10.0, 0.0, 0.0),
+            radius: 4.0,
+        };
+        t2.apply(edit);
+        let v = b.navigator().grid().version();
+        b.on_terrain_edit(&edit);
+        b.think(&p, &t2, &mut c);
+        assert_ne!(b.navigator().grid().version(), v);
     }
 }

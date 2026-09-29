@@ -12,7 +12,13 @@
 //!   answered with the server tick `s` it arrived at, so `c - s` is how many
 //!   ticks early that input was. When the smallest slack over the last few
 //!   pongs exceeds [`MAX_SLACK_TICKS`], the client skips a tick to cut
-//!   latency; below [`MIN_SLACK_TICKS`] it runs ahead.
+//!   latency; below [`MIN_SLACK_TICKS`] it runs ahead. A negative slack
+//!   before the clock is synced (the client is behind the server altogether,
+//!   e.g. the first pong after a slow level generation) catches up to the
+//!   same lead as a starvation report from behind (`MIN_SLACK_TICKS +
+//!   INITIAL_LEAD_TICKS + BEHIND_MARGIN_TICKS` = 12 ticks of slack). Once
+//!   synced, a negative slack (one late input, e.g. a Wi-Fi hiccup) is an
+//!   ordinary slack sample and raises the lead only to `MIN_SLACK_TICKS + 1`.
 //!
 //! Look input is sent as per-tick deltas, so a command the server had to
 //! replace by a repeat can leave a small permanent orientation difference.
@@ -47,7 +53,8 @@ pub struct ClientClock {
     /// inputs sent before the last catch-up and are ignored.
     ignore_starved_before: u64,
     ignore_slack: usize,
-    /// Snapshots that reported starvation.
+    /// Starvation reports acted on (a backlog of snapshots handled at once
+    /// counts once).
     pub starved: u64,
 }
 
@@ -102,8 +109,13 @@ impl ClientClock {
         } else {
             0
         };
-        if behind > self.pending || tick as u64 >= self.ignore_starved_before {
-            self.starved += 1;
+        let fresh = tick as u64 >= self.ignore_starved_before;
+        if behind > self.pending || fresh {
+            // A backlog only raises the target of the catch-up already under
+            // way: one starvation, not one per queued snapshot.
+            if fresh {
+                self.starved += 1;
+            }
             self.slack.clear();
             let missing = (tick - ack_input).min(30) as i64;
             self.pending = self.pending.max(missing + MIN_SLACK_TICKS).max(behind);
@@ -118,7 +130,24 @@ impl ClientClock {
         if sent_tick < self.ignore_starved_before {
             return;
         }
-        self.on_slack(sent_tick as i64 - server_tick as i64);
+        let slack = sent_tick as i64 - server_tick as i64;
+        if slack < 0 && !self.synced {
+            // Behind the server altogether (typically the first pong after a
+            // slow level generation, which arrives before the first
+            // snapshot): catch up to the same lead as the starvation path,
+            // not just to the bottom of the slack window, where every jitter
+            // spike would starve the server again. Like a starvation report,
+            // this ignores reports about inputs sent before the catch-up.
+            // Once synced, a late pong is an ordinary slack sample: jumping
+            // to the full margin mid-match would add ~130 ms of input lead
+            // that the slow trim takes ~16 s to remove.
+            let target = MIN_SLACK_TICKS + INITIAL_LEAD_TICKS as i64 + BEHIND_MARGIN_TICKS as i64;
+            self.pending = self.pending.max(target - slack);
+            self.slack.clear();
+            self.ignore_starved_before = sent_tick + 1 + self.pending as u64;
+            return;
+        }
+        self.on_slack(slack);
     }
 
     /// Feeds the slack measured by a ping/pong: input tick sent with the ping
@@ -218,5 +247,65 @@ mod tests {
         // Reports about inputs from before the catch-up are ignored.
         c.on_snapshot(192, 100, 104 + 40 + ran);
         assert_eq!(c.starved, 1);
+    }
+
+    #[test]
+    fn a_pong_from_far_behind_catches_up_with_the_full_margin() {
+        // First pong after a slow setup, before any snapshot: our input for
+        // tick 104 reached the server at tick 190.
+        let mut c = ClientClock::new(100);
+        c.on_pong(104, 190);
+        let target = MIN_SLACK_TICKS + INITIAL_LEAD_TICKS as i64 + BEHIND_MARGIN_TICKS as i64;
+        let mut ran = 0;
+        for _ in 0..40 {
+            ran += c.ticks_to_run(1) as i64 - 1;
+        }
+        assert_eq!(104 + ran - 190, target, "slack after the catch-up");
+        // Pongs sent before the catch-up do not add to it.
+        c.on_pong(105, 191);
+        assert_eq!(c.ticks_to_run(1), 1);
+    }
+
+    #[test]
+    fn one_late_pong_after_sync_only_nudges_the_lead() {
+        let mut c = ClientClock::new(100);
+        c.on_snapshot(110, 110, 113);
+        assert!(c.is_synced());
+        // Steady slack 3, then one input arrives a tick late (slack -1).
+        c.on_pong(400, 397);
+        assert_eq!(c.ticks_to_run(1), 1);
+        c.on_pong(400, 401);
+        let slack = -1;
+        let mut ran = 0;
+        for _ in 0..10 {
+            ran += c.ticks_to_run(1) as i64 - 1;
+        }
+        assert_eq!(
+            ran,
+            MIN_SLACK_TICKS + 1 - slack,
+            "not the full catch-up margin"
+        );
+        // Starvation reports are not hidden by the late pong.
+        let before = c.starved;
+        c.on_snapshot(420, 418, 430);
+        assert_eq!(c.starved, before + 1);
+    }
+
+    #[test]
+    fn a_backlog_of_snapshots_counts_as_one_starvation() {
+        // Eight snapshots queued while the session was built, handled at once:
+        // each raises the catch-up target, but it is one starvation.
+        let mut c = ClientClock::new(100);
+        for tick in (102..=116).step_by(2) {
+            c.on_snapshot(tick, 100, 104);
+        }
+        assert_eq!(c.starved, 1);
+        let expected =
+            116 + 1 + MIN_SLACK_TICKS as u64 + INITIAL_LEAD_TICKS + BEHIND_MARGIN_TICKS - 104;
+        let mut ran = 0;
+        for _ in 0..40 {
+            ran += c.ticks_to_run(1) as u64 - 1;
+        }
+        assert_eq!(ran, expected, "the newest snapshot sets the target");
     }
 }

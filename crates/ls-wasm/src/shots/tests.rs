@@ -22,6 +22,7 @@ fn world() -> (World, PlayerId) {
             },
         ],
         pickup_points: vec![],
+        instability: 0,
     };
     let mut w = World::new(WorldConfig::paint_the_void(42, setup)).unwrap();
     let me = w.add_player(Some(0), ShipType::Tinker).unwrap();
@@ -67,6 +68,7 @@ fn resources(s: &ShipState, secondary: WeaponId) -> Resources {
 
 fn net(p: &ls_sim::Projectile) -> NetProjectile {
     NetProjectile {
+        state: 0,
         id: p.id as u16,
         kind: p.weapon.0,
         owner: 0,
@@ -334,6 +336,7 @@ fn reconcile_offsets_fade_and_unconfirmed_shots_are_dropped() {
     // different aim): matched, the difference becomes a fading offset.
     let err = Vec3::new(0.3, 0.0, 0.0);
     let server = NetProjectile {
+        state: 0,
         id: 7,
         kind: laser.0,
         owner: 0,
@@ -362,6 +365,7 @@ fn reconcile_offsets_fade_and_unconfirmed_shots_are_dropped() {
     let later = 40;
     assert_eq!(p.on_tick(later, &ship, &hold, t.fire(), &terrain), 1);
     let far = NetProjectile {
+        state: 0,
         id: 9,
         pos: Vec3::new(50.0, 0.0, 0.0),
         ..server
@@ -487,6 +491,7 @@ fn weapons_seen_on_own_projectiles_become_selectable() {
     p.reconcile(
         1,
         &[NetProjectile {
+            state: 0,
             id: 3,
             kind: rivet.0,
             owner: 0,

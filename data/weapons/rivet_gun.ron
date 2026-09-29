@@ -1,5 +1,6 @@
 // Rivet Gun: kinetic primary. Fires scrap, 6x laser speed, high rate of fire, light damage.
 // Design doc: "180 u/s, high rate of fire, light damage. Malus: burns through scrap fast."
+// Behaviour: crates/ls-sim/src/weapons/kinetic/rivet_gun.rs (implemented: the generic hooks are the M1 behaviour).
 WeaponDef(
     id: "rivet_gun",
     name: "Rivet Gun",
@@ -15,4 +16,5 @@ WeaponDef(
     knockback: 0.3,
     terrain: (crater_radius: 0.0, paint_radius: 0.0),
     shield: PassThrough(0.5),
+    visual: (shape: Pellet, color: (190, 190, 200), scale: 0.7),
 )

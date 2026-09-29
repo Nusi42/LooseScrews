@@ -6,13 +6,18 @@ reference); change the types and the files together.
 
 | Path | Contents |
 | --- | --- |
-| `weapons/*.ron` | One file per weapon: speed, lifetime, damage, fire interval, cost (energy / scrap / count), splash, knockback, terrain effect (crater radius, paint radius), shield interaction. |
-| `rulesets/*.ron` | One default rule set per mode: per-weapon availability (`LoadoutAndPickup` / `PickupOnly` / `LoadoutOnly` / `Banned`), starting loadout, pickup spawn weights and respawn times, optional scrap pickup (`scrap_pickup`), friendly fire percent (0 = off, otherwise 10..=100), allowed ship types, absurdity. |
-| `ships/*.ron` | One file per ship type (`ls_sim::ShipTuning`): radius, per-axis cruise/boost caps, accelerations, turn rates, horizon assist, hull/energy/boost/scrap maxima and spawn values, regen and refill rates, scavenging, overdrive cost, damage multiplier, secondary slots, wreck scrap. M1 has only `tinker.ron`. |
+| `weapons/*.ron` | One file per weapon of the design doc (27; schema `ls_sim::WeaponDef`): speed, lifetime, damage, fire interval, cost (energy / scrap / count), splash, knockback, terrain effect (crater radius, paint radius), shield interaction (`Blocked` / `Wears(f)` / `PassThrough(f)`), generic pattern (`projectiles`, `spread_deg`), `charge`, `visual`, and free `params` read by the weapon's module. |
+| `ships/*.ron` | One file per ship type (`skitter`, `tinker`, `hauler`, `tug`; schema `ls_sim::ShipTuning`): radius, per-axis cruise/boost caps, accelerations, turn rates, horizon assist, hull/energy/boost/scrap maxima and spawn values, regen and refill rates, scavenging, overdrive cost, damage multiplier, secondary slots, wreck scrap, scrap passing (Tug). |
+| `gadgets/*.ron` | One file per gadget (`shield`, `cloak`, `decoy`; schema `ls_sim::GadgetDef`): activation (`Toggle` / `Instant`), energy cost, drain per second, moving drain multiplier, cooldown, duration, visual, `params`. |
+| `rulesets/*.ron` | One default rule set per mode (schema `ls_sim::RuleSet`, v2): weapon and gadget availability (`LoadoutAndPickup` / `PickupOnly` / `LoadoutOnly` / `Banned`), starting loadout (primaries, secondaries with counts, gadget), weapon / upgrade / gadget pickups (weight, respawn, ammo, `max_on_map`), scrap pickup, shield overrides and tuning multipliers per weapon, friendly fire percent (0 = off, otherwise 10..=100), allowed ship types, absurdity, mutators. |
 
-The files are embedded into `ls-sim` with `include_str!`, so the WASM client needs no file
-system. Changing any number changes the sim replay golden hash
-(`REPLAY_GOLDEN_HASH` in `crates/ls-sim/src/tests.rs`); update it in the same change.
+The files are embedded into `ls-sim` with `include_str!` (weapons by
+`crates/ls-sim/src/weapons/registry.rs`, gadgets by `crates/ls-sim/src/gadgets/mod.rs`, ships by
+`crates/ls-sim/src/tuning.rs`), so the WASM client needs no file system. Their hash
+(`ls_sim::data_hash`) is checked in the handshake, so clients and servers must be built from the
+same files. Changing any number changes the sim replay golden hash (`REPLAY_GOLDEN_HASH` in
+`crates/ls-sim/src/tests.rs`); update it in the same change. How weapon modules use these files:
+`docs/architecture/arsenal-framework.md`.
 
 Conventions:
 - `crater_radius` and `paint_radius` are radii in u. The design doc gives crater sizes as

@@ -1,7 +1,8 @@
 use super::*;
 use ls_game::server::{Room, RoomConfig};
 use ls_math::terrain::TerrainEdit;
-use ls_net::{Hello, Reject, RejectReason, PROTOCOL_VERSION};
+use ls_net::{Reject, RejectReason, PROTOCOL_VERSION};
+use ls_sim::ReplicatedKind;
 use ls_worldgen::Sliders;
 
 const DT: f64 = 1.0 / 60.0;
@@ -155,6 +156,46 @@ fn chunks_stream_and_edits_remesh_dirty_chunks_first() {
 }
 
 #[test]
+fn surface_states_reach_the_mesh_flags_and_expire() {
+    let mut g = small_practice(0);
+    let cam = g.local_pose().unwrap().pos;
+    while g.mesh_next(cam).is_some() {}
+    let hit = interior_surface(g.terrain(), cam);
+    let home = g.terrain().with_store(|s| s.chunk_at(hit)).unwrap();
+    // A charged patch lasting 30 ticks from now.
+    let until = g.terrain().display_tick() as u32 + 30;
+    g.terrain_mut().apply(TerrainEdit::Surface {
+        center: hit,
+        radius: 3.0,
+        states: ls_math::terrain::SurfaceStates::CHARGED.bits(),
+        until,
+    });
+    let mut flags = Vec::new();
+    while let Some(m) = g.mesh_next(cam) {
+        if m.coord == home {
+            flags = surface_flags(&m.mesh);
+            assert_eq!(flags.len(), m.mesh.vertex_count());
+        }
+    }
+    assert!(
+        flags.iter().any(|f| f & SURFACE_CHARGED != 0),
+        "charged vertices after the edit"
+    );
+    // Once the state expired the frame loop remeshes the chunk without it.
+    for _ in 0..40 {
+        g.frame(DT, Controls::default());
+    }
+    let mut after = None;
+    while let Some(m) = g.mesh_next(cam) {
+        if m.coord == home {
+            after = Some(surface_flags(&m.mesh));
+        }
+    }
+    let after = after.expect("the expired chunk is remeshed");
+    assert!(after.iter().all(|f| f & SURFACE_CHARGED == 0));
+}
+
+#[test]
 fn practice_rejects_bad_share_codes() {
     assert!(GameCore::practice("LS00-nope", 1).is_err());
     let typo = "LS04-0000-0000-000A-K4M7-8001-8F1P";
@@ -178,7 +219,9 @@ fn connect() -> Link {
         ..RoomConfig::default()
     };
     let mut room = Room::new(MatchConfig::paint_the_void(code), cfg).unwrap();
-    let hello = Message::Hello(Hello::new("tester", None)).encode().unwrap();
+    let hello = Message::Hello(ls_game::client_hello("tester", None, None))
+        .encode()
+        .unwrap();
     let id = room.join_packet(&hello).expect("join");
     let out = room.take_outgoing();
     assert_eq!(out.len(), 1);
@@ -385,7 +428,9 @@ fn online_client_under_latency_applies_look_exactly_once() {
     // Runs past tick 30, so the room generates the whole level (slow in
     // debug builds, like the ls-game netplay tests).
     let mut room = Room::new(MatchConfig::paint_the_void(code), RoomConfig::default()).unwrap();
-    let hello = Message::Hello(Hello::new("lagged", None)).encode().unwrap();
+    let hello = Message::Hello(ls_game::client_hello("lagged", None, None))
+        .encode()
+        .unwrap();
     let id = room.join_packet(&hello).expect("join");
     let mut down = Lane::new();
     let mut up = Lane::new();
@@ -526,7 +571,9 @@ fn online_shots_are_predicted_and_confirmed_under_latency() {
         ..RoomConfig::default()
     };
     let mut room = Room::new(MatchConfig::paint_the_void(code), cfg).unwrap();
-    let hello = Message::Hello(Hello::new("gunner", None)).encode().unwrap();
+    let hello = Message::Hello(ls_game::client_hello("gunner", None, None))
+        .encode()
+        .unwrap();
     let id = room.join_packet(&hello).expect("join");
     let mut down = Lane::new();
     let mut up = Lane::new();
@@ -665,7 +712,7 @@ fn online_scoreboard_counts_kills_and_match_info_reports_the_end() {
     assert_eq!(l.core.handle_packet(&kills).unwrap(), None);
     let feed = l.core.take_feed();
     assert_eq!(feed.len(), 4, "{feed:?}");
-    let you = l.core.scoreboard()[0];
+    let you = l.core.scoreboard()[0].clone();
     assert_eq!(
         (you.kills, you.deaths),
         (1, 3),
@@ -728,4 +775,243 @@ fn practice_scoreboard_and_match_info() {
     let m = g.match_info();
     assert!(m.over);
     assert!(m.secs_since_end > 0.1, "{}", m.secs_since_end);
+}
+
+// ----- M2: entities, visuals, names, weapon HUD and selection ------------------
+
+fn select(key: u8, wheel: i8, x: i8) -> Controls {
+    Controls {
+        weapon_key: key,
+        cycle_primary: wheel,
+        cycle_secondary: x,
+        ..Default::default()
+    }
+}
+
+#[test]
+fn practice_entities_carry_visuals_and_debris_radius() {
+    let mut g = small_practice(0);
+    let pos = g.local_pose().unwrap().pos;
+    if let Mode::Practice(p) = &mut g.mode {
+        p.world.spawn_entity(ls_sim::EntitySpawn::debris(
+            pos + Vec3::new(4.0, 0.0, 0.0),
+            Vec3::ZERO,
+            1.2,
+            6.0,
+        ));
+        p.world
+            .spawn_entity(ls_sim::EntitySpawn::dust(pos, 5.0, 600));
+    }
+    g.frame(DT, Controls::default());
+    let ents = g.entities();
+    let debris = ents
+        .iter()
+        .find(|e| e.kind == ReplicatedKind::Debris as u8)
+        .expect("debris replicated");
+    assert!((debris.radius - 1.2).abs() < 1e-6);
+    assert_eq!(debris.state[0], 6, "whole scrap units");
+    assert_eq!(debris.visual, ls_sim::BuiltinVisual::Debris.id().0);
+    let dust = ents
+        .iter()
+        .find(|e| e.kind == ReplicatedKind::DustCloud as u8)
+        .expect("dust replicated");
+    assert_eq!(dust.radius, 5.0);
+    // Every visual id resolves in the match table; wire ids are unique.
+    for e in &ents {
+        assert!(
+            g.visuals().get(ls_sim::VisualId(e.visual)).is_some(),
+            "{e:?}"
+        );
+    }
+    let mut ids: Vec<u16> = ents.iter().map(|e| e.id).collect();
+    ids.sort();
+    ids.dedup();
+    assert_eq!(ids.len(), ents.len());
+}
+
+#[test]
+fn projectiles_carry_their_weapon_visual() {
+    let mut g = small_practice(0);
+    let fire = Controls {
+        buttons: ls_sim::Buttons::FIRE_PRIMARY.0,
+        ..Default::default()
+    };
+    for _ in 0..10 {
+        g.frame(DT, fire);
+    }
+    let shots = g.projectiles();
+    assert!(!shots.is_empty());
+    for p in shots {
+        let v = g.visuals().projectile(WeaponId(p.kind));
+        assert_eq!(p.visual, v.0);
+    }
+}
+
+#[test]
+fn practice_players_have_names_and_ship_types() {
+    let g = small_practice(2);
+    let players = g.players();
+    assert_eq!(players.len(), 3);
+    let me = players.iter().find(|p| p.id == g.player()).unwrap();
+    assert_eq!(me.name, "You");
+    assert_eq!(me.ship_type, ShipType::Tinker.index());
+    assert!(players
+        .iter()
+        .filter(|p| p.id != g.player())
+        .all(|p| p.name.starts_with("Dummy ")));
+    let rows = g.scoreboard();
+    assert!(rows.iter().all(|r| !r.name.is_empty()));
+    let ships = g.remote_ships();
+    assert!(ships
+        .iter()
+        .all(|s| s.ship_type == ShipType::Tinker.index() && s.radius > 0.0));
+}
+
+#[test]
+fn practice_number_keys_wheel_and_x_select_carried_weapons() {
+    let mut g = small_practice(0);
+    if let Mode::Practice(p) = &mut g.mode {
+        let me = p.me;
+        for w in ["rivet_gun", "plasma_repeater", "seeker"] {
+            p.world.give_weapon(me, w).unwrap();
+        }
+    }
+    let view = g.loadout();
+    let names: Vec<&str> = view.primaries.iter().map(|e| e.name.as_str()).collect();
+    let first = g.weapons().get(view.primaries[0].weapon).id.clone();
+    assert_eq!(first, "scrap_laser", "{names:?}");
+    let rank =
+        |e: &crate::inventory::WeaponEntry| crate::inventory::design_rank(g.weapons(), e.weapon);
+    assert!(view.primaries.windows(2).all(|w| rank(&w[0]) < rank(&w[1])));
+    assert_eq!(view.primaries[0].key, 1);
+    assert!(view.primaries[0].selected);
+    let plasma = g.weapons().find("plasma_repeater").unwrap();
+    let key_of_plasma = view
+        .primaries
+        .iter()
+        .find(|e| e.weapon == plasma)
+        .unwrap()
+        .key;
+
+    // A number key selects the n-th carried primary.
+    g.frame(DT, select(key_of_plasma, 0, 0));
+    let sel = |g: &GameCore| {
+        let v = g.loadout();
+        (
+            v.primaries.iter().find(|e| e.selected).map(|e| e.weapon),
+            v.secondaries.iter().find(|e| e.selected).map(|e| e.weapon),
+        )
+    };
+    assert_eq!(sel(&g).0, Some(plasma));
+    assert_eq!(g.hud().weapon, "Plasma Repeater");
+
+    // The wheel steps through the primaries (wrapping).
+    let n = g.loadout().primaries.len();
+    for _ in 0..n {
+        g.frame(DT, select(0, 1, 0));
+    }
+    assert_eq!(sel(&g).0, Some(plasma), "a full turn of the wheel");
+    g.frame(DT, select(0, -1, 0));
+    assert_ne!(sel(&g).0, Some(plasma));
+
+    // X cycles secondaries.
+    let before = sel(&g).1;
+    g.frame(DT, select(0, 0, 1));
+    let after = sel(&g).1;
+    assert_ne!(before, after);
+    let name = g.weapons().get(after.unwrap()).name.clone();
+    assert!(g.hud().secondary.starts_with(&name));
+
+    // A key pressed on a frame that runs no tick is applied on the next one.
+    g.frame(0.0, select(1, 0, 0));
+    g.frame(DT, Controls::default());
+    assert_eq!(sel(&g).0, Some(g.loadout().primaries[0].weapon));
+}
+
+#[test]
+fn practice_gadget_key_toggles_the_gadget_in_the_hud() {
+    let mut g = small_practice(0);
+    let shield = g.gadgets().find("shield").unwrap();
+    if let Mode::Practice(p) = &mut g.mode {
+        let me = p.me;
+        p.world.ship_mut(me).unwrap().gadget = Some(shield);
+    }
+    assert_eq!(g.loadout().gadget, "Shield");
+    assert!(!g.loadout().gadget_active);
+    let press = Controls {
+        buttons: ls_sim::Buttons::GADGET.0,
+        ..Default::default()
+    };
+    g.frame(DT, press);
+    g.frame(DT, Controls::default());
+    assert!(g.loadout().gadget_active, "G toggles the Shield on");
+}
+
+#[test]
+fn online_names_entities_and_the_server_inventory() {
+    let mut l = connect();
+    for _ in 0..4 {
+        l.tick(Controls::default());
+    }
+    // Names come from the snapshot player list.
+    let players = l.core.players();
+    let me = players.iter().find(|p| p.id == l.core.player()).unwrap();
+    assert_eq!(me.name, "tester");
+    assert_eq!(l.core.scoreboard()[0].name, "tester");
+
+    // Server-side debris shows up as an entity.
+    let pid = l.room.player_of(l.id).unwrap();
+    let pos = l.room.world().ship(pid).unwrap().pos;
+    l.room.world_mut().spawn_entity(ls_sim::EntitySpawn::debris(
+        pos + Vec3::new(3.0, 0.0, 0.0),
+        Vec3::ZERO,
+        0.8,
+        4.0,
+    ));
+    // Entities are drawn at the render tick, like remote ships (a few
+    // ticks behind the newest snapshot).
+    for _ in 0..16 {
+        l.tick(Controls::default());
+    }
+    let debris = l
+        .core
+        .entities()
+        .into_iter()
+        .find(|e| e.kind == ReplicatedKind::Debris as u8)
+        .expect("debris in the snapshot");
+    assert_eq!(debris.state[0], 4);
+    assert!(debris.pos.distance(pos + Vec3::new(3.0, 0.0, 0.0)) < 0.5);
+    assert!(l
+        .core
+        .visuals()
+        .get(ls_sim::VisualId(debris.visual))
+        .is_some());
+
+    // Move the ship onto a weapon pickup on the server: the server reports
+    // the new inventory.
+    let found = l
+        .room
+        .world()
+        .pickups()
+        .iter()
+        .find_map(|sp| match sp.content {
+            Some((_, ls_sim::PickupKind::Weapon { weapon, .. })) => Some((sp.pos, weapon)),
+            _ => None,
+        });
+    let (spot, weapon) = found.expect("a weapon pickup on the level");
+    l.room.world_mut().ship_mut(pid).unwrap().pos = spot;
+    for _ in 0..4 {
+        l.tick(Controls::default());
+    }
+    let server_has = l.room.world().ship(pid).unwrap().weapon(weapon).is_some();
+    assert!(server_has, "the server gave the weapon");
+    let view = l.core.loadout();
+    assert!(
+        view.primaries
+            .iter()
+            .chain(&view.secondaries)
+            .any(|e| e.weapon == weapon),
+        "client inventory has {}",
+        l.core.weapons().get(weapon).id
+    );
 }

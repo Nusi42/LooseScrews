@@ -1,0 +1,16 @@
+// Shield: mainly protects you from your own weapons (splash, ricochets, your returning Echo
+// Cannon shots): self-damage is reduced by `self_damage_reduction`. Against enemy fire each
+// weapon has a shield setting (`WeaponDef::shield`, overridable per rule set): Blocked, Wears(f)
+// (the hit drains f x damage x energy_per_damage energy instead of hull) or PassThrough(f)
+// (f of the damage reaches the hull). Toggle with G; drains energy while up; drops at 0 energy.
+// Behaviour: crates/ls-sim/src/gadgets/shield.rs. Schema: `ls_sim::GadgetDef`.
+GadgetDef(
+    id: "shield",
+    name: "Shield",
+    activation: Toggle,
+    energy_cost: 5.0,
+    drain_per_sec: 4.0,
+    cooldown_secs: 1.0,
+    visual: (shape: Gadget, color: (90, 180, 255), scale: 1.0),
+    params: { "self_damage_reduction": 0.75, "energy_per_damage": 1.0 },
+)

@@ -7,6 +7,7 @@ import {
   MOUSE_SECONDARY,
   UI_ACTIONS,
   WEAPON_ACTIONS,
+  wheelStep,
   type Action,
 } from "./bindings.ts";
 
@@ -28,8 +29,14 @@ export interface InputState {
   overdrive: boolean;
   /** True for exactly one sample after H is pressed. */
   toggleHorizonAssist: boolean;
-  /** Weapon key pressed since the previous sample: 1-4, or 0 for none. */
+  /** Weapon key pressed since the previous sample: 1-9, 10 for the 0 key, or 0 for none. */
   weaponKey: number;
+  /** Mouse wheel since the previous sample: +1 next primary, -1 previous, 0 none. */
+  cyclePrimary: number;
+  /** True for exactly one sample after X is pressed (next secondary). */
+  cycleSecondary: boolean;
+  /** Gadget key (G) held; the simulation acts on the press edge. */
+  gadget: boolean;
   pointerLocked: boolean;
   /** Scoreboard key (Tab) held. */
   scoreboard: boolean;
@@ -52,6 +59,9 @@ export function emptyInput(): InputState {
     overdrive: false,
     toggleHorizonAssist: false,
     weaponKey: 0,
+    cyclePrimary: 0,
+    cycleSecondary: false,
+    gadget: false,
     pointerLocked: false,
     scoreboard: false,
     toggleDebug: false,
@@ -66,6 +76,7 @@ export class InputController {
   private readonly edges = new Set<Action>();
   private lookX = 0;
   private lookY = 0;
+  private wheel = 0;
   private primary = false;
   private secondary = false;
   private locked = false;
@@ -83,6 +94,7 @@ export class InputController {
     document.addEventListener("mousemove", (e) => this.onMouseMove(e), opts);
     document.addEventListener("mousedown", (e) => this.onMouseButton(e, true), opts);
     document.addEventListener("mouseup", (e) => this.onMouseButton(e, false), opts);
+    document.addEventListener("wheel", (e) => this.onWheel(e), { signal: this.abort.signal, passive: true });
     document.addEventListener("pointerlockchange", () => this.onPointerLockChange(), opts);
     target.addEventListener("contextmenu", (e) => e.preventDefault(), opts);
     target.addEventListener("click", () => this.requestLock(), opts);
@@ -115,6 +127,8 @@ export class InputController {
   /** Returns the current input and resets the accumulated mouse deltas and one-shot edges. */
   sample(): InputState {
     const axes = axesFromActions(this.held);
+    const [cyclePrimary, wheelRest] = wheelStep(this.wheel);
+    this.wheel = wheelRest;
     const state: InputState = {
       thrustForward: axes.forward,
       thrustRight: axes.right,
@@ -129,6 +143,9 @@ export class InputController {
       overdrive: this.held.has("overdrive"),
       toggleHorizonAssist: this.edges.has("toggleHorizonAssist"),
       weaponKey: WEAPON_ACTIONS.findIndex((a) => this.edges.has(a)) + 1,
+      cyclePrimary,
+      cycleSecondary: this.edges.has("cycleSecondary"),
+      gadget: this.held.has("gadget"),
       pointerLocked: this.locked,
       scoreboard: this.held.has("scoreboard"),
       toggleDebug: this.edges.has("toggleDebug"),
@@ -172,6 +189,13 @@ export class InputController {
     }
   }
 
+  private onWheel(e: WheelEvent): void {
+    if (!this.locked) return;
+    // Line-mode wheels (Firefox) report lines, not pixels.
+    const scale = e.deltaMode === 1 ? 40 : e.deltaMode === 2 ? 800 : 1;
+    this.wheel += e.deltaY * scale;
+  }
+
   private onMouseMove(e: MouseEvent): void {
     if (!this.locked) return;
     this.lookX += e.movementX;
@@ -203,5 +227,6 @@ export class InputController {
     this.secondary = false;
     this.lookX = 0;
     this.lookY = 0;
+    this.wheel = 0;
   }
 }

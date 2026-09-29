@@ -7,7 +7,8 @@
 //!   [`RegionSampler`], which samples it much faster over a region with the
 //!   same bits.
 //! - [`ChunkStore`]: 32³-cell chunks, generated lazily, with the terrain edit
-//!   log applied on top and a per-cell paint layer. Implements
+//!   log applied on top and per-cell surface layers (paint and timed surface
+//!   states: hot, charged, glow). Implements
 //!   [`ls_math::terrain::TerrainQuery`] for physics (`sdf`, `normal`,
 //!   `raycast`, `sphere_overlap`).
 //! - [`surface_nets`] and [`dual_contouring`]: chunk meshers, seam-free
@@ -25,6 +26,7 @@ pub mod chunk;
 pub mod generator;
 pub mod golden;
 pub mod grid;
+pub mod material;
 pub mod mesh;
 pub mod noise;
 pub mod sharecode;
@@ -33,11 +35,13 @@ pub mod sliders;
 pub use chunk::{ChunkCoord, ChunkStore, PaintCoverage};
 pub use generator::{Generator, RegionSampler, DEFAULT_SIZE_CHUNKS, WALL_THICKNESS};
 pub use grid::SampleGrid;
+pub use material::{strengthen_edit, Material, MaterialField, MaterialRegion};
 pub use mesh::{dual_contouring, dual_contouring_with_sdf, surface_nets, Mesh};
 pub use sharecode::ShareCode;
 pub use sliders::Sliders;
 
 pub use ls_math;
+pub use ls_math::terrain::SurfaceStates;
 
 /// Version of the generator algorithm. Stored in every share code; bump it
 /// whenever [`Generator::sample`] output changes.

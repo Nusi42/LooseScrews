@@ -8,7 +8,11 @@
 //! - [`stream`]: which chunk to mesh next around the camera, dirty first;
 //! - [`game`]: [`game::GameCore`], online (wrapping
 //!   `ls_game::client::ClientSession`, connect-agnostic: bytes in, bytes out)
-//!   or offline practice (a local `ls_sim::World`).
+//!   or offline practice (a local `ls_sim::World`);
+//! - [`scene`]: generic entities, the data-driven visual table and player
+//!   names;
+//! - [`inventory`]: carried weapons for the weapon HUD and selection by
+//!   number key, wheel and X.
 //!
 //! This file only converts to JavaScript types. Flat arrays keep the
 //! boundary cheap; their layouts are documented on each method and mirrored
@@ -18,6 +22,8 @@ use wasm_bindgen::prelude::*;
 
 pub mod controls;
 pub mod game;
+pub mod inventory;
+pub mod scene;
 pub mod sharecode;
 pub mod shots;
 pub mod stream;
@@ -115,7 +121,7 @@ pub fn golden_hashes(code: &str) -> Result<Vec<String>, JsError> {
 #[wasm_bindgen(js_name = helloPacket)]
 pub fn hello_packet(name: &str, preferred_team: i32) -> Result<Vec<u8>, JsError> {
     let team = u8::try_from(preferred_team).ok();
-    ls_net::Message::Hello(ls_net::Hello::new(name, team))
+    ls_net::Message::Hello(ls_game::client_hello(name, team, None))
         .encode()
         .map_err(|e| JsError::new(&e.to_string()))
 }
@@ -144,6 +150,86 @@ pub fn weapon_ids() -> Vec<String> {
         .iter()
         .map(|(_, d)| d.id.clone())
         .collect()
+}
+
+/// Visual shape names in shape-index order (the first number of each
+/// [`Game::visuals`] row indexes this list).
+#[wasm_bindgen(js_name = visualShapeNames)]
+pub fn visual_shape_names() -> Vec<String> {
+    scene::SHAPES
+        .iter()
+        .map(|&s| scene::shape_name(s).to_string())
+        .collect()
+}
+
+/// `ReplicatedKind` names in wire-byte order (`kind` of [`Game::entities`]).
+#[wasm_bindgen(js_name = entityKindNames)]
+pub fn entity_kind_names() -> Vec<String> {
+    (0u8..=u8::MAX)
+        .map_while(ls_sim::ReplicatedKind::from_u8)
+        .map(entity_kind_name)
+        .map(str::to_string)
+        .collect()
+}
+
+/// Lower camel case name of an entity kind (the web client's keys).
+pub fn entity_kind_name(k: ls_sim::ReplicatedKind) -> &'static str {
+    use ls_sim::ReplicatedKind::*;
+    match k {
+        Debris => "debris",
+        WeaponPickup => "weaponPickup",
+        UpgradePickup => "upgradePickup",
+        GadgetPickup => "gadgetPickup",
+        ScrapPile => "scrapPile",
+        Wreck => "wreck",
+        Decoy => "decoy",
+        Ghost => "ghost",
+        DustCloud => "dustCloud",
+        Marker => "marker",
+    }
+}
+
+/// Carried weapons and gadget for the weapon HUD (see
+/// `inventory::LoadoutView`). Per weapon, primaries first (key order), then
+/// secondaries: `names[i]`, `ammo[i]` and 4 bytes `info[4i..4i+4]` =
+/// `[slot (0 primary, 1 secondary), selected, key (1-10, 0 none), level]`.
+#[wasm_bindgen(getter_with_clone)]
+pub struct LoadoutHud {
+    pub names: Vec<String>,
+    pub ammo: Vec<String>,
+    pub info: Vec<u8>,
+    #[wasm_bindgen(js_name = maxLevels)]
+    pub max_levels: Vec<u8>,
+    /// Gadget name, empty for none.
+    pub gadget: String,
+    #[wasm_bindgen(js_name = gadgetActive)]
+    pub gadget_active: bool,
+}
+
+/// Bytes per weapon in [`LoadoutHud::info`].
+pub const LOADOUT_INFO_STRIDE: usize = 4;
+
+pub fn loadout_hud(v: &inventory::LoadoutView) -> LoadoutHud {
+    let mut h = LoadoutHud {
+        names: Vec::new(),
+        ammo: Vec::new(),
+        info: Vec::new(),
+        max_levels: Vec::new(),
+        gadget: v.gadget.clone(),
+        gadget_active: v.gadget_active,
+    };
+    for e in v.primaries.iter().chain(&v.secondaries) {
+        h.names.push(e.name.clone());
+        h.ammo.push(e.ammo.clone());
+        h.info.extend_from_slice(&[
+            (e.slot == ls_sim::WeaponSlot::Secondary) as u8,
+            e.selected as u8,
+            e.key,
+            e.level,
+        ]);
+        h.max_levels.push(e.max_level);
+    }
+    h
 }
 
 /// HUD values (see `game::HudState`).
@@ -182,6 +268,7 @@ pub struct ChunkMesh {
     normals: Vec<f32>,
     indices: Vec<u32>,
     teams: Vec<u8>,
+    surface: Vec<u8>,
     aabb: Vec<f32>,
 }
 
@@ -207,6 +294,11 @@ impl ChunkMesh {
     pub fn teams(&self) -> Vec<u8> {
         self.teams.clone()
     }
+    /// Surface state bits per vertex (`game::SURFACE_HOT`, `SURFACE_CHARGED`,
+    /// `SURFACE_GLOW`), or empty when the terrain has none.
+    pub fn surface(&self) -> Vec<u8> {
+        self.surface.clone()
+    }
     /// Chunk box `[minX, minY, minZ, maxX, maxY, maxZ]`.
     pub fn aabb(&self) -> Vec<f32> {
         self.aabb.clone()
@@ -214,9 +306,13 @@ impl ChunkMesh {
 }
 
 /// Floats per ship in [`Game::remote_ships`].
-pub const SHIP_STRIDE: usize = 11;
+pub const SHIP_STRIDE: usize = 14;
 /// Floats per projectile in [`Game::projectiles`].
-pub const PROJECTILE_STRIDE: usize = 8;
+pub const PROJECTILE_STRIDE: usize = 10;
+/// Floats per entity in [`Game::entities`].
+pub const ENTITY_STRIDE: usize = 20;
+/// Numbers per player in [`Game::player_info`].
+pub const PLAYER_STRIDE: usize = 4;
 
 /// Numbers in [`Game::debug_stats`].
 pub const DEBUG_STATS_LEN: usize = 10;
@@ -242,7 +338,8 @@ pub fn debug_stats_array(d: &game::DebugStats) -> Vec<f64> {
     ]
 }
 
-/// Per row `[id, team, alive, kills, deaths, isYou]`.
+/// Per row `[id, team, alive, kills, deaths, isYou]` (names: see
+/// [`Game::scoreboard_names`]).
 pub fn scoreboard_array(rows: &[game::ScoreRow]) -> Vec<f64> {
     let mut v = Vec::with_capacity(rows.len() * SCORE_STRIDE);
     for r in rows {
@@ -269,6 +366,82 @@ pub fn match_info_array(m: &game::MatchInfo) -> Vec<f64> {
         m.surface_cells as f64,
         m.secs_since_end as f64,
     ]
+}
+
+/// Per ship `[id, team, alive, boosting, px, py, pz, qx, qy, qz, qw,
+/// shipType, radius, gadgetActive]`.
+pub fn ships_array(ships: &[game::ShipView]) -> Vec<f32> {
+    let mut v = Vec::with_capacity(ships.len() * SHIP_STRIDE);
+    for s in ships {
+        v.extend_from_slice(&[
+            s.id as f32,
+            s.team as f32,
+            s.alive as u8 as f32,
+            s.boosting as u8 as f32,
+            s.pos.x,
+            s.pos.y,
+            s.pos.z,
+            s.rot.x,
+            s.rot.y,
+            s.rot.z,
+            s.rot.w,
+            s.ship_type as f32,
+            s.radius,
+            s.gadget_active as u8 as f32,
+        ]);
+    }
+    v
+}
+
+/// Per projectile `[kind, owner, px, py, pz, vx, vy, vz, visual, state]`.
+pub fn projectiles_array(shots: &[game::ProjectileView]) -> Vec<f32> {
+    let mut v = Vec::with_capacity(shots.len() * PROJECTILE_STRIDE);
+    for p in shots {
+        v.extend_from_slice(&[
+            p.kind as f32,
+            p.owner as f32,
+            p.pos.x,
+            p.pos.y,
+            p.pos.z,
+            p.vel.x,
+            p.vel.y,
+            p.vel.z,
+            p.visual as f32,
+            p.state as f32,
+        ]);
+    }
+    v
+}
+
+/// Per entity `[id, kind, visual, owner, team, px, py, pz, vx, vy, vz, qx,
+/// qy, qz, qw, state0, state1, state2, state3, radius (0 = unknown)]`.
+pub fn entities_array(entities: &[scene::EntityDraw]) -> Vec<f32> {
+    let mut v = Vec::with_capacity(entities.len() * ENTITY_STRIDE);
+    for e in entities {
+        v.extend_from_slice(&[
+            e.id as f32,
+            e.kind as f32,
+            e.visual as f32,
+            e.owner as f32,
+            e.team as f32,
+            e.pos.x,
+            e.pos.y,
+            e.pos.z,
+            e.vel.x,
+            e.vel.y,
+            e.vel.z,
+            e.rot.x,
+            e.rot.y,
+            e.rot.z,
+            e.rot.w,
+            e.state[0] as f32,
+            e.state[1] as f32,
+            e.state[2] as f32,
+            e.state[3] as f32,
+            e.radius,
+        ]);
+    }
+    v
 }
 
 /// The running game (online or practice), see `game::GameCore`.
@@ -341,8 +514,9 @@ impl Game {
     }
 
     /// Advances by `dt` seconds. `controls` = `[forward, right, up,
-    /// rollRight, yawRight (rad), pitchUp (rad), buttons, weaponSelect]`.
-    /// Returns the packets to send, in order.
+    /// rollRight, yawRight (rad), pitchUp (rad), buttons, weaponSelect,
+    /// weaponKey (1-10), cyclePrimary (±1), cycleSecondary (+1)]`
+    /// (`controls::CONTROLS_LEN`). Returns the packets to send, in order.
     pub fn frame(&mut self, dt: f64, controls: &[f32]) -> js_sys::Array {
         let out = self.core.frame(dt, Controls::from_slice(controls));
         out.iter()
@@ -371,48 +545,57 @@ impl Game {
         })
     }
 
-    /// Other ships, [`SHIP_STRIDE`] floats each: `[id, team, alive,
-    /// boosting, px, py, pz, qx, qy, qz, qw]`.
+    /// Other ships, [`SHIP_STRIDE`] floats each (see [`ships_array`]).
     #[wasm_bindgen(js_name = remoteShips)]
     pub fn remote_ships(&self) -> Vec<f32> {
-        let ships = self.core.remote_ships();
-        let mut v = Vec::with_capacity(ships.len() * SHIP_STRIDE);
-        for s in ships {
+        ships_array(&self.core.remote_ships())
+    }
+
+    /// Projectiles, [`PROJECTILE_STRIDE`] floats each (see
+    /// [`projectiles_array`]).
+    pub fn projectiles(&self) -> Vec<f32> {
+        projectiles_array(&self.core.projectiles())
+    }
+
+    /// Entities, [`ENTITY_STRIDE`] floats each (see [`entities_array`]).
+    pub fn entities(&self) -> Vec<f32> {
+        entities_array(&self.core.entities())
+    }
+
+    /// The match's visual table, `scene::VISUAL_STRIDE` floats per visual
+    /// id: `[shapeIndex (into visualShapeNames()), r, g, b (0..1), scale]`.
+    /// Constant for a match; read it once.
+    pub fn visuals(&self) -> Vec<f32> {
+        scene::visual_rows(self.core.visuals())
+    }
+
+    /// Players, [`PLAYER_STRIDE`] numbers each: `[id, team, shipType,
+    /// gadget (255 none)]`; names in the same order from
+    /// [`Game::player_names`].
+    #[wasm_bindgen(js_name = playerInfo)]
+    pub fn player_info(&self) -> Vec<f64> {
+        let players = self.core.players();
+        let mut v = Vec::with_capacity(players.len() * PLAYER_STRIDE);
+        for p in &players {
             v.extend_from_slice(&[
-                s.id as f32,
-                s.team as f32,
-                s.alive as u8 as f32,
-                s.boosting as u8 as f32,
-                s.pos.x,
-                s.pos.y,
-                s.pos.z,
-                s.rot.x,
-                s.rot.y,
-                s.rot.z,
-                s.rot.w,
+                p.id as f64,
+                p.team as f64,
+                p.ship_type as f64,
+                p.gadget as f64,
             ]);
         }
         v
     }
 
-    /// Projectiles, [`PROJECTILE_STRIDE`] floats each: `[kind, owner, px,
-    /// py, pz, vx, vy, vz]`.
-    pub fn projectiles(&self) -> Vec<f32> {
-        let shots = self.core.projectiles();
-        let mut v = Vec::with_capacity(shots.len() * PROJECTILE_STRIDE);
-        for p in shots {
-            v.extend_from_slice(&[
-                p.kind as f32,
-                p.owner as f32,
-                p.pos.x,
-                p.pos.y,
-                p.pos.z,
-                p.vel.x,
-                p.vel.y,
-                p.vel.z,
-            ]);
-        }
-        v
+    /// Player names in [`Game::player_info`] order.
+    #[wasm_bindgen(js_name = playerNames)]
+    pub fn player_names(&self) -> Vec<String> {
+        self.core.players().into_iter().map(|p| p.name).collect()
+    }
+
+    /// Carried weapons and gadget for the weapon HUD.
+    pub fn loadout(&self) -> LoadoutHud {
+        loadout_hud(&self.core.loadout())
     }
 
     pub fn hud(&self) -> HudState {
@@ -455,6 +638,12 @@ impl Game {
         scoreboard_array(&self.core.scoreboard())
     }
 
+    /// Player names of the scoreboard rows, in row order.
+    #[wasm_bindgen(js_name = scoreboardNames)]
+    pub fn scoreboard_names(&self) -> Vec<String> {
+        self.core.scoreboard().into_iter().map(|r| r.name).collect()
+    }
+
     /// Match result, [`MATCH_INFO_LEN`] numbers (see [`match_info_array`]).
     #[wasm_bindgen(js_name = matchInfo)]
     pub fn match_info(&self) -> Vec<f64> {
@@ -468,11 +657,13 @@ impl Game {
     pub fn mesh_next(&mut self, x: f32, y: f32, z: f32) -> Option<ChunkMesh> {
         let out = self.core.mesh_next(Vec3::new(x, y, z))?;
         let b = out.aabb;
+        let surface = game::surface_flags(&out.mesh);
         Some(ChunkMesh {
             key: stream::chunk_key(out.coord),
             positions: out.mesh.positions.iter().flatten().copied().collect(),
             normals: out.mesh.normals.iter().flatten().copied().collect(),
             indices: out.mesh.indices,
+            surface,
             teams: out.mesh.teams,
             aabb: vec![b.min.x, b.min.y, b.min.z, b.max.x, b.max.y, b.max.z],
         })
@@ -548,6 +739,7 @@ mod tests {
         let rows = [
             ScoreRow {
                 id: 3,
+                name: "Ada".into(),
                 team: 1,
                 alive: true,
                 kills: 4,
@@ -556,6 +748,7 @@ mod tests {
             },
             ScoreRow {
                 id: 0,
+                name: "You".into(),
                 team: 0,
                 alive: false,
                 kills: 0,
@@ -576,6 +769,100 @@ mod tests {
         });
         assert_eq!(m, vec![1.0, -1.0, 10.0, 20.0, 100.0, 1.5]);
         assert_eq!(m.len(), super::MATCH_INFO_LEN);
+    }
+
+    #[test]
+    fn scene_arrays_have_the_documented_layout() {
+        use crate::game::{ProjectileView, ShipView};
+        use crate::scene::EntityDraw;
+        use ls_math::{Quat, Vec3};
+        let ship = ShipView {
+            id: 2,
+            team: 1,
+            alive: true,
+            boosting: false,
+            pos: Vec3::new(1.0, 2.0, 3.0),
+            rot: Quat::IDENTITY,
+            ship_type: 3,
+            radius: 0.55,
+            gadget_active: true,
+        };
+        let s = super::ships_array(&[ship]);
+        assert_eq!(s.len(), super::SHIP_STRIDE);
+        assert_eq!(&s[..5], &[2.0, 1.0, 1.0, 0.0, 1.0]);
+        assert_eq!(&s[10..], &[1.0, 3.0, 0.55, 1.0]);
+        let p = super::projectiles_array(&[ProjectileView {
+            kind: 4,
+            owner: 1,
+            pos: Vec3::ZERO,
+            vel: Vec3::X,
+            visual: 17,
+            state: 2,
+        }]);
+        assert_eq!(p.len(), super::PROJECTILE_STRIDE);
+        assert_eq!((p[0], p[5], p[8], p[9]), (4.0, 1.0, 17.0, 2.0));
+        let e = super::entities_array(&[EntityDraw {
+            id: 300,
+            kind: 5,
+            visual: 2,
+            owner: 255,
+            team: 255,
+            pos: Vec3::new(4.0, 5.0, 6.0),
+            vel: Vec3::ZERO,
+            rot: Quat::IDENTITY,
+            state: [9, 8, 7, 6],
+            radius: 1.25,
+        }]);
+        assert_eq!(e.len(), super::ENTITY_STRIDE);
+        assert_eq!(&e[..8], &[300.0, 5.0, 2.0, 255.0, 255.0, 4.0, 5.0, 6.0]);
+        assert_eq!(e[14], 1.0, "quaternion w");
+        assert_eq!(&e[15..], &[9.0, 8.0, 7.0, 6.0, 1.25]);
+    }
+
+    #[test]
+    fn name_lists_cover_every_kind_and_shape() {
+        let kinds = super::entity_kind_names();
+        assert_eq!(kinds.len(), 10);
+        assert_eq!(kinds[ls_sim::ReplicatedKind::Wreck as usize], "wreck");
+        assert_eq!(
+            kinds[ls_sim::ReplicatedKind::DustCloud as usize],
+            "dustCloud"
+        );
+        let shapes = super::visual_shape_names();
+        assert_eq!(shapes.len(), crate::scene::SHAPES.len());
+        assert_eq!(shapes[0], "bolt");
+    }
+
+    #[test]
+    fn loadout_hud_flattens_primaries_then_secondaries() {
+        use crate::inventory::{LoadoutView, WeaponEntry};
+        use ls_sim::{WeaponId, WeaponSlot};
+        let e = |name: &str, slot, selected, key| WeaponEntry {
+            weapon: WeaponId(0),
+            name: name.into(),
+            slot,
+            ammo: "∞".into(),
+            level: 2,
+            max_level: 6,
+            selected,
+            key,
+        };
+        let v = LoadoutView {
+            primaries: vec![
+                e("A", WeaponSlot::Primary, false, 1),
+                e("B", WeaponSlot::Primary, true, 2),
+            ],
+            secondaries: vec![e("R", WeaponSlot::Secondary, true, 0)],
+            gadget: "Shield".into(),
+            gadget_active: true,
+        };
+        let h = super::loadout_hud(&v);
+        assert_eq!(h.names, ["A", "B", "R"]);
+        assert_eq!(h.info.len(), 3 * super::LOADOUT_INFO_STRIDE);
+        assert_eq!(&h.info[4..8], &[0, 1, 2, 2]);
+        assert_eq!(&h.info[8..12], &[1, 1, 0, 2]);
+        assert_eq!(h.max_levels, [6, 6, 6]);
+        assert!(h.gadget_active && h.gadget == "Shield");
     }
 
     #[test]

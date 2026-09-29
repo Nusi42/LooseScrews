@@ -33,6 +33,13 @@ pub struct Mesh {
     pub normals: Vec<[f32; 3]>,
     /// Paint team per vertex ([`crate::NO_TEAM`] = unpainted).
     pub teams: Vec<u8>,
+    /// Surface state bits per vertex (`ls_math::SurfaceStates`: 1 hot,
+    /// 2 charged, 4 glow), active at the chunk store's display tick.
+    pub states: Vec<u8>,
+    /// Rock material id per vertex ([`crate::Material::id`]: 0 weak, 1 rock,
+    /// 2 hard). Filled by the [`crate::ChunkStore`] meshers; empty for meshes
+    /// built from a bare [`SampleGrid`].
+    pub materials: Vec<u8>,
     /// Triangle list (counter-clockwise from outside).
     pub indices: Vec<u32>,
 }
@@ -50,7 +57,11 @@ impl Mesh {
         self.indices.len() / 3
     }
 
-    /// SHA-256 over all buffers (little-endian bit patterns), for golden tests.
+    /// SHA-256 over the geometry, paint and surface states (little-endian
+    /// bit patterns), for golden tests. States are hashed only when a vertex
+    /// has one, so meshes without states hash as they did before states
+    /// existed. Materials are a pure function of the vertex positions and the
+    /// seed and are not hashed.
     pub fn hash(&self) -> [u8; 32] {
         let mut h = Sha256::new();
         h.update((self.positions.len() as u32).to_le_bytes());
@@ -68,6 +79,10 @@ impl Mesh {
         h.update(&self.teams);
         for i in &self.indices {
             h.update(i.to_le_bytes());
+        }
+        if self.states.iter().any(|&b| b != 0) {
+            h.update(b"states");
+            h.update(&self.states);
         }
         h.finalize().into()
     }
@@ -285,6 +300,7 @@ fn build(grid: &SampleGrid, placement: Placement<'_>) -> Mesh {
                 ]);
                 mesh.normals.push(normalize_or_up(normal));
                 mesh.teams.push(grid.team(i, j, k));
+                mesh.states.push(grid.states(i, j, k));
             }
         }
     }

@@ -1,0 +1,22 @@
+// Scrap Shotgun: kinetic primary. 8 pellets at 200 u/s. Malus: useless at range. Lasting
+// effect: pockmarks walls and sprays fresh debris.
+// Behaviour: crates/ls-sim/src/weapons/kinetic/scrap_shotgun.rs (TODO(wave-B): generic fallback until implemented).
+// `params` are read by the weapon module (`WeaponDef::param`); numbers are tuning starting points.
+WeaponDef(
+    id: "scrap_shotgun",
+    name: "Scrap Shotgun",
+    family: Kinetic,
+    slot: Primary,
+    speed: 200.0,
+    lifetime_secs: 0.5,
+    damage: 3.0,
+    fire_interval_secs: 0.8,
+    cost: Scrap(4.0),
+    projectile_radius: 0.06,
+    knockback: 0.3,
+    shield: PassThrough(0.5),
+    projectiles: 8,
+    spread_deg: 6.0,
+    visual: (shape: Pellet, color: (200, 170, 130), scale: 0.8),
+    params: { "pockmark_radius": 0.25, "debris_per_shot": 1.0 },
+)

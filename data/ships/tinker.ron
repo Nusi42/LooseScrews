@@ -1,5 +1,6 @@
 // Tinker: the standard Scrapling and the reference for every speed in the design doc.
 // Speeds in u/s, accelerations in u/s^2, rates per second, angles in radians.
+// Design doc: top speed 95% of laser, damage 1x, hull 100, 2 secondary types.
 // Schema: `ls_sim::ShipTuning`. Changing a number changes the sim replay golden hash.
 ShipTuning(
     radius: 0.5,
@@ -38,4 +39,7 @@ ShipTuning(
     damage_mult: 1.0,
     secondary_slots: 2,
     wreck_scrap: 30.0,
+    // Support: passing scrap to teammates (Tug only).
+    can_pass_scrap: false,
+    scrap_pass_rate: 0.0,
 )

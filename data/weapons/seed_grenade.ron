@@ -1,0 +1,23 @@
+// Seed Grenade: special secondary. Grows a small rock structure on impact: block tunnels or
+// build cover (a deterministic cluster of AddSphere edits seeded by the projectile id). Malus:
+// small chance (2%) to grow something absurd, like a giant rubber duck. Lasting effect: the
+// structure stays until destroyed.
+// Behaviour: crates/ls-sim/src/weapons/specials/seed_grenade.rs (TODO(wave-B): generic fallback until implemented).
+// `params` are read by the weapon module (`WeaponDef::param`); numbers are tuning starting points.
+WeaponDef(
+    id: "seed_grenade",
+    name: "Seed Grenade",
+    family: Special,
+    slot: Secondary,
+    speed: 25.0,
+    lifetime_secs: 4.0,
+    damage: 5.0,
+    fire_interval_secs: 1.0,
+    cost: Count(1),
+    projectile_radius: 0.2,
+    knockback: 1.0,
+    shield: Blocked,
+    max_ammo: 3,
+    visual: (shape: Grenade, color: (120, 200, 90), scale: 1.0),
+    params: { "grow_spheres": 6.0, "grow_radius": 2.0, "duck_chance": 0.02 },
+)

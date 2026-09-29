@@ -1,0 +1,23 @@
+// Stalker Mine: ordnance secondary. Creeps toward ships within 10 u. Malus: slow. Lasting
+// effect: leaves a scorched trail along its path.
+// Behaviour: crates/ls-sim/src/weapons/ordnance/stalker_mine.rs (TODO(wave-B): generic fallback until implemented).
+// `params` are read by the weapon module (`WeaponDef::param`); numbers are tuning starting points.
+WeaponDef(
+    id: "stalker_mine",
+    name: "Stalker Mine",
+    family: Ordnance,
+    slot: Secondary,
+    speed: 3.0,
+    lifetime_secs: 60.0,
+    damage: 35.0,
+    fire_interval_secs: 0.75,
+    cost: Count(1),
+    projectile_radius: 0.3,
+    splash: Some((radius: 3.0, damage: 25.0, hits_owner: true)),
+    knockback: 7.0,
+    terrain: (crater_radius: 1.0),
+    shield: Wears(1.0),
+    max_ammo: 5,
+    visual: (shape: Mine, color: (160, 255, 80), scale: 1.0),
+    params: { "arm_secs": 1.0, "detect_radius": 10.0, "creep_speed": 4.0, "trigger_radius": 1.5 },
+)

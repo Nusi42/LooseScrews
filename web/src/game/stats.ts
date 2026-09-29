@@ -29,6 +29,8 @@ export interface DebugStats {
 
 export interface ScoreRow {
   id: number;
+  /** Player name (ls-wasm scoreboardNames()); empty when unknown. */
+  name?: string;
   team: number;
   alive: boolean;
   kills: number;
@@ -66,11 +68,12 @@ export function parseDebugStats(a: ArrayLike<number>): DebugStats {
   };
 }
 
-export function parseScoreboard(a: ArrayLike<number>): ScoreRow[] {
+export function parseScoreboard(a: ArrayLike<number>, names: readonly string[] = []): ScoreRow[] {
   const rows: ScoreRow[] = [];
   for (let i = 0; i + SCORE_STRIDE <= a.length; i += SCORE_STRIDE) {
     rows.push({
       id: at(a, i),
+      name: names[i / SCORE_STRIDE] ?? "",
       team: at(a, i + 1),
       alive: at(a, i + 2) !== 0,
       kills: at(a, i + 3),
@@ -95,9 +98,11 @@ export function parseMatchInfo(a: ArrayLike<number>): MatchInfo {
   };
 }
 
-/** Display name of a scoreboard row (names are not on the wire yet; matches the kill feed). */
-export function playerName(row: Pick<ScoreRow, "id" | "isYou">): string {
-  return row.isYou ? "You" : `Player ${row.id + 1}`;
+/** Display name of a scoreboard row: the player's name (marked "(you)" for the local player). */
+export function playerName(row: Pick<ScoreRow, "id" | "isYou" | "name">): string {
+  const name = row.name && row.name !== "You" ? row.name : "";
+  if (row.isYou) return name ? `${name} (you)` : "You";
+  return name || `Player ${row.id + 1}`;
 }
 
 /** Team share of the paintable surface in percent (0 when unknown). */

@@ -104,14 +104,16 @@ test("ship mesh points down -Z and is about one ship length long", () => {
   assert.ok(length > 0.9 && length < 1.1, `length ${length}`);
 });
 
-test("packInstances writes offset+scale, rotation, colour+emissive", () => {
+test("packInstances writes offset+scale, rotation, colour+emissive, stretch+opacity", () => {
   const data = packInstances([
     { position: { x: 1, y: 2, z: 3 }, rotation: { x: 0, y: 0, z: 0, w: 1 }, scale: 2, color: [0.5, 0.25, 1], emissive: 1 },
-    { position: { x: 4, y: 5, z: 6 }, rotation: { x: 0, y: 1, z: 0, w: 0 }, scale: 1, color: [0, 0, 0], emissive: 0 },
+    { position: { x: 4, y: 5, z: 6 }, rotation: { x: 0, y: 1, z: 0, w: 0 }, scale: 1, color: [0, 0, 0], emissive: 0, stretch: 4, opacity: 0.5 },
   ]);
+  assert.equal(INSTANCE_FLOATS, 16);
   assert.equal(data.length, 2 * INSTANCE_FLOATS);
-  assert.deepEqual([...data.slice(0, 12)], [1, 2, 3, 2, 0, 0, 0, 1, 0.5, 0.25, 1, 1]);
-  assert.deepEqual([...data.slice(12, 16)], [4, 5, 6, 1]);
+  assert.deepEqual([...data.slice(0, 16)], [1, 2, 3, 2, 0, 0, 0, 1, 0.5, 0.25, 1, 1, 1, 1, 0, 0], "defaults: no stretch, opaque");
+  assert.deepEqual([...data.slice(16, 20)], [4, 5, 6, 1]);
+  assert.deepEqual([...data.slice(28, 30)], [4, 0.5]);
   const out = new Float32Array(64);
   assert.equal(packInstances([], out), out, "reuses a large enough output buffer");
 });

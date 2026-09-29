@@ -1,0 +1,45 @@
+// Tug: support hull (candidate fourth type). Design doc: top speed 90% of laser, damage 0.8x,
+// hull 110, 2 secondary types; scavenges faster and can pass scrap to teammates.
+// Speeds in u/s, accelerations in u/s^2, rates per second, angles in radians.
+// Schema: `ls_sim::ShipTuning`. Changing a number changes the sim replay golden hash.
+ShipTuning(
+    radius: 0.55,
+    // Per-axis caps in ship space: 11.35 cruise, 15.59 boost (27.00 u/s = 90% of laser on the diagonal).
+    cruise_speed: 11.35,
+    boost_speed: 15.59,
+    thrust_accel: 30.0,
+    brake_accel: 40.0,
+    damping_decel: 8.0,
+    overspeed_decel: 20.0,
+    restitution: 0.2,
+    max_turn_rate: 11.0,
+    roll_rate: 2.3,
+    horizon_gain: 1.5,
+    horizon_max_rate: 0.8,
+
+    hull_max: 110.0,
+    energy_max: 100.0,
+    boost_max: 100.0,
+    scrap_max: 100.0,
+    spawn_energy: 100.0,
+    spawn_boost: 50.0,
+    spawn_scrap: 20.0,
+    energy_regen: 10.0,
+    boost_drain: 20.0,
+    brake_refill_per_speed: 0.6,
+    hard_brake_min_speed: 6.0,
+    scrape_distance: 0.6,
+    scrape_min_speed: 8.0,
+    scrape_refill: 30.0,
+    scavenge_radius: 3.5,
+    scavenge_rate: 30.0,
+    hull_per_scrap: 1.0,
+    // Overdrive gamble: 2 hull per missing energy point.
+    overdrive_hull_per_energy: 2.0,
+    damage_mult: 0.8,
+    secondary_slots: 2,
+    wreck_scrap: 35.0,
+    // Support: passing scrap to teammates (Tug only).
+    can_pass_scrap: true,
+    scrap_pass_rate: 20.0,
+)

@@ -9,7 +9,9 @@
 //! - [`steering`]: wall avoidance through `TerrainQuery` (SDF and raycasts),
 //!   velocity-to-thrust conversion, look control, open-space targets.
 //! - [`aim`]: projectile lead, fire tolerance, line of sight.
-//! - [`brain`]: the behavior (scavenge / combat / paint and wander).
+//! - [`nav`]: global navigation: coarse open-space grid from the terrain SDF,
+//!   A* and a route follower (hunting enemies across cave levels).
+//! - [`brain`]: the behavior (scavenge / combat / hunt / paint and wander).
 //! - [`bot`]: [`BotCore`], one bot's session + brain + desync checks, no I/O.
 //! - [`net`]: the runner with reconnects.
 //! - [`transport`]: WebSocket (`tokio-tungstenite`) and WebTransport
@@ -20,6 +22,7 @@
 pub mod aim;
 pub mod bot;
 pub mod brain;
+pub mod nav;
 pub mod net;
 pub mod stats;
 pub mod steering;

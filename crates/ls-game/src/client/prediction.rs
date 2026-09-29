@@ -18,7 +18,7 @@ use std::collections::VecDeque;
 use ls_math::terrain::TerrainQuery;
 use ls_math::{Quat, Vec3};
 use ls_net::NetShip;
-use ls_sim::{simulate_movement, InputCmd, ShipState, ShipTuning};
+use ls_sim::{simulate_movement, InputCmd, ShipState, ShipTuning, ShipType};
 
 use crate::convert::{rotation_error, NetConv};
 
@@ -98,6 +98,8 @@ struct Entry {
 pub struct Predictor {
     config: PredictionConfig,
     tuning: ShipTuning,
+    /// Ship type the local ship flies (its tuning is `tuning`).
+    ship_type: ShipType,
     /// Inputs (and predicted states) in ascending, contiguous tick order.
     entries: VecDeque<Entry>,
     /// Server-anchored state before the first entry.
@@ -116,6 +118,7 @@ impl Predictor {
         Predictor {
             config,
             tuning,
+            ship_type: ShipType::Tinker,
             entries: VecDeque::new(),
             base: None,
             pos_offset: Vec3::ZERO,
@@ -124,6 +127,17 @@ impl Predictor {
             spawn_poses: Vec::new(),
             freeze_after: None,
         }
+    }
+
+    /// Switches the ship type the prediction simulates (ship choice at a
+    /// respawn). Takes effect from the next reconciliation on.
+    pub fn set_ship_type(&mut self, ship_type: ShipType, tuning: ShipTuning) {
+        self.ship_type = ship_type;
+        self.tuning = tuning;
+    }
+
+    pub fn ship_type(&self) -> ShipType {
+        self.ship_type
     }
 
     /// Stops movement for every tick after `tick`: once a match is over the
@@ -269,10 +283,11 @@ impl Predictor {
         let result = match &predicted {
             Some(p) => {
                 let mut srv = p.clone();
+                srv.ship_type = self.ship_type;
                 conv.apply_net_ship(&mut srv, server);
                 let err = p.pos.distance(srv.pos);
                 self.stats.last_error = err;
-                if self.matches(p, &srv) {
+                if p.ship_type == srv.ship_type && self.matches(p, &srv) {
                     self.stats.accepted += 1;
                     self.prune_before(tick);
                     return Reconcile::Accepted;
@@ -300,10 +315,11 @@ impl Predictor {
                 let mut srv = match self.ship() {
                     Some(s) => {
                         let mut s = s.clone();
+                        s.ship_type = self.ship_type;
                         conv.apply_net_ship(&mut s, server);
                         s
                     }
-                    None => conv.net_to_ship(player, server),
+                    None => conv.net_to_ship_as(player, self.ship_type, server),
                 };
                 self.snap_to_spawn(&mut srv);
                 self.stats.last_error = 0.0;
@@ -441,8 +457,12 @@ mod tests {
 
     fn setup() -> (NetConv, BoxRoomTerrain, ShipState) {
         let bounds = Aabb::new(Vec3::ZERO, Vec3::new(256.0, 128.0, 256.0));
-        let conv =
-            NetConv::for_level(bounds, &WeaponTable::builtin(), ShipTuning::tinker()).unwrap();
+        let conv = NetConv::for_level(
+            bounds,
+            &WeaponTable::builtin(),
+            ls_sim::ShipTable::builtin(),
+        )
+        .unwrap();
         let room = BoxRoomTerrain::new(Aabb::new(Vec3::splat(10.0), Vec3::splat(120.0)));
         let ship = ShipState::new(
             PlayerId(0),

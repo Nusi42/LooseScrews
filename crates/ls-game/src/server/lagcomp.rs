@@ -110,7 +110,6 @@ pub fn plan_compensation(
     rewinds: &BTreeMap<u32, u64>,
 ) -> Vec<Displacement> {
     let k = world.tick() + 1;
-    let tuning = world.tuning();
     let mut out: Vec<Displacement> = Vec::new();
     // Post-movement positions of this step, computed on first need.
     let mut moved: Option<BTreeMap<PlayerId, Vec3>> = None;
@@ -128,7 +127,7 @@ pub fn plan_compensation(
             continue;
         };
         let len = speed * DT;
-        let radius = tuning.radius + world.weapons().get(p.weapon).projectile_radius;
+        let radius_of = |s: &ls_sim::ShipState| world.tuning_for(s.ship_type).radius + p.radius;
         let wall = terrain
             .raycast(p.pos, dir, len)
             .map_or(f32::INFINITY, |h| h.distance);
@@ -143,7 +142,7 @@ pub fn plan_compensation(
             let Some(r) = history.position(s.player, then) else {
                 continue;
             };
-            if let Some(t) = segment_sphere(p.pos, dir, len, r, radius) {
+            if let Some(t) = segment_sphere(p.pos, dir, len, r, radius_of(s)) {
                 if t <= wall && best.is_none_or(|(bt, _, _)| t < bt) {
                     best = Some((t, s.player, r));
                 }
@@ -159,15 +158,17 @@ pub fn plan_compensation(
                 .filter(|s| s.alive)
                 .map(|s| {
                     let mut c = s.clone();
-                    simulate_movement(&mut c, &cmd_of(s.player), tuning, terrain);
+                    let t = world.tuning_for(s.ship_type);
+                    simulate_movement(&mut c, &cmd_of(s.player), t, terrain);
                     (s.player, c.pos)
                 })
                 .collect()
         });
         // Would the simulation hit something at least as early anyway?
         let sim_hits = moved.iter().any(|(id, pos)| {
+            let r = world.ship(*id).map_or(0.5, &radius_of);
             *id != p.owner
-                && segment_sphere(p.pos, dir, len, *pos, radius)
+                && segment_sphere(p.pos, dir, len, *pos, r)
                     .is_some_and(|t| t <= wall && t <= t_best + 1e-4)
         });
         if sim_hits {
@@ -178,10 +179,14 @@ pub fn plan_compensation(
         if cmd.buttons.contains(Buttons::FIRE_PRIMARY)
             || cmd.buttons.contains(Buttons::FIRE_SECONDARY)
             || cmd.buttons.contains(Buttons::SCAVENGE)
+            || cmd.buttons.contains(Buttons::GADGET)
         {
             continue;
         }
-        let reach = PICKUP_RADIUS + tuning.radius;
+        let reach = PICKUP_RADIUS
+            + world
+                .ship(target)
+                .map_or(0.5, |s| world.tuning_for(s.ship_type).radius);
         if world
             .pickups()
             .iter()
@@ -195,9 +200,9 @@ pub fn plan_compensation(
         let offset = rewound - after;
         let mut probe = ship.clone();
         probe.pos += offset;
-        simulate_movement(&mut probe, &cmd, tuning, terrain);
+        simulate_movement(&mut probe, &cmd, world.tuning_for(ship.ship_type), terrain);
         if probe.pos.distance(rewound) > 1e-3
-            || segment_sphere(p.pos, dir, len, probe.pos, radius).is_none()
+            || segment_sphere(p.pos, dir, len, probe.pos, radius_of(ship)).is_none()
         {
             continue;
         }

@@ -1,16 +1,39 @@
 //! Ship types and per-type tuning numbers.
 //!
-//! Only the Tinker (the standard ship and the reference for every speed in the
-//! design doc) is implemented in M1. Its numbers follow the design doc where the
-//! doc gives them (speeds, hull, 2:1 overdrive, two secondary slots); the rest are
-//! tuning starting points. The numbers live in `data/ships/*.ron` and are embedded
-//! with `include_str!` so the WASM client and tests need no file system.
+//! The four Scrapling hulls of the design doc (Skitter, Tinker, Hauler, Tug).
+//! The Tinker is the standard ship and the reference for every speed in the
+//! design doc. Numbers follow the design doc's ship table where it gives them
+//! (top speed relative to the laser, damage multiplier, hull, secondary slots);
+//! the rest are tuning starting points. They live in `data/ships/*.ron` and are
+//! embedded with `include_str!` so the WASM client and tests need no file system.
 
 use serde::{Deserialize, Serialize};
 
 use crate::SimError;
 
-const TINKER_RON: &str = include_str!("../../../data/ships/tinker.ron");
+/// Embedded ship data, in [`ShipType::index`] order.
+pub const BUILTIN_SHIPS: [(ShipType, &str, &str); 4] = [
+    (
+        ShipType::Skitter,
+        "ships/skitter.ron",
+        include_str!("../../../data/ships/skitter.ron"),
+    ),
+    (
+        ShipType::Tinker,
+        "ships/tinker.ron",
+        include_str!("../../../data/ships/tinker.ron"),
+    ),
+    (
+        ShipType::Hauler,
+        "ships/hauler.ron",
+        include_str!("../../../data/ships/hauler.ron"),
+    ),
+    (
+        ShipType::Tug,
+        "ships/tug.ron",
+        include_str!("../../../data/ships/tug.ron"),
+    ),
+];
 
 /// The Scrapling hull types from the design doc.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -22,12 +45,36 @@ pub enum ShipType {
 }
 
 impl ShipType {
+    /// All types in index order.
+    pub const ALL: [ShipType; 4] = [
+        ShipType::Skitter,
+        ShipType::Tinker,
+        ShipType::Hauler,
+        ShipType::Tug,
+    ];
+
+    /// Stable index (wire and rule set code): Skitter 0, Tinker 1, Hauler 2, Tug 3.
     pub fn index(self) -> u8 {
         match self {
             ShipType::Skitter => 0,
             ShipType::Tinker => 1,
             ShipType::Hauler => 2,
             ShipType::Tug => 3,
+        }
+    }
+
+    /// Inverse of [`ShipType::index`].
+    pub fn from_index(i: u8) -> Option<ShipType> {
+        ShipType::ALL.get(i as usize).copied()
+    }
+
+    /// Lower-case name (`"skitter"`, ...), as in the data file names.
+    pub fn name(self) -> &'static str {
+        match self {
+            ShipType::Skitter => "skitter",
+            ShipType::Tinker => "tinker",
+            ShipType::Hauler => "hauler",
+            ShipType::Tug => "tug",
         }
     }
 }
@@ -95,14 +142,20 @@ pub struct ShipTuning {
     pub secondary_slots: u8,
     /// Scrap left in the wreck when the ship is destroyed (plus half its carried scrap).
     pub wreck_scrap: f32,
+    /// Support: can pass scrap to a teammate within scavenge reach (Tug).
+    #[serde(default)]
+    pub can_pass_scrap: bool,
+    /// Scrap per second passed to a teammate while scavenging next to them.
+    #[serde(default)]
+    pub scrap_pass_rate: f32,
 }
 
 impl ShipTuning {
     /// The Tinker, the standard ship type, from the embedded
     /// `data/ships/tinker.ron`.
     pub fn tinker() -> ShipTuning {
-        ShipTuning::from_ron("data/ships/tinker.ron", TINKER_RON)
-            .expect("embedded data/ships/tinker.ron is valid")
+        let (_, name, text) = BUILTIN_SHIPS[ShipType::Tinker.index() as usize];
+        ShipTuning::from_ron(name, text).expect("embedded data/ships/tinker.ron is valid")
     }
 
     /// Parses ship tuning from RON (schema: this struct).
@@ -113,12 +166,10 @@ impl ShipTuning {
         })
     }
 
-    /// Tuning for a ship type, or `None` if the type is not implemented yet.
+    /// Built-in tuning for a ship type (all four types exist since M2; the
+    /// `Option` is kept for data sets that leave a type out).
     pub fn for_type(ship_type: ShipType) -> Option<ShipTuning> {
-        match ship_type {
-            ShipType::Tinker => Some(ShipTuning::tinker()),
-            _ => None,
-        }
+        Some(ShipTable::builtin().get(ship_type).clone())
     }
 
     /// Top speed: all three axes at the boost cap (`boost_speed * sqrt(3)`).
@@ -130,6 +181,61 @@ impl ShipTuning {
 impl Default for ShipTuning {
     fn default() -> Self {
         ShipTuning::tinker()
+    }
+}
+
+/// Tuning of every ship type, indexed by [`ShipType::index`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct ShipTable {
+    types: [ShipTuning; 4],
+}
+
+impl ShipTable {
+    /// The four built-in ship files.
+    pub fn builtin() -> ShipTable {
+        let parse = |i: usize| {
+            let (_, name, text) = BUILTIN_SHIPS[i];
+            ShipTuning::from_ron(name, text).expect("embedded ship data is valid")
+        };
+        ShipTable {
+            types: [parse(0), parse(1), parse(2), parse(3)],
+        }
+    }
+
+    /// A table with the same tuning for every type (tests, tools).
+    pub fn uniform(tuning: ShipTuning) -> ShipTable {
+        ShipTable {
+            types: [tuning.clone(), tuning.clone(), tuning.clone(), tuning],
+        }
+    }
+
+    /// Replaces one type's tuning (builder).
+    pub fn with(mut self, ship_type: ShipType, tuning: ShipTuning) -> ShipTable {
+        self.types[ship_type.index() as usize] = tuning;
+        self
+    }
+
+    pub fn get(&self, ship_type: ShipType) -> &ShipTuning {
+        &self.types[ship_type.index() as usize]
+    }
+
+    pub fn get_mut(&mut self, ship_type: ShipType) -> &mut ShipTuning {
+        &mut self.types[ship_type.index() as usize]
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (ShipType, &ShipTuning)> {
+        ShipType::ALL.iter().map(move |&t| (t, self.get(t)))
+    }
+
+    /// Largest collision radius of any type (broad-phase margins).
+    pub fn max_radius(&self) -> f32 {
+        self.types.iter().map(|t| t.radius).fold(0.0, f32::max)
+    }
+}
+
+impl Default for ShipTable {
+    fn default() -> Self {
+        ShipTable::builtin()
     }
 }
 
@@ -176,12 +282,51 @@ mod tests {
             damage_mult: 1.0,
             secondary_slots: 2,
             wreck_scrap: 30.0,
+            can_pass_scrap: false,
+            scrap_pass_rate: 0.0,
         }
     }
 
     #[test]
     fn tinker_data_file_matches_reference() {
         assert_eq!(ShipTuning::tinker(), reference());
+    }
+
+    /// Design doc ship table: top speed relative to the 30 u/s laser, damage
+    /// multiplier, hull and secondary slots; every type stays slower than a laser.
+    #[test]
+    fn ship_types_match_design_doc() {
+        let t = ShipTable::builtin();
+        let laser = 30.0f32;
+        for (ty, speed, dmg, hull, slots) in [
+            (ShipType::Skitter, 0.98, 0.85, 70.0, 1),
+            (ShipType::Tinker, 0.95, 1.0, 100.0, 2),
+            (ShipType::Hauler, 0.85, 1.2, 150.0, 3),
+            (ShipType::Tug, 0.90, 0.8, 110.0, 2),
+        ] {
+            let s = t.get(ty);
+            let ratio = s.top_speed() / laser;
+            assert!((ratio - speed).abs() < 0.006, "{ty:?} {ratio}");
+            assert!(s.top_speed() < laser, "{ty:?} slower than a laser");
+            assert_eq!(s.damage_mult, dmg, "{ty:?}");
+            assert_eq!(s.hull_max, hull, "{ty:?}");
+            assert_eq!(s.secondary_slots, slots, "{ty:?}");
+        }
+        // Skitter: smallest hitbox, fastest turning; Hauler: largest hitbox.
+        let r = |ty| t.get(ty).radius;
+        let turn = |ty| t.get(ty).max_turn_rate;
+        for ty in [ShipType::Tinker, ShipType::Hauler, ShipType::Tug] {
+            assert!(r(ShipType::Skitter) < r(ty) && turn(ShipType::Skitter) > turn(ty));
+            assert!(r(ShipType::Hauler) >= r(ty));
+        }
+        assert_eq!(t.max_radius(), r(ShipType::Hauler));
+        // Tug: scavenges faster and can pass scrap.
+        let tug = t.get(ShipType::Tug);
+        assert!(tug.can_pass_scrap && tug.scavenge_rate > t.get(ShipType::Tinker).scavenge_rate);
+        for ty in ShipType::ALL {
+            assert_eq!(ShipType::from_index(ty.index()), Some(ty));
+        }
+        assert_eq!(ShipType::from_index(4), None);
     }
 
     #[test]

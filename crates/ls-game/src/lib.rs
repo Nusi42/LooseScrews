@@ -30,6 +30,18 @@ pub use error::GameError;
 pub use setup::{build_match, match_setup, MatchConfig};
 pub use terrain::GameTerrain;
 
+/// The `Hello` a client sends: name, preferred team and ship type, and the
+/// built-in game data hash (`ls_sim::data_hash`), which the server checks.
+pub fn client_hello(
+    name: impl Into<String>,
+    preferred_team: Option<u8>,
+    ship_type: Option<ls_sim::ShipType>,
+) -> ls_net::Hello {
+    ls_net::Hello::new(name, preferred_team)
+        .with_data_hash(ls_sim::data_hash())
+        .with_ship_type(ship_type.map(|t| t.index()))
+}
+
 /// `Disconnect` reason a host sends every client when it replaces a finished
 /// match with a new one. Clients treat it as "rejoin", not as an error: a new
 /// connection gets the new match's `Welcome`.

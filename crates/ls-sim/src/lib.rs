@@ -1,14 +1,20 @@
 //! Deterministic game simulation for Loose Screws.
 //!
-//! See `docs/implementation-plan.md` section 4.3. Contents:
+//! See `docs/implementation-plan.md` section 4.3 and, for the M2 arsenal
+//! framework, `docs/architecture/arsenal-framework.md`. Contents:
 //! - [`ShipState`], [`InputCmd`] and the flight model ([`simulate_movement`]):
 //!   per-axis thrust caps in ship space, damping, horizon assist, terrain collision.
 //! - Resources (hull, energy, boost, scrap) coupled as in the design doc.
-//! - Data-driven weapons ([`WeaponTable`], `data/weapons/*.ron`) and rule sets
-//!   ([`RuleSet`], `data/rulesets/*.ron`).
-//! - [`World`]: projectiles, splash, knockback, craters and paint, pickups,
-//!   scrap, respawns and the Paint the Void mode, advanced by [`World::step`].
-//! - [`World::state_hash`] for replay and desync checks.
+//! - Ship types ([`ShipTable`], `data/ships/*.ron`).
+//! - Data-driven weapons ([`WeaponTable`], `data/weapons/*.ron`) with one
+//!   behaviour module per weapon ([`weapons`]), gadgets ([`gadgets`],
+//!   `data/gadgets/*.ron`) and rule sets ([`RuleSet`], `data/rulesets/*.ron`,
+//!   rule set codes in [`rulecode`]).
+//! - [`World`]: projectiles, entities (debris, decoys, ghosts, dust),
+//!   splash, knockback, craters and paint, pickups, scrap, respawns and the
+//!   Paint the Void mode, advanced by [`World::step`].
+//! - [`World::state_hash`] for replay and desync checks, [`data::data_hash`]
+//!   for the handshake.
 //!
 //! Terrain is accessed only through [`ls_math::terrain::TerrainQuery`] (plus the
 //! [`SimTerrain`] extension for edits and paint coverage); this crate never
@@ -16,39 +22,54 @@
 //!
 //! This crate is deterministic: follow the rules in `CLAUDE.md`.
 
+pub mod behavior;
+pub mod data;
+pub mod entity;
 pub mod error;
+pub mod gadgets;
 pub mod hash;
 pub mod input;
 pub mod mode;
+pub mod rulecode;
 pub mod ruleset;
 pub mod ship;
 pub mod terrain;
 pub mod tuning;
+pub mod visual;
 pub mod weapon;
+pub mod weapons;
 pub mod world;
 
+pub use behavior::{Command, Ctx, Cue, CueKind, DamageSource};
+pub use data::{data_hash, with_behavior_version, GameData, SIM_BEHAVIOR_VERSION};
+pub use entity::{Entity, EntityKind, EntitySpawn, EntityView, ReplicatedKind, Source};
 pub use error::SimError;
+pub use gadgets::{GadgetActivation, GadgetDef, GadgetId, GadgetTable};
 pub use hash::StateHasher;
 pub use input::{Buttons, InputCmd};
 pub use mode::{MatchPhase, PaintTheVoid};
 pub use ruleset::{
-    Availability, Loadout, ModeRules, PaintTheVoidRules, PickupKind, PickupRule, ResolvedRules,
-    RuleSet, ScrapPickupRule,
+    Availability, Loadout, ModeRules, Mutator, PaintTheVoidRules, PickupKind, PickupRule,
+    ResolvedRules, RuleSet, ScrapPickupRule, WeaponTuning,
 };
-pub use ship::{simulate_movement, MovementReport, PlayerId, ShipState, WeaponState};
+pub use ship::{simulate_movement, ChargeState, MovementReport, PlayerId, ShipState, WeaponState};
 pub use terrain::{
     paint_team_id, team_from_paint_id, PaintCoverage, PaintedTerrain, SimTerrain, NO_PAINT,
 };
-pub use tuning::{ShipTuning, ShipType};
+pub use tuning::{ShipTable, ShipTuning, ShipType};
+pub use visual::{BuiltinVisual, Shape, Visual, VisualId, VisualTable};
 pub use weapon::{
-    ShieldInteraction, Splash, TerrainEffect, WeaponCost, WeaponDef, WeaponFamily, WeaponId,
-    WeaponSlot, WeaponTable,
+    ChargeDef, ShieldInteraction, Splash, TerrainEffect, WeaponCost, WeaponDef, WeaponFamily,
+    WeaponId, WeaponSlot, WeaponTable,
 };
 pub use world::{
-    Event, MatchSetup, PickupSpawn, Projectile, ScrapPile, SpawnPoint, World, WorldConfig,
+    proj_flags, Event, MatchSetup, PickupSpawn, Projectile, ScrapPile, SpawnPoint, World,
+    WorldConfig,
 };
 
 pub use ls_math;
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_arsenal;

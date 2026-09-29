@@ -18,4 +18,4 @@ pub use clock::ClientClock;
 pub use input::InputSequencer;
 pub use interp::{InterpolationBuffer, INTERP_DELAY_TICKS};
 pub use prediction::{PredictionConfig, PredictionStats, Predictor, Reconcile};
-pub use session::{ClientSession, Incoming, SessionStats};
+pub use session::{ClientSession, Incoming, SessionStats, GUIDED_STATE_BIT};

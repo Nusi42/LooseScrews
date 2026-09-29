@@ -404,6 +404,93 @@ button {
   background: var(--panel);
 }
 
+/* ---- Weapon panel (carried weapons, keys 1-0 / X / G) ---- */
+
+.hud-loadout {
+  display: grid;
+  gap: 2px;
+  margin: 4px 0 6px;
+  font-size: 12px;
+}
+
+.hud-slot {
+  display: grid;
+  grid-template-columns: 16px auto auto;
+  justify-content: end;
+  gap: 8px;
+  align-items: baseline;
+  color: var(--muted);
+  padding: 1px 4px;
+  border-radius: 4px;
+}
+
+.hud-slot.selected {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.1);
+  font-weight: 700;
+}
+
+.hud-slot.secondary:first-of-type,
+.hud-slot.primary + .hud-slot.secondary,
+.hud-slot.secondary + .hud-slot.gadget,
+.hud-slot.primary + .hud-slot.gadget {
+  margin-top: 4px;
+}
+
+.hud-slot.gadget.selected {
+  color: var(--accent);
+}
+
+.hud-slot-key {
+  font: 11px ui-monospace, Consolas, monospace;
+  text-align: center;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 3px;
+  min-width: 14px;
+}
+
+.hud-slot-key:empty {
+  border: none;
+}
+
+.hud-slot-detail {
+  font-size: 11px;
+  opacity: 0.85;
+}
+
+/* ---- Name tags over ships ---- */
+
+.name-tags {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.name-tag {
+  position: absolute;
+  left: 0;
+  top: 0;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.45);
+  font-size: 12px;
+  white-space: nowrap;
+  will-change: transform;
+}
+
+.name-tag.team-0 {
+  color: var(--team-0);
+}
+
+.name-tag.team-1 {
+  color: var(--team-1);
+}
+
+.name-tag.mate {
+  font-weight: 700;
+}
+
 /* ---- Start screen buttons and loading ---- */
 
 .play-row {

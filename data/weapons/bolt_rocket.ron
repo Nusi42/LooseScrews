@@ -1,5 +1,6 @@
 // Bolt Rocket: dumbfire ordnance secondary, limited count.
 // Design doc: "Dumbfire, 40 u/s. Malus: small blast. Lasting effect: 2 u crater" (diameter -> radius 1.0).
+// Behaviour: crates/ls-sim/src/weapons/ordnance/bolt_rocket.rs (implemented: the generic hooks are the M1 behaviour).
 WeaponDef(
     id: "bolt_rocket",
     name: "Bolt Rocket",
@@ -14,6 +15,7 @@ WeaponDef(
     splash: Some((radius: 2.5, damage: 20.0, hits_owner: true)),
     knockback: 8.0,
     terrain: (crater_radius: 1.0, paint_radius: 0.0),
-    shield: WearsDown,
+    shield: Wears(1.0),
     max_ammo: 10,
+    visual: (shape: Rocket, color: (255, 140, 60), scale: 1.0),
 )

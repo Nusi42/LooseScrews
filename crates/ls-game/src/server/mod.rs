@@ -13,14 +13,15 @@ use ls_math::terrain::TerrainQuery;
 use ls_math::Vec3;
 use ls_net::message::MAX_EVENTS;
 use ls_net::{
-    Channel, Hello, InputMsg, Message, NetEvent, NetInput, Reject, RejectReason, Snapshot,
-    SnapshotHistory, SnapshotMsg, Welcome, MAX_SHIPS, PROTOCOL_VERSION,
+    check_data_hash, Channel, Hello, InputMsg, InventoryMsg, Message, NetEntity, NetEvent,
+    NetInput, NetShip, NetWeapon, Reject, RejectReason, Relevance, Snapshot, SnapshotHistory,
+    SnapshotMsg, Welcome, MAX_SHIPS, PROTOCOL_VERSION,
 };
 use ls_sim::terrain::segment_sphere;
-use ls_sim::{Event, InputCmd, PlayerId, ShipType, World};
+use ls_sim::{Event, InputCmd, PlayerId, ReplicatedKind, ShipState, ShipType, World};
 
 use crate::client::INTERP_DELAY_TICKS;
-use crate::convert::{events_to_net, net_to_input, projectile_to_net};
+use crate::convert::{entity_to_net, events_to_net, net_to_input, projectile_to_net};
 use crate::setup::{build_match, MatchConfig};
 use crate::{GameError, GameTerrain, NetConv};
 pub use lagcomp::{Displacement, HistoryFrame, ShipHistory};
@@ -127,10 +128,19 @@ struct ClientState {
     /// setting up (level generation) and has predicted nothing, so repeated
     /// idle commands are not counted as missing inputs.
     started: bool,
+    /// True once any `Input` arrived: the client has built its session
+    /// (level generation can take a second after the `Welcome`) and gets
+    /// snapshots from now on. Snapshots sent before that would pile up
+    /// unread, all full (nothing can be acknowledged yet), and then be
+    /// handled in one burst: each one a full snapshot, a starvation report
+    /// and a prediction snap on the client.
+    ready: bool,
     acked_snapshot: Option<u32>,
     sent: SnapshotHistory,
     /// Terrain edits the client is known to have.
     known_edits: u32,
+    /// The inventory last sent to the client (`Message::Inventory`).
+    inventory_sent: Option<InventoryMsg>,
 }
 
 /// Information about a connected player.
@@ -140,6 +150,7 @@ pub struct ClientInfo {
     pub player: PlayerId,
     pub name: String,
     pub team: u8,
+    pub ship_type: ShipType,
 }
 
 /// One authoritative match: world, terrain, clients. See the module docs.
@@ -152,6 +163,8 @@ pub struct Room {
     conv: NetConv,
     share_code: String,
     ruleset_ron: String,
+    /// Hash of the match's game data; `Hello`s with another hash are rejected.
+    data_hash: u64,
     tick: u64,
     clients: BTreeMap<u8, ClientState>,
     history: ShipHistory,
@@ -172,8 +185,9 @@ impl Room {
         let conv = NetConv::for_level(
             terrain.bounds(),
             &match_cfg.weapons,
-            match_cfg.tuning.clone(),
+            match_cfg.ships.clone(),
         )?;
+        let data_hash = match_cfg.data_hash();
         let ruleset_ron = ron::to_string(&match_cfg.rules)
             .map_err(|e| GameError::Setup(format!("rule set serialization: {e}")))?;
         let share_code = match_cfg.code.encode()?;
@@ -186,6 +200,7 @@ impl Room {
             conv,
             share_code,
             ruleset_ron,
+            data_hash,
             tick: 0,
             clients: BTreeMap::new(),
             rewinds: BTreeMap::new(),
@@ -223,6 +238,10 @@ impl Room {
     pub fn stats(&self) -> RoomStats {
         self.stats
     }
+    /// Game data hash clients must match (`Hello::data_hash`).
+    pub fn data_hash(&self) -> u64 {
+        self.data_hash
+    }
     pub fn history(&self) -> &ShipHistory {
         &self.history
     }
@@ -239,11 +258,15 @@ impl Room {
     pub fn clients(&self) -> Vec<ClientInfo> {
         self.clients
             .iter()
-            .map(|(&id, c)| ClientInfo {
-                id,
-                player: c.player,
-                name: c.name.clone(),
-                team: self.world.ship(c.player).map_or(0, |s| s.team),
+            .map(|(&id, c)| {
+                let ship = self.world.ship(c.player);
+                ClientInfo {
+                    id,
+                    player: c.player,
+                    name: c.name.clone(),
+                    team: ship.map_or(0, |s| s.team),
+                    ship_type: ship.map_or(ShipType::Tinker, |s| s.ship_type),
+                }
             })
             .collect()
     }
@@ -264,7 +287,10 @@ impl Room {
     /// (reliable). Returns the new client's wire id, or the `Reject` to send.
     ///
     /// Team: the preferred team if it would not make that team two or more
-    /// players larger than the other, otherwise the smaller team.
+    /// players larger than the other, otherwise the smaller team. Ship type:
+    /// the preferred one if the rule set allows it, otherwise the Tinker (or
+    /// the first allowed type). A client built with other game data is
+    /// rejected with [`RejectReason::DataMismatch`].
     pub fn join(&mut self, hello: &Hello) -> Result<u8, Reject> {
         let reject = |reason, message: &str| Reject {
             reason,
@@ -277,6 +303,9 @@ impl Room {
                 "protocol version mismatch",
             ));
         }
+        if let Some(rj) = check_data_hash(hello, self.data_hash) {
+            return Err(rj);
+        }
         if self.is_full() {
             return Err(reject(RejectReason::ServerFull, "room is full"));
         }
@@ -287,9 +316,21 @@ impl Room {
             let count = |team: u8| self.world.ships().filter(|s| s.team == team).count();
             t < 2 && count(t) <= count(1 - t)
         });
+        let allowed = &self.world.resolved_rules().allowed_ship_types;
+        let ship_type = hello
+            .ship_type
+            .and_then(ShipType::from_index)
+            .filter(|t| allowed.contains(t))
+            .or_else(|| {
+                allowed
+                    .contains(&ShipType::Tinker)
+                    .then_some(ShipType::Tinker)
+            })
+            .or_else(|| allowed.first().copied())
+            .unwrap_or(ShipType::Tinker);
         let player = self
             .world
-            .add_player(team, ShipType::Tinker)
+            .add_player(team, ship_type)
             .map_err(|e| reject(RejectReason::Other, &e.to_string()))?;
         let team = self.world.ship(player).map_or(0, |s| s.team);
         // Encode the Welcome before registering the client: if it cannot be
@@ -299,6 +340,8 @@ impl Room {
             protocol_version: PROTOCOL_VERSION,
             player_id: id,
             team,
+            ship_type: ship_type.index(),
+            data_hash: self.data_hash,
             share_code: self.share_code.clone(),
             ruleset_name: self.match_cfg.rules.name.clone(),
             ruleset: self.ruleset_ron.clone().into_bytes(),
@@ -330,9 +373,11 @@ impl Room {
                 last: idle,
                 ack_input: self.tick,
                 started: false,
+                ready: false,
                 acked_snapshot: None,
                 sent: SnapshotHistory::default(),
                 known_edits: self.terrain.edit_count(),
+                inventory_sent: None,
             },
         );
         self.outgoing.push(Outgoing {
@@ -397,6 +442,16 @@ impl Room {
                 self.leave(client);
                 Ok(())
             }
+            Message::SelectShip { ship_type } => {
+                // Types the rule set does not allow are ignored (the client
+                // shows the allowed ones; a stale choice is not an error).
+                if let (Some(t), Some(c)) =
+                    (ShipType::from_index(ship_type), self.clients.get(&client))
+                {
+                    let _ = self.world.set_ship_type(c.player, t);
+                }
+                Ok(())
+            }
             other => Err(GameError::Protocol(format!(
                 "unexpected message from client {client}: {}",
                 message_name(&other)
@@ -413,6 +468,7 @@ impl Room {
         let Some(c) = self.clients.get_mut(&client) else {
             return;
         };
+        c.ready = true;
         if let Some(s) = m.ack_snapshot {
             if c.acked_snapshot.is_none_or(|a| s > a) {
                 if let Some(snap) = c.sent.get(s) {
@@ -448,8 +504,9 @@ impl Room {
 
     /// Advances the match by one 60 Hz tick: collects one input per client
     /// (repeating the last one if missing), applies lag compensation, steps
-    /// the world and, every `snapshot_interval` ticks, queues snapshots and
-    /// events for every client.
+    /// the world and, every `snapshot_interval` ticks, queues events for
+    /// every client and snapshots for every client that has sent an input
+    /// (see `ClientState::ready`).
     pub fn step(&mut self) -> StepReport {
         self.tick += 1;
         let k = self.tick;
@@ -537,6 +594,8 @@ impl Room {
             .map(|&v| v.min(u32::MAX as u64) as u32)
             .collect();
         let match_ticks_left = self.world.mode().remaining_ticks(self.world.tick()) as u32;
+        // Wire ids (`id as u16`) are unique among live projectiles: the
+        // simulation's allocator skips live ones (`World::alloc_projectile_id`).
         let mut projectiles: Vec<_> = self
             .world
             .projectiles()
@@ -544,10 +603,32 @@ impl Room {
             .map(|p| projectile_to_net(p, wire_id(&self.clients, p.owner)))
             .collect();
         projectiles.sort_by_key(|p| p.id);
+        debug_assert!(projectiles.windows(2).all(|w| w[0].id < w[1].id));
         projectiles.dedup_by_key(|p| p.id);
+        let entities: Vec<NetEntity> = self
+            .world
+            .entity_views()
+            .iter()
+            .map(|v| entity_to_net(v, v.owner.and_then(|o| wire_id(&self.clients, o))))
+            .collect();
+        let players: Vec<ls_net::NetPlayer> = self
+            .clients
+            .iter()
+            .filter_map(|(&id, c)| {
+                let s = self.world.ship(c.player)?;
+                Some(NetConv::player_to_net(id, &c.name, s))
+            })
+            .collect();
         let log = self.terrain.edit_log();
 
-        let ids: Vec<u8> = self.clients.keys().copied().collect();
+        let mut inventories: Vec<(u8, Message)> = Vec::new();
+        // Clients still setting up (no input yet) get no snapshots.
+        let ids: Vec<u8> = self
+            .clients
+            .iter()
+            .filter(|(_, c)| c.ready)
+            .map(|(&id, _)| id)
+            .collect();
         for id in ids {
             let ships = self
                 .clients
@@ -560,16 +641,25 @@ impl Room {
             let c = &self.clients[&id];
             let from = (c.known_edits as usize).min(log.len());
             let to = (from + self.cfg.max_edits_per_snapshot).min(log.len());
-            let snap = Snapshot {
+            let mut snap = Snapshot {
                 tick,
                 ack_input: c.ack_input as u32,
                 edit_base: from as u32,
                 edits: log[from..to].to_vec(),
                 ships,
                 projectiles: projectiles.clone(),
+                entities: entities.clone(),
+                players: players.clone(),
                 scores: scores.clone(),
                 match_ticks_left,
             };
+            snap.retain_relevant(
+                id,
+                &SimRelevance {
+                    world: &self.world,
+                    clients: &self.clients,
+                },
+            );
             let packed = self.conv.quantizer().pack_snapshot(&snap);
             let baseline = c.sent.choose_baseline(tick, c.acked_snapshot);
             let msg = Message::Snapshot(Box::new(SnapshotMsg {
@@ -595,8 +685,31 @@ impl Room {
             if let Some(c) = self.clients.get_mut(&id) {
                 c.sent.push(packed);
             }
+            // The own inventory, reliably, whenever it changed.
+            let inv = self
+                .world
+                .ship(self.clients[&id].player)
+                .map(|s| inventory_msg(tick, s));
+            if let Some(inv) = inv {
+                let c = &self.clients[&id];
+                let changed = c.inventory_sent.as_ref().is_none_or(|old| {
+                    InventoryMsg {
+                        tick,
+                        ..old.clone()
+                    } != inv
+                });
+                if changed {
+                    inventories.push((id, Message::Inventory(inv.clone())));
+                    if let Some(c) = self.clients.get_mut(&id) {
+                        c.inventory_sent = Some(inv);
+                    }
+                }
+            }
         }
 
+        for (id, msg) in inventories {
+            self.push_message(id, &msg);
+        }
         let events = std::mem::take(&mut self.pending_events);
         for chunk in events.chunks(MAX_EVENTS) {
             let msg = Message::Events(chunk.to_vec());
@@ -690,6 +803,61 @@ pub fn view_tick(ack: u32, interp: i64, snapshot_interval: i64) -> i64 {
     ack as i64 - interp + snapshot_interval / 2
 }
 
+/// The inventory message for a ship (see [`Message::Inventory`]).
+fn inventory_msg(tick: u32, s: &ShipState) -> InventoryMsg {
+    InventoryMsg {
+        tick,
+        weapons: s
+            .weapons
+            .iter()
+            .map(|w| NetWeapon {
+                weapon: w.weapon.0,
+                ammo: w.ammo.min(u16::MAX as u32) as u16,
+                level: w.level,
+            })
+            .collect(),
+        primary: s.primary.map_or(u8::MAX, |w| w.0),
+        secondary: s.secondary.map_or(u8::MAX, |w| w.0),
+        gadget: s.gadget.map_or(u8::MAX, |g| g.0),
+    }
+}
+
+/// Moving debris farther than this (u) from a viewer's ship is left out of
+/// its snapshots (resting debris costs one bit and stays).
+pub const DEBRIS_RELEVANCE_RADIUS: f32 = 100.0;
+
+/// Per-client snapshot relevance from the simulation: ships hidden by a
+/// gadget (Cloak) are left out for the viewers that must not see them, and
+/// moving debris far from the viewer.
+struct SimRelevance<'a> {
+    world: &'a World,
+    clients: &'a BTreeMap<u8, ClientState>,
+}
+
+impl Relevance for SimRelevance<'_> {
+    fn ship(&self, viewer: u8, ship: &NetShip) -> bool {
+        let (Some(v), Some(t)) = (self.clients.get(&viewer), self.clients.get(&ship.id)) else {
+            return true;
+        };
+        self.world.ship_visible_to(v.player, t.player)
+    }
+
+    fn entity(&self, viewer: u8, e: &NetEntity) -> bool {
+        // Debris state byte 1 is "resting".
+        if e.kind != ReplicatedKind::Debris as u8 || e.state[1] != 0 {
+            return true;
+        }
+        let Some(me) = self
+            .clients
+            .get(&viewer)
+            .and_then(|v| self.world.ship(v.player))
+        else {
+            return true;
+        };
+        me.pos.distance_squared(e.pos) <= DEBRIS_RELEVANCE_RADIUS * DEBRIS_RELEVANCE_RADIUS
+    }
+}
+
 fn queued(cmd: &NetInput, rewind: u64) -> QueuedInput {
     QueuedInput {
         cmd: net_to_input(cmd),
@@ -715,6 +883,8 @@ fn message_name(m: &Message) -> &'static str {
         Message::Ping { .. } => "Ping",
         Message::Pong { .. } => "Pong",
         Message::Disconnect { .. } => "Disconnect",
+        Message::SelectShip { .. } => "SelectShip",
+        Message::Inventory(_) => "Inventory",
     }
 }
 

@@ -35,6 +35,7 @@ tests are in [determinism.md](determinism.md). The contract part is the RNG stre
   | `ls_sim::world::RNG_STREAM_PICKUPS` | `0x5349_4d5f_5049_434b` ("SIM_PICK") | Weapon pickup rolls, seeded with `Pcg32::from_seed(match_seed, ..)` |
   | `ls_game::setup::RNG_STREAM_SPAWNS` | `0x4741_4d45_5f53_504e` ("GAME_SPN") | Team spawn point placement, `Pcg32::from_seed(world_seed, ..)` |
   | `ls_game::setup::RNG_STREAM_PICKUP_POINTS` | `0x4741_4d45_5f50_4b50` ("GAME_PKP") | Pickup point placement, `Pcg32::from_seed(world_seed, ..)` |
+  | `ls_sim::behavior::RNG_STREAM_MODULES` | `0x5349_4d5f_4d4f_4453` ("SIM_MODS") | Weapon and gadget modules (`Ctx::rng(key)`): `Pcg32::new(mix64(match_seed ^ mix64(key ^ tick.rotate_left(32))), ..)`, a private stream per key and tick |
 
   The simulation's `match_seed` (`WorldConfig::seed`) is
   `mix64(world_seed ^ ls_game::setup::MATCH_SEED_SALT)` with the salt `0x4d41_5443_485f_5345`
@@ -63,6 +64,7 @@ pub enum TerrainEdit {
     SubtractSphere { center: Vec3, radius: f32 }, // crater
     AddSphere { center: Vec3, radius: f32 },      // add rock
     Paint { center: Vec3, radius: f32, team: u8 },// paint surface cells, no geometry change
+    Surface { center: Vec3, radius: f32, states: u8, until: u32 }, // timed surface states
 }
 ```
 
@@ -76,10 +78,36 @@ pub enum TerrainEdit {
 - `radius` is in u. The design doc gives crater sizes as **diameters**, so weapon data
   stores `crater_radius = diameter / 2` (e.g. the 2 u Bolt Rocket crater is
   `crater_radius: 1.0`).
+- `Surface` sets timed surface states on the surface cells whose centre is within `radius`:
+  for every bit in `states` (`ls_math::SurfaceStates`: `HOT` 1, `CHARGED` 2, `GLOW` 4; other
+  bits ignored) the cell's expiry tick becomes `until` (absolute simulation tick; `0` clears).
+  A state is active while `tick < until`; the cell's other states are kept. Default durations
+  (design doc): hot 10 s, charged 15 s, glow 30 s (`SurfaceStates::DEFAULT_TICKS`,
+  `TerrainEdit::surface_for_default(center, radius, state, now)`). The edit carries the
+  expiry, not a duration, so peers that apply it late (snapshots, late-join replay) agree.
+  Charged cells drain 5 energy/s from ships scraping them (simulation rule; the query is
+  `GameTerrain::surface_states_near`).
 - `Paint.team` is the simulation team (0-based). `255` (`ls_worldgen::NO_TEAM`,
   `ls_sim::NO_PAINT`) means unpainted; a paint edit with team 255 erases. The same ids
   appear in `PaintCoverage.team_cells`, in mesh vertex `teams`, and in the web client's
-  `MeshData.team`. A crater clears paint from cells that stop being surface.
+  `MeshData.team`. A crater clears paint and surface states from cells that stop being
+  surface.
+
+### Terrain strength (`ls_worldgen::material`)
+
+Rock has a material per region: `Material::Weak` (id 0), `Rock` (1), `Hard` (2), from a
+Voronoi partition with one hashed site per 24 u cube (`MaterialField::new(world_seed)`; about
+30 % weak, 45 % rock, 25 % hard). It is a pure function of the seed and position, separate
+from the SDF (it does not change the generator golden hashes; a unit test pins it on native
+and wasm32). The ids and multipliers are contract constants in `ls_math::terrain`
+(`MATERIAL_WEAK`/`ROCK`/`HARD`, `material_crater_scale`: weak 1.4, rock 1.0, hard 0.6), so
+weak rock breaks first and repeated fire wears through hard rock slowly. The simulation does
+the scaling: `ls_sim::Ctx::crater` multiplies the radius by the scale of the material at the
+centre (read through `SimTerrain::material_at`; `GameTerrain` answers from the field), and
+`Ctx::crater_exact` does not (Tectonic Charge collapse zones keep the design-table size).
+Every terrain applies and logs edits verbatim, `Event::TerrainEdit` carries the edit as
+applied, and the log and the wire carry the scaled crater. Test terrains (`BoxRoomTerrain`,
+...) are ordinary rock everywhere (the `SimTerrain::material_at` default).
 
 ### `RayHit`
 
@@ -127,11 +155,15 @@ number on the wire.
 ## Chunk meshes (`ls-worldgen` -> `ls-wasm` -> web client)
 
 `ls_worldgen::Mesh` holds `positions: Vec<[f32; 3]>`, `normals: Vec<[f32; 3]>`,
-`indices: Vec<u32>` and `teams: Vec<u8>` (one paint id per vertex, see `Paint.team`).
+`indices: Vec<u32>`, `teams: Vec<u8>` (one paint id per vertex, see `Paint.team`),
+`states: Vec<u8>` (surface state bits per vertex, active at the chunk store's display tick,
+`GameTerrain::advance_to`) and `materials: Vec<u8>` (material id per vertex; filled by the
+`ChunkStore` meshers).
 Vertices are in world space and faces are counter-clockwise seen from open space. `ls-wasm`
 hands the client a `MeshData` (`web/src/renderer/mesh.ts`) by flattening only:
 `positions` and `normals` as `Float32Array` (xyz triples), `indices` as `Uint32Array`, and
-`teams` as the `Uint8Array` field `team` with values unchanged. The client renders with
+`teams` as the `Uint8Array` field `team` with values unchanged (`states` and `materials` are
+to be exported the same way by the client work of wave A3/C). The client renders with
 back-face culling and `frontFace: "ccw"`.
 
 ## Share codes
@@ -143,10 +175,28 @@ back-face culling and `frontFace: "ccw"`.
 TypeScript (`web/src/ui/shareCode.ts`) and then decodes the code, checksum and generator
 version through `ls-wasm`'s `checkShareCode`.
 
+## Game data ids (`ls-sim`)
+
+Every peer derives these from the same embedded data (the data hash in the handshake makes
+sure it is the same data); details in [arsenal-framework.md](arsenal-framework.md).
+
+| Id | Definition |
+| --- | --- |
+| `WeaponId` | Index in the weapon table sorted by weapon id (27 built-in weapons: `borrowed_time` 0 ... `tectonic_charge` 26); travels as projectile `kind`, ship flag bits 10-14, `InputCmd::weapon_select - 1` |
+| Weapon registry order | `weapons::registry::MODULES`, design-doc order; rule set codes index it (append only) |
+| `GadgetId` | Index in the gadget table sorted by id (`cloak` 0, `decoy` 1, `shield` 2); registry order (`shield`, `cloak`, `decoy`) is the rule set code order |
+| `ShipType::index` | Skitter 0, Tinker 1, Hauler 2, Tug 3 (wire, rule set codes) |
+| `VisualId` | Index in `VisualTable::new(weapons, gadgets)`: 8 built-ins, then 2 per weapon (projectile, pickup), then 1 per gadget |
+| Entity wire id | `entity id & 0x7fff`, unique among live entities (the allocator skips ids in use) |
+| `ReplicatedKind` | Entity `kind` byte: Debris 0, WeaponPickup 1, UpgradePickup 2, GadgetPickup 3, ScrapPile 4, Wreck 5, Decoy 6, Ghost 7, DustCloud 8, Marker 9 |
+| `CueKind` | Cue `kind` byte (`ls_sim::behavior::CueKind`) |
+| Data hash | `ls_sim::data_hash()`: FNV-1a over all embedded `data/` files sorted by path (path, 0, length, bytes without CR) |
+
 ## Network quantization (`ls-net`)
 
 `QuantConfig::default()` covers the default level box plus a 2 u margin
-(`[-2,258] x [-2,130] x [-2,258]` u). The server fills `Welcome.quant` with
+(`[-2,258] x [-2,130] x [-2,258]` u), ship and entity velocities up to 64 u/s per axis and
+projectiles up to 320 u/s (Railspike 270 u/s). The server fills `Welcome.quant` with
 `ls_game::convert::quant_config_for(Generator::bounds(), weapons)` (bounds plus 2 u) so
 clients always use the real level box. How game state maps onto the wire types (ids, tick
 numbering, `ack_input`, status scaling, scores, edit delivery) is specified in

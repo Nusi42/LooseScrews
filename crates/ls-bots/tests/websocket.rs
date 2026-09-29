@@ -285,7 +285,7 @@ fn welcome_bytes() -> Vec<u8> {
         ..RoomConfig::default()
     };
     let mut room = Room::new(MatchConfig::paint_the_void(code), cfg).unwrap();
-    let hello = Message::Hello(ls_game::ls_net::Hello::new("x", None))
+    let hello = Message::Hello(ls_game::client_hello("x", None, None))
         .encode()
         .unwrap();
     room.join_packet(&hello).unwrap();

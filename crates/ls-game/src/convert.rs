@@ -5,17 +5,19 @@
 //! - Inputs: [`input_to_net`] / [`net_to_input`]. Clients must simulate the
 //!   *quantized* command ([`quantize_input`]) so they predict exactly what the
 //!   server will simulate.
-//! - Projectiles and events: [`projectile_to_net`], [`events_to_net`].
+//! - Projectiles, entities, players and events: [`projectile_to_net`],
+//!   [`entity_to_net`], [`NetConv::player_to_net`], [`events_to_net`].
 //! - Quantization: [`quant_config_for`] derives the [`QuantConfig`] from the
 //!   level bounds (plus [`QUANT_MARGIN`]) and the weapon table.
 
 use ls_math::{Aabb, Quat, Vec3};
 use ls_net::{
-    buttons, ship_flags, NetEvent, NetInput, NetProjectile, NetShip, QuantConfig, Quantizer,
-    ShipStatus,
+    buttons, ship_flags, NetEntity, NetEvent, NetInput, NetPlayer, NetProjectile, NetShip,
+    QuantConfig, Quantizer, ShipStatus,
 };
 use ls_sim::{
-    Buttons, Event, InputCmd, PlayerId, Projectile, ShipState, ShipTuning, ShipType, WeaponTable,
+    Buttons, EntityView, Event, InputCmd, PlayerId, Projectile, ShipState, ShipTable, ShipTuning,
+    ShipType, WeaponTable,
 };
 
 use crate::GameError;
@@ -29,7 +31,7 @@ pub const NO_WEAPON: u8 = u8::MAX;
 
 /// Quantization for a level: `bounds` grown by [`QUANT_MARGIN`], ship speed
 /// range from `QuantConfig::default()` (64 u/s per axis), projectile range at
-/// least the default (256 u/s) and at least the fastest weapon.
+/// least the default (320 u/s) and at least the fastest weapon.
 pub fn quant_config_for(bounds: Aabb, weapons: &WeaponTable) -> QuantConfig {
     let d = QuantConfig::default();
     let fastest = weapons.iter().map(|(_, w)| w.speed).fold(0.0f32, f32::max);
@@ -44,14 +46,14 @@ pub fn quant_config_for(bounds: Aabb, weapons: &WeaponTable) -> QuantConfig {
 #[derive(Debug, Clone)]
 pub struct NetConv {
     quant: Quantizer,
-    tuning: ShipTuning,
+    ships: ShipTable,
 }
 
 impl NetConv {
-    pub fn new(config: QuantConfig, tuning: ShipTuning) -> Result<Self, GameError> {
+    pub fn new(config: QuantConfig, ships: ShipTable) -> Result<Self, GameError> {
         Ok(NetConv {
             quant: Quantizer::new(config)?,
-            tuning,
+            ships,
         })
     }
 
@@ -59,17 +61,42 @@ impl NetConv {
     pub fn for_level(
         bounds: Aabb,
         weapons: &WeaponTable,
-        tuning: ShipTuning,
+        ships: ShipTable,
     ) -> Result<Self, GameError> {
-        Self::new(quant_config_for(bounds, weapons), tuning)
+        Self::new(quant_config_for(bounds, weapons), ships)
     }
 
     pub fn quantizer(&self) -> &Quantizer {
         &self.quant
     }
 
+    /// Tuning of the standard ship type (Tinker).
     pub fn tuning(&self) -> &ShipTuning {
-        &self.tuning
+        self.ships.get(ShipType::Tinker)
+    }
+
+    /// Tuning of a ship type.
+    pub fn tuning_for(&self, t: ShipType) -> &ShipTuning {
+        self.ships.get(t)
+    }
+
+    pub fn ships(&self) -> &ShipTable {
+        &self.ships
+    }
+
+    /// Wire form of a player entry (name, team, ship type).
+    pub fn player_to_net(id: u8, name: &str, ship: &ShipState) -> NetPlayer {
+        let mut name = name.to_string();
+        while name.len() > ls_net::MAX_PLAYER_NAME {
+            name.pop();
+        }
+        NetPlayer {
+            id,
+            team: ship.team,
+            ship_type: ship.ship_type.index(),
+            gadget: ship.gadget.map_or(u8::MAX, |g| g.0),
+            name,
+        }
     }
 
     /// Wire form of a ship. `with_status` adds the private resource bytes
@@ -82,8 +109,11 @@ impl NetConv {
         if ship.boosting {
             flags |= ship_flags::BOOSTING;
         }
+        if ship.gadget_active {
+            flags |= ship_flags::SHIELDED;
+        }
         flags = ship_flags::with_team(flags, ship.team);
-        let weapon = ship.primary.map_or(0, |w| w.0.min(15));
+        let weapon = ship.primary.map_or(0, |w| w.0.min(31));
         flags = ship_flags::with_weapon(flags, weapon);
         NetShip {
             id,
@@ -95,10 +125,11 @@ impl NetConv {
         }
     }
 
-    /// Private resources scaled to bytes: `ceil(value / max * 255)`, so any
-    /// positive amount stays positive on the wire.
+    /// Private resources scaled to bytes: `ceil(value / max * 255)` with the
+    /// maxima of the ship's type, so any positive amount stays positive on
+    /// the wire.
     pub fn status(&self, ship: &ShipState) -> ShipStatus {
-        let t = &self.tuning;
+        let t = self.ships.get(ship.ship_type);
         ShipStatus {
             hull: to_byte(ship.hull, t.hull_max),
             energy: to_byte(ship.energy, t.energy_max),
@@ -107,9 +138,14 @@ impl NetConv {
         }
     }
 
-    /// Inverse of [`NetConv::status`] as `(hull, energy, boost, scrap)`.
+    /// Inverse of [`NetConv::status`] for a Tinker, as `(hull, energy, boost, scrap)`.
     pub fn status_values(&self, s: &ShipStatus) -> (f32, f32, f32, f32) {
-        let t = &self.tuning;
+        self.status_values_for(ShipType::Tinker, s)
+    }
+
+    /// Inverse of [`NetConv::status`] for a ship type.
+    pub fn status_values_for(&self, ship_type: ShipType, s: &ShipStatus) -> (f32, f32, f32, f32) {
+        let t = self.ships.get(ship_type);
         (
             from_byte(s.hull, t.hull_max),
             from_byte(s.energy, t.energy_max),
@@ -129,7 +165,7 @@ impl NetConv {
         ship.boosting = net.flags & ship_flags::BOOSTING != 0;
         ship.team = ship_flags::team(net.flags);
         if let Some(s) = &net.status {
-            let (hull, energy, boost, scrap) = self.status_values(s);
+            let (hull, energy, boost, scrap) = self.status_values_for(ship.ship_type, s);
             ship.hull = hull;
             ship.energy = energy;
             ship.boost = boost;
@@ -139,11 +175,21 @@ impl NetConv {
 
     /// A fresh [`ShipState`] (Tinker) carrying the networked state of `net`.
     pub fn net_to_ship(&self, player: PlayerId, net: &NetShip) -> ShipState {
+        self.net_to_ship_as(player, ShipType::Tinker, net)
+    }
+
+    /// A fresh [`ShipState`] of `ship_type` carrying the networked state of `net`.
+    pub fn net_to_ship_as(
+        &self,
+        player: PlayerId,
+        ship_type: ShipType,
+        net: &NetShip,
+    ) -> ShipState {
         let mut s = ShipState::new(
             player,
             ship_flags::team(net.flags),
-            ShipType::Tinker,
-            &self.tuning,
+            ship_type,
+            self.ships.get(ship_type),
             net.pos,
             net.rot,
         );
@@ -212,17 +258,19 @@ pub fn quantize_input(cmd: &InputCmd) -> InputCmd {
     net_to_input(&input_to_net(cmd))
 }
 
-const BUTTON_MAP: [(Buttons, u16); 6] = [
+const BUTTON_MAP: [(Buttons, u16); 7] = [
     (Buttons::BOOST, buttons::BOOST),
     (Buttons::FIRE_PRIMARY, buttons::FIRE_PRIMARY),
     (Buttons::FIRE_SECONDARY, buttons::FIRE_SECONDARY),
     (Buttons::SCAVENGE, buttons::SCAVENGE),
     (Buttons::OVERDRIVE, buttons::OVERDRIVE),
     (Buttons::HORIZON_ASSIST, buttons::HORIZON_ASSIST),
+    (Buttons::GADGET, buttons::GADGET),
 ];
 
 /// Wire form of a projectile: id truncated to 16 bits (wraps), `kind` is the
-/// weapon id, `owner` the shooter's wire id ([`NO_SHIP`] if they left).
+/// weapon id, `owner` the shooter's wire id ([`NO_SHIP`] if they left),
+/// `state` the replicated projectile flags (`ls_sim::proj_flags`).
 pub fn projectile_to_net(p: &Projectile, owner: Option<u8>) -> NetProjectile {
     NetProjectile {
         id: p.id as u16,
@@ -230,6 +278,29 @@ pub fn projectile_to_net(p: &Projectile, owner: Option<u8>) -> NetProjectile {
         owner: owner.unwrap_or(NO_SHIP),
         pos: p.pos,
         vel: p.vel,
+        state: p.net_state(),
+    }
+}
+
+/// Wire form of a generic entity: `id & 0x7fff` (unique among live
+/// entities, see `ls_sim::entity`), `kind` = `ls_sim::ReplicatedKind`,
+/// `owner` the owner's wire id ([`NO_SHIP`] if none). Debris is sent without
+/// velocity (drag changes it every tick; clients interpolate positions).
+pub fn entity_to_net(v: &EntityView, owner: Option<u8>) -> NetEntity {
+    NetEntity {
+        id: v.wire_id(),
+        kind: v.kind as u8,
+        visual: v.visual.0,
+        owner: owner.unwrap_or(NO_SHIP),
+        team: v.team,
+        pos: v.pos,
+        vel: if v.kind == ls_sim::ReplicatedKind::Debris {
+            Vec3::ZERO
+        } else {
+            v.vel
+        },
+        rot: v.rot,
+        state: v.state,
     }
 }
 
@@ -237,9 +308,9 @@ pub fn projectile_to_net(p: &Projectile, owner: Option<u8>) -> NetProjectile {
 ///
 /// `Damaged` becomes `Hit` (position = the preceding `Impact` point, damage
 /// rounded to whole points, at least 1), `Killed` becomes `Kill`, `Respawned`
-/// becomes `Respawn`, `MatchEnded` becomes `MatchOver`. Events about players
-/// without a wire id are dropped; the rest (fired, pickups, edits, scores)
-/// reach clients through snapshots instead.
+/// becomes `Respawn`, `MatchEnded` becomes `MatchOver`, `Cue` becomes `Cue`.
+/// Events about players without a wire id are dropped; the rest (fired,
+/// pickups, edits, scores) reach clients through snapshots instead.
 pub fn events_to_net(
     events: &[Event],
     tick: u64,
@@ -261,9 +332,9 @@ pub fn events_to_net(
                 if let Some(victim) = wire_id(*target) {
                     out.push(NetEvent::Hit {
                         tick,
-                        attacker: wire_id(*attacker).unwrap_or(NO_SHIP),
+                        attacker: attacker.and_then(&wire_id).unwrap_or(NO_SHIP),
                         victim,
-                        weapon: weapon.0,
+                        weapon: weapon.map_or(NO_WEAPON, |w| w.0),
                         damage: ls_math::det::round(*amount).clamp(1.0, u16::MAX as f32) as u16,
                         pos: last_impact,
                     });
@@ -296,6 +367,14 @@ pub fn events_to_net(
                 tick,
                 winner_team: *winner,
             }),
+            Event::Cue(c) => out.push(NetEvent::Cue {
+                tick,
+                kind: c.kind as u8,
+                source: c.source.and_then(&wire_id).unwrap_or(NO_SHIP),
+                target: c.target.and_then(&wire_id).unwrap_or(NO_SHIP),
+                pos: c.pos,
+                value: c.value,
+            }),
             _ => {}
         }
     }
@@ -319,7 +398,7 @@ mod tests {
         NetConv::for_level(
             Aabb::new(Vec3::ZERO, Vec3::new(256.0, 128.0, 256.0)),
             &WeaponTable::builtin(),
-            ShipTuning::tinker(),
+            ShipTable::builtin(),
         )
         .unwrap()
     }
@@ -330,7 +409,7 @@ mod tests {
         let q = c.quantizer().config();
         assert_eq!(q.bounds.min, Vec3::splat(-2.0));
         assert_eq!(q.bounds.max, Vec3::new(258.0, 130.0, 258.0));
-        assert!(q.max_projectile_speed >= 180.0);
+        assert!(q.max_projectile_speed >= 270.0, "Railspike");
         // Matches the ls-net default for the default level.
         assert_eq!(*q, QuantConfig::default());
     }
@@ -396,8 +475,8 @@ mod tests {
             },
             Event::Damaged {
                 target: PlayerId(1),
-                attacker: PlayerId(0),
-                weapon: WeaponId(0),
+                attacker: Some(PlayerId(0)),
+                weapon: Some(WeaponId(0)),
                 amount: 7.6,
                 direct: true,
             },
@@ -414,6 +493,13 @@ mod tests {
                 winner: Some(1),
                 team_cells: [1, 2],
             },
+            Event::Cue(ls_sim::Cue {
+                kind: ls_sim::CueKind::PoliteWarning,
+                source: Some(PlayerId(0)),
+                target: Some(PlayerId(3)),
+                pos: Vec3::X,
+                value: 90,
+            }),
         ];
         let net = events_to_net(&events, 5, id);
         assert_eq!(
@@ -437,7 +523,38 @@ mod tests {
                     tick: 5,
                     winner_team: Some(1),
                 },
+                NetEvent::Cue {
+                    tick: 5,
+                    kind: 0,
+                    source: 10,
+                    target: 13,
+                    pos: Vec3::X,
+                    value: 90,
+                },
             ]
         );
+    }
+
+    #[test]
+    fn status_uses_the_ship_type_maxima() {
+        let c = conv();
+        let t = ShipTable::builtin();
+        let mut s = ShipState::new(
+            PlayerId(0),
+            0,
+            ShipType::Hauler,
+            t.get(ShipType::Hauler),
+            Vec3::new(10.0, 10.0, 10.0),
+            Quat::IDENTITY,
+        );
+        s.hull = 150.0;
+        s.gadget_active = true;
+        let net = c.ship_to_net(0, &s, true);
+        assert_eq!(net.status.unwrap().hull, 255);
+        assert!(net.flags & ship_flags::SHIELDED != 0);
+        let back = c.net_to_ship_as(PlayerId(0), ShipType::Hauler, &c.quantize_ship(&net));
+        assert_eq!(back.hull, 150.0);
+        let p = NetConv::player_to_net(0, &"x".repeat(40), &s);
+        assert_eq!((p.ship_type, p.name.len()), (2, 32));
     }
 }

@@ -22,6 +22,100 @@ pub enum TerrainEdit {
     AddSphere { center: Vec3, radius: f32 },
     /// Paints surface cells within the sphere with a team color. Does not change geometry.
     Paint { center: Vec3, radius: f32, team: u8 },
+    /// Sets timed surface states ([`SurfaceStates`] bits in `states`) on the
+    /// surface cells within the sphere: each named state is active while the
+    /// simulation tick is below `until` (an absolute tick; `until = 0`
+    /// clears it). A cell's other states are kept. Does not change geometry.
+    Surface {
+        center: Vec3,
+        radius: f32,
+        states: u8,
+        until: u32,
+    },
+}
+
+/// Rock material ids (`ls_worldgen::Material`; mesh vertex `materials`):
+/// crumbly rock with larger craters...
+pub const MATERIAL_WEAK: u8 = 0;
+/// ...ordinary rock (craters as the weapon asks)...
+pub const MATERIAL_ROCK: u8 = 1;
+/// ...and hard rock with smaller craters.
+pub const MATERIAL_HARD: u8 = 2;
+
+/// Crater radius multiplier of a material id (1.0 for ordinary or unknown
+/// rock). The simulation scales craters with it (`ls_sim::Ctx::crater`).
+pub const fn material_crater_scale(material: u8) -> f32 {
+    match material {
+        MATERIAL_WEAK => 1.4,
+        MATERIAL_HARD => 0.6,
+        _ => 1.0,
+    }
+}
+
+/// Timed surface states stored per surface cell next to paint (bit set).
+///
+/// The durations are the design defaults; an edit carries its own absolute
+/// expiry tick, so a weapon may use a different duration.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Serialize, Deserialize,
+)]
+pub struct SurfaceStates(pub u8);
+
+impl SurfaceStates {
+    /// No state.
+    pub const NONE: SurfaceStates = SurfaceStates(0);
+    /// Hot surface (visual; explosions, plasma). Default 10 s.
+    pub const HOT: SurfaceStates = SurfaceStates(1);
+    /// Charged surface (drains energy from ships scraping it). Default 15 s.
+    pub const CHARGED: SurfaceStates = SurfaceStates(2);
+    /// Glowing surface (light). Default 30 s.
+    pub const GLOW: SurfaceStates = SurfaceStates(4);
+    /// Every defined state bit.
+    pub const ALL: SurfaceStates = SurfaceStates(7);
+    /// Number of defined states (bits `0..COUNT`).
+    pub const COUNT: usize = 3;
+    /// Default durations in seconds, indexed by bit.
+    pub const DEFAULT_SECS: [f32; 3] = [10.0, 15.0, 30.0];
+    /// Default durations in ticks at 60 Hz, indexed by bit.
+    pub const DEFAULT_TICKS: [u32; 3] = [600, 900, 1800];
+
+    #[inline]
+    pub const fn bits(self) -> u8 {
+        self.0
+    }
+
+    #[inline]
+    pub const fn contains(self, other: SurfaceStates) -> bool {
+        self.0 & other.0 == other.0
+    }
+
+    #[inline]
+    pub const fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+
+    #[inline]
+    pub const fn union(self, other: SurfaceStates) -> SurfaceStates {
+        SurfaceStates(self.0 | other.0)
+    }
+
+    /// Default duration in ticks of a single state bit (`None` otherwise).
+    pub const fn default_ticks(self) -> Option<u32> {
+        match self.0 {
+            1 => Some(Self::DEFAULT_TICKS[0]),
+            2 => Some(Self::DEFAULT_TICKS[1]),
+            4 => Some(Self::DEFAULT_TICKS[2]),
+            _ => None,
+        }
+    }
+}
+
+impl std::ops::BitOr for SurfaceStates {
+    type Output = SurfaceStates;
+    #[inline]
+    fn bitor(self, rhs: SurfaceStates) -> SurfaceStates {
+        self.union(rhs)
+    }
 }
 
 impl TerrainEdit {
@@ -30,7 +124,8 @@ impl TerrainEdit {
         match *self {
             TerrainEdit::SubtractSphere { center, .. }
             | TerrainEdit::AddSphere { center, .. }
-            | TerrainEdit::Paint { center, .. } => center,
+            | TerrainEdit::Paint { center, .. }
+            | TerrainEdit::Surface { center, .. } => center,
         }
     }
 
@@ -39,14 +134,30 @@ impl TerrainEdit {
         match *self {
             TerrainEdit::SubtractSphere { radius, .. }
             | TerrainEdit::AddSphere { radius, .. }
-            | TerrainEdit::Paint { radius, .. } => radius,
+            | TerrainEdit::Paint { radius, .. }
+            | TerrainEdit::Surface { radius, .. } => radius,
         }
     }
 
-    /// True if the edit changes the SDF (not just paint).
+    /// True if the edit changes the SDF (not just paint or surface states).
     #[inline]
     pub fn changes_geometry(&self) -> bool {
-        !matches!(self, TerrainEdit::Paint { .. })
+        !matches!(
+            self,
+            TerrainEdit::Paint { .. } | TerrainEdit::Surface { .. }
+        )
+    }
+
+    /// A [`TerrainEdit::Surface`] that sets one state for its default
+    /// duration starting at tick `now` (saturating at `u32::MAX`).
+    pub fn surface_for_default(center: Vec3, radius: f32, state: SurfaceStates, now: u64) -> Self {
+        let ticks = state.default_ticks().unwrap_or(0) as u64;
+        TerrainEdit::Surface {
+            center,
+            radius,
+            states: state.bits(),
+            until: now.saturating_add(ticks).min(u32::MAX as u64) as u32,
+        }
     }
 
     /// Bounding box of the region the edit can affect.
@@ -56,13 +167,14 @@ impl TerrainEdit {
     }
 
     /// Applies this edit to an SDF value `d` sampled at `p`, using the standard
-    /// CSG operators (union = `min`, subtraction = `max(d, -s)`). Paint returns `d`.
+    /// CSG operators (union = `min`, subtraction = `max(d, -s)`). Paint and
+    /// surface states return `d`.
     #[inline]
     pub fn apply_to_sdf(&self, d: f32, p: Vec3) -> f32 {
         match *self {
             TerrainEdit::SubtractSphere { center, radius } => d.max(radius - p.distance(center)),
             TerrainEdit::AddSphere { center, radius } => d.min(p.distance(center) - radius),
-            TerrainEdit::Paint { .. } => d,
+            TerrainEdit::Paint { .. } | TerrainEdit::Surface { .. } => d,
         }
     }
 }
@@ -264,7 +376,9 @@ impl BoxRoomTerrain {
 
     /// Paint edits applied so far, in order.
     pub fn paint_log(&self) -> impl Iterator<Item = &TerrainEdit> {
-        self.edits.iter().filter(|e| !e.changes_geometry())
+        self.edits
+            .iter()
+            .filter(|e| matches!(e, TerrainEdit::Paint { .. }))
     }
 }
 
@@ -309,9 +423,24 @@ mod tests {
             team: 1,
         };
         assert!(!p.changes_geometry());
+        let st = TerrainEdit::surface_for_default(Vec3::ONE, 2.0, SurfaceStates::CHARGED, 100);
+        assert_eq!(
+            st,
+            TerrainEdit::Surface {
+                center: Vec3::ONE,
+                radius: 2.0,
+                states: 2,
+                until: 1000
+            }
+        );
+        assert!(!st.changes_geometry());
+        assert_eq!(st.apply_to_sdf(1.5, Vec3::ONE), 1.5);
+        assert_eq!(st.radius(), 2.0);
+        assert_eq!(st.center(), Vec3::ONE);
         for edit in [
             e,
             p,
+            st,
             TerrainEdit::AddSphere {
                 center: Vec3::ONE,
                 radius: 0.5,
@@ -429,8 +558,44 @@ mod tests {
             team: 2,
         });
         assert_eq!(t.sdf(Vec3::new(1.0, 1.0, 1.0)), before);
-        assert_eq!(t.edits().len(), 3);
+        t.apply(TerrainEdit::surface_for_default(
+            Vec3::ZERO,
+            4.0,
+            SurfaceStates::HOT,
+            0,
+        ));
+        assert_eq!(t.sdf(Vec3::new(1.0, 1.0, 1.0)), before);
+        assert_eq!(t.edits().len(), 4);
         assert_eq!(t.paint_log().count(), 1);
+    }
+
+    #[test]
+    fn surface_state_bits_and_durations() {
+        let s = SurfaceStates::HOT | SurfaceStates::GLOW;
+        assert_eq!(s.bits(), 5);
+        assert!(s.contains(SurfaceStates::HOT) && !s.contains(SurfaceStates::CHARGED));
+        assert!(SurfaceStates::NONE.is_empty());
+        assert_eq!(SurfaceStates::ALL.bits(), 7);
+        for (i, secs) in SurfaceStates::DEFAULT_SECS.iter().enumerate() {
+            assert_eq!(
+                crate::Tick::ticks_for_secs(*secs),
+                SurfaceStates::DEFAULT_TICKS[i] as u64
+            );
+            assert_eq!(
+                SurfaceStates(1 << i).default_ticks(),
+                Some(SurfaceStates::DEFAULT_TICKS[i])
+            );
+        }
+        assert_eq!(s.default_ticks(), None);
+        // Saturates instead of wrapping.
+        let e = TerrainEdit::surface_for_default(Vec3::ZERO, 1.0, SurfaceStates::GLOW, u64::MAX);
+        assert!(matches!(
+            e,
+            TerrainEdit::Surface {
+                until: u32::MAX,
+                ..
+            }
+        ));
     }
 
     #[test]

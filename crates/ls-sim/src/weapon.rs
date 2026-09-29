@@ -1,10 +1,16 @@
 //! Data-driven weapon definitions loaded from `data/weapons/*.ron`.
+//!
+//! A [`WeaponDef`] holds the numbers; the behaviour lives in a module per
+//! weapon under `src/weapons/` (see [`crate::weapons`]). The built-in data
+//! files are embedded by the registry in `src/weapons/registry.rs`.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use ls_math::Tick;
 use serde::{Deserialize, Serialize};
 
+use crate::visual::Visual;
 use crate::SimError;
 
 /// Weapon family from the design doc's arsenal.
@@ -38,13 +44,44 @@ pub enum WeaponCost {
     Count(u32),
 }
 
-/// How the weapon interacts with a Shield gadget (present for M2; unused in M1).
+/// How the weapon interacts with an active Shield gadget (design doc, Gadgets).
+/// Rule sets can override it per weapon (`RuleSet::shield_overrides`).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum ShieldInteraction {
+    /// The shield stops the hit; it costs shield energy like `Wears(1.0)`
+    /// but never reaches the hull, even when the energy runs out.
     Blocked,
-    WearsDown,
-    /// The given fraction (0..=1) passes through to the hull.
+    /// The shield absorbs the hit and loses `f x damage` energy (times the
+    /// shield's `energy_per_damage`); what the energy cannot cover reaches
+    /// the hull. `f >= 0`.
+    Wears(f32),
+    /// The fraction `f` (0..=1) passes through to the hull; the shield absorbs
+    /// the rest for free.
     PassThrough(f32),
+}
+
+/// Charge mechanics: hold the trigger to charge, release to fire.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ChargeDef {
+    /// Full charge time; charge fraction is `held / max_secs`, capped at 1.
+    pub max_secs: f32,
+    /// Releasing earlier cancels the shot (nothing is paid).
+    #[serde(default)]
+    pub min_secs: f32,
+    /// Fires by itself once `max_secs` is reached (Polite Laser).
+    #[serde(default)]
+    pub auto_release: bool,
+    /// Damage and knockback multiplier at full charge (linear from 1 at no charge).
+    #[serde(default = "one_f32")]
+    pub damage_mult: f32,
+}
+
+fn one_f32() -> f32 {
+    1.0
+}
+
+fn one_u8() -> u8 {
+    1
 }
 
 /// Area damage around the impact point, falling off linearly to zero at `radius`.
@@ -64,10 +101,6 @@ pub struct TerrainEffect {
     pub crater_radius: f32,
     #[serde(default)]
     pub paint_radius: f32,
-}
-
-fn one() -> u8 {
-    1
 }
 
 /// One weapon's stats. Speeds in u/s, durations in seconds.
@@ -98,7 +131,7 @@ pub struct WeaponDef {
     pub terrain: TerrainEffect,
     pub shield: ShieldInteraction,
     /// Number of upgrade levels (1 = no upgrades).
-    #[serde(default = "one")]
+    #[serde(default = "one_u8")]
     pub max_level: u8,
     /// Extra damage per level above 1, as a fraction of the base damage.
     #[serde(default)]
@@ -106,6 +139,23 @@ pub struct WeaponDef {
     /// Ammo cap for [`WeaponCost::Count`] weapons.
     #[serde(default)]
     pub max_ammo: u32,
+    /// Projectiles per shot for the generic fire pattern (Scatter Laser 3,
+    /// Scrap Shotgun 8). Damage is per projectile.
+    #[serde(default = "one_u8")]
+    pub projectiles: u8,
+    /// Angle between neighbouring projectiles of the generic pattern (degrees).
+    #[serde(default)]
+    pub spread_deg: f32,
+    /// Hold-to-charge mechanics (Fusion Charger, Polite Laser).
+    #[serde(default)]
+    pub charge: Option<ChargeDef>,
+    /// How projectiles (and, tinted, pickups) of this weapon are drawn.
+    #[serde(default)]
+    pub visual: Visual,
+    /// Free numeric parameters for the weapon module (`param`), so a module
+    /// can add tuning numbers without touching this struct.
+    #[serde(default)]
+    pub params: BTreeMap<String, f32>,
 }
 
 impl WeaponDef {
@@ -164,10 +214,33 @@ impl WeaponDef {
             }
             _ => {}
         }
-        if let ShieldInteraction::PassThrough(f) = self.shield {
-            if !(0.0..=1.0).contains(&f) {
+        match self.shield {
+            ShieldInteraction::PassThrough(f) if !(0.0..=1.0).contains(&f) => {
                 return Err(bad("shield pass-through fraction must be in 0..=1"));
             }
+            ShieldInteraction::Wears(f) if !non_neg(f) => {
+                return Err(bad("shield wear factor must be >= 0"));
+            }
+            _ => {}
+        }
+        if self.projectiles == 0 || !non_neg(self.spread_deg) {
+            return Err(bad("projectiles must be >= 1 and spread_deg >= 0"));
+        }
+        if let Some(c) = self.charge {
+            if !pos(c.max_secs) || !non_neg(c.min_secs) || c.min_secs > c.max_secs {
+                return Err(bad(
+                    "charge needs max_secs > 0 and 0 <= min_secs <= max_secs",
+                ));
+            }
+            if !non_neg(c.damage_mult) {
+                return Err(bad("charge damage_mult must be >= 0"));
+            }
+        }
+        if !(self.visual.scale.is_finite() && self.visual.scale > 0.0) {
+            return Err(bad("visual scale must be > 0"));
+        }
+        if let Some((k, _)) = self.params.iter().find(|(_, v)| !v.is_finite()) {
+            return Err(bad(&format!("param `{k}` must be finite")));
         }
         if self.max_level == 0 || !non_neg(self.damage_per_level) {
             return Err(bad("max_level must be >= 1 and damage_per_level >= 0"));
@@ -190,7 +263,31 @@ impl WeaponDef {
         let extra = level.clamp(1, self.max_level) - 1;
         1.0 + self.damage_per_level * extra as f32
     }
+
+    /// A module parameter from `params`, or `default` if the data file has none.
+    pub fn param(&self, key: &str, default: f32) -> f32 {
+        self.params.get(key).copied().unwrap_or(default)
+    }
+
+    /// Ticks for a [`ChargeDef`] duration in seconds (at least 1).
+    pub fn charge_ticks(secs: f32) -> u64 {
+        Tick::ticks_for_secs(secs).max(1)
+    }
+
+    /// Knockback (u/s) per point of damage: the ratio of the data's
+    /// `knockback` to `damage`, so every hit pushes in proportion to its
+    /// damage. Weapons without damage use [`DEFAULT_KNOCKBACK_PER_DAMAGE`].
+    pub fn knockback_per_damage(&self) -> f32 {
+        if self.damage > 0.0 {
+            self.knockback / self.damage
+        } else {
+            DEFAULT_KNOCKBACK_PER_DAMAGE
+        }
+    }
 }
+
+/// Knockback per damage point for hits without a weapon ratio (u/s per point).
+pub const DEFAULT_KNOCKBACK_PER_DAMAGE: f32 = 0.15;
 
 /// Index of a weapon in a [`WeaponTable`] (weapons sorted by id).
 #[derive(
@@ -203,26 +300,6 @@ pub struct WeaponId(pub u8);
 pub struct WeaponTable {
     defs: Vec<WeaponDef>,
 }
-
-/// The M1 weapon files, embedded so the WASM client and tests need no file system.
-const BUILTIN_WEAPONS: &[(&str, &str)] = &[
-    (
-        "scrap_laser.ron",
-        include_str!("../../../data/weapons/scrap_laser.ron"),
-    ),
-    (
-        "rivet_gun.ron",
-        include_str!("../../../data/weapons/rivet_gun.ron"),
-    ),
-    (
-        "bolt_rocket.ron",
-        include_str!("../../../data/weapons/bolt_rocket.ron"),
-    ),
-    (
-        "paint_thrower.ron",
-        include_str!("../../../data/weapons/paint_thrower.ron"),
-    ),
-];
 
 impl WeaponTable {
     /// Builds a table from definitions (validated, sorted by id, ids unique).
@@ -279,10 +356,15 @@ impl WeaponTable {
         WeaponTable::new(defs)
     }
 
-    /// The four M1 weapons from `data/weapons`, embedded at compile time.
+    /// Every weapon of the design doc from `data/weapons`, embedded at
+    /// compile time by the registry (`crate::weapons::registry`).
     pub fn builtin() -> WeaponTable {
-        WeaponTable::from_ron_sources(BUILTIN_WEAPONS.iter().copied())
-            .expect("built-in weapon data is valid")
+        WeaponTable::from_ron_sources(
+            crate::weapons::registry::MODULES
+                .iter()
+                .map(|m| (m.file, m.data)),
+        )
+        .expect("built-in weapon data is valid")
     }
 
     pub fn len(&self) -> usize {
@@ -329,7 +411,7 @@ mod tests {
     #[test]
     fn builtin_weapons_match_design_doc() {
         let t = WeaponTable::builtin();
-        assert_eq!(t.len(), 4);
+        assert_eq!(t.len(), 27);
         let laser = t.get(t.find("scrap_laser").unwrap());
         assert_eq!(laser.speed, 30.0);
         assert_eq!(laser.lifetime_secs, 3.0);
@@ -399,5 +481,40 @@ mod tests {
         assert_eq!(laser.level_multiplier(1), 1.0);
         assert!(laser.level_multiplier(6) > laser.level_multiplier(5));
         assert_eq!(laser.level_multiplier(9), laser.level_multiplier(6));
+    }
+
+    #[test]
+    fn params_charge_and_knockback_ratio() {
+        let t = WeaponTable::builtin();
+        let fusion = t.get(t.find("fusion_charger").unwrap());
+        let c = fusion.charge.unwrap();
+        assert_eq!(c.max_secs, 2.0);
+        assert!(c.damage_mult > 1.0);
+        assert_eq!(fusion.param("channel_radius", 0.0), 0.8);
+        assert_eq!(fusion.param("missing", 7.0), 7.0);
+        let laser = t.get(t.find("scrap_laser").unwrap());
+        assert_eq!(laser.knockback_per_damage(), 1.0 / 8.0);
+        let flash = t.get(t.find("flash_pod").unwrap());
+        assert_eq!(flash.knockback_per_damage(), DEFAULT_KNOCKBACK_PER_DAMAGE);
+        let shotgun = t.get(t.find("scrap_shotgun").unwrap());
+        assert_eq!(shotgun.projectiles, 8);
+
+        let mut bad = laser.clone();
+        bad.shield = ShieldInteraction::PassThrough(1.5);
+        assert!(bad.validate().is_err());
+        let mut bad = laser.clone();
+        bad.projectiles = 0;
+        assert!(bad.validate().is_err());
+        let mut bad = fusion.clone();
+        bad.charge = Some(ChargeDef {
+            max_secs: 1.0,
+            min_secs: 2.0,
+            auto_release: false,
+            damage_mult: 1.0,
+        });
+        assert!(bad.validate().is_err());
+        let mut bad = laser.clone();
+        bad.params.insert("x".into(), f32::NAN);
+        assert!(bad.validate().is_err());
     }
 }

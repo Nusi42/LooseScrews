@@ -21,7 +21,9 @@ end-to-end picture; the exact rules and numbers live next to the code:
 
 Server step `k` (`Room::step`): take every client's input stamped `k` (or repeat its last
 command), plan lag compensation, run `World::step`, record ship positions for rewinds, and
-on snapshot ticks queue one snapshot per client. `Snapshot::tick` is the tick after that step.
+on snapshot ticks queue one snapshot per client that has sent an input (a client still
+generating its level gets none; see [Snapshots and deltas](#snapshots-and-deltas)).
+`Snapshot::tick` is the tick after that step.
 Once the match timer runs out the room stops stepping the world but keeps sending snapshots.
 
 The client runs its own 60 Hz clock ahead of the server: its first command is stamped
@@ -33,8 +35,12 @@ arrives before the server steps `k`. `ClientClock` keeps that lead right:
 - a client that is not ahead at all (for example after slow level generation in WASM) jumps
   to `tick + 13` in one go;
 - a `Ping` sent right after the input for tick `c` comes back as a `Pong` with `server_tick`;
-  `server_tick - c` is the input slack. Below 1 tick the client runs ahead, a minimum above 4
-  ticks over four pongs skips one tick. Pings go out every 30 ticks.
+  `c - server_tick` is the input slack. Below 1 tick the client runs ahead, a minimum above 4
+  ticks over four pongs skips one tick. A negative slack before the clock is synced (the
+  client is behind the server altogether, typically the first pong after slow level
+  generation, which arrives before the first snapshot) jumps to a slack of 12 ticks like the
+  catch-up above, instead of just to the bottom of the window. Once synced, a negative slack
+  (one late input) is an ordinary slack sample. Pings go out every 30 ticks.
 
 Until a snapshot proves the server had our input in time (`ClientClock::is_synced`), the
 client sends idle commands: look input is a per-tick delta, and a command the server replaced
@@ -85,36 +91,77 @@ Unmatched predictions disappear after 4 ticks. Bots do not predict shots.
   (respawns) are not interpolated; at most 6 ticks of extrapolation when snapshots run late.
 - Projectiles are straight-line extrapolated from the newest snapshot to the client's
   server-time estimate (at most 8 ticks).
+- Generic entities (debris, pickups, decoys, ...) are drawn at the same render tick as remote
+  ships (`ClientSession::entities`): the entity set of the first buffered snapshot at or after
+  it, positions lerped from the one before (debris carries no velocity on the wire, so it
+  never runs ahead of the ships that push it).
+- While the own ship guides a projectile (`proj_flags::CONTROLS_OWNER`, Eyeball) the server
+  gives it no thrust or look; the client predicts that too (`GUIDED_STATE_BIT` in the newest
+  snapshot's own projectiles), so guided flights do not mispredict.
 - The server's lag compensation assumes the same 6-tick delay when it rewinds targets.
 
 ## Snapshots and deltas
 
 Wire layout (`crates/ls-net/src/snapshot.rs`): `tick`, optional baseline (as a `u8` age),
 `ack_input`, `match_ticks_left`, terrain edits (`edit_base`, count, edits), scores, ships
-(a 32-bit presence mask, then each ship), projectiles.
+(a 32-bit presence mask, then each ship), projectiles (17 bytes full: id, kind, owner, state
+byte, position, velocity), generic entities (debris, pickups, scrap, wrecks, decoys, ghosts,
+dust: kind, visual, owner, team, position, velocity and rotation with presence bits, 4 state
+bytes) and the players list (names, teams, ship types, gadgets). Projectiles and entities are
+**id lists**: in a full snapshot a count, then per item its id as a varint gap from the
+previous one and its full state; in a delta one bit per item of the baseline's list ("present
+and unchanged", so resting debris, pickups and wrecks cost 1 bit), then for the others 1 bit
+"still present" plus field diffs (entities: a "position only" fast path), then the new items
+as a full id list. Players in a delta: 1 bit "changed", then a 32-bit presence mask and a
+change bit per known player; only changed or new players are sent. Entity positions are
+`ENTITY_POS_SHIFT` (3) bits coarser than ship positions (about 0.03 u), so drifting debris
+moves few steps between snapshots. Protocol version 2; what the entity and player fields mean
+is in [arsenal-framework.md](arsenal-framework.md#replication-ls-net-protocol-2). The server
+filters each client's snapshot through `ls_net::Relevance` first (a cloaked enemy is left
+out; moving debris farther than 100 u from the viewer's ship too, `DEBRIS_RELEVANCE_RADIUS`)
+and sends debris without velocity.
+
+The own inventory (carried weapons, ammo, levels, selection, gadget) is not in snapshots: the
+room sends `Message::Inventory` reliably to each client whenever its ship's inventory changes
+(checked on snapshot ticks).
 
 - A full ship is exactly **18 bytes** (`SHIP_CORE_BITS = 144`): position 3 x 16 bit inside the
   quantization box (level bounds + 2 u), smallest-three orientation in 32 bits, velocity
-  3 x 16 bit (±64 u/s), 16 flag bits (alive, boosting, team, selected primary weapon id).
+  3 x 16 bit (±64 u/s), 16 flag bits (alive, boosting, gadget active, team, selected primary
+  weapon id in 5 bits).
   Flag bit 15 tells the decoder a 4-byte `ShipStatus` (hull, energy, boost, scrap, each
   `ceil(value / max * 255)`) follows; only the receiving client's own ship carries it.
 - **Deltas.** The server keeps a `SnapshotHistory` per client (128 snapshots, 256 ticks) and
   encodes against the client's newest acknowledged snapshot (`choose_baseline`: age 1..=255
   ticks and still in history, else a full snapshot). Fields are compared as packed integers,
-  so a delta decodes to exactly the packed snapshot the server built. Ships and projectiles in
-  the baseline send a change bit plus per-field differences (2-bit size class: unchanged, 4-bit
-  or 8-bit zigzag difference, or the raw 16-bit value); new ones are sent in full. The client
+  so a delta decodes to exactly the packed snapshot the server built. Ships in the baseline
+  send a change bit plus per-field differences (2-bit size class: unchanged, 4-bit or 8-bit
+  zigzag difference, or the raw 16-bit value); new ones are sent in full; projectiles and
+  entities use the id lists above. The client
   keeps the same 128-entry history, so every baseline the server may choose is available.
+- **Joins.** Snapshots to a client start with its first `Input` (sent once its session is
+  built), so a join costs one full snapshot, plus one per snapshot interval of round trip until
+  the client's first `ack_snapshot` arrives; after that every snapshot is a delta. Sending
+  snapshots during level generation made each join cost ~8 full snapshots, starvation reports
+  and prediction snaps (M1 issue B; regression test
+  `a_join_costs_one_full_snapshot_and_starves_once` in `crates/ls-game/tests/netplay.rs`).
 - Budget: `bandwidth_32_ships_at_30_hz` in `ls-net` proves 32 ships x 18 B x 30 Hz fits
-  17 KiB/s before delta compression. In practice a 3-bot local run measures about 4 KiB/s of
-  snapshots for the whole server.
-- Events (hits, kills, respawns, match end) are batched per snapshot into an `Events` message
-  on the reliable channel.
+  17 KiB/s before delta compression. `bandwidth_32_ships_64_debris` measures a delta with 32
+  moving ships, debris at its cap (64 pieces drifting after an explosion), 40 pickups and 8
+  wrecks: the entities add about 160 B (1 datagram in all), inside the budget next to the
+  377 B M1 measured for 32 moving ships. Busy ships (turning and thrusting all the time) cost
+  up to about 515 B on their own, above the budget; ship deltas (rotation) are the next thing
+  to shrink. In practice a 3-bot local run measures about 4 KiB/s of snapshots for the whole
+  server.
+- Events (hits, kills, respawns, match end, cues such as warnings and blinding) are batched
+  per snapshot into an `Events` message on the reliable channel.
 
 ## Terrain edit replication
 
-Craters and paint are `ls_math::terrain::TerrainEdit` values (`SubtractSphere`, `AddSphere`,
-`Paint`) produced by `World::step` and applied to `GameTerrain`. The level is never sent;
+Craters, paint and surface states are `ls_math::terrain::TerrainEdit` values
+(`SubtractSphere`, `AddSphere`, `Paint`, `Surface`) produced by `World::step` and applied to
+`GameTerrain` (craters come already scaled by rock strength by the simulation, see
+[contracts.md](contracts.md#terrain-strength-ls_worldgenmaterial)). The level is never sent;
 instead every peer keeps the same ordered **edit log**:
 
 1. `GameTerrain` logs every edit it is handed (even ones the chunk store rejects), so an edit's
@@ -126,13 +173,15 @@ instead every peer keeps the same ordered **edit log**:
    The client applies only the unseen tail (`apply_sequence`); a gap is a hard error
    (`GameError::EditGap`, which bots count as a desync). Edits from stale (out-of-order)
    snapshots are still applied.
-4. On the wire an edit is a 2-bit kind, centre and radius as **raw `f32` bits** and, for paint,
-   an 8-bit team (130 or 138 bits). Raw bits, not quantized values, so every peer applies the
+4. On the wire an edit is a 2-bit kind, centre and radius as **raw `f32` bits**, for paint an
+   8-bit team, and for surface states 8 state bits plus the 32-bit expiry tick (130, 138 or
+   170 bits). Raw bits, not quantized values, so every peer applies the
    exact same CSG and stays bit-identical ([determinism.md](determinism.md)).
 5. Applying an edit marks chunks dirty; the browser remeshes dirty chunks first (surface nets,
    at most 8 chunks for a 3 u crater).
 
-`GameTerrain::state_hash()` (edit log + SDF on a 4 u lattice + paint around every edit) is the
+`GameTerrain::state_hash()` (edit log + SDF on a 4 u lattice + paint and stored surface state
+expiry ticks around every edit) is the
 cheap terrain desync check between peers; tests compare it with the server's, and the browser
 exposes it as `Game.terrainHash()` for debugging.
 

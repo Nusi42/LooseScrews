@@ -26,6 +26,6 @@ pub use aabb::Aabb;
 pub use mat3::Mat3;
 pub use quat::Quat;
 pub use rng::{Pcg32, SplitMix64};
-pub use terrain::{RayHit, TerrainEdit, TerrainQuery};
+pub use terrain::{RayHit, SurfaceStates, TerrainEdit, TerrainQuery};
 pub use tick::{Tick, DT, DT_F64, TICK_HZ};
 pub use vec3::Vec3;

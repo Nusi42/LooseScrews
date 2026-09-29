@@ -1,0 +1,22 @@
+// Fusion Charger: energy primary. Hold up to 2 s; damage and knockback scale with charge.
+// Malus: charging past 2 s burns your own hull. Lasting effect: melts a channel along its path
+// and shoves debris aside.
+// Behaviour: crates/ls-sim/src/weapons/energy/fusion_charger.rs (TODO(wave-B): generic fallback until implemented).
+// `params` are read by the weapon module (`WeaponDef::param`); numbers are tuning starting points.
+WeaponDef(
+    id: "fusion_charger",
+    name: "Fusion Charger",
+    family: Energy,
+    slot: Primary,
+    speed: 30.0,
+    lifetime_secs: 3.0,
+    damage: 12.0,
+    fire_interval_secs: 1.0,
+    cost: Energy(12.0),
+    projectile_radius: 0.3,
+    knockback: 3.0,
+    shield: PassThrough(0.5),
+    charge: Some((max_secs: 2.0, damage_mult: 4.0)),
+    visual: (shape: Orb, color: (200, 90, 255), scale: 1.6),
+    params: { "overcharge_hull_per_sec": 10.0, "channel_radius": 0.8 },
+)

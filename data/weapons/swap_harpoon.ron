@@ -1,0 +1,22 @@
+// Swap Harpoon: special secondary. On hit, you swap positions with the target (velocities swap
+// too). Malus: 4 s cooldown; you inherit their momentum. Lasting effect: the harpoon spike
+// stays in the wall as a small grab point.
+// Behaviour: crates/ls-sim/src/weapons/specials/swap_harpoon.rs (TODO(wave-B): generic fallback until implemented).
+// `params` are read by the weapon module (`WeaponDef::param`); numbers are tuning starting points.
+WeaponDef(
+    id: "swap_harpoon",
+    name: "Swap Harpoon",
+    family: Special,
+    slot: Secondary,
+    speed: 60.0,
+    lifetime_secs: 1.5,
+    damage: 5.0,
+    fire_interval_secs: 4.0,
+    cost: Count(1),
+    projectile_radius: 0.15,
+    knockback: 0.0,
+    shield: PassThrough(1.0),
+    max_ammo: 5,
+    visual: (shape: Harpoon, color: (200, 200, 200), scale: 1.2),
+    params: { "spike_radius": 0.3 },
+)

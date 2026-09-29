@@ -1,0 +1,22 @@
+// Corkscrew: energy primary. 5 bolts in a rotating fan. Malus: wide pattern wastes energy at
+// long range. Lasting effect: etches spiral grooves into walls.
+// Behaviour: crates/ls-sim/src/weapons/energy/corkscrew.rs (TODO(wave-B): generic fallback until implemented).
+// `params` are read by the weapon module (`WeaponDef::param`); numbers are tuning starting points.
+WeaponDef(
+    id: "corkscrew",
+    name: "Corkscrew",
+    family: Energy,
+    slot: Primary,
+    speed: 30.0,
+    lifetime_secs: 3.0,
+    damage: 3.0,
+    fire_interval_secs: 0.35,
+    cost: Energy(6.0),
+    projectile_radius: 0.12,
+    knockback: 0.3,
+    shield: Wears(1.0),
+    projectiles: 5,
+    spread_deg: 10.0,
+    visual: (shape: Bolt, color: (120, 255, 140), scale: 0.8),
+    params: { "spiral_radius": 1.0, "spin_hz": 2.0, "groove_radius": 0.25 },
+)

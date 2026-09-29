@@ -4,8 +4,9 @@
 //! the client convert between simulation state and these types. Two forms
 //! exist for snapshot content:
 //!
-//! - `Net*` types ([`NetShip`], [`NetProjectile`], [`Snapshot`]) hold `f32`
-//!   values and are what game code reads and writes.
+//! - `Net*` types ([`NetShip`], [`NetProjectile`], [`NetEntity`],
+//!   [`Snapshot`]) hold `f32` values and are what game code reads and writes.
+//!   [`NetPlayer`] (names, teams, ship types) needs no quantization.
 //! - `Packed*` types hold the quantized integers that actually go on the
 //!   wire. Delta compression works on these, so it is exact.
 //!
@@ -21,8 +22,8 @@ use crate::quant::{pack_quat, unpack_quat, PackedVec3, Quantizer};
 pub const MAX_SHIPS: u8 = 32;
 
 /// Bit assignments of [`NetShip::flags`]. Bits 0-14 are free for game use;
-/// the constants below are the suggested layout. Bit 15 is reserved for the
-/// codec (it signals that a [`ShipStatus`] follows) and is always cleared.
+/// the constants below are the layout `ls-game` uses. Bit 15 is reserved for
+/// the codec (it signals that a [`ShipStatus`] follows) and is always cleared.
 pub mod ship_flags {
     pub const ALIVE: u16 = 1 << 0;
     pub const BOOSTING: u16 = 1 << 1;
@@ -30,16 +31,17 @@ pub mod ship_flags {
     pub const FIRING_SECONDARY: u16 = 1 << 3;
     pub const SCAVENGING: u16 = 1 << 4;
     pub const OVERDRIVE: u16 = 1 << 5;
+    /// The ship's gadget is switched on (which gadget: `NetPlayer::gadget`).
     pub const SHIELDED: u16 = 1 << 6;
+    /// Alias of [`SHIELDED`]: any gadget (Shield, Cloak) is on.
+    pub const GADGET_ACTIVE: u16 = SHIELDED;
     pub const SPAWN_PROTECTED: u16 = 1 << 7;
     /// Team id (0-3) in bits 8-9.
     pub const TEAM_SHIFT: u32 = 8;
     pub const TEAM_MASK: u16 = 0b11 << TEAM_SHIFT;
-    /// Selected weapon slot (0-15) in bits 10-13.
+    /// Selected primary weapon id (0-31) in bits 10-14.
     pub const WEAPON_SHIFT: u32 = 10;
-    pub const WEAPON_MASK: u16 = 0b1111 << WEAPON_SHIFT;
-    /// Free for future use.
-    pub const SPARE: u16 = 1 << 14;
+    pub const WEAPON_MASK: u16 = 0b1_1111 << WEAPON_SHIFT;
     /// Reserved for the wire format; cleared by `Quantizer::pack_ship`.
     pub const WIRE_RESERVED: u16 = 1 << 15;
 
@@ -106,7 +108,8 @@ pub struct PackedShip {
 pub const SHIP_CORE_BITS: usize = 48 + 32 + 48 + 16;
 
 /// A projectile in flight. Projectiles never inherit shooter velocity, so
-/// clients can extrapolate them exactly between snapshots.
+/// clients can extrapolate them between snapshots (steered ones change
+/// velocity; the next snapshot corrects).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct NetProjectile {
     /// Server-assigned id, unique among live projectiles (wraps around).
@@ -117,6 +120,9 @@ pub struct NetProjectile {
     pub owner: u8,
     pub pos: Vec3,
     pub vel: Vec3,
+    /// Weapon-defined state bits (stuck, armed, returning, ...; see
+    /// `ls_sim::proj_flags`).
+    pub state: u8,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -126,10 +132,90 @@ pub struct PackedProjectile {
     pub owner: u8,
     pub pos: PackedVec3,
     pub vel: PackedVec3,
+    pub state: u8,
 }
 
-/// Bits of a projectile in a full snapshot (16 bytes).
-pub const PROJECTILE_BITS: usize = 16 + 8 + 8 + 48 + 48;
+/// Bits of a projectile in a full snapshot (17 bytes).
+pub const PROJECTILE_BITS: usize = 16 + 8 + 8 + 48 + 48 + 8;
+
+/// A generic replicated entity: debris, pickups, scrap piles, wrecks,
+/// decoys, ghosts, dust clouds, markers. The game defines `kind`, `visual`
+/// and the meaning of `state`; the codec only moves the numbers.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct NetEntity {
+    /// Unique among live entities (the server keeps it stable while the
+    /// entity lives). Separate id space from projectiles.
+    pub id: u16,
+    pub kind: u8,
+    /// Index into the match's visual table.
+    pub visual: u16,
+    /// Owner ship id, or 255.
+    pub owner: u8,
+    /// Team, or 255.
+    pub team: u8,
+    pub pos: Vec3,
+    /// Quantized like ship velocities (`±max_ship_speed`).
+    pub vel: Vec3,
+    pub rot: Quat,
+    pub state: [u8; 4],
+}
+
+/// Quantized [`NetEntity`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PackedEntity {
+    pub id: u16,
+    pub kind: u8,
+    pub visual: u16,
+    pub owner: u8,
+    pub team: u8,
+    pub pos: PackedVec3,
+    pub vel: PackedVec3,
+    pub rot: u32,
+    pub state: [u8; 4],
+}
+
+/// Bits of a resting entity (zero velocity, no rotation) in a full snapshot,
+/// including its 16-bit id: 17 bytes plus 2 presence bits.
+pub const ENTITY_MIN_BITS: usize = 16 + 8 + 16 + 8 + 8 + 48 + 1 + 1 + 32;
+
+/// A connected player as every client sees it (names above ships, the
+/// scoreboard, the ship type for hitboxes and prediction).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NetPlayer {
+    /// Ship id.
+    pub id: u8,
+    pub team: u8,
+    /// Ship type index (`ls_sim::ShipType::index`).
+    pub ship_type: u8,
+    /// Gadget id in the gadget slot (`ls_sim::GadgetId`), 255 for none.
+    pub gadget: u8,
+    pub name: String,
+}
+
+/// Longest player name on the wire (bytes).
+pub const MAX_PLAYER_NAME: usize = 32;
+
+/// Decides per client which snapshot items it receives: interest
+/// management and hidden ships (Cloak). The server applies it with
+/// [`Snapshot::retain_relevant`] before packing each client's snapshot.
+pub trait Relevance {
+    /// Whether `viewer` receives `ship` (the viewer's own ship is always kept).
+    fn ship(&self, _viewer: u8, _ship: &NetShip) -> bool {
+        true
+    }
+    fn projectile(&self, _viewer: u8, _p: &NetProjectile) -> bool {
+        true
+    }
+    fn entity(&self, _viewer: u8, _e: &NetEntity) -> bool {
+        true
+    }
+}
+
+/// Everything is relevant to everyone.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct AllRelevant;
+
+impl Relevance for AllRelevant {}
 
 /// Snapshot contents as game code sees them.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -144,10 +230,24 @@ pub struct Snapshot {
     pub edits: Vec<TerrainEdit>,
     pub ships: Vec<NetShip>,
     pub projectiles: Vec<NetProjectile>,
+    /// Generic entities, sorted by id.
+    pub entities: Vec<NetEntity>,
+    /// Connected players (names, teams, ship types), sorted by id.
+    pub players: Vec<NetPlayer>,
     /// Mode-defined scores, e.g. per-team painted share in 1/65535 units.
     pub scores: Vec<u32>,
     /// Ticks until the match ends.
     pub match_ticks_left: u32,
+}
+
+impl Snapshot {
+    /// Drops the ships, projectiles and entities `viewer` should not see
+    /// (its own ship is always kept).
+    pub fn retain_relevant(&mut self, viewer: u8, r: &dyn Relevance) {
+        self.ships.retain(|s| s.id == viewer || r.ship(viewer, s));
+        self.projectiles.retain(|p| r.projectile(viewer, p));
+        self.entities.retain(|e| r.entity(viewer, e));
+    }
 }
 
 /// Quantized snapshot; ships and projectiles sorted by id.
@@ -159,6 +259,8 @@ pub struct PackedSnapshot {
     pub edits: Vec<TerrainEditBits>,
     pub ships: Vec<PackedShip>,
     pub projectiles: Vec<PackedProjectile>,
+    pub entities: Vec<PackedEntity>,
+    pub players: Vec<NetPlayer>,
     pub scores: Vec<u32>,
     pub match_ticks_left: u32,
 }
@@ -193,6 +295,13 @@ impl PackedSnapshot {
             .ok()
             .map(|i| &self.projectiles[i])
     }
+
+    pub fn entity(&self, id: u16) -> Option<&PackedEntity> {
+        self.entities
+            .binary_search_by_key(&id, |e| e.id)
+            .ok()
+            .map(|i| &self.entities[i])
+    }
 }
 
 /// A terrain edit stored bit-exactly (edits are sent as raw `f32` bits so
@@ -200,30 +309,39 @@ impl PackedSnapshot {
 /// bit patterns. Converts losslessly to and from [`TerrainEdit`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TerrainEditBits {
-    /// 0 = subtract sphere, 1 = add sphere, 2 = paint.
+    /// 0 = subtract sphere, 1 = add sphere, 2 = paint, 3 = surface states.
     pub kind: u8,
     pub center: [u32; 3],
     pub radius: u32,
-    /// Paint team (0 for geometry edits).
+    /// Paint team for paint, state bits for surface states (0 for geometry edits).
     pub team: u8,
+    /// Expiry tick of surface states (0 for every other kind).
+    pub until: u32,
 }
 
 impl From<TerrainEdit> for TerrainEditBits {
     fn from(e: TerrainEdit) -> Self {
-        let (kind, c, r, team) = match e {
-            TerrainEdit::SubtractSphere { center, radius } => (0, center, radius, 0),
-            TerrainEdit::AddSphere { center, radius } => (1, center, radius, 0),
+        let (kind, c, r, team, until) = match e {
+            TerrainEdit::SubtractSphere { center, radius } => (0, center, radius, 0, 0),
+            TerrainEdit::AddSphere { center, radius } => (1, center, radius, 0, 0),
             TerrainEdit::Paint {
                 center,
                 radius,
                 team,
-            } => (2, center, radius, team),
+            } => (2, center, radius, team, 0),
+            TerrainEdit::Surface {
+                center,
+                radius,
+                states,
+                until,
+            } => (3, center, radius, states, until),
         };
         TerrainEditBits {
             kind,
             center: c.to_bits(),
             radius: r.to_bits(),
             team,
+            until,
         }
     }
 }
@@ -239,6 +357,12 @@ impl From<TerrainEditBits> for TerrainEdit {
         match e.kind {
             0 => TerrainEdit::SubtractSphere { center, radius },
             1 => TerrainEdit::AddSphere { center, radius },
+            3 => TerrainEdit::Surface {
+                center,
+                radius,
+                states: e.team,
+                until: e.until,
+            },
             _ => TerrainEdit::Paint {
                 center,
                 radius,
@@ -252,23 +376,24 @@ impl From<TerrainEditBits> for TerrainEdit {
 pub(crate) const EDIT_MIN_BITS: usize = 2 + 4 * 32;
 
 /// Terrain edit: 2-bit kind, center and radius as raw `f32`, 8-bit team for
-/// paint only (130 or 138 bits).
+/// paint, 8-bit states and 32-bit expiry tick for surface states (130, 138
+/// or 170 bits).
 pub(crate) fn write_edit(w: &mut BitWriter, e: &TerrainEditBits) {
     w.write_bits(e.kind as u64, 2);
     for c in e.center {
         w.write_u32(c);
     }
     w.write_u32(e.radius);
-    if e.kind == 2 {
+    if e.kind >= 2 {
         w.write_u8(e.team);
+    }
+    if e.kind == 3 {
+        w.write_u32(e.until);
     }
 }
 
 pub(crate) fn read_edit(r: &mut BitReader) -> Result<TerrainEditBits, DecodeError> {
     let kind = r.read_bits(2)? as u8;
-    if kind > 2 {
-        return Err(DecodeError::Invalid("terrain edit kind"));
-    }
     let center = [
         r.read_finite_f32()?.to_bits(),
         r.read_finite_f32()?.to_bits(),
@@ -278,12 +403,14 @@ pub(crate) fn read_edit(r: &mut BitReader) -> Result<TerrainEditBits, DecodeErro
     if radius < 0.0 {
         return Err(DecodeError::Invalid("negative edit radius"));
     }
-    let team = if kind == 2 { r.read_u8()? } else { 0 };
+    let team = if kind >= 2 { r.read_u8()? } else { 0 };
+    let until = if kind == 3 { r.read_u32()? } else { 0 };
     Ok(TerrainEditBits {
         kind,
         center,
         radius: radius.to_bits(),
         team,
+        until,
     })
 }
 
@@ -318,6 +445,7 @@ impl Quantizer {
             owner: p.owner,
             pos: self.pack_position(p.pos),
             vel: self.pack_projectile_velocity(p.vel),
+            state: p.state,
         }
     }
 
@@ -328,6 +456,35 @@ impl Quantizer {
             owner: p.owner,
             pos: self.unpack_position(p.pos),
             vel: self.unpack_projectile_velocity(p.vel),
+            state: p.state,
+        }
+    }
+
+    pub fn pack_entity(&self, e: &NetEntity) -> PackedEntity {
+        PackedEntity {
+            id: e.id,
+            kind: e.kind,
+            visual: e.visual,
+            owner: e.owner,
+            team: e.team,
+            pos: self.pack_entity_position(e.pos),
+            vel: self.pack_ship_velocity(e.vel),
+            rot: pack_quat(e.rot),
+            state: e.state,
+        }
+    }
+
+    pub fn unpack_entity(&self, e: &PackedEntity) -> NetEntity {
+        NetEntity {
+            id: e.id,
+            kind: e.kind,
+            visual: e.visual,
+            owner: e.owner,
+            team: e.team,
+            pos: self.unpack_entity_position(e.pos),
+            vel: self.unpack_ship_velocity(e.vel),
+            rot: unpack_quat(e.rot),
+            state: e.state,
         }
     }
 
@@ -342,6 +499,11 @@ impl Quantizer {
             .map(|x| self.pack_projectile(x))
             .collect();
         projectiles.sort_by_key(|x| x.id);
+        let mut entities: Vec<PackedEntity> =
+            s.entities.iter().map(|x| self.pack_entity(x)).collect();
+        entities.sort_by_key(|x| x.id);
+        let mut players = s.players.clone();
+        players.sort_by_key(|p| p.id);
         PackedSnapshot {
             tick: s.tick,
             ack_input: s.ack_input,
@@ -349,6 +511,8 @@ impl Quantizer {
             edits: s.edits.iter().map(|&e| e.into()).collect(),
             ships,
             projectiles,
+            entities,
+            players,
             scores: s.scores.clone(),
             match_ticks_left: s.match_ticks_left,
         }
@@ -366,6 +530,8 @@ impl Quantizer {
                 .iter()
                 .map(|x| self.unpack_projectile(x))
                 .collect(),
+            entities: s.entities.iter().map(|x| self.unpack_entity(x)).collect(),
+            players: s.players.clone(),
             scores: s.scores.clone(),
             match_ticks_left: s.match_ticks_left,
         }
@@ -380,6 +546,7 @@ pub mod buttons {
     pub const SCAVENGE: u16 = 1 << 3;
     pub const OVERDRIVE: u16 = 1 << 4;
     pub const HORIZON_ASSIST: u16 = 1 << 5;
+    pub const GADGET: u16 = 1 << 6;
 }
 
 /// One input command for one simulation tick, already in wire units
@@ -532,6 +699,16 @@ pub enum NetEvent {
         /// `None` for a draw.
         winner_team: Option<u8>,
     },
+    /// A game cue (warning, blinding, chime, gadget switch; see
+    /// `ls_sim::CueKind`). Ship ids are 255 for none.
+    Cue {
+        tick: u32,
+        kind: u8,
+        source: u8,
+        target: u8,
+        pos: Vec3,
+        value: u16,
+    },
 }
 
 pub(crate) const EVENT_MIN_BITS: usize = 8 + 32;
@@ -601,6 +778,25 @@ impl NetEvent {
                     w.write_u8(t);
                 }
             }
+            NetEvent::Cue {
+                tick,
+                kind,
+                source,
+                target,
+                pos,
+                value,
+            } => {
+                if !pos.is_finite() {
+                    return Err(EncodeError::OutOfRange("cue position must be finite"));
+                }
+                w.write_u8(4);
+                w.write_u32(tick);
+                w.write_u8(kind);
+                w.write_u8(source);
+                w.write_u8(target);
+                write_vec_raw(w, pos);
+                w.write_u16(value);
+            }
         }
         Ok(())
     }
@@ -636,6 +832,14 @@ impl NetEvent {
                     None
                 },
             },
+            4 => NetEvent::Cue {
+                tick,
+                kind: r.read_u8()?,
+                source: r.read_u8()?,
+                target: r.read_u8()?,
+                pos: read_vec_raw(r)?,
+                value: r.read_u16()?,
+            },
             _ => return Err(DecodeError::Invalid("event tag")),
         })
     }
@@ -663,12 +867,18 @@ mod tests {
                 radius: 2.0,
                 team: 1,
             },
+            TerrainEdit::Surface {
+                center: Vec3::new(8.0, 9.0, 10.0),
+                radius: 1.5,
+                states: 5,
+                until: 0xdead_beef,
+            },
         ];
         let mut w = BitWriter::new();
         for e in edits {
             write_edit(&mut w, &e.into());
         }
-        assert_eq!(w.bit_len(), 130 + 130 + 138);
+        assert_eq!(w.bit_len(), 130 + 130 + 138 + 170);
         let bytes = w.finish();
         let mut r = BitReader::new(&bytes);
         for e in edits {
@@ -726,6 +936,57 @@ mod tests {
         assert_eq!(ship_flags::team(f), 2);
         assert_eq!(ship_flags::weapon(f), 9);
         assert_eq!(f & ship_flags::WIRE_RESERVED, 0);
+        // 27 weapons need 5 bits; the reserved bit stays clear.
+        let f = ship_flags::with_weapon(0, 31);
+        assert_eq!(ship_flags::weapon(f), 31);
+        assert_eq!(f & ship_flags::WIRE_RESERVED, 0);
+    }
+
+    #[test]
+    fn relevance_filters_snapshots() {
+        struct HideShip3;
+        impl Relevance for HideShip3 {
+            fn ship(&self, viewer: u8, ship: &NetShip) -> bool {
+                !(ship.id == 3 && viewer == 1)
+            }
+            fn entity(&self, _viewer: u8, e: &NetEntity) -> bool {
+                e.kind != 9
+            }
+        }
+        let ship = |id| NetShip {
+            id,
+            pos: Vec3::ZERO,
+            vel: Vec3::ZERO,
+            rot: Quat::IDENTITY,
+            flags: 0,
+            status: None,
+        };
+        let entity = |id, kind| NetEntity {
+            id,
+            kind,
+            visual: 0,
+            owner: 255,
+            team: 255,
+            pos: Vec3::ZERO,
+            vel: Vec3::ZERO,
+            rot: Quat::IDENTITY,
+            state: [0; 4],
+        };
+        let base = Snapshot {
+            ships: vec![ship(1), ship(2), ship(3)],
+            entities: vec![entity(1, 0), entity(2, 9)],
+            ..Default::default()
+        };
+        let mut s = base.clone();
+        s.retain_relevant(1, &HideShip3);
+        assert_eq!(s.ships.iter().map(|s| s.id).collect::<Vec<_>>(), [1, 2]);
+        assert_eq!(s.entities.len(), 1);
+        let mut s = base.clone();
+        s.retain_relevant(3, &HideShip3);
+        assert_eq!(s.ships.len(), 3, "own ship always kept");
+        let mut s = base;
+        s.retain_relevant(1, &AllRelevant);
+        assert_eq!(s.ships.len(), 3);
     }
 
     #[test]

@@ -14,7 +14,7 @@ use ls_math::{det, Quat, Vec3, DT};
 use serde::{Deserialize, Serialize};
 
 use crate::terrain::{world_normal, world_sdf};
-use crate::{Buttons, InputCmd, ShipTuning, ShipType, WeaponId};
+use crate::{Buttons, GadgetId, InputCmd, ShipTuning, ShipType, WeaponId, WeaponSlot};
 
 /// Player identifier, assigned by the [`crate::World`] in join order.
 #[derive(
@@ -30,6 +30,19 @@ pub struct WeaponState {
     pub ammo: u32,
     /// Upgrade level, starting at 1.
     pub level: u8,
+    /// Paid shots fired with this weapon so far (wrapping): alternating or
+    /// rotating patterns (Scatter Laser, Corkscrew) read it as `Shot::shots`.
+    #[serde(default)]
+    pub shots: u32,
+}
+
+/// A weapon being charged (trigger held; see `WeaponDef::charge`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChargeState {
+    pub slot: WeaponSlot,
+    pub weapon: WeaponId,
+    /// Tick the trigger went down.
+    pub start_tick: u64,
 }
 
 /// Complete state of one ship.
@@ -66,6 +79,24 @@ pub struct ShipState {
     pub last_attacker: Option<PlayerId>,
     pub kills: u32,
     pub deaths: u32,
+    /// Gadget in the ship's one gadget slot.
+    pub gadget: Option<GadgetId>,
+    /// Toggle gadgets (Shield, Cloak): currently on.
+    pub gadget_active: bool,
+    /// First tick the gadget may be activated again.
+    pub gadget_ready_tick: u64,
+    /// Weapon being charged, if any.
+    pub charge: Option<ChargeState>,
+    /// Buttons of the previous tick (edge detection, e.g. the gadget key).
+    pub prev_buttons: Buttons,
+    /// Blinded (Flash Pod) until this tick; the client darkens the view.
+    pub blind_until: u64,
+    /// Weapons cannot fire before this tick (Borrowed Time malus).
+    pub weapons_offline_until: u64,
+    /// Tick of the last shot (Cloak reveals a ship that just fired).
+    pub last_fired_tick: Option<u64>,
+    /// Ship type to use at the next respawn (ship choice).
+    pub next_ship_type: Option<ShipType>,
 }
 
 impl ShipState {
@@ -103,6 +134,15 @@ impl ShipState {
             last_attacker: None,
             kills: 0,
             deaths: 0,
+            gadget: None,
+            gadget_active: false,
+            gadget_ready_tick: 0,
+            charge: None,
+            prev_buttons: Buttons::NONE,
+            blind_until: 0,
+            weapons_offline_until: 0,
+            last_fired_tick: None,
+            next_ship_type: None,
         }
     }
 
@@ -231,9 +271,10 @@ fn rotate_ship(ship: &mut ShipState, input: &InputCmd, t: &ShipTuning) {
     ship.orientation = ship.orientation.integrate_local(omega, DT);
 }
 
-/// Moves a sphere through terrain, sliding along surfaces. Returns
-/// `(contact, max normal speed removed)`.
-fn move_and_collide<T: TerrainQuery + ?Sized>(
+/// Moves a sphere through terrain, sliding along surfaces (and bouncing with
+/// `restitution`). Returns `(contact, max normal speed removed)`. Shared by
+/// ships and debris.
+pub(crate) fn move_sphere<T: TerrainQuery + ?Sized>(
     terrain: &T,
     pos: &mut Vec3,
     vel: &mut Vec3,
@@ -308,7 +349,7 @@ pub fn simulate_movement<T: TerrainQuery + ?Sized>(
         ship.energy = (ship.energy + t.energy_regen * DT).min(t.energy_max);
     }
 
-    let (contact, impact) = move_and_collide(
+    let (contact, impact) = move_sphere(
         terrain,
         &mut ship.pos,
         &mut ship.vel,

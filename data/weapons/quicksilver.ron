@@ -1,0 +1,22 @@
+// Quicksilver: ordnance secondary. Fastest missile, 45 u/s. Malus: small blast. Lasting
+// effect: 2 u crater.
+// Behaviour: crates/ls-sim/src/weapons/ordnance/quicksilver.rs (TODO(wave-B): generic fallback until implemented).
+// `params` are read by the weapon module (`WeaponDef::param`); numbers are tuning starting points.
+WeaponDef(
+    id: "quicksilver",
+    name: "Quicksilver",
+    family: Ordnance,
+    slot: Secondary,
+    speed: 45.0,
+    lifetime_secs: 3.0,
+    damage: 25.0,
+    fire_interval_secs: 0.6,
+    cost: Count(1),
+    projectile_radius: 0.18,
+    splash: Some((radius: 1.5, damage: 10.0, hits_owner: true)),
+    knockback: 5.0,
+    terrain: (crater_radius: 1.0),
+    shield: Wears(1.0),
+    max_ammo: 10,
+    visual: (shape: Rocket, color: (220, 220, 235), scale: 0.9),
+)

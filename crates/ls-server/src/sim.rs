@@ -642,8 +642,19 @@ mod tests {
 
     fn join(s: &mut Sim, id: u64, cfg: LinkConfig) -> PeerLink {
         let (link, peer) = conn(id, cfg);
-        s.join(Hello::new(format!("p{id}"), None), link);
+        s.join(ls_game::client_hello(format!("p{id}"), None, None), link);
         peer
+    }
+
+    /// An encoded `Input` with one idle command for `tick`.
+    fn idle_input(tick: u64) -> Vec<u8> {
+        let cmd = ls_game::ls_sim::InputCmd::idle(tick);
+        Message::Input(ls_net::InputMsg {
+            ack_snapshot: None,
+            cmds: vec![ls_game::convert::input_to_net(&cmd)],
+        })
+        .encode()
+        .unwrap()
     }
 
     /// Every frame queued for the peer right now, decoded.
@@ -744,6 +755,11 @@ mod tests {
             ..LinkConfig::default()
         };
         let a = join(&mut s, 1, cfg);
+        s.tick();
+        // Snapshots flow once the client has sent an input (it is set up).
+        a.push_incoming(idle_input(s.room.tick() + 4))
+            .await
+            .unwrap();
         for _ in 0..4 {
             s.tick();
         }
@@ -807,7 +823,7 @@ mod tests {
     fn last_player_leaving_a_finished_match_does_not_rebuild() {
         let (mut s, _tx) = sim(2);
         let (link, _peer) = conn(1, LinkConfig::default());
-        s.join(Hello::new("a", None), link);
+        s.join(ls_game::client_hello("a", None, None), link);
         s.tick();
         s.room.world_mut().mode_mut().phase = MatchPhase::Ended { winner: None };
         s.remove(0, Leave::Closed);

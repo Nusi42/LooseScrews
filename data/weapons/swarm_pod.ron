@@ -1,0 +1,23 @@
+// Swarm Pod: ordnance secondary. 30 u/s; releases 6 homing blobs on impact. Malus: blobs are
+// weak alone. Lasting effect: scatter of small craters.
+// Behaviour: crates/ls-sim/src/weapons/ordnance/swarm_pod.rs (TODO(wave-B): generic fallback until implemented).
+// `params` are read by the weapon module (`WeaponDef::param`); numbers are tuning starting points.
+WeaponDef(
+    id: "swarm_pod",
+    name: "Swarm Pod",
+    family: Ordnance,
+    slot: Secondary,
+    speed: 30.0,
+    lifetime_secs: 4.0,
+    damage: 15.0,
+    fire_interval_secs: 1.0,
+    cost: Count(1),
+    projectile_radius: 0.22,
+    splash: Some((radius: 2.0, damage: 10.0, hits_owner: true)),
+    knockback: 4.0,
+    terrain: (crater_radius: 0.75),
+    shield: Wears(1.0),
+    max_ammo: 5,
+    visual: (shape: Rocket, color: (255, 170, 40), scale: 1.1),
+    params: { "blobs": 6.0, "blob_speed": 15.0, "blob_damage": 6.0, "blob_lifetime_secs": 3.0, "blob_crater_radius": 0.5, "turn_rate": 2.0 },
+)

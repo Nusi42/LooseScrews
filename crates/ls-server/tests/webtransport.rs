@@ -182,7 +182,7 @@ struct Player {
 impl Player {
     async fn join(http: SocketAddr, name: &'static str) -> Player {
         let (hash, port) = cert_hash(http).await;
-        let mut client = WtClient::open(port, hash, Hello::new(name, None)).await;
+        let mut client = WtClient::open(port, hash, ls_game::client_hello(name, None, None)).await;
         let first = client.first_reliable().await;
         let welcome = check_welcome(Message::decode(&first).unwrap()).unwrap();
         let session = tokio::task::block_in_place(|| {

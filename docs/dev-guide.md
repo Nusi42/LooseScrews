@@ -190,9 +190,12 @@ node tools/e2e.mjs --server-bin target/<area>/release/ls-server --bots-bin targe
 
 ## 8. Adding a weapon
 
-Weapons are data (`data/weapons/*.ron`, schema `ls_sim::WeaponDef`), embedded into `ls-sim`
-at compile time. The server, the bots and the browser all use `WeaponTable::builtin()`, so a
-new weapon needs one line of Rust plus the data file. Example, an ordnance secondary:
+Every weapon of the design doc already exists: a data file (`data/weapons/<id>.ron`, schema
+`ls_sim::WeaponDef`), a behaviour module (`crates/ls-sim/src/weapons/<family>/<id>.rs`,
+`WeaponBehavior`) and an entry in `crates/ls-sim/src/weapons/registry.rs`. How modules work,
+their hooks and the per-tick order are in
+[architecture/arsenal-framework.md](architecture/arsenal-framework.md). To add a new one
+(example: an ordnance secondary):
 
 1. Create `data/weapons/nail_mortar.ron`:
 
@@ -211,46 +214,52 @@ new weapon needs one line of Rust plus the data file. Example, an ordnance secon
        max_ammo: 4,                  // required for Count weapons (>= the count)
        projectile_radius: 0.2,
        splash: Some((radius: 3.0, damage: 15.0)),   // optional `hits_owner: true`
-       knockback: 4.0,               // u/s on a direct hit
+       knockback: 4.0,               // u/s on a direct hit (scales with damage)
        terrain: (crater_radius: 1.5),                // radius = design-doc diameter / 2; also paint_radius
-       shield: WearsDown,            // Blocked | WearsDown | PassThrough(0..=1), unused in M1
+       shield: Wears(1.0),           // Blocked | Wears(f >= 0) | PassThrough(0..=1)
+       visual: (shape: Grenade, color: (200, 160, 90), scale: 1.0),
+       params: { "nails": 5.0 },     // free numbers for the module (`def.param("nails", 5.0)`)
    )
    ```
 
-   Optional fields: `max_level` (default 1) and `damage_per_level` for upgrades. Validation
-   (`WeaponDef::validate`) rejects non-positive speed/lifetime/interval, negative values, and
-   count weapons without enough `max_ammo`.
-2. Register it in `BUILTIN_WEAPONS` in `crates/ls-sim/src/weapon.rs` (`include_str!`).
-3. Make it available in a rule set: add it to `weapons` (`LoadoutAndPickup`, `PickupOnly`,
-   `LoadoutOnly`; unlisted means `Banned`), and to `starting_loadout` and/or `pickups`
-   (count weapons take an `ammo` per pickup).
-4. Client presentation: a projectile style in `PROJECTILE_STYLE` (`web/src/game/views.ts`;
-   unknown ids get a default style) and, for a primary, a number key in `WEAPON_KEYS`
-   (`web/src/game/controls.ts`). HUD names come from `weaponNames()` automatically.
-5. Bots only use the four M1 weapons (`crates/ls-bots/src/brain.rs`); teach them if needed.
-6. Update tests and hashes: `builtin_weapons_match_design_doc` asserts the weapon count;
-   run `cargo test -p ls-sim replay_golden_hash`, since shifted weapon ids or changed rules
-   can change `REPLAY_GOLDEN_HASH` (see
-   [determinism.md](architecture/determinism.md#re-blessing-after-an-intentional-change)).
-7. Rebuild everything that embeds data: `cargo build --release -p ls-server -p ls-bots` and
-   `cd web && npm run build`.
+   Optional fields: `max_level` and `damage_per_level` (upgrades), `projectiles` and
+   `spread_deg` (generic multi-projectile pattern), `charge: Some((max_secs: 2.0, min_secs:
+   0.0, auto_release: false, damage_mult: 3.0))`. `WeaponDef::validate` rejects out-of-range
+   values.
+2. Add the module file `crates/ls-sim/src/weapons/ordnance/nail_mortar.rs` (copy a `TODO(wave-B)`
+   module), list it in `weapons/ordnance/mod.rs` and **append** an entry to
+   `registry::MODULES` (rule set codes index that list; never reorder it). Override the hooks
+   the weapon needs; the defaults are the generic straight-projectile weapon.
+3. Make it available in a rule set: `weapons` (`LoadoutAndPickup`, `PickupOnly`, `LoadoutOnly`;
+   unlisted means `Banned`), and `starting_loadout` and/or `pickups` (count weapons take an
+   `ammo` per pickup; `max_on_map` caps copies on the map).
+4. Client presentation: projectiles and pickups are drawn from the weapon's `visual` (see the
+   `VisualTable` in the arsenal doc and `SHAPE_STYLES` in `web/src/game/scene.ts`); number keys,
+   the wheel and X follow the registry order automatically, and the weapon panel takes names
+   from the data. No client code is needed unless the weapon needs a new `Shape`.
+5. Bots pick weapons by cost (`crates/ls-bots/src/brain.rs`); teach them special mechanics.
+6. Tests and hashes: `weapons::tests::every_weapon_has_a_module_and_a_data_file` and
+   `builtin_weapons_match_design_doc` assert the weapon count; add scenario tests; update
+   `REPLAY_GOLDEN_HASH` (see [determinism.md](architecture/determinism.md#re-blessing-after-an-intentional-change)).
+   The data hash changes too, so rebuild everything that embeds data together:
+   `cargo build --release -p ls-server -p ls-bots` and `cd web && npm run build`.
 
 Things to know:
 
 - `WeaponId`s are indices in **id-sorted order**, so a new id shifts the ids of every weapon
-  sorted after it (`nail_mortar` becomes 1 and moves `paint_thrower`, `rivet_gun`,
-  `scrap_laser` up). Ids travel on the wire (projectile `kind`, ship flags, inputs), and the
-  handshake does not compare weapon tables, so server and clients must come from the same build.
-- Ship flags carry the selected primary in 4 bits (ids 0-15); the table holds at most 255.
+  sorted after it. Ids travel on the wire (projectile `kind`, ship flags, inputs); the
+  handshake compares the data hash, so a client built from other data files is rejected with
+  a clear reason instead of desyncing.
+- Ship flags carry the selected primary in 5 bits (ids 0-31); the table holds at most 255.
 - The fastest weapon sets the projectile velocity quantization range
-  (`quant_config_for`: at least 256 u/s).
-- Mechanics beyond the fields above (homing, beams, mines) need code in `ls-sim`.
+  (`quant_config_for`: at least 320 u/s).
 
 ## 9. Adding a rule set
 
-A rule set for an existing mode is pure data: the server loads the file at startup, validates
-it against the weapon table, and sends its RON text to every client in the `Welcome`, so
-browsers and bots need no rebuild.
+A rule set for an existing mode is pure data (schema `ls_sim::RuleSet`, v2): the server loads
+the file at startup, validates it against the weapon and gadget tables, and sends its RON text
+to every client in the `Welcome`, so browsers and bots need no rebuild. Every setting of the
+design doc's match rules is a field; see `data/rulesets/paint_the_void.ron` for all of them.
 
 1. Copy `data/rulesets/paint_the_void.ron` to a new file and edit it:
 
@@ -263,17 +272,21 @@ browsers and bots need no rebuild.
            "scrap_laser": LoadoutAndPickup,
            "paint_thrower": LoadoutOnly,
        },
+       gadgets: { "shield": LoadoutOnly },       // unlisted gadgets are Banned
        starting_loadout: (
            primaries: ["scrap_laser", "paint_thrower"],
            secondaries: [],                      // (id, count) pairs for secondaries
-           gadget: None,                         // gadgets arrive in M2
+           gadget: Some("shield"),
        ),
-       pickups: {
-           "scrap_laser": (weight: 1.0, respawn_secs: 20.0),
+       pickups: {},                              // weapon pickups: (weight, respawn_secs, ammo, max_on_map)
+       upgrade_pickups: {
+           "scrap_laser": (weight: 1.0, respawn_secs: 20.0),   // laser levels 1-6
        },
        scrap_pickup: Some((weight: 1.0, respawn_secs: 15.0, amount: 30.0)),
+       shield_overrides: { "scrap_laser": PassThrough(0.5) },
+       tuning: { "scrap_laser": (damage: 1.25, fire_rate: 1.0, ammo: 1.0) },
        friendly_fire_percent: 0,                 // 0 = off, otherwise 10..=100
-       allowed_ship_types: [Tinker],
+       allowed_ship_types: [Skitter, Tinker],
        absurdity: 0,                             // 0..=100, used from M4
    )
    ```
@@ -281,10 +294,16 @@ browsers and bots need no rebuild.
 2. Run it: `cargo run -p ls-server --release -- --ruleset data/rulesets/lasers_only.ron`. The log
    line `match ready ... ruleset=Lasers Only` confirms it; an invalid file stops the server with
    the reason (for example `invalid rule set: friendly_fire_percent 5 must be 0 (off) or
-   10..=100`). `RuleSet::resolve` checks that every weapon exists, loadout weapons are allowed
-   in the loadout and fit their slot, pickups are pickup-able, and the numbers are in range.
+   10..=100`). `RuleSet::resolve` checks that every weapon and gadget exists, loadout items are
+   allowed in the loadout and fit their slot, pickups are pickup-able, and the numbers are in
+   range.
 3. Play it with bots and the browser as usual; `tools/e2e.mjs --ruleset <file>` runs the e2e
    checks on it (use `--min-craters 0` if the rule set has no crater weapons).
+
+Rule sets also travel as short codes: `RuleSet::to_code()` gives `LR...` (Crockford base32,
+CRC-16) and `RuleSet::from_code` reads it back exactly (format in
+`crates/ls-sim/src/rulecode.rs`; values the format cannot carry, such as a weight of 0.3, are
+rejected when encoding).
 
 Only `data/rulesets/paint_the_void.ron` is embedded (`RuleSet::paint_the_void()`, the default
 and the practice mode's rules). A new **mode** is code: a `ModeRules` variant in

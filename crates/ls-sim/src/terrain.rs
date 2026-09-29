@@ -14,7 +14,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use ls_math::terrain::{BoxRoomTerrain, PlaneTerrain, TerrainEdit, TerrainQuery};
+use ls_math::terrain::{
+    BoxRoomTerrain, PlaneTerrain, SurfaceStates, TerrainEdit, TerrainQuery, MATERIAL_ROCK,
+};
 use ls_math::{det, Aabb, Vec3};
 use serde::{Deserialize, Serialize};
 
@@ -67,6 +69,27 @@ pub trait SimTerrain: TerrainQuery {
     fn paint_coverage(&self) -> Option<PaintCoverage> {
         None
     }
+
+    /// Surface states (hot, charged, glow) active at tick `now` within
+    /// `radius` of `center`. Terrains without surface states report none.
+    fn surface_states_near(&self, _center: Vec3, _radius: f32, _now: u64) -> SurfaceStates {
+        SurfaceStates::NONE
+    }
+
+    /// Rock material id at `p` (`ls_math::terrain::MATERIAL_*`). Terrains
+    /// without materials are ordinary rock everywhere.
+    fn material_at(&self, _p: Vec3) -> u8 {
+        MATERIAL_ROCK
+    }
+}
+
+/// The read-only terrain layers hook code sees through `View::layers`
+/// (implemented by the world for any [`SimTerrain`]).
+pub trait TerrainLayers {
+    /// See [`SimTerrain::surface_states_near`].
+    fn surface_states_near(&self, center: Vec3, radius: f32, now: u64) -> SurfaceStates;
+    /// See [`SimTerrain::material_at`].
+    fn material_at(&self, p: Vec3) -> u8;
 }
 
 impl SimTerrain for BoxRoomTerrain {
@@ -225,6 +248,14 @@ impl<T: SimTerrain> SimTerrain for PaintedTerrain<T> {
                 self.refresh_region(region);
             }
         }
+    }
+
+    fn surface_states_near(&self, center: Vec3, radius: f32, now: u64) -> SurfaceStates {
+        self.inner.surface_states_near(center, radius, now)
+    }
+
+    fn material_at(&self, p: Vec3) -> u8 {
+        self.inner.material_at(p)
     }
 
     fn paint_coverage(&self) -> Option<PaintCoverage> {

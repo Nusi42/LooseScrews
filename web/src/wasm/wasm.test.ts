@@ -6,7 +6,17 @@ import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { DEBUG_STATS_LEN, MATCH_INFO_LEN, SCORE_STRIDE, type WasmApi } from "./api.ts";
+import { parseEntities, parsePlayers, parseVisuals, loadoutState } from "../game/views.ts";
+import { SHAPE_STYLES } from "../game/scene.ts";
+import {
+  CONTROLS_LEN,
+  DEBUG_STATS_LEN,
+  MATCH_INFO_LEN,
+  PROJECTILE_STRIDE,
+  SCORE_STRIDE,
+  SHIP_STRIDE,
+  type WasmApi,
+} from "./api.ts";
 
 const pkgJsUrl = new URL("./pkg/ls_wasm.js", import.meta.url);
 const pkgJs = fileURLToPath(pkgJsUrl);
@@ -56,7 +66,12 @@ test("WASM share-code check, hello packet and practice game", { skip }, async ()
   bad.free();
   assert.equal(wasm.tickHz(), 60);
   assert.ok(wasm.helloPacket("tester", -1).length > 4);
-  assert.deepEqual(wasm.weaponIds(), ["bolt_rocket", "paint_thrower", "rivet_gun", "scrap_laser"]);
+  const ids = wasm.weaponIds();
+  assert.equal(ids.length, 27, "every design-doc weapon");
+  assert.deepEqual(ids, [...ids].sort(), "weapon ids in ls-sim id order");
+  // Every visual shape has a client style (new weapons need no client code).
+  for (const shape of wasm.visualShapeNames()) assert.ok(SHAPE_STYLES[shape], `style for ${shape}`);
+  assert.equal(wasm.entityKindNames()[0], "debris");
 
   const code = wasm.randomShareCode(1, 2, 45, 35);
   const game = wasm.Game.practice(code, 1);
@@ -65,11 +80,12 @@ test("WASM share-code check, hello packet and practice game", { skip }, async ()
     assert.equal(game.shareCode, code);
     const start = game.localPose();
     assert.ok(start && start.length === 11);
-    const controls = new Float32Array([1, 0, 0, 0, 0, 0, 0, 0]);
+    const controls = new Float32Array(CONTROLS_LEN);
+    controls[0] = 1;
     for (let i = 0; i < 30; i++) assert.deepEqual(game.frame(1 / 60, controls), []);
     const end = game.localPose()!;
     assert.ok(Math.hypot(end[0]! - start[0]!, end[1]! - start[1]!, end[2]! - start[2]!) > 1);
-    assert.equal(game.remoteShips().length, 11, "one dummy");
+    assert.equal(game.remoteShips().length, SHIP_STRIDE, "one dummy");
     const mesh = game.meshNext(end[0]!, end[1]!, end[2]!);
     assert.ok(mesh);
     assert.match(mesh.key, /^-?\d+,-?\d+,-?\d+$/);
@@ -89,6 +105,29 @@ test("WASM share-code check, hello packet and practice game", { skip }, async ()
     const info = game.matchInfo();
     assert.equal(info.length, MATCH_INFO_LEN);
     assert.equal(info[0], 0, "running");
+    assert.deepEqual(game.scoreboardNames().length, 2);
+
+    // M2: visual table, entities, players and the weapon panel.
+    const visuals = parseVisuals(game.visuals(), wasm.visualShapeNames());
+    assert.ok(visuals.length > 8 + 2 * 27, "built-ins, then two per weapon, then gadgets");
+    assert.equal(visuals[2]?.shape, "wreck");
+    const entities = parseEntities(game.entities(), wasm.entityKindNames());
+    for (const e of entities) assert.ok(visuals[e.visual], `visual of ${e.kind}`);
+    const players = parsePlayers(game.playerInfo(), game.playerNames());
+    assert.equal(players.length, 2);
+    assert.ok(players.some((p) => p.name === "You"));
+    const loadout = loadoutState(game.loadout());
+    assert.ok(loadout.primaries.length >= 1);
+    assert.equal(loadout.primaries[0]?.key, 1);
+    assert.equal(loadout.primaries.filter((w) => w.selected).length, 1);
+
+    // Fire: projectiles carry their weapon visual.
+    controls[6] = 2; // fire primary
+    for (let i = 0; i < 20; i++) game.frame(1 / 60, controls);
+    const shots = game.projectiles();
+    assert.ok(shots.length >= PROJECTILE_STRIDE);
+    const visual = shots[8]!;
+    assert.equal(visuals[visual]?.shape !== undefined, true);
   } finally {
     game.free();
   }

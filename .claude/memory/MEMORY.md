@@ -1,0 +1,7 @@
+- [Next steps](next-steps.md) — READ FIRST in a new session: current state, what to do next
+- [Repo docs and notes layout](repo-docs-and-memory-layout.md) — docs/ vs userDocs/, keep CLAUDE.md current, notes live in .claude/memory/
+- [Orchestration preferences](orchestration-preferences.md) — Opus 5.5 agents at medium effort in waves, commit per wave
+- [Loose Screws design doc](loose-screws-design-doc.md) — the living design doc and its repo export
+- [Maintainer reviews on phone](maintainer-phone-review.md) — commentable HTML pages instead of local md; screenshots after each milestone and wave
+- [First impression visuals](first-impression-visuals.md) — visual quality bar: modern look, rich effects, correct FOV and scale
+- [Disk hygiene](disk-hygiene.md) — packages build into target/pkg; clean win2+ target/ after each green wave

@@ -1,0 +1,23 @@
+# Rust
+/target/
+**/*.rs.bk
+
+# Web
+node_modules/
+web/dist/
+web/src/wasm/pkg/
+
+# Generated certificates and local config
+*.pem
+*.key
+.env
+.env.*
+
+# Editors / OS
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store
+
+# Claude Code: keep project memory and settings, ignore local-only settings
+.claude/settings.local.json

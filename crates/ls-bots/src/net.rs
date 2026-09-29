@@ -1,27 +1,18 @@
-//! WebSocket runner: connects one bot to a server with `tokio-tungstenite`
-//! and drives its [`BotCore`] at 60 Hz until told to stop, reconnecting
-//! after lost connections.
-//!
-//! Framing: every binary WebSocket message carries exactly one encoded
-//! `ls_net::Message` in each direction (WebSocket is the reliable channel,
-//! so unreliable messages travel reliably too). Text frames are ignored.
+//! Bot runner: connects one bot to a server over WebSocket or WebTransport
+//! ([`crate::transport`]) and drives its [`BotCore`] at 60 Hz until told to
+//! stop, reconnecting after lost connections.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use futures_util::{SinkExt, StreamExt};
 use ls_game::ls_math::TICK_HZ;
 use ls_game::ls_net::{check_welcome, Hello, Message, RejectReason};
 use ls_game::MATCH_RESTART_REASON;
-use tokio::net::TcpStream;
-use tokio_tungstenite::tungstenite::Message as WsMessage;
-use tokio_tungstenite::{connect_async_with_config, MaybeTlsStream, WebSocketStream};
 
 use crate::bot::{BotCore, Flow};
 use crate::stats::BotStats;
-
-type Ws = WebSocketStream<MaybeTlsStream<TcpStream>>;
+use crate::transport::{Link, Recv, TransportKind};
 
 /// Most ticks run in one go after a stall; the rest are skipped (the client
 /// clock catches up through its starvation handling).
@@ -37,8 +28,10 @@ const RESTART_DELAY: Duration = Duration::from_millis(500);
 #[derive(Debug, Clone)]
 pub struct BotConfig {
     pub name: String,
-    /// WebSocket URL, e.g. `ws://127.0.0.1:7777/ws`.
+    /// WebSocket URL, e.g. `ws://127.0.0.1:7777/ws` (WebTransport fetches
+    /// the certificate hash from its host and port).
     pub server: String,
+    pub transport: TransportKind,
     /// Varies the behavior between bots.
     pub seed: u64,
     /// Wait before the first connection (staggered joins).
@@ -46,7 +39,7 @@ pub struct BotConfig {
     /// Try again after a lost or failed connection.
     pub reconnect: bool,
     pub reconnect_delay: Duration,
-    /// Limit for TCP + WebSocket handshake and for the `Welcome`.
+    /// Limit for the connection handshake and for the `Welcome`.
     pub connect_timeout: Duration,
     /// A write the server does not take within this time ends the session
     /// (the server stopped reading).
@@ -61,6 +54,7 @@ impl BotConfig {
         BotConfig {
             name: name.into(),
             server: server.into(),
+            transport: TransportKind::WebSocket,
             seed,
             start_delay: Duration::ZERO,
             reconnect: true,
@@ -189,20 +183,25 @@ async fn play_session(
     stats: &mut BotStats,
 ) -> SessionEnd {
     // --- connect and handshake ---------------------------------------------
-    let connect = connect_async_with_config(cfg.server.as_str(), None, true);
+    let connect = Link::connect(cfg.transport, cfg.server.as_str());
     let mut ws = match tokio::time::timeout(cfg.connect_timeout, connect).await {
-        Ok(Ok((ws, _response))) => ws,
-        Ok(Err(e)) => return SessionEnd::ConnectFailed(e.to_string()),
+        Ok(Ok(link)) => link,
+        Ok(Err(e)) => return SessionEnd::ConnectFailed(e),
         Err(_) => return SessionEnd::ConnectFailed("connect timed out".into()),
     };
-    let hello = match Message::Hello(Hello::new(cfg.name.as_str(), None)).encode() {
+    let hello = Message::Hello(Hello::new(cfg.name.as_str(), None));
+    let bytes = match hello.encode() {
         Ok(b) => b,
         Err(e) => return protocol_error(stats, format!("cannot encode Hello: {e}")),
     };
-    if let Err(e) = ws.send(WsMessage::Binary(hello.into())).await {
-        return SessionEnd::ConnectFailed(e.to_string());
+    let sent = async {
+        ws.send(bytes, hello.channel()).await?;
+        ws.flush().await
+    };
+    if let Err(e) = write_within(cfg.write_timeout, sent).await {
+        return SessionEnd::ConnectFailed(e);
     }
-    let first = match recv_binary(&mut ws, cfg.connect_timeout).await {
+    let first = match ws.first_packet(cfg.connect_timeout).await {
         Ok(b) => b,
         Err(e) => return SessionEnd::ConnectFailed(e),
     };
@@ -224,7 +223,7 @@ async fn play_session(
     let mut core = match BotCore::from_welcome(&welcome, seed) {
         Ok(c) => c,
         Err(e) => {
-            let _ = tokio::time::timeout(GOODBYE_TIMEOUT, ws.close(None)).await;
+            let _ = tokio::time::timeout(GOODBYE_TIMEOUT, ws.close()).await;
             return protocol_error(stats, format!("unusable Welcome: {e}"));
         }
     };
@@ -234,6 +233,7 @@ async fn play_session(
         player = welcome.player_id,
         team = welcome.team,
         code = %welcome.share_code,
+        transport = cfg.transport.name(),
         edits = welcome.edit_log.len(),
         "joined"
     );
@@ -249,8 +249,8 @@ async fn play_session(
 
     let end = loop {
         tokio::select! {
-            incoming = ws.next() => match incoming {
-                Some(Ok(WsMessage::Binary(bytes))) => {
+            incoming = ws.recv() => match incoming {
+                Recv::Packet(bytes) => {
                     last_rx = Instant::now();
                     match core.handle_packet(&bytes, stats) {
                         Ok(Flow::Continue) => {}
@@ -261,29 +261,25 @@ async fn play_session(
                             break SessionEnd::Lost(format!("server ended the session: {reason}"));
                         }
                         Err(e) => {
-                            let _ = tokio::time::timeout(GOODBYE_TIMEOUT, ws.close(None)).await;
+                            let _ = tokio::time::timeout(GOODBYE_TIMEOUT, ws.close()).await;
                             break SessionEnd::Lost(e.to_string());
                         }
                     }
                 }
-                Some(Ok(WsMessage::Close(frame))) => {
-                    let why = frame.map_or_else(String::new, |f| format!(" ({})", f.reason));
-                    break SessionEnd::Lost(format!("closed by server{why}"));
-                }
-                // Text frames are not part of the protocol; ping/pong frames
-                // are answered by tungstenite.
-                Some(Ok(_)) => last_rx = Instant::now(),
-                Some(Err(e)) => break SessionEnd::Lost(e.to_string()),
-                None => break SessionEnd::Lost("connection closed".into()),
+                Recv::Other => last_rx = Instant::now(),
+                Recv::Closed(why) => break SessionEnd::Lost(why),
             },
             _ = interval.tick() => {
                 if stop.should_stop() {
                     let bye = Message::Disconnect { reason: "bot stopping".into() };
                     if let Ok(bytes) = bye.encode() {
-                        let send = ws.send(WsMessage::Binary(bytes.into()));
+                        let send = async {
+                            ws.send(bytes, bye.channel()).await?;
+                            ws.flush().await
+                        };
                         let _ = tokio::time::timeout(GOODBYE_TIMEOUT, send).await;
                     }
-                    let _ = tokio::time::timeout(GOODBYE_TIMEOUT, ws.close(None)).await;
+                    let _ = tokio::time::timeout(GOODBYE_TIMEOUT, ws.close()).await;
                     break SessionEnd::Stopped;
                 }
                 if last_rx.elapsed() > cfg.silence_timeout {
@@ -306,7 +302,7 @@ async fn play_session(
                                 continue;
                             }
                         };
-                        let feed = ws.feed(WsMessage::Binary(bytes.into()));
+                        let feed = ws.send(bytes, m.channel());
                         if let Err(e) = write_within(cfg.write_timeout, feed).await {
                             core.finish(stats);
                             return SessionEnd::Lost(e);
@@ -364,20 +360,4 @@ fn protocol_error(stats: &mut BotStats, msg: String) -> SessionEnd {
     stats.protocol_errors += 1;
     stats.note_error(msg.clone());
     SessionEnd::ConnectFailed(msg)
-}
-
-/// Waits for the next binary message (skipping control and text frames).
-async fn recv_binary(ws: &mut Ws, limit: Duration) -> Result<Vec<u8>, String> {
-    let deadline = tokio::time::Instant::now() + limit;
-    loop {
-        match tokio::time::timeout_at(deadline, ws.next()).await {
-            Err(_) => return Err("no answer to Hello".into()),
-            Ok(None) | Ok(Some(Ok(WsMessage::Close(_)))) => {
-                return Err("connection closed during handshake".into())
-            }
-            Ok(Some(Ok(WsMessage::Binary(b)))) => return Ok(b.to_vec()),
-            Ok(Some(Ok(_))) => {}
-            Ok(Some(Err(e))) => return Err(e.to_string()),
-        }
-    }
 }

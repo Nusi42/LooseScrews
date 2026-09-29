@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import type { WasmApi } from "./api.ts";
+import { DEBUG_STATS_LEN, MATCH_INFO_LEN, SCORE_STRIDE, type WasmApi } from "./api.ts";
 
 const pkgJsUrl = new URL("./pkg/ls_wasm.js", import.meta.url);
 const pkgJs = fileURLToPath(pkgJsUrl);
@@ -79,6 +79,16 @@ test("WASM share-code check, hello packet and practice game", { skip }, async ()
     const hud = game.hud();
     assert.equal(hud.hull, hud.hullMax);
     hud.free();
+    // Overlay arrays in their documented layouts (wasm/api.ts).
+    const stats = game.debugStats();
+    assert.equal(stats.length, DEBUG_STATS_LEN);
+    assert.equal(stats[0], -1, "no ping offline");
+    const rows = game.scoreboard();
+    assert.equal(rows.length, 2 * SCORE_STRIDE, "player and one dummy");
+    assert.equal(rows[5], 1, "own row first (team 0) and flagged");
+    const info = game.matchInfo();
+    assert.equal(info.length, MATCH_INFO_LEN);
+    assert.equal(info[0], 0, "running");
   } finally {
     game.free();
   }

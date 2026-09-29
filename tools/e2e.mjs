@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-// End-to-end soak run: ls-server + N ls-bots over real WebSockets, then checks
+// End-to-end soak run: ls-server + N ls-bots over real WebSockets (or
+// WebTransport with --transport wt), then checks
 // the logs. Called by tools/e2e.ps1 and tools/e2e.sh after they built the
 // release binaries and the web client; can also be run directly.
 //
@@ -16,7 +17,11 @@
 //   --p99-budget-us <n>     tick p99 limit [4000]
 //   --min-craters <n>       crater edits required (0 for levels where bots
 //                           only paint) [1]
-//   --log-dir <dir>         where server.log / bots.log go [target/e2e-logs]//
+//   --log-dir <dir>         where server.log / bots.log go [target/e2e-logs]
+//   --transport ws|wt       bot transport: WebSocket or WebTransport (then
+//                           also checks /cert-hash and that the bots joined
+//                           over WebTransport) [ws]
+//
 // Checks: the server serves web/dist/index.html (and its assets); bots exit 0
 // with every bot joined and no protocol errors or desyncs; the server logs no
 // desync (input starvation) warning, no errors and no skipped ticks; tick p99
@@ -48,6 +53,7 @@ const defaults = {
   "p99-budget-us": "4000",
   "min-craters": "1",
   "log-dir": join(repoRoot, "target", "e2e-logs"),
+  transport: "ws",
 };
 
 function parseArgs(argv) {
@@ -72,6 +78,7 @@ function parseArgs(argv) {
     if (!existsSync(o[k])) die(`${k} not found: ${o[k]}`);
   }
   o["log-dir"] = resolve(o["log-dir"]);
+  if (o.transport !== "ws" && o.transport !== "wt") die("--transport must be ws or wt");
   return {
     serverBin: o["server-bin"],
     botsBin: o["bots-bin"],
@@ -85,6 +92,7 @@ function parseArgs(argv) {
     p99BudgetUs: posInt(o["p99-budget-us"], "p99-budget-us"),
     minCraters: Math.max(0, Number.parseInt(o["min-craters"], 10) || 0),
     logDir: o["log-dir"],
+    transport: o.transport,
   };
 }
 
@@ -237,6 +245,33 @@ async function httpChecks(base, webRoot) {
   }
 }
 
+/** WebTransport: `/cert-hash` publishes the certificate hash and UDP port. */
+async function certHashCheck(base, port) {
+  try {
+    const r = await fetch(`${base}/cert-hash`);
+    const body = await r.json();
+    const ok =
+      r.status === 200 &&
+      body.algorithm === "sha-256" &&
+      /^[0-9a-f]{64}$/.test(body.hash) &&
+      body.port === port &&
+      body.expires * 1000 > Date.now() &&
+      body.expires * 1000 <= Date.now() + 14 * 86400_000;
+    check("HTTP GET /cert-hash publishes the WebTransport certificate", ok, `status ${r.status}, ${JSON.stringify(body)}`);
+  } catch (e) {
+    check("HTTP GET /cert-hash publishes the WebTransport certificate", false, String(e?.message ?? e));
+  }
+}
+
+function checkTransport(bots, server, opts) {
+  const name = opts.transport === "wt" ? "webtransport" : "websocket";
+  const joined = bots.text.replace(ANSI, "").split(/\r?\n/).filter((l) => l.includes(" joined"));
+  const over = joined.filter((l) => parseFields(l).transport === name);
+  check(`bots joined over ${name}`, joined.length > 0 && over.length === joined.length, `${over.length} of ${joined.length} joins`);
+  const closed = server.text.replace(ANSI, "").split(/\r?\n/).filter((l) => l.includes(`${name} closed`));
+  check(`server served the bots over ${name}`, closed.length >= opts.count, `${closed.length} ${name} sessions closed`);
+}
+
 function checkBots(bots, exit, opts) {
   const text = bots.text.replace(ANSI, "");
   check("bots exited 0", exit.code === 0 && !exit.killed, exit.killed ? "killed after timeout" : `exit code ${exit.code}`);
@@ -316,7 +351,7 @@ async function main() {
   mkdirSync(opts.logDir, { recursive: true });
   const port = opts.port || (await freePort());
   const base = `http://127.0.0.1:${port}`;
-  console.log(`e2e: ${opts.count} bots for ${opts.duration} s on ${base}, code ${opts.code}, logs in ${opts.logDir}`);
+  console.log(`e2e: ${opts.count} bots (${opts.transport}) for ${opts.duration} s on ${base}, code ${opts.code}, logs in ${opts.logDir}`);
 
   const server = run(
     "server",
@@ -341,11 +376,17 @@ async function main() {
   }
   check("server started", true);
   await httpChecks(base, opts.webRoot);
+  if (opts.transport === "wt") await certHashCheck(base, port);
 
   const bots = run(
     "bots",
     opts.botsBin,
-    ["--server", `ws://127.0.0.1:${port}/ws`, "--count", String(opts.count), "--duration", String(opts.duration)],
+    [
+      "--server", `ws://127.0.0.1:${port}/ws`,
+      "--count", String(opts.count),
+      "--duration", String(opts.duration),
+      "--transport", opts.transport,
+    ],
     join(opts.logDir, "bots.log"),
     (l) => /WARN|ERROR|^result:/.test(l),
   );
@@ -355,6 +396,7 @@ async function main() {
 
   checkBots(bots, botsExit, opts);
   checkServer(server, serverExit, opts);
+  checkTransport(bots, server, opts);
   finish(opts);
 }
 

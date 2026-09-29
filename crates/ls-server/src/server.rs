@@ -20,6 +20,7 @@ use crate::endpoint::{CertHash, ConnSettings, Endpoint, EndpointContext, Hub};
 use crate::http::HttpEndpoint;
 use crate::sim::{self, RoomInfo, SimCommand, SimParams};
 use crate::stats::{SharedStats, StatsSnapshot};
+use crate::wt::WebTransportEndpoint;
 
 /// Errors while starting or talking to the server.
 #[derive(Debug, Error)]
@@ -39,7 +40,10 @@ pub enum ServerError {
 /// Everything needed to start a server.
 #[derive(Debug, Clone)]
 pub struct ServerConfig {
+    /// TCP address of HTTP and the WebSocket endpoint.
     pub bind: SocketAddr,
+    /// UDP address of the WebTransport endpoint (`None`: WebSocket only).
+    pub webtransport: Option<SocketAddr>,
     pub match_cfg: MatchConfig,
     pub room: RoomConfig,
     /// Directory served over HTTP (the built web client); `None` serves a
@@ -55,10 +59,12 @@ pub struct ServerConfig {
 
 impl ServerConfig {
     /// Defaults: 8 players, 30 Hz snapshots, lag compensation on, stats
-    /// every 10 s, 10 s intermission after a match, no web root.
+    /// every 10 s, 10 s intermission after a match, no web root, no
+    /// WebTransport.
     pub fn new(bind: SocketAddr, match_cfg: MatchConfig) -> Self {
         ServerConfig {
             bind,
+            webtransport: None,
             match_cfg,
             room: RoomConfig::default(),
             web_root: None,
@@ -108,11 +114,17 @@ fn random_seed() -> u64 {
 pub struct Server;
 
 impl Server {
-    /// Binds the port, builds the match on the sim thread (waits until it is
-    /// ready) and starts accepting HTTP and WebSocket connections.
+    /// Binds the ports, builds the match on the sim thread (waits until it
+    /// is ready) and starts accepting HTTP, WebSocket and (if configured)
+    /// WebTransport connections.
     pub async fn start(config: ServerConfig) -> Result<ServerHandle, ServerError> {
         let endpoint = HttpEndpoint::bind(config.bind, config.web_root.clone()).await?;
         let local_addr = endpoint.local_addr()?;
+        let wt_endpoint = config
+            .webtransport
+            .map(WebTransportEndpoint::bind)
+            .transpose()?;
+        let webtransport_addr = wt_endpoint.as_ref().map(|e| e.local_addr()).transpose()?;
         let stats = Arc::new(SharedStats::default());
         let (cmd_tx, cmd_rx) = mpsc::channel();
         let sim_stop = Arc::new(AtomicBool::new(false));
@@ -138,6 +150,7 @@ impl Server {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let mut handle = ServerHandle {
             local_addr,
+            webtransport_addr,
             room,
             stats: stats.clone(),
             hub: Hub::new(cmd_tx, stats, config.conn),
@@ -149,7 +162,11 @@ impl Server {
             cert_hash: Arc::new(RwLock::new(None)),
         };
         handle.spawn_endpoint(Box::new(endpoint));
+        if let Some(wt) = wt_endpoint {
+            handle.spawn_endpoint(Box::new(wt));
+        }
         info!(
+            webtransport = ?webtransport_addr,
             addr = %local_addr,
             share_code = %handle.room.share_code,
             ruleset = %handle.room.ruleset,
@@ -165,6 +182,7 @@ impl Server {
 #[derive(Debug)]
 pub struct ServerHandle {
     local_addr: SocketAddr,
+    webtransport_addr: Option<SocketAddr>,
     room: RoomInfo,
     stats: Arc<SharedStats>,
     hub: Hub,
@@ -180,6 +198,11 @@ impl ServerHandle {
     /// The bound address (useful with port 0).
     pub fn local_addr(&self) -> SocketAddr {
         self.local_addr
+    }
+
+    /// The bound UDP address of the WebTransport endpoint, if enabled.
+    pub fn webtransport_addr(&self) -> Option<SocketAddr> {
+        self.webtransport_addr
     }
 
     /// The match's share code, as printed.
@@ -201,12 +224,12 @@ impl ServerHandle {
         &self.hub
     }
 
-    /// Where a WebTransport endpoint publishes its certificate hash.
+    /// Where the WebTransport endpoint publishes its certificate hash.
     pub fn cert_hash(&self) -> &CertHash {
         &self.cert_hash
     }
 
-    /// Starts another endpoint (the WebTransport seam for wave 4).
+    /// Starts another endpoint.
     pub fn spawn_endpoint(&mut self, endpoint: Box<dyn Endpoint>) {
         let ctx = EndpointContext {
             hub: self.hub.clone(),

@@ -3,6 +3,8 @@
 `crates/ls-game` is the pure-logic layer shared by `ls-server`, `ls-wasm` and `ls-bots`. It
 joins `ls-worldgen` (terrain), `ls-sim` (rules and physics) and `ls-net` (wire format) and does
 no I/O: hosts own sockets, clocks and threads, feed packets in and send what comes out.
+The end-to-end netcode picture (tick model, deltas, edit replication, transports) is in
+[netcode.md](netcode.md); how the crates fit together in [overview.md](overview.md).
 
 ```
 ls-math <- ls-worldgen --+
@@ -33,7 +35,7 @@ declared with `default-features = false`; `ls-server` enables `features = ["serv
   `Snapshot::edit_base`). `apply_sequence(base, edits)` applies only the unseen tail and fails
   with `GameError::EditGap` if edits were missed.
 - `SimTerrain::paint_coverage` maps `ls_worldgen::PaintCoverage` to teams 0/1 and caches it
-  until the next edit. It generates every chunk on first use (about 23 s in debug builds, well
+  until the next edit. It generates every chunk on first use (about 7 s in debug builds at the default sliders, well
   under a second in release), which is why `Room::new` pregenerates and why tests that stay
   below tick 30 (the first score update) turn that off.
 - The store sits in a `RefCell` because `paint_coverage(&self)` must generate chunks. The type
@@ -47,13 +49,25 @@ declared with `default-features = false`; `ls-server` enables `features = ["serv
 `match_setup(code, rules, pristine_terrain)`:
 
 1. Room box shrunk by 4 u. Team 0 spawns in the low-x 30 % slab, team 1 in the high-x slab.
-2. Per team, up to 6 spawn points: draw a point in the slab (`Pcg32::from_seed(seed,
+   The pristine level is first scanned on a 4 u lattice (`scan_open_space`, points with at
+   least 1 u clearance).
+2. Per team, up to 6 spawn points. Step 1 (only if the scan saw at least 6 points with 3 u
+   clearance in the slab): draw a point in the slab (`Pcg32::from_seed(seed,
    RNG_STREAM_SPAWNS)`), snap it to open space with 3 u clearance (`find_open_point`, radius
-   6), keep it if still in the slab and 6 u from the team's other spawns. 64 draws per point;
-   if a team gets none, the open point nearest the slab centre is used. Spawns face the level
-   centre horizontally (no roll).
+   6), keep it if still in the slab and 6 u from the team's other spawns; 64 draws per point.
+   Step 2 (step 1 skipped or found nothing, on a copy of the RNG stream): pick scanned points
+   with 3, 2, 1.5, then 1 u clearance in the slab, then in the team's half of the level, then
+   on a 2 u lattice of that half. Step-2 points are strictly on the team's side of the
+   midplane. Spawns face the level centre horizontally (no roll).
 3. Up to 12 pickup points anywhere in the box (`RNG_STREAM_PICKUP_POINTS`), 2 u clearance,
-   14 u apart, 10 u from every spawn.
+   14 u apart, 10 u from every spawn; random draws only if at least 1 % of the lattice has
+   2 u clearance, otherwise scanned points with 2, 1.5, then 1 u clearance.
+
+Roomy levels keep exactly the setups of the plain random search; tight ones (Enclosure 75 and
+up, where the SDF underestimates distance and almost nothing has 3 u clearance) get spawns and
+pickups with less clearance (at least 1 u, twice the ship radius). `setup::tests` sweeps all 25
+Enclosure x Density combinations (0/25/50/75/100): one seed in debug builds, 8 with
+`cargo test -p ls-game --release --lib setup` (and in CI's wasm32 run).
 
 The world's `WorldConfig::seed` is `mix64(code.seed ^ MATCH_SEED_SALT)`. Setup reads only the
 pristine level, so a client computes the same spawn points from the share code (the predictor
@@ -130,6 +144,22 @@ catch-up sends only the newest 8 `Input` messages (older ones would be late anyw
 - **Terrain**: snapshot edits are applied in log order before anything else (also from stale
   snapshots); meshes of dirty chunks are rebuilt by the host.
 
+## Browser core extras (`ls-wasm`)
+
+- **Shot prediction** (`crates/ls-wasm/src/shots.rs`, `ShotPredictor`): every predicted tick
+  runs the simulation's firing rules on the predicted ship (weapon selection, bans, fire
+  interval, energy / scrap / count cost, overdrive hull) and draws the shot at once with the
+  simulation's muzzle position, direction and speed. Own projectiles in a snapshot are matched
+  to predictions (same weapon, direction, position within 1.5 ticks of travel); the matched
+  server projectile takes over and the difference becomes a fading render offset. A prediction
+  the server never shows is dropped 4 ticks after it was fired; shots are hidden past the first
+  wall or their lifetime. The server does not send the secondary selection: the predictor
+  knows the loadout secondary plus any weapon kind seen on an own projectile.
+- **Stats for overlays**: flat arrays for the F3 debug overlay (ping, corrections, snaps, shot
+  counters, chunk counts) and the scoreboard / end-of-match screen (per-ship team, paint per
+  team, match info). The browser passes its clock with `setClockMs` before handling packets so
+  pings are timed when they arrive.
+
 ## Server core
 
 `Room::new(MatchConfig, RoomConfig)` builds the match. The host:
@@ -194,5 +224,5 @@ rewound target positions for projectile tests would remove the displacement tric
 | `ls-bots` `tests/room_play.rs` | A full room of 8 bots plays a (60 s) match to its end and 5 s beyond: no desyncs or protocol errors, terrain identical to the server's, no corrections after the match end |
 | `setup`, `terrain`, `convert` tests | deterministic setup in open space, steppable world, edits/dirty chunks/gaps/coverage, round trips |
 
-The whole crate tests in about 35 s in debug builds (dominated by full level generation in the
-integration tests) and 15 s in release.
+The whole crate tests in about 40 s in debug builds (dominated by level generation) and about
+20 s in release (where the match setup sweep runs all 8 seeds).

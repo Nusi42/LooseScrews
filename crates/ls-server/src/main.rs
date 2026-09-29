@@ -9,6 +9,10 @@
 //! then get `Disconnect` with `ls_game::MATCH_RESTART_REASON` and rejoin; the
 //! first join builds the next match on the same level.
 //!
+//! WebTransport listens on UDP `--wt-bind` (default: the `--bind` address,
+//! so the same port number); the hash of its self-signed certificate is
+//! served at `GET /cert-hash`. `--no-webtransport` turns it off.
+//!
 //! Log filtering follows `RUST_LOG` (default `info`).
 
 use std::net::SocketAddr;
@@ -31,6 +35,14 @@ struct Args {
     /// Address to bind (HTTP, and the WebSocket at /ws).
     #[arg(long, default_value = ls_server::DEFAULT_BIND)]
     bind: SocketAddr,
+
+    /// UDP address of the WebTransport endpoint [default: the --bind address].
+    #[arg(long, conflicts_with = "no_webtransport")]
+    wt_bind: Option<SocketAddr>,
+
+    /// Do not start the WebTransport endpoint (clients use WebSocket).
+    #[arg(long)]
+    no_webtransport: bool,
 
     /// Share code of the world (a random world if omitted).
     #[arg(long)]
@@ -82,6 +94,7 @@ fn main() -> anyhow::Result<()> {
     let match_cfg = match_config(args.code.as_deref(), args.ruleset.as_deref())
         .context("invalid match configuration")?;
     let mut cfg = ServerConfig::new(args.bind, match_cfg);
+    cfg.webtransport = (!args.no_webtransport).then(|| args.wt_bind.unwrap_or(args.bind));
     cfg.room.max_players = args.max_players;
     cfg.stats_interval = Duration::from_secs_f64(args.stats_interval);
     cfg.intermission = Duration::from_secs_f64(args.intermission);

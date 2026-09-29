@@ -1,8 +1,11 @@
 //! `ls-bots`: spawns headless bot clients against a Loose Screws server.
 //!
 //! ```text
-//! ls-bots --server ws://127.0.0.1:7777/ws --count 7 [--duration 600]
+//! ls-bots --server ws://127.0.0.1:7777/ws --count 7 [--duration 600] [--transport ws|wt]
 //! ```
+//!
+//! `--transport wt` plays over WebTransport: the certificate hash and UDP
+//! port come from `GET /cert-hash` on the host and port of `--server`.
 //!
 //! Prints a per-bot summary at exit. Exit code 0: all good; 1: a bot saw a
 //! protocol error or desync; 2: a bot never managed to join; 3: a bot lost
@@ -18,15 +21,20 @@ use std::time::{Duration, Instant};
 use clap::Parser;
 use ls_bots::{
     exit_code, run_bot_blocking, summary, BotConfig, BotStats, DisconnectPolicy, StopSignal,
+    TransportKind,
 };
 
 /// Command line arguments.
 #[derive(Debug, Parser)]
 #[command(name = "ls-bots", version, about = "Loose Screws headless bot clients")]
 struct Args {
-    /// WebSocket URL of the server.
+    /// WebSocket URL of the server (with `--transport wt`, its host and
+    /// port serve `/cert-hash`).
     #[arg(long, default_value = ls_bots::DEFAULT_SERVER)]
     server: String,
+    /// Transport: `ws` (WebSocket) or `wt` (WebTransport).
+    #[arg(long, value_enum, default_value_t = TransportKind::WebSocket)]
+    transport: TransportKind,
     /// Number of bots to spawn.
     #[arg(long, default_value_t = 7)]
     count: u32,
@@ -72,6 +80,7 @@ fn main() -> ExitCode {
     let stop = StopSignal::new(deadline);
     tracing::info!(
         server = %args.server,
+        transport = args.transport.name(),
         count = args.count,
         duration = ?args.duration,
         "starting bots"
@@ -87,6 +96,7 @@ fn main() -> ExitCode {
         );
         cfg.start_delay = Duration::from_millis(args.stagger_ms * u64::from(i));
         cfg.reconnect = !args.no_reconnect;
+        cfg.transport = args.transport;
         let stop = stop.clone();
         let spawned = thread::Builder::new()
             .name(name.clone())

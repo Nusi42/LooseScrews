@@ -13,8 +13,16 @@
 //! interpolated between ticks for smooth rendering at any frame rate), remote
 //! ships and projectiles, HUD values, a kill feed and chunk meshes streamed
 //! around the camera with dirty-chunk remeshing after terrain edits.
+//!
+//! Online, the local player's shots are predicted ([`crate::shots`]) and the
+//! player's own projectiles are drawn in the local (predicted) timeline, so
+//! a shot leaves the muzzle on the click instead of a round trip later.
+//! The core also keeps what the overlays need: ping, prediction counters, a
+//! kill/death tally (from the kill events since joining) and the match
+//! result ([`GameCore::debug_stats`], [`GameCore::scoreboard`],
+//! [`GameCore::match_info`]).
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use ls_game::client::ClientSession;
 use ls_game::setup::{match_seed, match_setup};
@@ -23,12 +31,13 @@ use ls_math::terrain::TerrainQuery;
 use ls_math::{Aabb, Quat, Vec3};
 use ls_net::{check_welcome, ship_flags, Message, NetEvent, NetShip};
 use ls_sim::{
-    Event, MatchPhase, PlayerId, ShipState, ShipTuning, ShipType, WeaponCost, WeaponDef, WeaponId,
-    WeaponTable, World, WorldConfig,
+    Event, InputCmd, MatchPhase, PlayerId, ResolvedRules, ShipState, ShipTuning, ShipType,
+    WeaponCost, WeaponDef, WeaponId, WeaponTable, World, WorldConfig,
 };
 use ls_worldgen::{ChunkCoord, Generator, Mesh, ShareCode};
 
 use crate::controls::{Controls, FixedStep, LookAccumulator};
+use crate::shots::{FireRules, Resources, ShotPredictor, ShotStats};
 use crate::stream::ChunkStreamer;
 
 /// Ticks per second as `f32`.
@@ -39,6 +48,13 @@ const TELEPORT: f32 = 8.0;
 const MAX_FEED: usize = 32;
 /// Default number of idle target dummies in practice.
 pub const DEFAULT_DUMMIES: u8 = 3;
+/// Own projectiles are extrapolated from their snapshot to the local
+/// (predicted) time by at most this many ticks (0.5 s of lead plus latency).
+pub const MAX_OWN_EXTRAPOLATION_TICKS: f64 = 30.0;
+/// Weight of a new round-trip sample in the smoothed ping.
+const PING_SMOOTHING: f64 = 0.25;
+/// Outstanding pings remembered for round-trip times.
+const MAX_PINGS: usize = 16;
 
 /// Local ship pose to render.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -97,6 +113,48 @@ pub struct HudState {
     pub status: String,
 }
 
+/// Counters for the debug overlay.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct DebugStats {
+    /// Smoothed round-trip time to the server (ms), `None` before the first
+    /// pong or offline.
+    pub ping_ms: Option<f64>,
+    /// Own-ship prediction: snapshots that matched, were corrected
+    /// (reconciled) or snapped, and the last error (u).
+    pub accepted: u64,
+    pub corrected: u64,
+    pub snapped: u64,
+    pub last_error: f32,
+    pub shots: ShotStats,
+    pub synced: bool,
+}
+
+/// One scoreboard row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScoreRow {
+    /// Wire id (online) or player id (practice).
+    pub id: u8,
+    pub team: u8,
+    pub alive: bool,
+    /// Online: counted from kill events since this client joined.
+    pub kills: u32,
+    pub deaths: u32,
+    pub is_you: bool,
+}
+
+/// Match result for the end screen.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct MatchInfo {
+    pub over: bool,
+    /// Winning team, `None` for a draw (or while running).
+    pub winner: Option<u8>,
+    /// Painted surface cells per team and paintable surface cells.
+    pub team_cells: [u64; 2],
+    pub surface_cells: u64,
+    /// Seconds since the match timer ran out (0 while running).
+    pub secs_since_end: f32,
+}
+
 /// A chunk mesh produced by [`GameCore::mesh_next`].
 #[derive(Debug, Clone)]
 pub struct ChunkMeshOut {
@@ -116,6 +174,21 @@ struct Online {
     last_snapshot: Option<u32>,
     was_alive: bool,
     match_over: Option<Option<u8>>,
+    /// Resolved rule set (firing rules for shot prediction).
+    resolved: ResolvedRules,
+    shots: ShotPredictor,
+    /// Kills and deaths per wire id, from kill events since joining.
+    tally: BTreeMap<u8, (u32, u32)>,
+    /// Local time (ms) for round-trip times: the host's clock once it
+    /// calls [`GameCore::set_clock_ms`], otherwise the sum of frame deltas
+    /// (which times a pong handled before a frame at the previous frame).
+    local_ms: f64,
+    host_clock: bool,
+    /// Outstanding pings: nonce and local send time.
+    pings: VecDeque<(u32, f64)>,
+    ping_ms: Option<f64>,
+    /// Server tick the match ended at, once a snapshot showed it over.
+    ended_at: Option<u64>,
 }
 
 #[derive(Debug)]
@@ -125,12 +198,163 @@ struct Practice {
     me: PlayerId,
     /// All ships before the latest tick (for render interpolation).
     prev: Vec<ShipState>,
+    /// Seconds since the match ended (the world stops ticking then).
+    over_secs: f32,
 }
 
 #[derive(Debug)]
 enum Mode {
     Online(Box<Online>),
     Practice(Box<Practice>),
+}
+
+impl Online {
+    /// Runs the shot predictor over the ticks `first..` that the session
+    /// just predicted with `cmd` (only once synchronized: before that the
+    /// session sends idle commands). Ticks after the match end fire nothing,
+    /// like on the server.
+    fn predict_shots(
+        &mut self,
+        first: u64,
+        cmd: &InputCmd,
+        weapons: &WeaponTable,
+        tuning: &ShipTuning,
+    ) {
+        let end = self.session.match_end_tick();
+        let rules = FireRules {
+            weapons,
+            rules: &self.resolved,
+            tuning,
+        };
+        for tick in first..self.session.next_input_tick() {
+            if end.is_some_and(|e| tick > e) || self.match_over.is_some() {
+                break;
+            }
+            let Some(ship) = self.session.predictor().state_at(tick) else {
+                continue;
+            };
+            self.shots
+                .on_tick(tick, ship, cmd, rules, self.session.terrain());
+        }
+    }
+
+    /// Feeds the newest snapshot to the shot predictor: own-ship weapon and
+    /// resources, then matches the own projectiles.
+    fn reconcile_shots(&mut self) {
+        let Some(snap) = self.session.latest_snapshot() else {
+            return;
+        };
+        let me = self.session.player();
+        if let Some(own) = snap.ships.iter().find(|s| s.id == me) {
+            let primary = WeaponId(ship_flags::weapon(own.flags));
+            let mut res = Resources {
+                count: self.ammo_estimate,
+                ..Resources::default()
+            };
+            if let Some(st) = own.status {
+                let (hull, energy, _boost, scrap) = self.session.conv().status_values(&st);
+                res.hull = hull;
+                res.energy = energy;
+                res.scrap = scrap;
+            }
+            self.shots
+                .on_snapshot_state(snap.tick as u64, Some(primary), res);
+        }
+        let own: Vec<_> = snap
+            .projectiles
+            .iter()
+            .filter(|p| p.owner == me)
+            .copied()
+            .collect();
+        self.shots.reconcile(snap.tick as u64, &own);
+        if snap.match_ticks_left == 0 {
+            self.shots.clear();
+            if self.ended_at.is_none() {
+                let tick = snap.tick as u64;
+                self.ended_at = Some(self.session.match_end_tick().map_or(tick, |e| e.min(tick)));
+            }
+        }
+    }
+
+    fn on_ping_sent(&mut self, nonce: u32) {
+        if self.pings.len() >= MAX_PINGS {
+            self.pings.pop_front();
+        }
+        self.pings.push_back((nonce, self.local_ms));
+    }
+
+    fn on_pong(&mut self, nonce: u32) {
+        let Some(i) = self.pings.iter().position(|(n, _)| *n == nonce) else {
+            return;
+        };
+        let rtt = (self.local_ms - self.pings[i].1).max(0.0);
+        self.pings.drain(..=i);
+        self.ping_ms = Some(match self.ping_ms {
+            Some(p) => p + (rtt - p) * PING_SMOOTHING,
+            None => rtt,
+        });
+    }
+
+    /// Tick at which the local ship is drawn (see `GameCore::local_pose`).
+    fn local_render_tick(&self, alpha: f32) -> Option<f64> {
+        let latest = self.session.predictor().latest_tick()?;
+        Some(latest as f64 - 1.0 + alpha as f64)
+    }
+
+    /// Projectiles to draw: other players' at the estimated server time;
+    /// the player's own (and predicted ones) at the local predicted time,
+    /// hidden once they reach terrain.
+    fn projectiles(&self, alpha: f32) -> Vec<ProjectileView> {
+        let s = &self.session;
+        let Some(snap) = s.latest_snapshot() else {
+            return Vec::new();
+        };
+        let me = s.player();
+        let local_t = self.local_render_tick(alpha);
+        let server_dt = ((s.clock().server_time() - snap.tick as f64).clamp(0.0, 8.0)
+            + alpha as f64)
+            / HZ as f64;
+        let mut out = Vec::with_capacity(snap.projectiles.len() + self.shots.pending().len());
+        for p in &snap.projectiles {
+            match local_t {
+                Some(t) if p.owner == me => {
+                    let ext = (t - snap.tick as f64).clamp(0.0, MAX_OWN_EXTRAPOLATION_TICKS);
+                    let step = p.vel * (ext / HZ as f64) as f32;
+                    let len = step.length();
+                    if len > 0.0 && s.terrain().raycast(p.pos, step, len).is_some() {
+                        continue;
+                    }
+                    out.push(ProjectileView {
+                        kind: p.kind,
+                        owner: p.owner,
+                        pos: p.pos + step + self.shots.offset(p.id),
+                        vel: p.vel,
+                    });
+                }
+                _ => out.push(ProjectileView {
+                    kind: p.kind,
+                    owner: p.owner,
+                    pos: p.pos + p.vel * server_dt as f32,
+                    vel: p.vel,
+                }),
+            }
+        }
+        if let Some(t) = local_t {
+            out.extend(
+                self.shots
+                    .pending()
+                    .iter()
+                    .filter(|shot| shot.visible_at(t))
+                    .map(|shot| ProjectileView {
+                        kind: shot.weapon.0,
+                        owner: me,
+                        pos: shot.pos_at(t),
+                        vel: shot.vel,
+                    }),
+            );
+        }
+        out
+    }
 }
 
 /// See the module docs.
@@ -157,11 +381,12 @@ impl GameCore {
         let tuning = ShipTuning::tinker();
         let session = ClientSession::from_welcome(&welcome, weapons.clone(), tuning.clone())
             .map_err(|e| e.to_string())?;
-        let secondary = session
+        let resolved = session
             .rules()
             .resolve(&weapons)
-            .ok()
-            .and_then(|r| r.loadout_secondaries.first().copied());
+            .map_err(|e| e.to_string())?;
+        let secondary = resolved.loadout_secondaries.first().copied();
+        let shots = ShotPredictor::new(&resolved);
         let streamer = ChunkStreamer::new(session.terrain().chunk_coords());
         Ok(GameCore {
             mode: Mode::Online(Box::new(Online {
@@ -172,6 +397,14 @@ impl GameCore {
                 last_snapshot: None,
                 was_alive: false,
                 match_over: None,
+                resolved,
+                shots,
+                tally: BTreeMap::new(),
+                local_ms: 0.0,
+                host_clock: false,
+                pings: VecDeque::new(),
+                ping_ms: None,
+                ended_at: None,
             })),
             step: FixedStep::default(),
             look: LookAccumulator::default(),
@@ -223,6 +456,7 @@ impl GameCore {
                 terrain,
                 me,
                 prev,
+                over_secs: 0.0,
             })),
             step: FixedStep::default(),
             look: LookAccumulator::default(),
@@ -306,12 +540,33 @@ impl GameCore {
             return Ok(None);
         };
         let incoming = o.session.handle_packet(bytes).map_err(|e| e.to_string())?;
+        match &incoming {
+            ls_game::client::Incoming::Snapshot { stale: false, .. } => {
+                self.track_online_ammo();
+                if let Mode::Online(o) = &mut self.mode {
+                    o.reconcile_shots();
+                }
+            }
+            ls_game::client::Incoming::Pong { nonce, .. } => o.on_pong(*nonce),
+            _ => {}
+        }
         self.collect_online_events();
         self.pull_dirty();
         Ok(match incoming {
             ls_game::client::Incoming::Disconnected(reason) => Some(reason),
             _ => None,
         })
+    }
+
+    /// Sets the local clock (ms, monotonic, e.g. `performance.now()`) used to
+    /// time pings. Call before handling the packets drained this frame.
+    pub fn set_clock_ms(&mut self, ms: f64) {
+        if let Mode::Online(o) = &mut self.mode {
+            if ms.is_finite() {
+                o.local_ms = ms;
+                o.host_clock = true;
+            }
+        }
     }
 
     // ----- per frame -----------------------------------------------------------
@@ -329,7 +584,20 @@ impl GameCore {
                 // that actually run, so it is applied exactly once.
                 let n = o.session.plan_ticks(due);
                 let cmd = self.look.command(controls, n, max_turn);
-                for msg in o.session.run_ticks(n, due, cmd) {
+                let first = o.session.next_input_tick();
+                let synced = o.session.is_synced();
+                let msgs = o.session.run_ticks(n, due, cmd);
+                if !o.host_clock {
+                    o.local_ms += dt.max(0.0) * 1000.0;
+                }
+                if synced {
+                    o.predict_shots(first, &cmd, &self.weapons, &self.tuning);
+                }
+                o.shots.decay(n);
+                for msg in msgs {
+                    if let Message::Ping { nonce, .. } = &msg {
+                        o.on_ping_sent(*nonce);
+                    }
                     match msg.encode() {
                         Ok(bytes) => out.push(bytes),
                         Err(e) => push_feed(&mut self.feed, format!("Could not send input: {e}")),
@@ -348,6 +616,9 @@ impl GameCore {
                         ..cmd
                     };
                     events.extend(p.world.step(&mut p.terrain, &[(p.me, tick_cmd)]));
+                }
+                if !p.world.mode().is_running() {
+                    p.over_secs += dt.max(0.0) as f32;
                 }
                 for e in events {
                     self.practice_event(e);
@@ -442,19 +713,9 @@ impl GameCore {
 
     /// Projectiles moved along their velocity to the current render time.
     pub fn projectiles(&self) -> Vec<ProjectileView> {
-        let dt = self.step.alpha() / HZ;
+        let alpha = self.step.alpha();
         match &self.mode {
-            Mode::Online(o) => o
-                .session
-                .projectiles()
-                .iter()
-                .map(|p| ProjectileView {
-                    kind: p.kind,
-                    owner: p.owner,
-                    pos: p.pos + p.vel * dt,
-                    vel: p.vel,
-                })
-                .collect(),
+            Mode::Online(o) => o.projectiles(alpha),
             Mode::Practice(p) => p
                 .world
                 .projectiles()
@@ -587,6 +848,135 @@ impl GameCore {
         std::mem::take(&mut self.feed)
     }
 
+    /// Counters for the debug overlay (prediction and ping are online only).
+    pub fn debug_stats(&self) -> DebugStats {
+        match &self.mode {
+            Mode::Online(o) => {
+                let p = o.session.prediction_stats();
+                DebugStats {
+                    ping_ms: o.ping_ms,
+                    accepted: p.accepted,
+                    corrected: p.corrected,
+                    snapped: p.snapped,
+                    last_error: p.last_error,
+                    shots: o.shots.stats(),
+                    synced: o.session.is_synced(),
+                }
+            }
+            Mode::Practice(_) => DebugStats {
+                synced: true,
+                ..DebugStats::default()
+            },
+        }
+    }
+
+    /// Scoreboard rows sorted by team, then kills (most first), deaths
+    /// (fewest first) and id.
+    pub fn scoreboard(&self) -> Vec<ScoreRow> {
+        let mut rows: Vec<ScoreRow> = match &self.mode {
+            Mode::Online(o) => {
+                let me = o.session.player();
+                let snap_ships = o
+                    .session
+                    .latest_snapshot()
+                    .map_or(&[][..], |s| &s.ships[..]);
+                let mut rows: Vec<ScoreRow> = snap_ships
+                    .iter()
+                    .map(|s| {
+                        let (kills, deaths) = o.tally.get(&s.id).copied().unwrap_or_default();
+                        ScoreRow {
+                            id: s.id,
+                            team: ship_flags::team(s.flags),
+                            alive: s.flags & ship_flags::ALIVE != 0,
+                            kills,
+                            deaths,
+                            is_you: s.id == me,
+                        }
+                    })
+                    .collect();
+                if !rows.iter().any(|r| r.is_you) {
+                    let (kills, deaths) = o.tally.get(&me).copied().unwrap_or_default();
+                    rows.push(ScoreRow {
+                        id: me,
+                        team: o.session.team(),
+                        alive: true,
+                        kills,
+                        deaths,
+                        is_you: true,
+                    });
+                }
+                rows
+            }
+            Mode::Practice(p) => p
+                .world
+                .ships()
+                .map(|s| ScoreRow {
+                    id: s.player.0.min(254) as u8,
+                    team: s.team,
+                    alive: s.alive,
+                    kills: s.kills,
+                    deaths: s.deaths,
+                    is_you: s.player == p.me,
+                })
+                .collect(),
+        };
+        rows.sort_by(|a, b| {
+            (a.team, std::cmp::Reverse(a.kills), a.deaths, a.id).cmp(&(
+                b.team,
+                std::cmp::Reverse(b.kills),
+                b.deaths,
+                b.id,
+            ))
+        });
+        rows
+    }
+
+    /// Match result and paint cells for the end screen.
+    pub fn match_info(&self) -> MatchInfo {
+        match &self.mode {
+            Mode::Online(o) => {
+                let s = &o.session;
+                let Some(snap) = s.latest_snapshot() else {
+                    return MatchInfo::default();
+                };
+                let (team_cells, surface_cells) = match snap.scores[..] {
+                    [a, b, surface, ..] => ([a as u64, b as u64], surface as u64),
+                    _ => ([0; 2], 0),
+                };
+                let over = o.match_over.is_some() || snap.match_ticks_left == 0;
+                let winner = match o.match_over {
+                    Some(w) => w,
+                    None if over => leader(team_cells),
+                    None => None,
+                };
+                let secs_since_end = match (over, o.ended_at.or(s.match_end_tick())) {
+                    (true, Some(end)) => {
+                        ((s.clock().server_time() - end as f64).max(0.0) / HZ as f64) as f32
+                    }
+                    _ => 0.0,
+                };
+                MatchInfo {
+                    over,
+                    winner,
+                    team_cells,
+                    surface_cells,
+                    secs_since_end,
+                }
+            }
+            Mode::Practice(p) => {
+                let mode = p.world.mode();
+                let over = !mode.is_running();
+                MatchInfo {
+                    over,
+                    winner: if over { mode.leader() } else { None },
+                    team_cells: mode.coverage.team_cells,
+                    surface_cells: mode.coverage.surface_cells,
+                    secs_since_end: p.over_secs,
+                }
+            }
+        }
+    }
+
     fn name(&self, id: u8) -> String {
         if id == self.player() {
             "You".into()
@@ -604,10 +994,18 @@ impl GameCore {
         };
         for e in events {
             let line = match e {
-                NetEvent::Kill { killer, victim, .. } => Some(kill_line(
-                    (killer != u8::MAX).then(|| self.name(killer)),
-                    self.name(victim),
-                )),
+                NetEvent::Kill { killer, victim, .. } => {
+                    if let Mode::Online(o) = &mut self.mode {
+                        o.tally.entry(victim).or_default().1 += 1;
+                        if killer != u8::MAX && killer != victim {
+                            o.tally.entry(killer).or_default().0 += 1;
+                        }
+                    }
+                    Some(kill_line(
+                        (killer != u8::MAX).then(|| self.name(killer)),
+                        self.name(victim),
+                    ))
+                }
                 NetEvent::MatchOver { winner_team, .. } => {
                     if let Mode::Online(o) = &mut self.mode {
                         o.match_over = Some(winner_team);
@@ -762,6 +1160,15 @@ pub fn ammo_text(def: &WeaponDef, energy: f32, scrap: f32, count: Option<u32>) -
         WeaponCost::Energy(c) => shots(energy, c),
         WeaponCost::Scrap(c) => shots(scrap, c),
         WeaponCost::Count(_) => count.map_or_else(|| "?".into(), |n| n.to_string()),
+    }
+}
+
+/// Winner by painted cells like `ls_sim::PaintTheVoid::leader` (`None` on a tie).
+fn leader([a, b]: [u64; 2]) -> Option<u8> {
+    match a.cmp(&b) {
+        std::cmp::Ordering::Greater => Some(0),
+        std::cmp::Ordering::Less => Some(1),
+        std::cmp::Ordering::Equal => None,
     }
 }
 

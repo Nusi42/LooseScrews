@@ -37,7 +37,11 @@ class Game implements GameHandle {
   remoteShips(): Float32Array { return new Float32Array(0); }
   projectiles(): Float32Array { return new Float32Array(0); }
   hud(): HudStateHandle { return hud(); }
+  setClockMs(): void {}
   takeFeed(): string[] { return []; }
+  debugStats(): Float64Array { return new Float64Array(10); }
+  scoreboard(): Float64Array { return new Float64Array(0); }
+  matchInfo(): Float64Array { return new Float64Array(6); }
   meshNext(): ChunkMeshHandle | undefined { return undefined; }
   takeUnloads(): string[] { return []; }
   pendingChunks(): number { return 0; }
@@ -67,7 +71,7 @@ test("a match restart is reported as such, not as an error", () => {
   const r = s.frame(1 / 60, {
     thrustForward: 0, thrustRight: 0, thrustUp: 0, roll: 0, lookX: 0, lookY: 0, boost: false,
     firePrimary: false, fireSecondary: false, scavenge: false, overdrive: false,
-    toggleHorizonAssist: false, weaponKey: 0, pointerLocked: true,
+    toggleHorizonAssist: false, weaponKey: 0, pointerLocked: true, scoreboard: false, toggleDebug: false,
   });
   assert.equal(r.matchRestart, true);
   assert.match(r.disconnected ?? "", /new match/);

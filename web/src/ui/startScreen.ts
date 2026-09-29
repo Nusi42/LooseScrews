@@ -95,7 +95,8 @@ export function showStartScreen(parent: HTMLElement, validate?: CodeValidator): 
       <p class="controls-hint">
         Online plays the world the server runs; a share code you enter is used for practice.
         Mouse look · W/S thrust · A/D strafe · Space/Ctrl (or C) up/down · Q/E roll ·
-        Shift boost · mouse buttons fire · 1-4 weapons · F overdrive · R scavenge · H horizon assist
+        Shift boost · mouse buttons fire · 1-4 weapons · F overdrive · R scavenge · H horizon assist ·
+        Tab scoreboard · F3 debug overlay
       </p>
     </form>`;
   parent.appendChild(root);

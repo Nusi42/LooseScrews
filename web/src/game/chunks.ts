@@ -47,6 +47,8 @@ export class ChunkLoader {
   private readonly sink: ChunkSink;
   private readonly now: () => number;
   private readonly shown = new Set<string>();
+  /** Chunk meshes built since this loader was created. */
+  meshedTotal = 0;
 
   constructor(sink: ChunkSink, now: () => number = () => performance.now()) {
     this.sink = sink;
@@ -71,6 +73,7 @@ export class ChunkLoader {
       if (!handle) break;
       const { key, mesh } = takeMesh(handle);
       meshed++;
+      this.meshedTotal++;
       if (mesh.indices.length > 0) {
         this.shown.add(key);
         this.sink(key, mesh);
@@ -79,6 +82,12 @@ export class ChunkLoader {
       }
     }
     return { meshed, removed, pending: game.pendingChunks(cam.x, cam.y, cam.z), shown: this.shown.size };
+  }
+
+  /** Removes every chunk from the sink (the game is gone, e.g. before a rejoin). */
+  clear(): void {
+    for (const key of this.shown) this.sink(key, null);
+    this.shown.clear();
   }
 
   /** Removes every chunk from the sink and makes ls-wasm mesh them again. */

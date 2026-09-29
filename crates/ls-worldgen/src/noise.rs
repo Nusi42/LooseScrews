@@ -58,6 +58,23 @@ const GRADS: [[f32; 3]; 12] = [
     [0.0, -1.0, -1.0],
 ];
 
+/// `(det::floor(x), det::floor(x) as i32)`, bit for bit, without the libm
+/// call for the usual magnitudes.
+#[inline(always)]
+fn floor_parts(x: f32) -> (f32, i32) {
+    if x.abs() < 8_388_608.0 {
+        // |x| < 2^23: the truncation and the floor are exact integers.
+        let t = x as i32;
+        let i = if x < t as f32 { t - 1 } else { t };
+        // An integral x (including -0.0) is its own floor.
+        let f = i as f32;
+        (if f == x { x } else { f }, i)
+    } else {
+        let f = det::floor(x);
+        (f, f as i32)
+    }
+}
+
 #[inline]
 fn fade(t: f32) -> f32 {
     // 6t^5 - 15t^4 + 10t^3, Horner form with plain multiplies and adds.
@@ -69,38 +86,125 @@ fn lerp(a: f32, b: f32, t: f32) -> f32 {
     a + (b - a) * t
 }
 
+/// Gradient vector of the lattice point `(ix, iy, iz)` for `seed`.
 #[inline]
-fn grad_dot(seed: u64, ix: i32, iy: i32, iz: i32, dx: f32, dy: f32, dz: f32) -> f32 {
+pub fn lattice_gradient(seed: u64, ix: i32, iy: i32, iz: i32) -> [f32; 3] {
     let h = hash3(seed, ix, iy, iz);
-    let g = GRADS[((h >> 32) as u32 % 12) as usize];
-    g[0] * dx + g[1] * dy + g[2] * dz
+    GRADS[((h >> 32) as u32 % 12) as usize]
+}
+
+/// The gradients of the 8 corners of a lattice cell `(ix, iy, iz)`, split
+/// into components. Lane `l < 4` is the corner
+/// `(ix, iy + (l & 1), iz + (l >> 1))`, lane `l + 4` the same corner one step
+/// along +x. This layout lets the compiler evaluate four corners at once;
+/// every lane still performs exactly the scalar operations of the reference
+/// formula.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CellGradients {
+    pub x: [f32; 8],
+    pub y: [f32; 8],
+    pub z: [f32; 8],
+}
+
+/// [`CellGradients`] of a lattice cell for `seed`.
+#[inline]
+pub fn cell_gradients(seed: u64, ix: i32, iy: i32, iz: i32) -> CellGradients {
+    let mut g = CellGradients {
+        x: [0.0; 8],
+        y: [0.0; 8],
+        z: [0.0; 8],
+    };
+    for l in 0..8 {
+        let v = lattice_gradient(
+            seed,
+            ix + (l >> 2) as i32,
+            iy + (l & 1) as i32,
+            iz + ((l >> 1) & 1) as i32,
+        );
+        g.x[l] = v[0];
+        g.y[l] = v[1];
+        g.z[l] = v[2];
+    }
+    g
 }
 
 /// 3D gradient noise in roughly `[-1, 1]`, zero at every integer lattice point.
 pub fn gradient_noise(seed: u64, p: Vec3) -> f32 {
-    let fx = det::floor(p.x);
-    let fy = det::floor(p.y);
-    let fz = det::floor(p.z);
-    let (ix, iy, iz) = (fx as i32, fy as i32, fz as i32);
+    gradient_noise_with(p, |x, y, z| cell_gradients(seed, x, y, z))
+}
+
+/// [`gradient_noise`] with the gradients of the point's lattice cell
+/// supplied by `grads` (for example from a precomputed table).
+/// Bit-identical to [`gradient_noise`] when `grads` returns
+/// [`cell_gradients`] values.
+#[inline(always)]
+pub fn gradient_noise_with(p: Vec3, grads: impl Fn(i32, i32, i32) -> CellGradients) -> f32 {
+    let (fx, ix) = floor_parts(p.x);
+    let (fy, iy) = floor_parts(p.y);
+    let (fz, iz) = floor_parts(p.z);
     let (dx, dy, dz) = (p.x - fx, p.y - fy, p.z - fz);
     let (u, v, w) = (fade(dx), fade(dy), fade(dz));
 
-    let n000 = grad_dot(seed, ix, iy, iz, dx, dy, dz);
-    let n100 = grad_dot(seed, ix + 1, iy, iz, dx - 1.0, dy, dz);
-    let n010 = grad_dot(seed, ix, iy + 1, iz, dx, dy - 1.0, dz);
-    let n110 = grad_dot(seed, ix + 1, iy + 1, iz, dx - 1.0, dy - 1.0, dz);
-    let n001 = grad_dot(seed, ix, iy, iz + 1, dx, dy, dz - 1.0);
-    let n101 = grad_dot(seed, ix + 1, iy, iz + 1, dx - 1.0, dy, dz - 1.0);
-    let n011 = grad_dot(seed, ix, iy + 1, iz + 1, dx, dy - 1.0, dz - 1.0);
-    let n111 = grad_dot(seed, ix + 1, iy + 1, iz + 1, dx - 1.0, dy - 1.0, dz - 1.0);
-
-    let x00 = lerp(n000, n100, u);
-    let x10 = lerp(n010, n110, u);
-    let x01 = lerp(n001, n101, u);
-    let x11 = lerp(n011, n111, u);
-    let y0 = lerp(x00, x10, v);
-    let y1 = lerp(x01, x11, v);
+    let g = grads(ix, iy, iz);
+    // Corner terms g . (dx - i, dy - j, dz - k), lanes as in CellGradients:
+    // `lo` holds the corners with i = 0, `hi` those with i = 1.
+    let ey = [dy, dy - 1.0, dy, dy - 1.0];
+    let ez = [dz, dz, dz - 1.0, dz - 1.0];
+    let dx1 = dx - 1.0;
+    let lo: [f32; 4] = std::array::from_fn(|l| g.x[l] * dx + g.y[l] * ey[l] + g.z[l] * ez[l]);
+    let hi: [f32; 4] =
+        std::array::from_fn(|l| g.x[l + 4] * dx1 + g.y[l + 4] * ey[l] + g.z[l + 4] * ez[l]);
+    // x00, x10, x01, x11
+    let x: [f32; 4] = std::array::from_fn(|l| lerp(lo[l], hi[l], u));
+    let y0 = lerp(x[0], x[1], v);
+    let y1 = lerp(x[2], x[3], v);
     lerp(y0, y1, w)
+}
+
+/// [`gradient_noise_with`] at the points `(xs[i], y, z)`, written to `out`.
+///
+/// Every lattice gradient has exactly one zero component, so each corner
+/// term `g.x * dx + g.y * dy + g.z * dz` equals `g.x * dx + (g.y * dy + g.z *
+/// dz)` exactly, up to the sign of a zero result; the bracket only changes
+/// when the lattice cell does, so it is computed once per cell. Everything
+/// else is the same arithmetic in the same order, so each output equals
+/// [`gradient_noise_with`] exactly, except that a zero may come out with the
+/// other sign.
+pub fn gradient_noise_row(
+    xs: &[f32],
+    y: f32,
+    z: f32,
+    grads: impl Fn(i32, i32, i32) -> CellGradients,
+    out: &mut [f32],
+) {
+    assert_eq!(xs.len(), out.len());
+    let (fy, iy) = floor_parts(y);
+    let (fz, iz) = floor_parts(z);
+    let (dy, dz) = (y - fy, z - fz);
+    let (v, w) = (fade(dy), fade(dz));
+    let ey = [dy, dy - 1.0, dy, dy - 1.0];
+    let ez = [dz, dz, dz - 1.0, dz - 1.0];
+    // Per lane (as in CellGradients): gradient x component and the y/z bracket.
+    let mut cell = None;
+    let mut gx = [0.0f32; 8];
+    let mut rest = [0.0f32; 8];
+    for (x, o) in xs.iter().zip(out.iter_mut()) {
+        let (fx, ix) = floor_parts(*x);
+        if cell != Some(ix) {
+            cell = Some(ix);
+            let g = grads(ix, iy, iz);
+            gx = g.x;
+            rest = std::array::from_fn(|l| g.y[l] * ey[l & 3] + g.z[l] * ez[l & 3]);
+        }
+        let dx = x - fx;
+        let u = fade(dx);
+        let dx1 = dx - 1.0;
+        let x: [f32; 4] =
+            std::array::from_fn(|l| lerp(gx[l] * dx + rest[l], gx[l + 4] * dx1 + rest[l + 4], u));
+        let y0 = lerp(x[0], x[1], v);
+        let y1 = lerp(x[2], x[3], v);
+        *o = lerp(y0, y1, w);
+    }
 }
 
 #[cfg(test)]
@@ -147,6 +251,34 @@ mod tests {
             worst = worst.max(g.abs());
         }
         assert!(worst < NOISE_LIPSCHITZ, "measured {worst}");
+    }
+
+    #[test]
+    fn floor_parts_matches_libm() {
+        let mut rng = ls_math::SplitMix64::new(21);
+        let special = [
+            0.0f32,
+            -0.0,
+            0.25,
+            -0.25,
+            1.0,
+            -1.0,
+            8_388_607.5,
+            -8_388_607.5,
+            8_388_608.0,
+            -8_388_608.0,
+            3e9,
+            -3e9,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            f32::NAN,
+        ];
+        let random = (0..20_000).map(|_| (rng.next_f32() - 0.5) * 400.0);
+        for x in special.into_iter().chain(random) {
+            let (f, i) = floor_parts(x);
+            assert_eq!(f.to_bits(), det::floor(x).to_bits(), "{x}");
+            assert_eq!(i, det::floor(x) as i32, "{x}");
+        }
     }
 
     #[test]

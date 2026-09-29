@@ -5,9 +5,11 @@
 //! - [`SimLink`] lives on the sim thread and implements [`ls_net::Transport`]
 //!   (poll-based, never blocks): `send_*` queue frames, `recv` drains packets
 //!   the socket task received.
-//! - [`PeerLink`] lives in the socket task (WebSocket today, WebTransport in
-//!   wave 4): it awaits outgoing frames with [`PeerLink::next_outgoing`] and
-//!   forwards received packets with [`PeerLink::push_incoming`].
+//! - [`PeerLink`] lives in the socket task (WebSocket or WebTransport): it
+//!   awaits outgoing frames with [`PeerLink::next_outgoing`] and forwards
+//!   received packets with [`PeerLink::push_incoming`] (reliable, waits while
+//!   the queue is full) or [`PeerLink::try_push_datagram`] (unreliable, dropped
+//!   while the queue is full).
 //!
 //! Backpressure: at most [`LinkConfig::max_unreliable_queued`] unreliable
 //! frames wait at once; queuing another drops the oldest waiting unreliable
@@ -59,7 +61,7 @@ impl Default for LinkConfig {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConnInfo {
     pub id: ConnId,
-    /// Transport name (`"websocket"`, later `"webtransport"`).
+    /// Transport name (`"websocket"` or `"webtransport"`).
     pub transport: &'static str,
     pub remote: SocketAddr,
 }
@@ -116,7 +118,7 @@ pub struct SimLink {
     info: ConnInfo,
     shared: Arc<Shared>,
     counters: Arc<LinkCounters>,
-    incoming: mpsc::Receiver<Vec<u8>>,
+    incoming: mpsc::Receiver<Packet>,
     cfg: LinkConfig,
     open: bool,
 }
@@ -126,7 +128,7 @@ pub struct SimLink {
 pub struct PeerLink {
     info: ConnInfo,
     shared: Arc<Shared>,
-    incoming: mpsc::Sender<Vec<u8>>,
+    incoming: mpsc::Sender<Packet>,
 }
 
 /// Creates the two halves of one connection.
@@ -240,11 +242,7 @@ impl Transport for SimLink {
             return Err(TransportError::Closed);
         }
         match self.incoming.try_recv() {
-            // WebSocket frames are ordered and reliable.
-            Ok(data) => Ok(Some(Packet {
-                channel: Channel::Reliable,
-                data,
-            })),
+            Ok(packet) => Ok(Some(packet)),
             Err(mpsc::error::TryRecvError::Empty) => Ok(None),
             Err(mpsc::error::TryRecvError::Disconnected) => Err(TransportError::Closed),
         }
@@ -326,9 +324,27 @@ impl PeerLink {
     /// queue is full; fails once the sim side closed the link.
     pub async fn push_incoming(&self, data: Vec<u8>) -> Result<(), TransportError> {
         self.incoming
-            .send(data)
+            .send(Packet {
+                channel: Channel::Reliable,
+                data,
+            })
             .await
             .map_err(|_| TransportError::Closed)
+    }
+
+    /// Hands a received datagram to the sim thread without waiting: returns
+    /// `Ok(false)` if the incoming queue is full and the datagram was
+    /// dropped (inputs repeat the newest commands, so the next one covers
+    /// it); fails once the sim side closed the link.
+    pub fn try_push_datagram(&self, data: Vec<u8>) -> Result<bool, TransportError> {
+        match self.incoming.try_send(Packet {
+            channel: Channel::Unreliable,
+            data,
+        }) {
+            Ok(()) => Ok(true),
+            Err(mpsc::error::TrySendError::Full(_)) => Ok(false),
+            Err(mpsc::error::TrySendError::Closed(_)) => Err(TransportError::Closed),
+        }
     }
 
     /// Why the sim side closed the link, if it did.
@@ -373,7 +389,21 @@ mod tests {
         );
         assert_eq!(sim.recv().unwrap(), None);
         peer.push_incoming(b"input".to_vec()).await.unwrap();
-        assert_eq!(sim.recv().unwrap().unwrap().data, b"input");
+        assert_eq!(
+            sim.recv().unwrap().unwrap(),
+            Packet {
+                channel: Channel::Reliable,
+                data: b"input".to_vec()
+            }
+        );
+        assert_eq!(peer.try_push_datagram(b"dgram".to_vec()), Ok(true));
+        assert_eq!(
+            sim.recv().unwrap().unwrap(),
+            Packet {
+                channel: Channel::Unreliable,
+                data: b"dgram".to_vec()
+            }
+        );
         drop(peer);
         assert_eq!(sim.recv(), Err(TransportError::Closed));
         assert!(!sim.is_open());
@@ -441,6 +471,23 @@ mod tests {
             .unwrap();
         assert_eq!(f.unwrap().data, b"late");
         let _ = sim;
+    }
+
+    #[tokio::test]
+    async fn datagrams_are_dropped_when_the_incoming_queue_is_full() {
+        let cfg = LinkConfig {
+            max_incoming_queued: 2,
+            ..LinkConfig::default()
+        };
+        let (mut sim, peer) = pair(cfg);
+        assert_eq!(peer.try_push_datagram(vec![1]), Ok(true));
+        assert_eq!(peer.try_push_datagram(vec![2]), Ok(true));
+        assert_eq!(peer.try_push_datagram(vec![3]), Ok(false));
+        assert_eq!(sim.recv().unwrap().unwrap().data, [1]);
+        assert_eq!(sim.recv().unwrap().unwrap().data, [2]);
+        assert_eq!(sim.recv().unwrap(), None);
+        sim.close();
+        assert_eq!(peer.try_push_datagram(vec![4]), Err(TransportError::Closed));
     }
 
     #[test]

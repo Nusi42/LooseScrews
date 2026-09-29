@@ -205,7 +205,11 @@ class FakeGame implements GameHandle {
   remoteShips(): Float32Array { return new Float32Array([5, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1]); }
   projectiles(): Float32Array { return new Float32Array(0); }
   hud(): HudStateHandle { return fakeHud(); }
+  setClockMs(): void {}
   takeFeed(): string[] { return ["You destroyed Player 6"]; }
+  debugStats(): Float64Array { return new Float64Array([42, 10, 2, 1, 0.5, 6, 5, 1, 0, 1]); }
+  scoreboard(): Float64Array { return new Float64Array([2, 1, 1, 3, 1, 1, 5, 0, 1, 0, 2, 0]); }
+  matchInfo(): Float64Array { return new Float64Array([0, -1, 25, 50, 100, 0]); }
   meshNext(): ChunkMeshHandle | undefined { return undefined; }
   takeUnloads(): string[] { return []; }
   pendingChunks(): number { return 0; }

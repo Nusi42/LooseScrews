@@ -33,3 +33,14 @@ test("an empty input sample holds nothing", () => {
   assert.equal(e.overdrive, false);
   assert.equal(e.thrustForward, 0);
 });
+
+test("overlay keys: Tab holds the scoreboard, F3 toggles the debug overlay", async () => {
+  const { UI_ACTIONS } = await import("./bindings.ts");
+  assert.equal(KEY_BINDINGS["Tab"], "scoreboard");
+  assert.equal(KEY_BINDINGS["F3"], "toggleDebug");
+  assert.ok(UI_ACTIONS.has("scoreboard") && UI_ACTIONS.has("toggleDebug"));
+  assert.ok(!UI_ACTIONS.has("forward"), "flight keys still need pointer lock");
+  const e = emptyInput();
+  assert.equal(e.scoreboard, false);
+  assert.equal(e.toggleDebug, false);
+});

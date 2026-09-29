@@ -3,7 +3,9 @@
 //! - [`Sliders`] and [`ShareCode`]: the seven world sliders, and the short
 //!   code (`LS…`) that rebuilds the same world everywhere.
 //! - [`Generator`]: the deterministic signed distance field of a freshly
-//!   generated level (Enclosure and Density active in M1).
+//!   generated level (Enclosure and Density active in M1), and
+//!   [`RegionSampler`], which samples it much faster over a region with the
+//!   same bits.
 //! - [`ChunkStore`]: 32³-cell chunks, generated lazily, with the terrain edit
 //!   log applied on top and a per-cell paint layer. Implements
 //!   [`ls_math::terrain::TerrainQuery`] for physics (`sdf`, `normal`,
@@ -29,7 +31,7 @@ pub mod sharecode;
 pub mod sliders;
 
 pub use chunk::{ChunkCoord, ChunkStore, PaintCoverage};
-pub use generator::{Generator, DEFAULT_SIZE_CHUNKS, WALL_THICKNESS};
+pub use generator::{Generator, RegionSampler, DEFAULT_SIZE_CHUNKS, WALL_THICKNESS};
 pub use grid::SampleGrid;
 pub use mesh::{dual_contouring, dual_contouring_with_sdf, surface_nets, Mesh};
 pub use sharecode::ShareCode;

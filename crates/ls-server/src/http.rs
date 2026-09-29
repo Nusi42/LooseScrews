@@ -1,5 +1,6 @@
 //! HTTP/1.1 on the game port: static files from the web root (the built web
-//! client, for one-command local play), `GET /cert-hash` for WebTransport,
+//! client, for one-command local play), `GET /cert-hash` for WebTransport
+//! (JSON, see [`crate::endpoint::CertHashInfo`]),
 //! and the WebSocket upgrade at `/ws` (also accepted at `/`, so
 //! `ws://host:7777` works too).
 //!
@@ -375,13 +376,29 @@ async fn handle_request(
             .read()
             .map(|h| h.clone())
             .unwrap_or_default();
+        // Readable cross-origin, so a client served from elsewhere (the Vite
+        // dev server with `?server=host:port`) can use WebTransport too.
+        let cors = "Access-Control-Allow-Origin: *\r\n";
         return match hash {
-            Some(h) => respond(stream, 200, "text/plain", h.as_bytes(), head, keep_alive).await,
+            Some(h) => {
+                let body = h.to_json();
+                respond_with(
+                    stream,
+                    200,
+                    "application/json",
+                    cors,
+                    body.as_bytes(),
+                    head,
+                    keep_alive,
+                )
+                .await
+            }
             None => {
-                respond(
+                respond_with(
                     stream,
                     404,
                     "text/plain",
+                    cors,
                     b"WebTransport is not enabled",
                     head,
                     keep_alive,
@@ -458,8 +475,30 @@ async fn respond(
     head_only: bool,
     keep_alive: bool,
 ) -> std::io::Result<()> {
+    respond_with(
+        stream,
+        status,
+        content_type,
+        "",
+        body,
+        head_only,
+        keep_alive,
+    )
+    .await
+}
+
+/// [`respond`] with extra header lines (each ending in `\r\n`).
+async fn respond_with(
+    stream: &mut TcpStream,
+    status: u16,
+    content_type: &str,
+    extra_headers: &str,
+    body: &[u8],
+    head_only: bool,
+    keep_alive: bool,
+) -> std::io::Result<()> {
     let head = format!(
-        "HTTP/1.1 {status} {}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nCache-Control: no-cache\r\nX-Content-Type-Options: nosniff\r\nConnection: {}\r\n\r\n",
+        "HTTP/1.1 {status} {}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nCache-Control: no-cache\r\nX-Content-Type-Options: nosniff\r\n{extra_headers}Connection: {}\r\n\r\n",
         reason_phrase(status),
         body.len(),
         if keep_alive { "keep-alive" } else { "close" },

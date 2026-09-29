@@ -5,7 +5,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
-rust-version.workspace = true
+rust-version = "1.88" # wtransport 0.7 needs 1.88; the rest of the workspace stays on 1.85
 
 [dependencies]
 ls-game.workspace = true
@@ -15,8 +15,11 @@ tokio.workspace = true
 tokio-tungstenite.workspace = true
 futures-util.workspace = true
 tracing.workspace = true
+wtransport.workspace = true
 tracing-subscriber.workspace = true
 
 [dev-dependencies]
 # The end-to-end tests host an authoritative `Room` in-process.
 ls-game = { workspace = true, features = ["server"] }
+# The WebTransport test runs bots against the real server.
+ls-server = { path = "../ls-server" }

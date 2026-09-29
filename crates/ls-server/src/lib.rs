@@ -11,8 +11,9 @@
 //!   dropped under backpressure, reliable ones never.
 //! - [`endpoint`]: the transport seam ([`endpoint::Endpoint`],
 //!   [`endpoint::Hub`]). [`http::HttpEndpoint`] serves static files and
-//!   upgrades `/ws` to a WebSocket ([`ws`]); WebTransport plugs in the same
-//!   way in wave 4.
+//!   `GET /cert-hash` and upgrades `/ws` to a WebSocket ([`ws`]);
+//!   [`wt::WebTransportEndpoint`] accepts WebTransport sessions on a UDP port
+//!   (datagrams for unreliable packets, a framed stream for reliable ones).
 //! - [`server`]: [`ServerConfig`], [`Server::start`] and [`ServerHandle`]
 //!   (graceful shutdown, stats, room inspection).
 //!
@@ -26,8 +27,9 @@ pub mod sim;
 pub mod stats;
 pub mod timing;
 pub mod ws;
+pub mod wt;
 
-pub use endpoint::{ConnSettings, Endpoint, EndpointContext, Hub};
+pub use endpoint::{CertHashInfo, ConnSettings, Endpoint, EndpointContext, Hub};
 pub use server::{match_config, Server, ServerConfig, ServerError, ServerHandle};
 pub use stats::StatsSnapshot;
 

@@ -19,7 +19,7 @@ const HELP: Record<ErrorKind, string> = {
     "Check that ls-server is running and reachable (the page connects to ws://<this host>/ws; add " +
     "?server=host:port to use another server). Reload to return to the start screen, where Practice " +
     "offline works without a server.",
-  "match-over": "The server starts the next match on the same level. Reload to join it.",
+  "match-over": "The server started the next match on the same level, but rejoining failed. Reload to join it.",
   other: "Something went wrong while starting the game. Reload the page to try again.",
 };
 

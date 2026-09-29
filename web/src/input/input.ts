@@ -1,6 +1,14 @@
 // Pointer-lock keyboard/mouse input, exposed as an InputState sampled once per frame.
 
-import { axesFromActions, KEY_BINDINGS, MOUSE_PRIMARY, MOUSE_SECONDARY, WEAPON_ACTIONS, type Action } from "./bindings.ts";
+import {
+  axesFromActions,
+  KEY_BINDINGS,
+  MOUSE_PRIMARY,
+  MOUSE_SECONDARY,
+  UI_ACTIONS,
+  WEAPON_ACTIONS,
+  type Action,
+} from "./bindings.ts";
 
 export interface InputState {
   /** Thrust axes in ship space, each -1..1 (per-axis, so diagonals add up). */
@@ -23,6 +31,10 @@ export interface InputState {
   /** Weapon key pressed since the previous sample: 1-4, or 0 for none. */
   weaponKey: number;
   pointerLocked: boolean;
+  /** Scoreboard key (Tab) held. */
+  scoreboard: boolean;
+  /** True for exactly one sample after F3 is pressed. */
+  toggleDebug: boolean;
 }
 
 export function emptyInput(): InputState {
@@ -41,6 +53,8 @@ export function emptyInput(): InputState {
     toggleHorizonAssist: false,
     weaponKey: 0,
     pointerLocked: false,
+    scoreboard: false,
+    toggleDebug: false,
   };
 }
 
@@ -116,6 +130,8 @@ export class InputController {
       toggleHorizonAssist: this.edges.has("toggleHorizonAssist"),
       weaponKey: WEAPON_ACTIONS.findIndex((a) => this.edges.has(a)) + 1,
       pointerLocked: this.locked,
+      scoreboard: this.held.has("scoreboard"),
+      toggleDebug: this.edges.has("toggleDebug"),
     };
     this.lookX = 0;
     this.lookY = 0;
@@ -130,6 +146,18 @@ export class InputController {
 
   private onKey(e: KeyboardEvent, down: boolean): void {
     const action = KEY_BINDINGS[e.code];
+    if (action && UI_ACTIONS.has(action)) {
+      // Overlay keys work without pointer lock too; keep Tab from moving
+      // focus and F3 from opening the browser's find bar.
+      e.preventDefault();
+      if (down) {
+        if (!e.repeat && !this.held.has(action)) this.edges.add(action);
+        this.held.add(action);
+      } else {
+        this.held.delete(action);
+      }
+      return;
+    }
     if (!action || !this.locked) {
       if (!down && action) this.held.delete(action);
       return;

@@ -441,3 +441,212 @@ button {
     display: none;
   }
 }
+
+/* ---- Scoreboard (hold Tab) and end-of-match screen ---- */
+
+.scoreboard {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: min(640px, calc(100vw - 32px));
+  max-height: calc(100vh - 32px);
+  overflow: auto;
+  padding: 16px 20px;
+  box-sizing: border-box;
+  border-radius: 10px;
+  background: rgba(8, 10, 16, 0.86);
+}
+
+.sb-title {
+  margin: 0 0 12px;
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+.sb-teams {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 14px;
+}
+
+.sb-team {
+  border-top: 3px solid var(--muted);
+  padding-top: 6px;
+}
+
+.sb-team.team-0 {
+  border-color: var(--team-0);
+}
+
+.sb-team.team-1 {
+  border-color: var(--team-1);
+}
+
+.sb-team-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.sb-team-paint {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.sb-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+
+.sb-table th {
+  text-align: left;
+  font-weight: 500;
+  color: var(--muted);
+  padding: 2px 4px;
+}
+
+.sb-table th:not(:first-child),
+.sb-num {
+  text-align: right;
+  width: 56px;
+  font-variant-numeric: tabular-nums;
+}
+
+.sb-table td {
+  padding: 3px 4px;
+}
+
+.sb-table tr.you td {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.sb-table tr.dead td {
+  opacity: 0.55;
+}
+
+.sb-empty td {
+  color: var(--muted);
+  font-style: italic;
+}
+
+.sb-note {
+  margin-top: 10px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.end-screen {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  box-sizing: border-box;
+  background: rgba(5, 6, 10, 0.55);
+}
+
+.end-card {
+  width: min(640px, 100%);
+  max-height: 100%;
+  overflow: auto;
+  padding: 24px 28px;
+  box-sizing: border-box;
+  border-radius: 12px;
+  background: rgba(8, 10, 16, 0.9);
+  text-align: center;
+}
+
+.end-kicker {
+  font-size: 13px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.end-title {
+  margin: 6px 0 2px;
+  font-size: 32px;
+}
+
+.end-subtitle {
+  margin: 0 0 16px;
+  color: var(--muted);
+}
+
+.end-bars {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 18px;
+}
+
+.end-bar-row {
+  display: grid;
+  grid-template-columns: 70px 1fr 64px;
+  align-items: center;
+  gap: 10px;
+  text-align: left;
+}
+
+.end-bar-row.winner .end-bar-name::after {
+  content: " ★";
+  color: var(--accent);
+}
+
+.end-bar {
+  height: 14px;
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.1);
+  overflow: hidden;
+}
+
+.end-bar-fill {
+  height: 100%;
+  background: var(--muted);
+}
+
+.team-0 .end-bar-fill {
+  background: var(--team-0);
+}
+
+.team-1 .end-bar-fill {
+  background: var(--team-1);
+}
+
+.end-bar-value {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.end-board {
+  text-align: left;
+}
+
+.end-footer {
+  margin: 18px 0 0;
+  font-size: 18px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---- Debug overlay (F3) ---- */
+
+.debug-overlay {
+  position: absolute;
+  top: 8px;
+  left: 12px;
+  margin: 0;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.55);
+  font: 12px/1.45 ui-monospace, Consolas, monospace;
+  color: var(--text);
+  white-space: pre;
+}

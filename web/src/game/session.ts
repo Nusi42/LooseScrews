@@ -6,8 +6,16 @@
 import { emptyInput, type InputState } from "../input/input.ts";
 import type { HudValues } from "../ui/hud.ts";
 import type { GameHandle, HudStateHandle, WasmApi } from "../wasm/api.ts";
-import { WebSocketTransport, type SocketFactory } from "../net/transport.ts";
-import { ControlState } from "./controls.ts";
+import { connectTransport, transportLabel } from "../net/connect.ts";
+import { ControlState, type ControlSettings } from "./controls.ts";
+import {
+  parseDebugStats,
+  parseMatchInfo,
+  parseScoreboard,
+  type DebugStats,
+  type MatchInfo,
+  type ScoreRow,
+} from "./stats.ts";
 import {
   parsePose,
   parseProjectiles,
@@ -17,15 +25,32 @@ import {
   type ShipState,
 } from "./views.ts";
 
-/** What the session needs from a transport (WebSocketTransport, or a fake in tests). */
+/** What the session needs from a transport (WebSocketTransport / WebTransportTransport, or a fake in tests). */
 export interface PacketLink {
   readonly isOpen: boolean;
   readonly closeReason: string | null;
-  /** `droppable`: may be skipped under send backpressure (inputs, pings). */
+  /**
+   * `droppable`: may be skipped under send backpressure (inputs, pings):
+   * the transport skips it while its send buffer is backed up instead of
+   * queueing without bound. Each Input repeats the newest commands, so a
+   * skipped one loses nothing still useful. Only set it for ls-net
+   * `Channel::Unreliable` messages (Input, Ping): WebTransport sends
+   * droppable packets as datagrams, which may also be lost in transit.
+   */
   send(packet: Uint8Array, droppable?: boolean): void;
   drain(): Uint8Array[];
   close(reason?: string): void;
+  /** Droppable packets skipped under backpressure (if the transport counts them). */
+  readonly droppedPackets?: number;
 }
+
+/** A freshly opened link that can wait for the handshake reply. */
+export interface HandshakeLink extends PacketLink {
+  nextPacket(timeoutMs?: number): Promise<Uint8Array>;
+}
+
+/** Opens a link to `url` (default: `connectTransport`, WebTransport with WebSocket fallback). */
+export type LinkOpener = (url: string) => Promise<HandshakeLink>;
 
 export interface FrameResult {
   pose: LocalPose | null;
@@ -82,6 +107,8 @@ export class GameSession {
   readonly restartReason: string | null;
   private ended: string | null = null;
   private disposed = false;
+  /** Monotonic clock in ms (times pings for the debug overlay). */
+  clock: () => number = () => performance.now();
 
   constructor(
     game: GameHandle,
@@ -113,14 +140,17 @@ export class GameSession {
     url: string,
     name: string,
     horizonAssist = true,
-    factory?: SocketFactory,
+    open: LinkOpener = (u) => connectTransport(u),
+    controls?: ControlSettings,
   ): Promise<GameSession> {
-    const link = await WebSocketTransport.connect(url, factory);
+    const link = await open(url);
     try {
       link.send(api.helloPacket(name, -1));
       const welcome = await link.nextPacket();
       const game = api.Game.fromWelcome(welcome);
-      return new GameSession(game, link, api.weaponIds(), horizonAssist, api.matchRestartReason());
+      const session = new GameSession(game, link, api.weaponIds(), horizonAssist, api.matchRestartReason());
+      if (controls) session.controls.settings = { ...controls };
+      return session;
     } catch (err) {
       link.close("handshake failed");
       throw err;
@@ -131,6 +161,32 @@ export class GameSession {
     return this.link !== null;
   }
 
+  /** Active transport name for the debug overlay ("WebTransport" / "WebSocket"); null offline. */
+  get transportName(): string | null {
+    return this.link ? transportLabel(this.link) : null;
+  }
+
+  /** Packets the transport skipped under send backpressure (null if it does not count them). */
+  get droppedSends(): number | null {
+    const n = this.link?.droppedPackets;
+    return typeof n === "number" ? n : null;
+  }
+
+  /** Debug counters (ping, prediction, predicted shots). */
+  debugStats(): DebugStats {
+    return parseDebugStats(this.disposed ? [] : this.game.debugStats());
+  }
+
+  /** Scoreboard rows (sorted by team, then kills). */
+  scoreboard(): ScoreRow[] {
+    return this.disposed ? [] : parseScoreboard(this.game.scoreboard());
+  }
+
+  /** Match result and team paint cells. */
+  matchInfo(): MatchInfo {
+    return parseMatchInfo(this.disposed ? [] : this.game.matchInfo());
+  }
+
   get hasEnded(): boolean {
     return this.ended !== null;
   }
@@ -139,6 +195,7 @@ export class GameSession {
     let disconnected: string | null = null;
     let matchRestart = false;
     if (this.link && this.ended === null) {
+      this.game.setClockMs(this.clock());
       for (const packet of this.link.drain()) {
         try {
           const reason = this.game.handlePacket(packet);

@@ -1,6 +1,6 @@
 # Loose Screws — Implementation Plan
 
-Status: Milestone 1 (vertical slice) in progress — waves 1 to 3 done (playable end to end with bots) · Source design: [design/game-design-doc.md](design/game-design-doc.md)
+Status: Milestone 1 (vertical slice) in progress — waves 1 to 3 done and committed (playable end to end with bots); wave 4 (WebTransport, performance) and wave 5 (documentation) in progress, see [section 5.1](#51-milestone-1-status) · Source design: [design/game-design-doc.md](design/game-design-doc.md) · Developer docs: [README.md](README.md)
 
 Milestone 1 proves the three riskiest parts of the design before anything else is built:
 
@@ -142,14 +142,65 @@ Work runs as orchestrated waves of parallel work packages. Packages in the same 
 | 4 | WebTransport transport, dual contouring upgrade, performance pass | server, worldgen, web | 3 |
 | 5 | Documentation: architecture and dev guide in `docs/`; player manual and hosting guide in `userDocs/` | `docs/`, `userDocs/` | 3 |
 
+### 5.1 Milestone 1 status
+
+Updated in wave 5 (docs). Verified with release builds in this tree: the wasm32
+unit tests, the native worldgen golden/timing, sim replay and match setup tests, `tools/determinism-check.mjs` (6/6 share codes match), `cargo test -p
+ls-bots --release`, the `ls-server` WebSocket and WebTransport tests, and `tools/e2e.mjs`
+(4 bots for 30 s: all 22 checks pass; 8 bots over WebTransport for a full match and restart on an
+idle machine: all 23 checks pass, worst window p99 241 us).
+
+| Wave | Status |
+| --- | --- |
+| 1 Scaffold | Done (commit `936b75c`) |
+| 2a-2e Worldgen, sim, net, renderer, review | Done (commit `936b75c`) |
+| 3a-3d Server, WASM client, bots, e2e | Done (commit `f26e093`) |
+| 4 WebTransport | Done: server endpoint (`crates/ls-server/src/wt.rs`, UDP, self-signed cert, `/cert-hash`), browser transport with WebSocket fallback, bots `--transport wt`, e2e `--transport wt` |
+| 4 Dual contouring | Mesher implemented, seam-free and golden-hashed, but gameplay still meshes with surface nets: dual contouring costs 4-13 ms per busy chunk against 0.5-0.8 ms, too slow for the per-frame remesh budget |
+| 4 Performance pass | Done: `ls_worldgen::RegionSampler` (faster chunk generation, same bits, golden hashes unchanged) and the `worldgen_bench` example. Server tick: p50 about 0.1 ms, p99 typically 0.2-0.5 ms with 8 bots |
+| 5 Documentation | `docs/`: index, architecture overview, netcode, determinism, dev guide. `userDocs/`: player manual and hosting guide. Reviewed against the code and `--help` output |
+
+Acceptance criteria (section 4):
+
+| Module | Criteria | State |
+| --- | --- | --- |
+| 4.1 ls-math | Tests on native and wasm32 | Met |
+| 4.2 ls-worldgen | Golden hashes native = WASM; < 2 ms surface nets per chunk; crater touches ≤ 8 chunks | Met (0.5-0.8 ms per busy chunk; `crater_dirties_at_most_eight_chunks`) |
+| 4.3 ls-sim | Speed model, resources, each weapon, rule-set enforcement, replay hash | Met |
+| 4.4 ls-net | Round trips, 18 B ship state, bandwidth estimate | Met (`bandwidth_32_ships_at_30_hz`) |
+| 4.5 ls-server | 8 bots play a full match without desync warnings; p99 < 4 ms | Met: `tools/e2e.ps1 --transport wt --count 8 --duration 330` on an idle machine: full match and restart, 0 desyncs, 0 protocol errors, 0 skipped ticks, worst window p99 241 us (max 297 us). An earlier run while the machine was compiling showed isolated spikes up to 7.5 ms p99 |
+| 4.6 ls-wasm + web | Player opens `http://localhost:7777`, flies, shoots, craters, paints, sees scores with 7 bots | Implemented; the client core is tested headless against a live server and the WebTransport connection was checked in headless Chrome, but no person has played it in a browser yet |
+| 4.7 ls-bots | CLI and behaviours | Met |
+
+Remaining gaps before M1 can be called done:
+
+- **Browser acceptance is manual.** No automated browser run covers 4.6 (WebGPU rendering,
+  pointer lock, WebTransport in a real browser); a headless-browser smoke test would close it.
+- **Dual contouring is not used in play** (see wave 4 above): either make it fast enough for
+  the remesh budget or keep surface nets for M1 and move sharp edges to a later milestone.
+- **Soak test.** Passed manually: 3 bots for 60 minutes (12 matches, 0 protocol errors, 0 desyncs, 0 disconnects, max reconciliation error 0.134 u, server p99 about 0.06 ms). It is not part of `tools/ci.*`.
+- **No hosted CI.** `tools/ci.ps1` / `tools/ci.sh` run locally only.
+- **Handshake does not check game data.** Weapons and ship tuning are compiled into every
+  binary and are not compared in `Hello`/`Welcome`; a client built from different `data/` would
+  desync silently. A data hash in the handshake (or bumping `PROTOCOL_VERSION` on data
+  changes) would catch it.
+- **Lag compensation estimates the shooter's view tick** from the acked snapshot (error below
+  one tick on average); an exact value needs the client's render tick in `InputMsg`, a protocol
+  change (see [architecture/game-glue.md](architecture/game-glue.md#lag-compensation)).
+- **Pickups, scrap piles and wrecks are not drawn** in the browser (they work in the simulation;
+  see `userDocs/player-manual.md`). Remote pilots show as "Player N", not by name.
+
 ## 6. Testing strategy
 
-- `cargo test --workspace` for all Rust crates; `cargo clippy --workspace -- -D warnings`.
-- `cargo build -p ls-wasm --target wasm32-unknown-unknown --release` + `wasm-bindgen` + Node script comparing golden hashes with native.
+Commands and details: [dev-guide.md](dev-guide.md#4-tests) and [architecture/determinism.md](architecture/determinism.md).
+
+- `cargo test --workspace` for all Rust crates, `cargo test -p ls-bots --release` for the bot end-to-end tests; `cargo clippy --workspace --all-targets -- -D warnings`; `cargo fmt --all -- --check`.
+- Unit tests of `ls-math`, `ls-net`, `ls-sim`, `ls-worldgen` and `ls-game` on wasm32 under Node (`wasm-bindgen-test-runner`), including the worldgen golden hashes and the sim replay hash.
+- `cargo build -p ls-wasm --target wasm32-unknown-unknown --release` + `wasm-bindgen` + `tools/determinism-check.mjs` comparing the package's golden hashes with the native fixture.
 - `npm run typecheck`, `npm test` and `npm run build` in `web/`.
 - Replay tests: recorded input streams must produce identical state hashes.
-- Soak test: server + 7 bots for 10 minutes, checks tick time and desync counters.
-- `tools/ci.ps1` and `tools/ci.sh` run all of the above in order.
+- End-to-end: `tools/e2e.ps1` / `tools/e2e.sh` (server + 7 bots for 90 s with log checks; a full match with `--count 8 --duration 330`). Soak test: server + 7 bots for 10 minutes (`ls-bots --duration 600`), checking tick time and desync counters. Both are manual, not part of CI.
+- `tools/ci.ps1` and `tools/ci.sh` run everything above except the end-to-end and soak runs, in order.
 
 ## 7. Risks
 

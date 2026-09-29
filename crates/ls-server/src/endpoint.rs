@@ -8,12 +8,12 @@
 //!    either side closes or the peer is silent for
 //!    [`ConnSettings::idle_timeout`].
 //!
-//! The WebSocket endpoint ([`crate::http::HttpEndpoint`]) is the only one in
-//! milestone 1. WebTransport (wave 4) implements [`Endpoint`] the same way:
-//! reliable frames on a stream, [`Channel::Unreliable`](ls_net::Channel)
-//! frames as datagrams (limit [`LinkConfig::max_unreliable_size`] to the
-//! datagram size so oversized packets fall back to the stream), and the cert
-//! hash published through [`CertHash`] for `GET /cert-hash`.
+//! Two endpoints exist: WebSocket ([`crate::http::HttpEndpoint`], TCP) and
+//! WebTransport ([`crate::wt::WebTransportEndpoint`], UDP): reliable frames
+//! on a bidirectional stream, [`Channel::Unreliable`](ls_net::Channel)
+//! frames as datagrams (the link's [`LinkConfig::max_unreliable_size`] is the
+//! datagram size, so oversized packets fall back to the stream), and its
+//! certificate hash published through [`CertHash`] for `GET /cert-hash`.
 
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -52,9 +52,42 @@ impl Default for ConnSettings {
     }
 }
 
+/// What a WebTransport endpoint publishes for browsers: the SHA-256 hash of
+/// its self-signed certificate (for `serverCertificateHashes`) and where to
+/// connect. Served as JSON at `GET /cert-hash` (see [`CertHashInfo::to_json`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CertHashInfo {
+    /// SHA-256 of the DER certificate.
+    pub sha256: [u8; 32],
+    /// UDP port of the WebTransport endpoint.
+    pub port: u16,
+    /// URL path of the WebTransport session.
+    pub path: &'static str,
+    /// End of the certificate's validity, Unix seconds.
+    pub not_after_unix: i64,
+}
+
+impl CertHashInfo {
+    /// The hash as lower-case hex (64 characters).
+    pub fn hex(&self) -> String {
+        self.sha256.iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    /// `{"algorithm":"sha-256","hash":"<hex>","port":7777,"path":"/wt","expires":<unix s>}`
+    pub fn to_json(&self) -> String {
+        format!(
+            r#"{{"algorithm":"sha-256","hash":"{}","port":{},"path":"{}","expires":{}}}"#,
+            self.hex(),
+            self.port,
+            self.path,
+            self.not_after_unix
+        )
+    }
+}
+
 /// The certificate hash a WebTransport endpoint publishes (served at
-/// `GET /cert-hash`; 404 while `None`).
-pub type CertHash = Arc<RwLock<Option<String>>>;
+/// `GET /cert-hash`; 404 while `None`). Replaced when the certificate rotates.
+pub type CertHash = Arc<RwLock<Option<CertHashInfo>>>;
 
 /// Entry point for new connections of any transport; cheap to clone.
 #[derive(Debug, Clone)]
@@ -156,3 +189,30 @@ pub trait Endpoint: Send + 'static {
 /// The sim thread has stopped and no longer takes commands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ServerGone;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cert_hash_json() {
+        let mut sha256 = [0u8; 32];
+        sha256[0] = 0xab;
+        sha256[31] = 0x01;
+        let info = CertHashInfo {
+            sha256,
+            port: 7777,
+            path: "/wt",
+            not_after_unix: 1_700_000_000,
+        };
+        let hex = info.hex();
+        assert_eq!(hex.len(), 64);
+        assert!(hex.starts_with("ab00") && hex.ends_with("0001"));
+        assert_eq!(
+            info.to_json(),
+            format!(
+                r#"{{"algorithm":"sha-256","hash":"{hex}","port":7777,"path":"/wt","expires":1700000000}}"#
+            )
+        );
+    }
+}

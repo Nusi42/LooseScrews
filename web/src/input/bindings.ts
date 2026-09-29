@@ -18,7 +18,10 @@ export type Action =
   | "weapon1"
   | "weapon2"
   | "weapon3"
-  | "weapon4";
+  | "weapon4"
+  // Interface keys (work with or without pointer lock).
+  | "scoreboard"
+  | "toggleDebug";
 
 export const KEY_BINDINGS: Readonly<Record<string, Action>> = {
   KeyW: "forward",
@@ -44,7 +47,13 @@ export const KEY_BINDINGS: Readonly<Record<string, Action>> = {
   Digit2: "weapon2",
   Digit3: "weapon3",
   Digit4: "weapon4",
+  // Hold for the scoreboard; F3 toggles the debug overlay.
+  Tab: "scoreboard",
+  F3: "toggleDebug",
 };
+
+/** Actions handled even while the pointer is not locked (overlays, not flying). */
+export const UI_ACTIONS: ReadonlySet<Action> = new Set<Action>(["scoreboard", "toggleDebug"]);
 
 /** Weapon-slot actions in key order (Digit1 = index 0). */
 export const WEAPON_ACTIONS: readonly Action[] = ["weapon1", "weapon2", "weapon3", "weapon4"];

@@ -22,6 +22,19 @@
 //! cell's surface state is known locally. Sampling, incremental edits and
 //! fresh evaluation give the same bits (see the tests), which is what keeps
 //! peers that replay the same edit log in sync.
+//!
+//! # Cost
+//!
+//! - Edits are baked into the stored samples: an edit is applied once to the
+//!   corners within its reach when it arrives (generated chunks) or when the
+//!   chunk is generated (pristine samples first, then every registered edit
+//!   in log order). Remeshing reads stored samples only, so its cost does not
+//!   depend on the edit history.
+//! - `eval` (physics, arbitrary points) still composes edits per point, but
+//!   only those registered with the point's 8 u edit bin.
+//! - Pristine samples come from a [`RegionSampler`] (feature tables plus
+//!   pruned per-block candidate lists, noise rows), bit-identical to
+//!   [`Generator::sample`].
 
 use std::collections::BTreeMap;
 
@@ -29,9 +42,10 @@ use ls_math::terrain::{TerrainEdit, TerrainQuery};
 use ls_math::{det, Aabb, Vec3};
 use serde::{Deserialize, Serialize};
 
+use crate::generator::floor_i32;
 use crate::grid::SampleGrid;
 use crate::mesh::{dual_contouring_with_sdf, surface_nets, Mesh};
-use crate::{Generator, CHUNK_CELLS, NO_TEAM};
+use crate::{Generator, RegionSampler, CHUNK_CELLS, NO_TEAM};
 
 /// Magnitude at which stored SDF values are clamped (u).
 pub const SDF_CLAMP: f32 = 6.0;
@@ -143,11 +157,25 @@ impl Chunk {
 
     /// Counts surface cells in the (inclusive) cell range.
     fn count_surface(&self, lo: [usize; 3], hi: [usize; 3]) -> u32 {
+        let Samples::Dense(d) = &self.samples else {
+            return 0;
+        };
         let mut n = 0;
+        // Per corner column x: how many of the four corners (x, j|j+1,
+        // k|k+1) are rock. A cell is a surface cell unless its two columns
+        // hold 0 or 8 rock corners together.
+        let mut rock = [0u8; CHUNK_CORNERS];
         for k in lo[2]..=hi[2] {
             for j in lo[1]..=hi[1] {
+                for (x, r) in rock.iter_mut().enumerate().take(hi[0] + 2).skip(lo[0]) {
+                    *r = (d[corner_index(x, j, k)] < 0.0) as u8
+                        + (d[corner_index(x, j + 1, k)] < 0.0) as u8
+                        + (d[corner_index(x, j, k + 1)] < 0.0) as u8
+                        + (d[corner_index(x, j + 1, k + 1)] < 0.0) as u8;
+                }
                 for i in lo[0]..=hi[0] {
-                    n += self.is_surface_cell(i, j, k) as u32;
+                    let s = rock[i] + rock[i + 1];
+                    n += (s != 0 && s != 8) as u32;
                 }
             }
         }
@@ -166,14 +194,78 @@ fn cell_index(i: usize, j: usize, k: usize) -> u16 {
     (i + n * (j + n * k)) as u16
 }
 
+/// Bins per chunk axis for the per-point edit lists used by `eval`.
+const EDIT_BINS: usize = 4;
+/// Edge length of an edit bin (u).
+const EDIT_BIN_SIZE: f32 = (CHUNK_CELLS as usize / EDIT_BINS) as f32;
+
+/// The geometry edits that can affect one chunk, as indices into the log.
+#[derive(Debug, Clone, Default)]
+struct ChunkEdits {
+    /// Every edit whose reach touches the chunk (plus its padded ring), in
+    /// log order. Baked into the samples when the chunk is generated.
+    all: Vec<u32>,
+    /// Per bin (`EDIT_BINS³`, x fastest; empty until the first edit): the
+    /// edits whose reach touches the bin, in log order, minus craters that a
+    /// later crater in the same bin fully contains (see [`Crater`]). `eval`
+    /// only replays the bin of the point, so its cost depends on the edits
+    /// near the point, not on the chunk's whole history, and repeated
+    /// craters on one spot do not pile up.
+    bins: Vec<Vec<u32>>,
+}
+
+/// Margin for [`Crater::covers`]: far above the f32 rounding of distances
+/// at level coordinates, so a covered crater's term is below the covering
+/// one's bit for bit at every point.
+const CRATER_COVER_EPS: f32 = 1e-3;
+
+/// A `SubtractSphere` that can make earlier ones redundant in `eval`.
+///
+/// For craters `S1` then (later) `S2` with `s2(p) >= s1(p)` everywhere
+/// (`s = r - |p - c|`), and any chain `F` of min/max edits between them,
+/// `max(F(max(d, s1)), s2) == max(F(d), s2)`: `F` is monotone and
+/// `F(s1) <= max(F(d), s1)`. So `S1` can leave the bins `S2` is registered
+/// in without changing a single `eval` bit. The log, `ChunkEdits::all`
+/// (baking) and late-join replay keep every edit.
+#[derive(Debug, Clone, Copy)]
+struct Crater {
+    center: Vec3,
+    radius: f32,
+}
+
+impl Crater {
+    /// Whether `earlier` is a crater fully inside this one (with margin).
+    fn covers(&self, earlier: &TerrainEdit) -> bool {
+        match *earlier {
+            TerrainEdit::SubtractSphere { center, radius } => {
+                self.radius - radius - center.distance(self.center) > CRATER_COVER_EPS
+            }
+            _ => false,
+        }
+    }
+}
+
+fn containing_crater(edit: &TerrainEdit) -> Option<Crater> {
+    match *edit {
+        TerrainEdit::SubtractSphere { center, radius } => Some(Crater { center, radius }),
+        _ => None,
+    }
+}
+
+/// Bin of a coordinate along one axis (`v - origin`), clamped to the chunk.
+#[inline]
+fn bin_of(v: f32, origin: i32) -> usize {
+    (det::floor((v - origin as f32) / EDIT_BIN_SIZE) as i32).clamp(0, EDIT_BINS as i32 - 1) as usize
+}
+
 /// Chunked, editable, paintable terrain for one level.
 #[derive(Debug, Clone)]
 pub struct ChunkStore {
     gen: Generator,
     dims: [i32; 3],
     chunks: Vec<Option<Chunk>>,
-    /// Indices into `log` of the geometry edits that can affect each chunk.
-    chunk_edits: Vec<Vec<u32>>,
+    /// The geometry edits that can affect each chunk.
+    chunk_edits: Vec<ChunkEdits>,
     log: Vec<TerrainEdit>,
 }
 
@@ -186,7 +278,7 @@ impl ChunkStore {
             gen,
             dims,
             chunks: vec![None; count],
-            chunk_edits: vec![Vec::new(); count],
+            chunk_edits: vec![ChunkEdits::default(); count],
             log: Vec::new(),
         }
     }
@@ -247,36 +339,52 @@ impl ChunkStore {
     /// The chunk containing world point `p` (by `floor(p / 32)`), if inside the level.
     pub fn chunk_at(&self, p: Vec3) -> Option<ChunkCoord> {
         let s = CHUNK_CELLS as f32;
-        let c = ChunkCoord::new(
-            det::floor(p.x / s) as i32,
-            det::floor(p.y / s) as i32,
-            det::floor(p.z / s) as i32,
-        );
+        let c = ChunkCoord::new(floor_i32(p.x / s), floor_i32(p.y / s), floor_i32(p.z / s));
         self.contains_chunk(c).then_some(c)
     }
 
     /// The world SDF (see the module docs). Needs no generated chunks.
     ///
-    /// Cost grows linearly with the number of geometry edits registered with the
-    /// point's chunk (the list only grows). Wave-4 perf work: prune edits fully
-    /// contained in a later `SubtractSphere`, or read baked chunk samples instead
-    /// of replaying the list.
+    /// Replays only the edits registered with the point's edit bin (an 8 u
+    /// cube), so the cost depends on how many edits are near `p`, not on the
+    /// length of the edit log.
     pub fn eval(&self, p: Vec3) -> f32 {
-        let room = self.gen.room_open(p);
-        let v = match self.chunk_at(p).and_then(|c| self.chunk_slot(c)) {
-            Some(slot) => {
-                let mut d = self.gen.terrain(p);
-                for &e in &self.chunk_edits[slot] {
-                    d = self.log[e as usize].apply_to_sdf(d, p);
-                }
-                d.min(room)
-            }
-            None => self.gen.terrain(p).min(room),
-        };
-        v.clamp(-SDF_CLAMP, SDF_CLAMP) + 0.0
+        self.eval_with(p, |q| self.gen.terrain(q))
     }
 
-    /// Generates a chunk if needed.
+    /// [`ChunkStore::eval`] with the generator terrain supplied by `terrain`
+    /// (which must return `Generator::terrain` bits, e.g. a
+    /// [`RegionSampler`](crate::generator::RegionSampler)).
+    #[inline]
+    fn eval_with(&self, p: Vec3, terrain: impl Fn(Vec3) -> f32) -> f32 {
+        let room = self.gen.room_open(p);
+        let mut d = terrain(p);
+        if let Some(c) = self.chunk_at(p) {
+            let edits = &self.chunk_edits[self.chunk_slot(c).expect("in level")];
+            if !edits.bins.is_empty() {
+                let o = c.origin();
+                let bin = bin_of(p.x, o[0])
+                    + EDIT_BINS * (bin_of(p.y, o[1]) + EDIT_BINS * bin_of(p.z, o[2]));
+                for &e in &edits.bins[bin] {
+                    d = self.log[e as usize].apply_to_sdf(d, p);
+                }
+            }
+        }
+        d.min(room).clamp(-SDF_CLAMP, SDF_CLAMP) + 0.0
+    }
+
+    /// A generator sampler with tables covering chunk `c`'s padded corners
+    /// (and the small offsets used for normals).
+    fn chunk_sampler(&self, c: ChunkCoord) -> RegionSampler<'_> {
+        let b = c.aabb();
+        self.gen.region_sampler(Aabb::new(
+            b.min - Vec3::splat(2.0),
+            b.max + Vec3::splat(2.0),
+        ))
+    }
+
+    /// Generates a chunk if needed: pristine samples from the generator,
+    /// then every registered edit applied once to the corners it can reach.
     pub fn ensure_generated(&mut self, c: ChunkCoord) {
         let Some(slot) = self.chunk_slot(c) else {
             return;
@@ -285,42 +393,13 @@ impl ChunkStore {
             return;
         }
         let o = c.origin();
-        let mut samples = None;
-        if self.chunk_edits[slot].is_empty() {
-            // 1-Lipschitz: if every block centre is far enough beyond the
-            // clamp, every stored and padded corner has the clamp value.
-            let (mut all_open, mut all_rock) = (true, true);
-            'blocks: for bz in UNIFORM_BLOCK_CENTERS {
-                for by in UNIFORM_BLOCK_CENTERS {
-                    for bx in UNIFORM_BLOCK_CENTERS {
-                        let p = Vec3::new(o[0] as f32 + bx, o[1] as f32 + by, o[2] as f32 + bz);
-                        let v = self.gen.sample(p);
-                        all_open &= v >= SDF_CLAMP + UNIFORM_BLOCK_RADIUS;
-                        all_rock &= v <= -(SDF_CLAMP + UNIFORM_BLOCK_RADIUS);
-                        if !all_open && !all_rock {
-                            break 'blocks;
-                        }
-                    }
-                }
-            }
-            if all_open {
-                samples = Some(Samples::Uniform(SDF_CLAMP));
-            } else if all_rock {
-                samples = Some(Samples::Uniform(-SDF_CLAMP));
-            }
+        let mut samples = pristine_samples(&self.chunk_sampler(c), o);
+        let level = self.level_corners();
+        for &e in &self.chunk_edits[slot].all {
+            let edit = self.log[e as usize];
+            let (lo, hi) = edit_corner_range(o, edit.bounds().expand(SDF_CLAMP));
+            bake_edit(&self.gen, level, o, &mut samples, &edit, lo, hi);
         }
-        let samples = samples.unwrap_or_else(|| {
-            let n = CHUNK_CORNERS;
-            let mut d = Vec::with_capacity(n * n * n);
-            for k in 0..n as i32 {
-                for j in 0..n as i32 {
-                    for i in 0..n as i32 {
-                        d.push(self.eval(SampleGrid::corner_pos(o, i, j, k)));
-                    }
-                }
-            }
-            Samples::Dense(d)
-        });
         let mut chunk = Chunk {
             samples,
             paint: BTreeMap::new(),
@@ -329,6 +408,11 @@ impl ChunkStore {
         let m = CHUNK_CELLS as usize - 1;
         chunk.surface_cells = chunk.count_surface([0; 3], [m; 3]);
         self.chunks[slot] = Some(chunk);
+    }
+
+    /// Level size in corners along each axis (corners `0..size` are inside).
+    fn level_corners(&self) -> [i32; 3] {
+        self.dims.map(|d| d * CHUNK_CELLS)
     }
 
     /// Generates every chunk of the level.
@@ -343,6 +427,7 @@ impl ChunkStore {
         self.ensure_generated(c);
         let o = c.origin();
         let chunk = self.chunk_slot(c).and_then(|s| self.chunks[s].as_ref());
+        let sampler = self.chunk_sampler(c);
         let n = CHUNK_CELLS;
         let mut values = Vec::with_capacity((n as usize + 2).pow(3));
         for k in -1..=n {
@@ -354,7 +439,7 @@ impl ChunkStore {
                         }
                         // Padding ring: read a generated neighbour (its corner
                         // 31 is our corner -1, same bits), else evaluate.
-                        _ => self.corner_value([o[0] + i, o[1] + j, o[2] + k]),
+                        _ => self.corner_value([o[0] + i, o[1] + j, o[2] + k], &sampler),
                     };
                     values.push(v);
                 }
@@ -376,14 +461,15 @@ impl ChunkStore {
     }
 
     /// World SDF at an integer corner, from stored samples when available.
-    fn corner_value(&self, g: [i32; 3]) -> f32 {
+    fn corner_value(&self, g: [i32; 3], sampler: &RegionSampler) -> f32 {
         let n = CHUNK_CELLS;
         let c = ChunkCoord::new(g[0].div_euclid(n), g[1].div_euclid(n), g[2].div_euclid(n));
         if let Some(ch) = self.chunk_slot(c).and_then(|s| self.chunks[s].as_ref()) {
             let l = [g[0].rem_euclid(n), g[1].rem_euclid(n), g[2].rem_euclid(n)];
             return ch.value(l[0] as usize, l[1] as usize, l[2] as usize);
         }
-        self.eval(Vec3::new(g[0] as f32, g[1] as f32, g[2] as f32))
+        let p = Vec3::new(g[0] as f32, g[1] as f32, g[2] as f32);
+        self.eval_with(p, |q| sampler.terrain(q))
     }
 
     /// Finds an open point near `near` with at least `clearance` of free space
@@ -421,14 +507,21 @@ impl ChunkStore {
     }
 
     /// Dual-contouring mesh of a chunk (empty for chunks outside the level),
-    /// with exact Hermite data from [`ChunkStore::eval`]. Much
-    /// slower than surface nets; see the timing test.
+    /// with exact Hermite data from [`ChunkStore::eval`] (terrain read
+    /// through a [`RegionSampler`]).
+    ///
+    /// Off the hot path: the game meshes with surface nets. Dual contouring
+    /// needs about 14 SDF evaluations per crossing edge (8 root-refinement
+    /// steps and a central-difference normal), roughly 110 000 for a busy
+    /// chunk, so it stays around 10-20x slower than surface nets (several
+    /// ms per chunk native release; see `examples/worldgen_bench.rs`).
     pub fn mesh_dual_contouring(&mut self, c: ChunkCoord) -> Mesh {
         if !self.contains_chunk(c) || self.is_uniform(c) {
             return Mesh::default();
         }
         let grid = self.sample_grid(c);
-        dual_contouring_with_sdf(&grid, &|p| self.eval(p))
+        let sampler = self.chunk_sampler(c);
+        dual_contouring_with_sdf(&grid, &|p| self.eval_with(p, |q| sampler.terrain(q)))
     }
 
     /// True if the chunk (after generating it) is entirely rock or entirely open.
@@ -523,7 +616,28 @@ impl ChunkStore {
                 continue;
             }
             let slot = self.chunk_slot(c).expect("in range");
-            self.chunk_edits[slot].push(index);
+            let o = c.origin();
+            let log = &self.log;
+            let edits = &mut self.chunk_edits[slot];
+            edits.all.push(index);
+            if edits.bins.is_empty() {
+                edits.bins = vec![Vec::new(); EDIT_BINS.pow(3)];
+            }
+            // Same bin function as `eval`: a point in the reach box lies in a
+            // bin between those of the box corners.
+            let lo = [0, 1, 2].map(|a| bin_of(reach.min[a], o[a]));
+            let hi = [0, 1, 2].map(|a| bin_of(reach.max[a], o[a]));
+            for bz in lo[2]..=hi[2] {
+                for by in lo[1]..=hi[1] {
+                    for bx in lo[0]..=hi[0] {
+                        let bin = &mut edits.bins[bx + EDIT_BINS * (by + EDIT_BINS * bz)];
+                        if let Some(later) = containing_crater(&edit) {
+                            bin.retain(|&e| !later.covers(&log[e as usize]));
+                        }
+                        bin.push(index);
+                    }
+                }
+            }
             if self.chunks[slot].is_some() {
                 self.update_chunk_samples(c, slot, &edit, reach);
             }
@@ -549,58 +663,16 @@ impl ChunkStore {
         reach: Aabb,
     ) {
         let o = c.origin();
-        let n = CHUNK_CORNERS as i32;
-        let local = |v: f32, oo: i32| v - oo as f32;
-        let lo = [
-            (det::floor(local(reach.min.x, o[0])) as i32).clamp(0, n - 1),
-            (det::floor(local(reach.min.y, o[1])) as i32).clamp(0, n - 1),
-            (det::floor(local(reach.min.z, o[2])) as i32).clamp(0, n - 1),
-        ];
-        let hi = [
-            (det::ceil(local(reach.max.x, o[0])) as i32).clamp(0, n - 1),
-            (det::ceil(local(reach.max.y, o[1])) as i32).clamp(0, n - 1),
-            (det::ceil(local(reach.max.z, o[2])) as i32).clamp(0, n - 1),
-        ];
-        let room_of = |p: Vec3| self.gen.room_open(p).clamp(-SDF_CLAMP, SDF_CLAMP);
-        let inside = |p: Vec3| self.chunk_at(p).is_some();
-        // Precompute new values first (immutable borrow), then write.
-        let chunk = self.chunks[slot].as_ref().expect("generated");
-        let mut updates = Vec::new();
-        for k in lo[2]..=hi[2] {
-            for j in lo[1]..=hi[1] {
-                for i in lo[0]..=hi[0] {
-                    let p = SampleGrid::corner_pos(o, i, j, k);
-                    if !inside(p) {
-                        continue; // outside the level: edits never apply
-                    }
-                    let old = chunk.value(i as usize, j as usize, k as usize);
-                    let v = edit
-                        .apply_to_sdf(old, p)
-                        .clamp(-SDF_CLAMP, SDF_CLAMP)
-                        .min(room_of(p))
-                        + 0.0;
-                    if v.to_bits() != old.to_bits() {
-                        updates.push((corner_index(i as usize, j as usize, k as usize), v));
-                    }
-                }
-            }
-        }
-        if updates.is_empty() {
-            return;
-        }
+        let (lo, hi) = edit_corner_range(o, reach);
+        let level = self.level_corners();
         let chunk = self.chunks[slot].as_mut().expect("generated");
         // Cells whose surface state may change: those touching updated corners.
         let cm = CHUNK_CELLS as usize - 1;
         let clo = lo.map(|v| (v as usize).saturating_sub(1).min(cm));
         let chi = hi.map(|v| (v as usize).min(cm));
         let before = chunk.count_surface(clo, chi);
-        if let Samples::Uniform(u) = chunk.samples {
-            chunk.samples = Samples::Dense(vec![u; CHUNK_CORNERS.pow(3)]);
-        }
-        if let Samples::Dense(d) = &mut chunk.samples {
-            for (idx, v) in updates {
-                d[idx] = v;
-            }
+        if !bake_edit(&self.gen, level, o, &mut chunk.samples, edit, lo, hi) {
+            return;
         }
         let after = chunk.count_surface(clo, chi);
         chunk.surface_cells = chunk.surface_cells + after - before;
@@ -706,6 +778,180 @@ impl ChunkStore {
             Samples::Dense(d) => d.clone(),
         })
     }
+}
+
+/// Pristine samples (generator only, clamped) of the chunk at `o`.
+///
+/// Uses the generator's 1-Lipschitz bound twice: first the whole padded
+/// chunk (27 probes), then an octree over the stored corners, where a block
+/// whose centre is further than its half-diagonal (plus a safety margin)
+/// beyond the clamp gets the clamp value without sampling each corner. The
+/// result is bit-identical to sampling every corner.
+fn pristine_samples(sampler: &RegionSampler, o: [i32; 3]) -> Samples {
+    let at = |i: f32, j: f32, k: f32| {
+        sampler.sample(Vec3::new(o[0] as f32 + i, o[1] as f32 + j, o[2] as f32 + k))
+    };
+    // If every block centre is far enough beyond the clamp, every stored and
+    // padded corner has the clamp value.
+    let (mut all_open, mut all_rock) = (true, true);
+    'blocks: for bz in UNIFORM_BLOCK_CENTERS {
+        for by in UNIFORM_BLOCK_CENTERS {
+            for bx in UNIFORM_BLOCK_CENTERS {
+                let v = at(bx, by, bz);
+                all_open &= v >= SDF_CLAMP + UNIFORM_BLOCK_RADIUS;
+                all_rock &= v <= -(SDF_CLAMP + UNIFORM_BLOCK_RADIUS);
+                if !all_open && !all_rock {
+                    break 'blocks;
+                }
+            }
+        }
+    }
+    if all_open {
+        return Samples::Uniform(SDF_CLAMP);
+    }
+    if all_rock {
+        return Samples::Uniform(-SDF_CLAMP);
+    }
+    let n = CHUNK_CORNERS;
+    // NaN marks corners still to sample: the octree fills the provably
+    // clamped blocks, then the rest is sampled a row run at a time.
+    let mut d = vec![f32::NAN; n * n * n];
+    cull_blocks(sampler, o, &mut d, [0; 3], [n - 1; 3]);
+    let xs: Vec<f32> = (0..n as i32).map(|i| (o[0] + i) as f32).collect();
+    let mut row = vec![0.0f32; n];
+    for k in 0..n {
+        for j in 0..n {
+            let base = corner_index(0, j, k);
+            let (y, z) = ((o[1] + j as i32) as f32, (o[2] + k as i32) as f32);
+            let mut i = 0;
+            while i < n {
+                if !d[base + i].is_nan() {
+                    i += 1;
+                    continue;
+                }
+                let start = i;
+                while i < n && d[base + i].is_nan() {
+                    i += 1;
+                }
+                sampler.sample_row(y, z, &xs[start..i], &mut row[start..i]);
+                for x in start..i {
+                    d[base + x] = row[x].clamp(-SDF_CLAMP, SDF_CLAMP) + 0.0;
+                }
+            }
+        }
+    }
+    Samples::Dense(d)
+}
+
+/// Blocks with fewer corners than this per axis are not tested.
+const MIN_CULL_BLOCK: usize = 4;
+
+/// Fills the blocks within corners `lo..=hi` of `d` whose every corner
+/// provably has the clamp value (see [`pristine_samples`]); leaves the rest.
+fn cull_blocks(
+    sampler: &RegionSampler,
+    o: [i32; 3],
+    d: &mut [f32],
+    lo: [usize; 3],
+    hi: [usize; 3],
+) {
+    let span = [0, 1, 2].map(|a| hi[a] - lo[a]);
+    if span.iter().all(|&s| s + 1 >= MIN_CULL_BLOCK) {
+        let c = [0, 1, 2].map(|a| (lo[a] + hi[a]) as f32 * 0.5);
+        let centre = Vec3::new(o[0] as f32 + c[0], o[1] as f32 + c[1], o[2] as f32 + c[2]);
+        let half = Vec3::new(span[0] as f32, span[1] as f32, span[2] as f32) * 0.5;
+        // 1-Lipschitz with a margin for the measured noise gradient bound.
+        let reach = SDF_CLAMP + half.length() * 1.05 + 0.25;
+        let v = sampler.sample(centre);
+        let fill = if v >= reach {
+            Some(SDF_CLAMP)
+        } else if v <= -reach {
+            Some(-SDF_CLAMP)
+        } else {
+            None
+        };
+        if let Some(fill) = fill {
+            for k in lo[2]..=hi[2] {
+                for j in lo[1]..=hi[1] {
+                    for i in lo[0]..=hi[0] {
+                        d[corner_index(i, j, k)] = fill;
+                    }
+                }
+            }
+            return;
+        }
+        if span.iter().all(|&s| s + 1 >= 2 * MIN_CULL_BLOCK) {
+            let mid = [0, 1, 2].map(|a| (lo[a] + hi[a]) / 2);
+            for oct in 0..8 {
+                let pick = |a: usize| {
+                    if oct >> a & 1 == 0 {
+                        (lo[a], mid[a])
+                    } else {
+                        (mid[a] + 1, hi[a])
+                    }
+                };
+                let (x, y, z) = (pick(0), pick(1), pick(2));
+                cull_blocks(sampler, o, d, [x.0, y.0, z.0], [x.1, y.1, z.1]);
+            }
+        }
+    }
+}
+
+/// Corner index range (inclusive, within `0..=32`) of the chunk at `o` that
+/// the edit reach box `reach` can touch.
+fn edit_corner_range(o: [i32; 3], reach: Aabb) -> ([i32; 3], [i32; 3]) {
+    let n = CHUNK_CORNERS as i32;
+    let lo = [0, 1, 2].map(|a| (det::floor(reach.min[a] - o[a] as f32) as i32).clamp(0, n - 1));
+    let hi = [0, 1, 2].map(|a| (det::ceil(reach.max[a] - o[a] as f32) as i32).clamp(0, n - 1));
+    (lo, hi)
+}
+
+/// Applies a geometry edit to the stored corners `lo..=hi` of the chunk at
+/// `o` (skipping corners outside the level, where edits never apply), exactly
+/// as [`ChunkStore::eval`] composes it. Returns true if any value changed.
+fn bake_edit(
+    gen: &Generator,
+    level: [i32; 3],
+    o: [i32; 3],
+    samples: &mut Samples,
+    edit: &TerrainEdit,
+    lo: [i32; 3],
+    hi: [i32; 3],
+) -> bool {
+    let mut changed = false;
+    for k in lo[2]..=hi[2] {
+        for j in lo[1]..=hi[1] {
+            for i in lo[0]..=hi[0] {
+                let g = [o[0] + i, o[1] + j, o[2] + k];
+                if (0..3).any(|a| g[a] < 0 || g[a] >= level[a]) {
+                    continue; // outside the level: edits never apply
+                }
+                let p = SampleGrid::corner_pos(o, i, j, k);
+                let idx = corner_index(i as usize, j as usize, k as usize);
+                let old = match samples {
+                    Samples::Uniform(u) => *u,
+                    Samples::Dense(d) => d[idx],
+                };
+                let room = gen.room_open(p).clamp(-SDF_CLAMP, SDF_CLAMP);
+                let v = edit
+                    .apply_to_sdf(old, p)
+                    .clamp(-SDF_CLAMP, SDF_CLAMP)
+                    .min(room)
+                    + 0.0;
+                if v.to_bits() == old.to_bits() {
+                    continue;
+                }
+                if let Samples::Uniform(u) = *samples {
+                    *samples = Samples::Dense(vec![u; CHUNK_CORNERS.pow(3)]);
+                }
+                if let Samples::Dense(d) = samples {
+                    d[idx] = v;
+                }
+                changed = true;
+            }
+        }
+    }
+    changed
 }
 
 /// World region whose corners feed a chunk's mesh (cells -1..32).
@@ -1078,6 +1324,240 @@ mod tests {
         assert!(g.values().iter().all(|v| *v == SDF_CLAMP));
         assert_eq!(s.sample_grid(c), g);
         assert!(s.mesh_surface_nets(c).is_empty());
+    }
+
+    /// Many random edits, clustered and spread, including ones overlapping
+    /// chunk and bin borders and the walls.
+    fn random_edits(center: Vec3, n: usize, seed: u64) -> Vec<TerrainEdit> {
+        let mut rng = ls_math::SplitMix64::new(seed);
+        (0..n)
+            .map(|i| {
+                let spread = if i % 3 == 0 { 120.0 } else { 14.0 };
+                let c = center
+                    + Vec3::new(
+                        rng.next_f32() - 0.5,
+                        rng.next_f32() - 0.5,
+                        rng.next_f32() - 0.5,
+                    ) * spread;
+                // Some centres exactly on chunk / bin planes.
+                let c = if i % 7 == 0 {
+                    Vec3::new(
+                        det::floor(c.x / 8.0) * 8.0,
+                        c.y,
+                        det::floor(c.z / 32.0) * 32.0,
+                    )
+                } else {
+                    c
+                };
+                let radius = 1.0 + rng.next_f32() * 5.0;
+                if i % 5 == 4 {
+                    TerrainEdit::AddSphere { center: c, radius }
+                } else {
+                    TerrainEdit::SubtractSphere { center: c, radius }
+                }
+            })
+            .collect()
+    }
+
+    /// Reference world SDF: every logged edit replayed at every point.
+    fn reference_eval(s: &ChunkStore, p: Vec3) -> f32 {
+        let gen = s.generator();
+        let mut d = gen.terrain(p);
+        if s.chunk_at(p).is_some() {
+            for e in s.edit_log() {
+                d = e.apply_to_sdf(d, p);
+            }
+        }
+        d.min(gen.room_open(p)).clamp(-SDF_CLAMP, SDF_CLAMP) + 0.0
+    }
+
+    /// `eval` (per-bin edit lists) equals replaying the whole log, bit for bit.
+    #[test]
+    fn binned_eval_matches_full_replay() {
+        let mut s = store(50, 50);
+        let (hit, _) = surface_point(&s);
+        for e in random_edits(hit, 300, 3) {
+            s.apply(e);
+        }
+        let mut rng = ls_math::SplitMix64::new(4);
+        for i in 0..20_000 {
+            let mut p = hit
+                + Vec3::new(
+                    rng.next_f32() - 0.5,
+                    rng.next_f32() - 0.5,
+                    rng.next_f32() - 0.5,
+                ) * 40.0;
+            if i % 4 == 0 {
+                // On bin / chunk planes and lattice corners.
+                p = Vec3::new(det::floor(p.x / 8.0) * 8.0, det::floor(p.y), p.z);
+            }
+            assert_eq!(
+                s.eval(p).to_bits(),
+                reference_eval(&s, p).to_bits(),
+                "{p:?}"
+            );
+        }
+        for p in [Vec3::new(-0.5, 64.0, 128.0), Vec3::new(256.0, 64.0, 128.0)] {
+            assert_eq!(s.eval(p).to_bits(), reference_eval(&s, p).to_bits());
+        }
+    }
+
+    /// Block culling in `pristine_samples` (Lipschitz bound) never changes a
+    /// stored sample: every corner of every chunk equals the clamped
+    /// generator sample, for several slider mixes. Release builds check all
+    /// corners of all chunks; debug builds a subset.
+    #[test]
+    fn culled_samples_match_generator_everywhere() {
+        let full = !cfg!(debug_assertions);
+        let mixes: &[(u8, u8)] = if full {
+            &[(0, 0), (50, 60), (75, 20), (100, 100)]
+        } else {
+            &[(50, 60), (100, 100)]
+        };
+        for &(e, d) in mixes {
+            let mut s = store(e, d);
+            let gen = s.generator().clone();
+            let coords = s.chunk_coords();
+            let (chunk_step, corner_step) = if full { (1, 1) } else { (23, 7) };
+            for c in coords.into_iter().step_by(chunk_step) {
+                s.ensure_generated(c);
+                let samples = s.chunk_samples(c).unwrap();
+                let o = c.origin();
+                for (n, v) in samples.iter().enumerate().step_by(corner_step) {
+                    let (i, j, k) = (
+                        n % CHUNK_CORNERS,
+                        (n / CHUNK_CORNERS) % CHUNK_CORNERS,
+                        n / CHUNK_CORNERS.pow(2),
+                    );
+                    let p = SampleGrid::corner_pos(o, i as i32, j as i32, k as i32);
+                    let want = gen.sample(p).clamp(-SDF_CLAMP, SDF_CLAMP) + 0.0;
+                    assert_eq!(v.to_bits(), want.to_bits(), "{e}/{d} {c:?} {p:?}");
+                }
+            }
+        }
+    }
+
+    /// Clustered, nested craters interleaved with AddSpheres: pruning covered
+    /// craters from the bins keeps `eval` bit-identical to a full replay
+    /// and keeps the bins short.
+    #[test]
+    fn pruned_clustered_craters_match_full_replay() {
+        let mut s = store(50, 50);
+        let (hit, _) = surface_point(&s);
+        let mut rng = ls_math::SplitMix64::new(11);
+        let mut jitter = |scale: f32| {
+            Vec3::new(
+                rng.next_f32() - 0.5,
+                rng.next_f32() - 0.5,
+                rng.next_f32() - 0.5,
+            ) * scale
+        };
+        for i in 0..240 {
+            let c = hit + jitter(3.0);
+            let radius = 1.0 + (i % 6) as f32 * 0.8 + jitter(0.5).x;
+            if i % 5 == 3 {
+                s.apply(TerrainEdit::AddSphere {
+                    center: c,
+                    radius: radius * 0.5,
+                });
+            } else {
+                s.apply(TerrainEdit::SubtractSphere { center: c, radius });
+            }
+            // Exact nesting, and a same-sized repeat (not strictly covered).
+            if i % 9 == 0 {
+                s.apply(TerrainEdit::SubtractSphere { center: c, radius });
+                s.apply(TerrainEdit::SubtractSphere {
+                    center: c,
+                    radius: radius + 0.5,
+                });
+            }
+        }
+        for _ in 0..20_000 {
+            let p = hit + jitter(24.0);
+            assert_eq!(
+                s.eval(p).to_bits(),
+                reference_eval(&s, p).to_bits(),
+                "{p:?}"
+            );
+        }
+        let c = s.chunk_at(hit).unwrap();
+        let edits = &s.chunk_edits[s.chunk_slot(c).unwrap()];
+        let longest = edits.bins.iter().map(Vec::len).max().unwrap();
+        assert!(
+            longest * 2 < edits.all.len(),
+            "bins not pruned: {longest} of {}",
+            edits.all.len()
+        );
+    }
+
+    /// Chunks generated after 200 edits (baked once each) equal chunks that
+    /// were generated first and edited incrementally, and match `eval`.
+    #[test]
+    fn baked_generation_after_many_edits_equals_incremental() {
+        let mut a = store(75, 30);
+        let (hit, _) = surface_point(&a);
+        let edits = random_edits(hit, 200, 9);
+        let region = Aabb::from_center_half_extents(hit, Vec3::splat(24.0));
+        let coords = a.chunks_overlapping(region);
+        for &c in &coords {
+            a.ensure_generated(c);
+        }
+        for e in &edits {
+            a.apply(*e);
+        }
+        let mut b = ChunkStore::replay(a.generator().clone(), &edits);
+        for &c in &coords {
+            b.ensure_generated(c);
+            let (sa, sb) = (a.chunk_samples(c).unwrap(), b.chunk_samples(c).unwrap());
+            assert!(
+                sa.iter().zip(&sb).all(|(x, y)| x.to_bits() == y.to_bits()),
+                "{c:?}"
+            );
+            let o = c.origin();
+            for (idx, v) in sb.iter().enumerate().step_by(13) {
+                let (i, j, k) = (
+                    idx % CHUNK_CORNERS,
+                    (idx / CHUNK_CORNERS) % CHUNK_CORNERS,
+                    idx / CHUNK_CORNERS.pow(2),
+                );
+                let p = SampleGrid::corner_pos(o, i as i32, j as i32, k as i32);
+                assert_eq!(v.to_bits(), b.eval(p).to_bits(), "{p:?}");
+            }
+            let slot = a.chunk_slot(c).unwrap();
+            let (ca, cb) = (
+                a.chunks[slot].as_ref().unwrap(),
+                b.chunks[slot].as_ref().unwrap(),
+            );
+            assert_eq!(ca.surface_cells, cb.surface_cells, "{c:?}");
+            let m = CHUNK_CELLS as usize - 1;
+            assert_eq!(cb.surface_cells, cb.count_surface([0; 3], [m; 3]));
+            assert_eq!(a.mesh_surface_nets(c).hash(), b.mesh_surface_nets(c).hash());
+        }
+    }
+
+    /// The fast surface-cell count agrees with the per-cell test.
+    #[test]
+    fn surface_count_matches_cell_test() {
+        let mut s = store(50, 60);
+        let c = ChunkCoord::new(3, 1, 3);
+        s.ensure_generated(c);
+        let ch = s.chunks[s.chunk_slot(c).unwrap()].as_ref().unwrap();
+        for (lo, hi) in [
+            ([0; 3], [31; 3]),
+            ([3, 0, 7], [9, 31, 8]),
+            ([31; 3], [31; 3]),
+        ] {
+            let mut n = 0;
+            for k in lo[2]..=hi[2] {
+                for j in lo[1]..=hi[1] {
+                    for i in lo[0]..=hi[0] {
+                        n += ch.is_surface_cell(i, j, k) as u32;
+                    }
+                }
+            }
+            assert_eq!(ch.count_surface(lo, hi), n);
+        }
+        assert!(ch.surface_cells > 1000);
     }
 
     #[test]

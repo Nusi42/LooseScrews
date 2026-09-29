@@ -5,6 +5,9 @@ These types live in `crates/ls-math` so that crates developed in parallel (`ls-w
 of them is a cross-crate change: update this page, and every implementer and caller, in
 the same change.
 
+Overview of all crates: [overview.md](overview.md); determinism rules and golden hashes in
+depth: [determinism.md](determinism.md).
+
 ## Coordinates, units and time
 
 | Item | Convention |
@@ -19,12 +22,12 @@ the same change.
 
 ## Determinism
 
-- Transcendentals only through `ls_math::det` (`sin, cos, sin_cos, tan, asin, acos, atan2,
-  sqrt, exp, ln, powf, floor, ceil, round, fmod`), which wraps `libm`.
-- No `mul_add`. `Vec3`, `Quat`, `Mat3` use plain `+ - * /` only.
-- Randomness: `SplitMix64` to derive seeds, `Pcg32::new(seed, stream)` (reference PCG32) or
-  `Pcg32::from_seed(seed, stream)` (seed scrambled first) per subsystem. Give each subsystem
-  its own stream id so adding a draw in one place never shifts another.
+The rules (floats, `ls_math::det`, no `mul_add`, ordering, no environment) and the golden-hash
+tests are in [determinism.md](determinism.md). The contract part is the RNG streams:
+
+- `SplitMix64` derives seeds; `Pcg32::new(seed, stream)` (reference PCG32) or
+  `Pcg32::from_seed(seed, stream)` (seed scrambled first) gives each subsystem its own stream,
+  so adding a draw in one place never shifts another.
 - Stream ids in use:
 
   | Constant | Value | Use |
@@ -39,8 +42,10 @@ the same change.
   peer derives the same `MatchSetup` from the share code and rule set.
 
   `ls-worldgen` draws no RNG streams: its noise and features are integer hashes of the seed.
+  (`ls-bots` uses its own stream for bot behaviour; it is not part of the deterministic core.)
 - `det::tests::golden_bits` and the RNG reference-vector tests run on native and on wasm32
-  (see `CLAUDE.md` for the command); they must stay identical on both.
+  (commands in [determinism.md](determinism.md#the-wasm-cross-check)); they must stay
+  identical on both.
 
 ## Terrain (`ls_math::terrain`)
 
@@ -134,7 +139,9 @@ back-face culling and `frontFace: "ccw"`.
 `LS` followed by exactly 26 Crockford base32 symbols (130 bits: version u8, seed u64,
 7 sliders x 7 bit, CRC-8, 1 pad bit), printed as `LSab-cdef-ghij-klmn-opqr-stuv-wxyz`
 (34 characters). Decoding ignores case, dashes and whitespace and reads O as 0 and I/L as 1.
-`ls_worldgen::ShareCode` is the reference; the web start screen only checks this format.
+`ls_worldgen::ShareCode` is the reference. The web start screen checks the format in
+TypeScript (`web/src/ui/shareCode.ts`) and then decodes the code, checksum and generator
+version through `ls-wasm`'s `checkShareCode`.
 
 ## Network quantization (`ls-net`)
 

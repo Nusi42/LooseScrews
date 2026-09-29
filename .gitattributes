@@ -1,0 +1,5 @@
+# Normalize line endings: LF in the repository and working tree, except Windows scripts.
+* text=auto eol=lf
+*.ps1 text eol=crlf
+*.png binary
+*.wasm binary

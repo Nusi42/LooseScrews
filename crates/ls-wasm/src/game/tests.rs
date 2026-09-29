@@ -511,3 +511,221 @@ fn online_client_under_latency_applies_look_exactly_once() {
         Some("match over")
     );
 }
+
+// ----- shot prediction, overlays --------------------------------------------
+
+/// Over a 4-tick (each way) link the player's shot is drawn on the frame the
+/// trigger is pulled, long before any snapshot can carry it; the server's
+/// projectiles then take over without a visible jump, nothing is dropped or
+/// unexpected, and the ping is measured.
+#[test]
+fn online_shots_are_predicted_and_confirmed_under_latency() {
+    let code = ShareCode::new(4242, Sliders::new(40, 30));
+    let cfg = RoomConfig {
+        pregenerate: false,
+        ..RoomConfig::default()
+    };
+    let mut room = Room::new(MatchConfig::paint_the_void(code), cfg).unwrap();
+    let hello = Message::Hello(Hello::new("gunner", None)).encode().unwrap();
+    let id = room.join_packet(&hello).expect("join");
+    let mut down = Lane::new();
+    let mut up = Lane::new();
+    for o in room.take_outgoing() {
+        down.push(4, o.bytes);
+    }
+    let mut core: Option<GameCore> = None;
+    let mut fire_from = None;
+    let mut first_seen = None;
+    let mut max_offset = 0.0f32;
+    let laser = WeaponTable::builtin().find("scrap_laser").unwrap();
+    for now in 1..=150u64 {
+        while let Some(b) = up.pop(now) {
+            room.handle_packet(id, &b).expect("valid input");
+        }
+        room.step();
+        for o in room.take_outgoing() {
+            down.push(now + 4, o.bytes);
+        }
+        // The host clock: one frame per tick.
+        let clock_ms = now as f64 * 1000.0 / 60.0;
+        if let Some(c) = &mut core {
+            c.set_clock_ms(clock_ms);
+        }
+        while let Some(b) = down.pop(now) {
+            match &mut core {
+                None => {
+                    let mut c = GameCore::online(&b).expect("welcome");
+                    c.set_clock_ms(clock_ms);
+                    core = Some(c);
+                }
+                Some(c) => assert_eq!(c.handle_packet(&b).expect("valid packet"), None),
+            }
+        }
+        let Some(c) = &mut core else { continue };
+        let Mode::Online(o) = &c.mode else {
+            unreachable!()
+        };
+        if o.session.is_synced() && fire_from.is_none() {
+            fire_from = Some(now);
+        }
+        let firing = fire_from.is_some_and(|f| now < f + 60);
+        let controls = Controls {
+            forward: 0.5,
+            yaw_right: 0.002,
+            buttons: if firing {
+                ls_sim::Buttons::FIRE_PRIMARY.0
+            } else {
+                0
+            },
+            weapon_select: laser.0 + 1,
+            ..Default::default()
+        };
+        for p in c.frame(DT, controls) {
+            up.push(now + 4, p);
+        }
+        let me = c.player();
+        let own = c.projectiles().iter().filter(|p| p.owner == me).count();
+        if firing && own > 0 && first_seen.is_none() {
+            first_seen = Some(now);
+        }
+        let Mode::Online(o) = &c.mode else {
+            unreachable!()
+        };
+        if let Some(snap) = o.session.latest_snapshot() {
+            for p in &snap.projectiles {
+                max_offset = max_offset.max(o.shots.offset(p.id).length());
+            }
+        }
+    }
+    let c = core.expect("joined");
+    let fire_from = fire_from.expect("synchronized");
+    assert!(fire_from < 40, "synced at {fire_from}");
+    assert_eq!(
+        first_seen,
+        Some(fire_from),
+        "the first shot is drawn on the frame it is fired"
+    );
+    let d = c.debug_stats();
+    let s = d.shots;
+    assert!(s.predicted >= 4, "{s:?}");
+    assert_eq!(s.unpredicted, 0, "{s:?}");
+    assert!(s.dropped <= 1, "{s:?}");
+    assert!(s.confirmed + s.dropped >= s.predicted - 1, "{s:?}");
+    assert!(max_offset < 0.1, "reconciliation offset {max_offset}");
+    assert!(s.confirmed >= 3, "the server fired them too: {s:?}");
+    let ping = d.ping_ms.expect("pongs arrived");
+    // 4 + 4 ticks of link latency (133 ms) on the host clock.
+    assert!((125.0..=155.0).contains(&ping), "ping {ping} ms");
+    assert!(d.synced);
+    // The first snapshot anchors the prediction (counted as a snap).
+    assert!(d.corrected + d.snapped <= 1, "{d:?}");
+}
+
+#[test]
+fn online_scoreboard_counts_kills_and_match_info_reports_the_end() {
+    let mut l = connect();
+    for _ in 0..8 {
+        l.tick(Controls::default());
+    }
+    let rows = l.core.scoreboard();
+    assert_eq!(rows.len(), 1);
+    assert!(rows[0].is_you && rows[0].alive);
+    assert_eq!((rows[0].kills, rows[0].deaths), (0, 0));
+    assert!(!l.core.match_info().over);
+
+    let me = l.core.player();
+    let kills = Message::Events(vec![
+        NetEvent::Kill {
+            tick: 5,
+            killer: me,
+            victim: 5,
+            weapon: 0,
+        },
+        NetEvent::Kill {
+            tick: 6,
+            killer: 5,
+            victim: me,
+            weapon: 0,
+        },
+        NetEvent::Kill {
+            tick: 7,
+            killer: me,
+            victim: me,
+            weapon: 0,
+        },
+        NetEvent::Kill {
+            tick: 8,
+            killer: u8::MAX,
+            victim: me,
+            weapon: 0,
+        },
+    ])
+    .encode()
+    .unwrap();
+    assert_eq!(l.core.handle_packet(&kills).unwrap(), None);
+    let feed = l.core.take_feed();
+    assert_eq!(feed.len(), 4, "{feed:?}");
+    let you = l.core.scoreboard()[0];
+    assert_eq!(
+        (you.kills, you.deaths),
+        (1, 3),
+        "self-destructs and crashes are deaths, not kills"
+    );
+
+    // A snapshot after the timer ran out: the match is over, the leader wins.
+    let Mode::Online(o) = &l.core.mode else {
+        unreachable!()
+    };
+    let newest = o.session.latest_snapshot().unwrap().tick;
+    let end = Message::Snapshot(Box::new(ls_net::SnapshotMsg {
+        baseline: None,
+        snapshot: ls_net::PackedSnapshot {
+            tick: newest + 2,
+            ack_input: newest + 2,
+            edit_base: l.core.edit_count(),
+            scores: vec![30, 70, 400],
+            match_ticks_left: 0,
+            ..Default::default()
+        },
+    }))
+    .encode()
+    .unwrap();
+    assert_eq!(l.core.handle_packet(&end).unwrap(), None);
+    let m = l.core.match_info();
+    assert!(m.over);
+    assert_eq!(m.winner, Some(1));
+    assert_eq!((m.team_cells, m.surface_cells), ([30, 70], 400));
+    // Time since the end grows with the server time estimate.
+    let before = m.secs_since_end;
+    for _ in 0..30 {
+        l.core.frame(DT, Controls::default());
+    }
+    let after = l.core.match_info().secs_since_end;
+    assert!(after > before + 0.05, "{before} -> {after}");
+    // The own row is still listed although the snapshot had no ships.
+    assert!(l.core.scoreboard().iter().any(|r| r.is_you));
+}
+
+#[test]
+fn practice_scoreboard_and_match_info() {
+    let mut g = small_practice(2);
+    let rows = g.scoreboard();
+    assert_eq!(rows.len(), 3);
+    assert_eq!(rows.iter().filter(|r| r.is_you).count(), 1);
+    assert_eq!(rows[0].team, 0, "sorted by team");
+    assert!(rows[1..].iter().all(|r| r.team == 1));
+    let m = g.match_info();
+    assert!(!m.over);
+    assert_eq!(m.secs_since_end, 0.0);
+    assert_eq!(g.debug_stats().ping_ms, None);
+    // End the match: the world stops, the end screen time runs.
+    if let Mode::Practice(p) = &mut g.mode {
+        p.world.mode_mut().end_tick = p.world.tick() + 1;
+    }
+    for _ in 0..10 {
+        g.frame(DT, Controls::default());
+    }
+    let m = g.match_info();
+    assert!(m.over);
+    assert!(m.secs_since_end > 0.1, "{}", m.secs_since_end);
+}

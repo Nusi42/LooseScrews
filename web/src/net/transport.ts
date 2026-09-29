@@ -1,4 +1,5 @@
-// WebSocket transport to ls-server: one binary WebSocket message per encoded
+// WebSocket transport to ls-server (the fallback when WebTransport is not
+// available, see connect.ts): one binary WebSocket message per encoded
 // ls-net Message, both directions. Incoming packets are queued and drained by
 // the frame loop (the poll-based shape of ls-net's `Transport` trait).
 // WebSocket is reliable and ordered, so "unreliable" packets go the same way.
@@ -54,6 +55,7 @@ export class TransportError extends Error {
 }
 
 export class WebSocketTransport {
+  readonly kind = "websocket";
   private readonly socket: SocketLike;
   private readonly inbox: Uint8Array[] = [];
   private closedReason: string | null = null;

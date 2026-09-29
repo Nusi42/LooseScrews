@@ -26,4 +26,5 @@ Units follow the design doc: 1 u = one ship length, speeds in u/s, durations in 
 (the simulation converts them to 60 Hz ticks with `ls_math::Tick::ticks_for_secs`).
 
 The server loads a rule set with `--ruleset data/rulesets/<mode>.ron`; see
-`docs/implementation-plan.md` section 4.3 for the full field list.
+`docs/dev-guide.md` sections 8 (adding a weapon) and 9 (adding a rule set) for the full
+field lists.

@@ -19,6 +19,7 @@ use wasm_bindgen::prelude::*;
 pub mod controls;
 pub mod game;
 pub mod sharecode;
+pub mod shots;
 pub mod stream;
 
 use crate::controls::Controls;
@@ -217,6 +218,59 @@ pub const SHIP_STRIDE: usize = 11;
 /// Floats per projectile in [`Game::projectiles`].
 pub const PROJECTILE_STRIDE: usize = 8;
 
+/// Numbers in [`Game::debug_stats`].
+pub const DEBUG_STATS_LEN: usize = 10;
+/// Numbers per row in [`Game::scoreboard`].
+pub const SCORE_STRIDE: usize = 6;
+/// Numbers in [`Game::match_info`].
+pub const MATCH_INFO_LEN: usize = 6;
+
+/// `[pingMs (-1 = unknown), accepted, corrected, snapped, lastError,
+/// shotsPredicted, shotsConfirmed, shotsDropped, shotsUnpredicted, synced]`.
+pub fn debug_stats_array(d: &game::DebugStats) -> Vec<f64> {
+    vec![
+        d.ping_ms.unwrap_or(-1.0),
+        d.accepted as f64,
+        d.corrected as f64,
+        d.snapped as f64,
+        d.last_error as f64,
+        d.shots.predicted as f64,
+        d.shots.confirmed as f64,
+        d.shots.dropped as f64,
+        d.shots.unpredicted as f64,
+        d.synced as u8 as f64,
+    ]
+}
+
+/// Per row `[id, team, alive, kills, deaths, isYou]`.
+pub fn scoreboard_array(rows: &[game::ScoreRow]) -> Vec<f64> {
+    let mut v = Vec::with_capacity(rows.len() * SCORE_STRIDE);
+    for r in rows {
+        v.extend_from_slice(&[
+            r.id as f64,
+            r.team as f64,
+            r.alive as u8 as f64,
+            r.kills as f64,
+            r.deaths as f64,
+            r.is_you as u8 as f64,
+        ]);
+    }
+    v
+}
+
+/// `[over, winner (-1 = draw / none), team0Cells, team1Cells, surfaceCells,
+/// secsSinceEnd]`.
+pub fn match_info_array(m: &game::MatchInfo) -> Vec<f64> {
+    vec![
+        m.over as u8 as f64,
+        m.winner.map_or(-1.0, |w| w as f64),
+        m.team_cells[0] as f64,
+        m.team_cells[1] as f64,
+        m.surface_cells as f64,
+        m.secs_since_end as f64,
+    ]
+}
+
 /// The running game (online or practice), see `game::GameCore`.
 #[wasm_bindgen]
 pub struct Game {
@@ -270,6 +324,13 @@ impl Game {
     pub fn bounds(&self) -> Vec<f32> {
         let b = self.core.bounds();
         vec![b.min.x, b.min.y, b.min.z, b.max.x, b.max.y, b.max.z]
+    }
+
+    /// Sets the clock (ms, e.g. `performance.now()`) that times pings; call
+    /// once per frame before handling that frame's packets.
+    #[wasm_bindgen(js_name = setClockMs)]
+    pub fn set_clock_ms(&mut self, ms: f64) {
+        self.core.set_clock_ms(ms);
     }
 
     /// Handles one packet from the server. Returns the reason if the server
@@ -383,6 +444,23 @@ impl Game {
         self.core.take_feed()
     }
 
+    /// Debug counters, [`DEBUG_STATS_LEN`] numbers (see [`debug_stats_array`]).
+    #[wasm_bindgen(js_name = debugStats)]
+    pub fn debug_stats(&self) -> Vec<f64> {
+        debug_stats_array(&self.core.debug_stats())
+    }
+
+    /// Scoreboard, [`SCORE_STRIDE`] numbers per row (see [`scoreboard_array`]).
+    pub fn scoreboard(&self) -> Vec<f64> {
+        scoreboard_array(&self.core.scoreboard())
+    }
+
+    /// Match result, [`MATCH_INFO_LEN`] numbers (see [`match_info_array`]).
+    #[wasm_bindgen(js_name = matchInfo)]
+    pub fn match_info(&self) -> Vec<f64> {
+        match_info_array(&self.core.match_info())
+    }
+
     /// Meshes the next chunk around the camera (dirty chunks first), or
     /// `undefined` when all chunks in range are current. Call repeatedly
     /// within the frame's meshing budget.
@@ -454,6 +532,50 @@ mod tests {
         sorted.sort();
         assert_eq!(ids, sorted, "WeaponTable sorts by id");
         assert_eq!(super::weapon_names().len(), ids.len());
+    }
+
+    #[test]
+    fn overlay_arrays_have_the_documented_layout() {
+        use crate::game::{DebugStats, MatchInfo, ScoreRow};
+        let d = super::debug_stats_array(&DebugStats {
+            ping_ms: None,
+            corrected: 2,
+            synced: true,
+            ..Default::default()
+        });
+        assert_eq!(d.len(), super::DEBUG_STATS_LEN);
+        assert_eq!((d[0], d[2], d[9]), (-1.0, 2.0, 1.0));
+        let rows = [
+            ScoreRow {
+                id: 3,
+                team: 1,
+                alive: true,
+                kills: 4,
+                deaths: 1,
+                is_you: false,
+            },
+            ScoreRow {
+                id: 0,
+                team: 0,
+                alive: false,
+                kills: 0,
+                deaths: 2,
+                is_you: true,
+            },
+        ];
+        let s = super::scoreboard_array(&rows);
+        assert_eq!(s.len(), 2 * super::SCORE_STRIDE);
+        assert_eq!(&s[..6], &[3.0, 1.0, 1.0, 4.0, 1.0, 0.0]);
+        assert_eq!(&s[6..], &[0.0, 0.0, 0.0, 0.0, 2.0, 1.0]);
+        let m = super::match_info_array(&MatchInfo {
+            over: true,
+            winner: None,
+            team_cells: [10, 20],
+            surface_cells: 100,
+            secs_since_end: 1.5,
+        });
+        assert_eq!(m, vec![1.0, -1.0, 10.0, 20.0, 100.0, 1.5]);
+        assert_eq!(m.len(), super::MATCH_INFO_LEN);
     }
 
     #[test]

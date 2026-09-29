@@ -8,11 +8,18 @@
 //   remoteShips(): SHIP_STRIDE floats each  [id, team, alive, boosting, px, py, pz, qx, qy, qz, qw]
 //   projectiles(): PROJECTILE_STRIDE floats [kind, owner, px, py, pz, vx, vy, vz]
 //   frame() controls: CONTROLS_LEN floats   [forward, right, up, rollRight, yawRight, pitchUp, buttons, weaponSelect]
+//   debugStats():  DEBUG_STATS_LEN numbers  [pingMs (-1 = unknown), accepted, corrected, snapped, lastError,
+//                                            shotsPredicted, shotsConfirmed, shotsDropped, shotsUnpredicted, synced]
+//   scoreboard():  SCORE_STRIDE numbers each [id, team, alive, kills, deaths, isYou]
+//   matchInfo():   MATCH_INFO_LEN numbers   [over, winner (-1 = draw/none), team0Cells, team1Cells, surfaceCells, secsSinceEnd]
 
 export const POSE_LEN = 11;
 export const SHIP_STRIDE = 11;
 export const PROJECTILE_STRIDE = 8;
 export const CONTROLS_LEN = 8;
+export const DEBUG_STATS_LEN = 10;
+export const SCORE_STRIDE = 6;
+export const MATCH_INFO_LEN = 6;
 
 export interface ChunkMeshHandle {
   readonly key: string;
@@ -53,12 +60,17 @@ export interface GameHandle {
   readonly editCount: number;
   bounds(): Float32Array;
   handlePacket(packet: Uint8Array): string | undefined;
+  /** Clock (ms) that times pings; set once per frame before handling packets. */
+  setClockMs(ms: number): void;
   frame(dt: number, controls: Float32Array): unknown[];
   localPose(): Float32Array | undefined;
   remoteShips(): Float32Array;
   projectiles(): Float32Array;
   hud(): HudStateHandle;
   takeFeed(): string[];
+  debugStats(): Float64Array;
+  scoreboard(): Float64Array;
+  matchInfo(): Float64Array;
   meshNext(x: number, y: number, z: number): ChunkMeshHandle | undefined;
   takeUnloads(x: number, y: number, z: number): string[];
   pendingChunks(x: number, y: number, z: number): number;

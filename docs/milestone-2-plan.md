@@ -171,7 +171,7 @@ Checks at integration (CARGO_TARGET_DIR=target/integrator-c): `pwsh tools/ci.ps1
 WebTransport (7 bots, 90 s, worst p99 317 / 295 us); stress and soak runs in the acceptance
 section below.
 
-Open (after M2):
+Open (after M2; scheduled in [implementation-plan.md §8, carried-over items](implementation-plan.md#carried-over-items)):
 - Bandwidth: busy 32-ship fights average within 17,280 B/s at every baseline age, but the
   busiest snapshots are up to about 6 % over at a 4-tick and 19 % over at a 6-tick baseline
   (`busy_fight_with_projectiles_fits_the_budget`, four seeds; netcode.md). New projectiles'

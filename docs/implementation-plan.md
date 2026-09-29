@@ -180,8 +180,9 @@ brackets and [milestone-2-plan.md](milestone-2-plan.md)):
   [M2: closed by the browser smoke test, `tools/browser-smoke`, part of `tools/ci.*`.]
 - **Dual contouring is not used in play** (see wave 4 above): either make it fast enough for
   the remesh budget or keep surface nets for M1 and move sharp edges to a later milestone.
+  [Scheduled: M4, see §8.]
 - **Soak test.** Passed manually: 3 bots for 60 minutes (12 matches, 0 protocol errors, 0 desyncs, 0 disconnects, max reconciliation error 0.134 u, server p99 about 0.06 ms). It is not part of `tools/ci.*`.
-- **No hosted CI.** `tools/ci.ps1` / `tools/ci.sh` run locally only.
+- **No hosted CI.** `tools/ci.ps1` / `tools/ci.sh` run locally only. [Scheduled: M5, see §8.]
 - **Handshake does not check game data.** Weapons and ship tuning are compiled into every
   binary and are not compared in `Hello`/`Welcome`; a client built from different `data/` would
   desync silently. A data hash in the handshake (or bumping `PROTOCOL_VERSION` on data
@@ -190,6 +191,7 @@ brackets and [milestone-2-plan.md](milestone-2-plan.md)):
 - **Lag compensation estimates the shooter's view tick** from the acked snapshot (error below
   one tick on average); an exact value needs the client's render tick in `InputMsg`, a protocol
   change (see [architecture/game-glue.md](architecture/game-glue.md#lag-compensation)).
+  [Scheduled: M5, see §8.]
 - **Pickups, scrap piles and wrecks are not drawn** in the browser (they work in the simulation;
   see `userDocs/player-manual.md`). Remote pilots show as "Player N", not by name. [M2: closed;
   generic entities are drawn from their data-driven visuals and name tags show player names.]
@@ -217,12 +219,58 @@ Commands and details: [dev-guide.md](dev-guide.md#4-tests) and [architecture/det
 | 6DOF prediction errors in tight tunnels | Same `ls-sim` code on client (WASM) and server; reconciliation with smoothing |
 | Scope creep from the full design | Strict M1 table above; everything else goes to later milestones |
 
-## 8. Later milestones
+## 8. Milestones
 
-| Milestone | Content |
-| --- | --- |
-| M2 Arsenal and physics | All weapons from the design doc, Tectonic Charge, debris physics, surface states, ship types, gadgets (Shield, Cloak, Decoy), rule set editor |
-| M3 Modes and lobby | Team Brawl, The Squeeze, Instagib, Heist, Hot Reactor, Last Color Standing, duels; lobby service, server list, invites, party codes |
-| M4 The level has moods | Comedy director and events, remaining sliders (verticality, gravity chaos, palette, instability), monochrome pigment, The Architect |
-| M5 Platforms and ops | Tauri app with UDP, WebRTC fallback, WebGL2 fallback, regional deployment with Agones or Nomad, bandwidth optimization |
-| M6 Coop and business | Deep Dig, Tethered, Escort the Intern; cosmetics store, creator economy |
+| Milestone | Status | Content |
+| --- | --- | --- |
+| M1 Vertical slice | Done | See sections 1–5 |
+| M2 Arsenal and physics | Done | All weapons from the design doc, Tectonic Charge, debris physics, surface states, ship types, gadgets (Shield, Cloak, Decoy), rule set editor — see [milestone-2-plan.md](milestone-2-plan.md) |
+| M3 Modes and lobby | Next | Team Brawl, The Squeeze, Instagib, Heist, Hot Reactor, Last Color Standing, duels; lobby service, server list, invites, party codes |
+| M4 The level has moods | Planned | Comedy director and events, remaining sliders (verticality, gravity chaos, palette, instability), monochrome pigment, The Architect |
+| M5 Platforms and ops | Planned | Tauri app with UDP, WebRTC fallback, WebGL2 fallback, regional deployment with Agones or Nomad, bandwidth optimization |
+| M6 Coop and business | Planned | Deep Dig, Tethered, Escort the Intern; cosmetics store, creator economy |
+
+### Carried-over items
+
+Open items from finished milestones, scheduled into the milestone where they fit. Each
+milestone plan copies its items into its own scope table when it starts.
+
+**M3 Modes and lobby**
+- **Match rebuild blocks joins.** Building the next match (0.6–1.6 s) runs on the sim thread,
+  so players joining during it wait for their Welcome. Build the next match off the sim thread
+  and swap it in (matters more with lobby-driven match rotation). *From M1.*
+- **Tectonic collapse tick spike.** One collapse makes a single 2–7 ms tick (a 35 u exact
+  crater plus about 30 crack edits in one tick). p99 is unaffected; spread the crack craters
+  over the following ticks (sim behaviour change, bump `SIM_BEHAVIOR_VERSION`). *From M2.*
+- **Weapon state on the wire.** Send `WeaponState::shots` in `Message::Inventory` so the shot
+  predictor no longer infers the Scatter/Corkscrew fan phase, and add a weapon-state byte to
+  `NetWeapon` so the Paint Thrower colour survives a rejoin. *From M2.*
+- **Own Leech Arc beam drawn locally** instead of one round trip late. *From M2.*
+- **Bot navigation cost.** Building the nav grid costs about 2–3 s of CPU per bot per match;
+  share one grid per match between bots in the same process, or cache it per share code.
+  *From M2.*
+
+**M4 The level has moods**
+- **Dual contouring in play.** The sharp-edged mesher is golden-hashed and seam-free but costs
+  4–13 ms per busy chunk against 0.5–0.8 ms for surface nets, so gameplay still meshes with
+  surface nets. Make it fit the per-frame remesh budget (or remesh with it in the background)
+  to get the crisp mine look from the design doc. *From M1.*
+
+**M5 Platforms and ops**
+- **Bandwidth worst case (accepted for now).** Busy 32-ship fights average within
+  17,280 B/s at every baseline age, but the busiest snapshots are up to about 6 % over at a
+  4-tick and 19 % over at a 6-tick baseline (`busy_fight_with_projectiles_fits_the_budget`).
+  New projectiles' velocity residuals dominate: predict them from the owner's orientation and
+  weapon speed, or send coarser new-projectile velocities (protocol change). *From M2.*
+- **Exact lag-compensation view tick.** The server estimates what the shooter saw from the
+  acked snapshot (under one tick of error on average); sending the client's render tick in
+  `InputMsg` makes it exact (protocol change). *From M1.*
+- **Hosted CI.** `tools/ci.*` runs locally only. Needs a runner with a GPU for the browser
+  smoke test (or `LS_SKIP_BROWSER_SMOKE` on GPU-less runners), and a dedicated quiet machine
+  for tick-time assertions. *From M1/M2.*
+- **Tick timing is wall-clock.** e2e p99 checks fail under outside load (parallel builds,
+  a file sync client syncing the checkout); stress and soak runs need a quiet machine, ideally the hosted
+  runner above, or a CPU-time based check. *From M2.*
+- **Chrome/Edge console warning** "powerPreference option is currently ignored" on Windows
+  (crbug 369219127); drop the option on Windows once the renderer targets more platforms.
+  *From M2.*

@@ -129,6 +129,91 @@ mod tests {
         assert!(!ship.gadget_active, "shield drops at zero energy");
     }
 
+    /// Scenario: the weapon data's shield setting decides what an enemy hit
+    /// does to a shielded ship (Scrap Laser `Wears`: energy pays, Rivet Gun
+    /// `PassThrough`: that fraction reaches the hull); upkeep drains energy
+    /// while boosting (no regen) and the shield drops at zero energy.
+    #[test]
+    fn enemy_weapons_follow_their_shield_setting_and_upkeep_drops_it() {
+        use crate::gadgets::test_util::*;
+        use crate::{Buttons, InputCmd, WeaponSlot, WeaponState};
+
+        let hit = |weapon: &str, shield: bool| {
+            let mut w = world_with_gadget("shield");
+            let mut t = room();
+            let a = w.add_player(Some(0), ShipType::Tinker).unwrap();
+            let b = w.add_player(Some(1), ShipType::Tinker).unwrap();
+            if shield {
+                run(&mut w, &mut t, &press(b, Buttons::GADGET), 1);
+                assert!(w.ship(b).unwrap().gadget_active);
+            }
+            let wid = w.weapons().find(weapon).unwrap();
+            let def = w.weapons().get(wid).clone();
+            let s = w.ship_mut(a).unwrap();
+            s.add_weapon(WeaponState {
+                weapon: wid,
+                ammo: def.max_ammo,
+                level: 1,
+                shots: 0,
+            });
+            assert_eq!(def.slot, WeaponSlot::Primary);
+            s.primary = Some(wid);
+            s.scrap = 50.0;
+            place(&mut w, a, Vec3::new(0.0, 0.0, 8.0), Vec3::NEG_Z);
+            place(&mut w, b, Vec3::ZERO, Vec3::Z);
+            w.ship_mut(b).unwrap().energy = 50.0;
+            let mut ev = run(&mut w, &mut t, &press(a, Buttons::FIRE_PRIMARY), 1);
+            ev.extend(run(&mut w, &mut t, &[], 20));
+            // 21 ticks of regen (10/s) minus upkeep (4/s).
+            let regen = 21.0 / 60.0 * (10.0 - 4.0);
+            let spent = 50.0 + regen - w.ship(b).unwrap().energy;
+            (damage_to(&ev, b), spent, def.shield)
+        };
+        // Scrap Laser: Wears(1.0) -> no hull damage, the energy pays 1 per point.
+        let (bare, _, _) = hit("scrap_laser", false);
+        let (dmg, spent, setting) = hit("scrap_laser", true);
+        assert_eq!(setting, ShieldInteraction::Wears(1.0));
+        assert!(bare > 0.0);
+        assert_eq!(dmg, 0.0);
+        assert!((spent - bare).abs() < 0.1, "{spent} vs {bare}");
+        // Rivet Gun: PassThrough(f) -> f of the damage reaches the hull, free.
+        let (bare, _, _) = hit("rivet_gun", false);
+        let (dmg, _, setting) = hit("rivet_gun", true);
+        let ShieldInteraction::PassThrough(f) = setting else {
+            panic!("rivet gun data: {setting:?}");
+        };
+        assert!(bare > 0.0);
+        assert!((dmg - bare * f).abs() < 1e-3, "{dmg} vs {bare} x {f}");
+
+        // Upkeep: boosting stops regen, so the shield eats 4 energy/s and drops at 0.
+        let mut w = world_with_gadget("shield");
+        let mut t = room();
+        let a = w.add_player(Some(0), ShipType::Tinker).unwrap();
+        run(&mut w, &mut t, &press(a, Buttons::GADGET), 1);
+        let s = w.ship_mut(a).unwrap();
+        s.energy = 2.0;
+        s.boost = 100.0;
+        let boost = [(
+            a,
+            InputCmd::idle(0)
+                .with_thrust(Vec3::X)
+                .with_buttons(Buttons::BOOST),
+        )];
+        run(&mut w, &mut t, &boost, 15);
+        let s = w.ship(a).unwrap();
+        assert!(
+            s.gadget_active && (s.energy - 1.0).abs() < 0.02,
+            "{}",
+            s.energy
+        );
+        let ev = run(&mut w, &mut t, &boost, 16);
+        assert!(!w.ship(a).unwrap().gadget_active, "dropped at zero energy");
+        assert!(ev.iter().any(|e| matches!(
+            e,
+            crate::Event::Cue(c) if c.kind == crate::CueKind::Gadget && c.value == 255
+        )));
+    }
+
     #[test]
     fn self_damage_is_reduced_by_three_quarters() {
         let (def, mut ship) = setup();

@@ -13,7 +13,9 @@
 //!
 //! The three "openness" fields are blended linearly by Enclosure (constant
 //! weights keep the Lipschitz bound). Density then adds rock: floor-to-ceiling
-//! pillars with knobs and faceted floating rocks (union via `min`). Finally the
+//! pillars with knobs and faceted floating rocks (union via `min`). Then the
+//! connection network ([`crate::network`]) carves caverns and tunnels that
+//! link both team ends and the level centre (`max(terrain, carve)`), and the
 //! level is sealed by walls [`WALL_THICKNESS`] thick inside the level box.
 //!
 //! Feature lookups use jittered grids; each feature stays inside its grid
@@ -26,6 +28,7 @@ use std::cell::OnceCell;
 use ls_math::rng::{mix64, SplitMix64};
 use ls_math::{det, Aabb, Vec3};
 
+use crate::network::Network;
 use crate::noise::{
     cell_gradients, gradient_noise_row, gradient_noise_with, hash2, hash3, unit_f32, unit_f32_b,
     CellGradients, NOISE_LIPSCHITZ,
@@ -84,6 +87,7 @@ struct Seeds {
     mine: u64,
     pillar: u64,
     rock: u64,
+    connect: u64,
 }
 
 impl Seeds {
@@ -97,6 +101,7 @@ impl Seeds {
             mine: sm.next_u64(),
             pillar: sm.next_u64(),
             rock: sm.next_u64(),
+            connect: sm.next_u64(),
         }
     }
 }
@@ -114,6 +119,7 @@ pub struct Generator {
     w_mine: f32,
     density: f32,
     mine_offset: Vec3,
+    network: Network,
 }
 
 impl Generator {
@@ -167,6 +173,7 @@ impl Generator {
             w_mine,
             density: sliders.density.min(100) as f32 / 100.0,
             mine_offset,
+            network: Network::build(seeds.connect, sliders.enclosure.min(100), room),
         }
     }
 
@@ -208,6 +215,21 @@ impl Generator {
         } else {
             -self.room.sdf(p)
         }
+    }
+
+    /// The carved connection network (hubs and tunnels linking both team
+    /// ends of the level).
+    pub fn network(&self) -> &Network {
+        &self.network
+    }
+
+    /// Whether a ship keeping `margin` of free space can fly in a straight
+    /// line from `p` to the centre lines of the connection network in the
+    /// pristine level ([`Network::reaches`] with [`Generator::sample`]).
+    /// The network links both team ends, so such points share one
+    /// connected open volume.
+    pub fn reaches_network(&self, p: Vec3, margin: f32, tries: usize) -> bool {
+        self.network.reaches(|x| self.sample(x), p, margin, tries)
     }
 
     /// Rock material (strength class) at `p`; see [`crate::material`].
@@ -260,7 +282,7 @@ impl Generator {
         if self.density > 0.0 {
             open = open.min(self.pillars(f, p)).min(self.rocks(f, p));
         }
-        open
+        self.network.carve(p, open)
     }
 
     /// Open sky: distance to the nearest floating island, capped at [`SKY_CAP`].

@@ -189,9 +189,9 @@ fn scrap_laser_hits_enemy_with_damage_and_knockback() {
     let mut ev = run(&mut w, &mut t, &fire(a), 1);
     assert!((w.ship(a).unwrap().energy - (energy - 3.0)).abs() < 1e-4);
     ev.extend(run(&mut w, &mut t, &[], 30));
-    assert_eq!(damage_events(&ev), vec![(b, 8.0)]);
+    assert_eq!(damage_events(&ev), vec![(b, 6.0)]);
     let sb = w.ship(b).unwrap();
-    assert_eq!(sb.hull, 92.0);
+    assert_eq!(sb.hull, 94.0);
     assert_eq!(sb.last_attacker, Some(a));
     assert!(ev.iter().any(|e| matches!(
         e,
@@ -223,7 +223,7 @@ fn laser_upgrade_levels_raise_damage() {
     ev.extend(run(&mut w, &mut t, &[], 30));
     let dmg = damage_events(&ev);
     assert_eq!(dmg.len(), 1);
-    assert!((dmg[0].1 - 8.0 * 1.3).abs() < 1e-4, "{dmg:?}");
+    assert!((dmg[0].1 - 6.0 * 1.26667).abs() < 1e-4, "{dmg:?}");
 }
 
 #[test]
@@ -242,7 +242,7 @@ fn rivet_gun_is_fast_consumes_scrap_and_does_not_tunnel() {
     w.ship_mut(a).unwrap().scrap = 2.0;
     let ev = run(&mut w, &mut t, &fire(a), 1);
     assert_eq!(fired_count(&ev), 1);
-    assert_eq!(w.ship(a).unwrap().scrap, 1.0);
+    assert_eq!(w.ship(a).unwrap().scrap, 1.5, "half a scrap per rivet");
     // 180 u/s = 3 u per tick; the ship sphere is only 1.1 u across, but the
     // swept test still hits it within 7 ticks (20 u / 3 u).
     let rivet = &w.projectiles()[0];
@@ -529,12 +529,12 @@ fn laser_damage_with_ff(ff: u8, same_team: bool) -> f32 {
 #[test]
 fn friendly_fire_scales_teammate_damage() {
     assert_eq!(laser_damage_with_ff(0, true), 0.0);
-    assert_eq!(laser_damage_with_ff(50, true), 4.0);
-    assert_eq!(laser_damage_with_ff(100, true), 8.0);
-    assert!((laser_damage_with_ff(10, true) - 0.8).abs() < 1e-5);
+    assert_eq!(laser_damage_with_ff(50, true), 3.0);
+    assert_eq!(laser_damage_with_ff(100, true), 6.0);
+    assert!((laser_damage_with_ff(10, true) - 0.6).abs() < 1e-5);
     // Enemies always take full damage.
-    assert_eq!(laser_damage_with_ff(0, false), 8.0);
-    assert_eq!(laser_damage_with_ff(50, false), 8.0);
+    assert_eq!(laser_damage_with_ff(0, false), 6.0);
+    assert_eq!(laser_damage_with_ff(50, false), 6.0);
 }
 
 // ----- resources -------------------------------------------------------------
@@ -895,7 +895,7 @@ fn replay_same_inputs_same_state_hash() {
 /// (run the crate tests under `wasm-bindgen-test-runner`, see `CLAUDE.md`).
 /// Changing simulation behavior or tuning changes it: update the constant in
 /// the same change and say so in the commit.
-const REPLAY_GOLDEN_HASH: u64 = 0x95fc_61f9_7ab2_1d34;
+const REPLAY_GOLDEN_HASH: u64 = 0x08f8_5cd9_ee05_fd2c;
 
 #[test]
 fn replay_golden_hash() {
@@ -993,4 +993,71 @@ fn knockback_scales_with_damage_multiplier() {
     let v2 = push(2.0);
     assert!(v1 > 0.0, "{v1}");
     assert!((v2 / v1 - 2.0).abs() < 0.05, "{v1} {v2}");
+}
+
+#[test]
+fn shift_ship_moves_the_ship_and_its_newest_trail_sample() {
+    let mut t = std_room();
+    let mut w = world();
+    let a = w.add_player(Some(0), ShipType::Tinker).unwrap();
+    place(&mut w, a, Vec3::ZERO, Vec3::NEG_Z);
+    run(&mut w, &mut t, &[], 3);
+    let before = w.trail_for_test(a, 1).unwrap().0;
+    let newest = w.trail_for_test(a, 0).unwrap().0;
+    let pos = w.ship(a).unwrap().pos;
+    let d = Vec3::new(1.0, 2.0, 3.0);
+    w.shift_ship(a, d);
+    assert_eq!(w.ship(a).unwrap().pos, pos + d);
+    assert_eq!(w.trail_for_test(a, 0).unwrap().0, newest + d);
+    assert_eq!(
+        w.trail_for_test(a, 1).unwrap().0,
+        before,
+        "older samples stay"
+    );
+}
+
+#[test]
+fn magnet_sneeze_pulls_a_weapon_pickup_off_its_spawn_point() {
+    let mut t = std_room();
+    let mut rules = RuleSet::paint_the_void();
+    rules.pickups.retain(|k, _| k == "bolt_rocket");
+    rules.upgrade_pickups.clear();
+    rules.gadget_pickups.clear();
+    rules.scrap_pickup = None;
+    let mut s = setup();
+    let spawn = Vec3::new(0.0, 0.0, -15.0);
+    s.pickup_points = vec![spawn];
+    let mut w = world_with(rules, s);
+    let a = w.add_player(Some(0), ShipType::Tinker).unwrap();
+    let sneeze = w.weapons().find("magnet_sneeze").unwrap();
+    {
+        let sh = w.ship_mut(a).unwrap();
+        sh.add_weapon(crate::WeaponState {
+            weapon: sneeze,
+            ammo: 5,
+            level: 1,
+            shots: 0,
+        });
+        sh.secondary = Some(sneeze);
+    }
+    let sneeze_input = [(a, InputCmd::idle(0).with_buttons(Buttons::FIRE_SECONDARY))];
+    place(&mut w, a, Vec3::ZERO, Vec3::NEG_Z);
+    run(&mut w, &mut t, &sneeze_input, 1);
+    // 15 u away: it jumps `pickup_pull` (10 u) towards the shooter.
+    let sp = &w.pickups()[0];
+    assert_eq!(sp.pos, spawn, "the spawn point stays");
+    assert!(
+        (sp.content_pos().z + 5.0).abs() < 0.2,
+        "{:?}",
+        sp.content_pos()
+    );
+    assert!(w
+        .entity_views()
+        .iter()
+        .any(|e| e.id == sp.id && (e.pos.z + 5.0).abs() < 0.2));
+    // The next sneeze lands it in reach: collected.
+    place(&mut w, a, Vec3::ZERO, Vec3::NEG_Z);
+    let ev = run(&mut w, &mut t, &sneeze_input, 120);
+    assert!(ev.iter().any(|e| matches!(e, Event::PickupTaken { .. })));
+    assert_eq!(w.pickups()[0].offset, Vec3::ZERO);
 }

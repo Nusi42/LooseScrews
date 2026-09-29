@@ -33,8 +33,9 @@ use crate::wire::{
 };
 
 /// Bumped whenever the wire format changes incompatibly (2: M2 entities,
-/// players, cues, data hash, ship choice).
-pub const PROTOCOL_VERSION: u16 = 2;
+/// players, cues, data hash, ship choice; 3: predictive ship deltas with
+/// the snapshot's ship motion scale).
+pub const PROTOCOL_VERSION: u16 = 3;
 /// First bytes of a [`Hello`] body: ASCII `LSCR` when read as little-endian.
 pub const MAGIC: u32 = u32::from_le_bytes(*b"LSCR");
 

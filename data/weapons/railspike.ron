@@ -1,7 +1,10 @@
 // Railspike: kinetic primary. 270 u/s; heavy shots pierce ships and walls up to 2 u thick.
 // Malus: slow fire rate; muzzle flash reveals you. Lasting effect: drills straight holes
 // through thin terrain that let light through.
-// Behaviour: crates/ls-sim/src/weapons/kinetic/railspike.rs (TODO(wave-B): generic fallback until implemented).
+// Behaviour: crates/ls-sim/src/weapons/kinetic/railspike.rs (pierces every ship and debris piece
+// in the line; rock up to `pierce_thickness` gets a straight hole of `hole_radius` craters every
+// `hole_spacing` u; thicker rock stops the spike with a `crater_radius` dent; each shot sends a
+// `MuzzleFlash` cue lasting `reveal_secs`).
 // `params` are read by the weapon module (`WeaponDef::param`); numbers are tuning starting points.
 WeaponDef(
     id: "railspike",
@@ -11,11 +14,13 @@ WeaponDef(
     speed: 270.0,
     lifetime_secs: 1.0,
     damage: 35.0,
-    fire_interval_secs: 1.2,
+    // 3 spikes kill a Tinker: 3.0 s.
+    fire_interval_secs: 1.5,
     cost: Scrap(4.0),
     projectile_radius: 0.08,
     knockback: 4.0,
+    terrain: (crater_radius: 0.3),
     shield: PassThrough(0.75),
     visual: (shape: Spike, color: (230, 230, 255), scale: 1.2),
-    params: { "pierce_thickness": 2.0, "hole_radius": 0.35, "reveal_secs": 0.5 },
+    params: { "pierce_thickness": 2.0, "hole_radius": 0.35, "hole_spacing": 0.5, "reveal_secs": 0.5 },
 )

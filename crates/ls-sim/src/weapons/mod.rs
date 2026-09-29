@@ -330,6 +330,23 @@ pub fn sub_projectile(
     }
 }
 
+/// Debris pieces within this distance of a hit count towards
+/// [`debris_crowded`].
+pub const DEBRIS_CROWD_RADIUS: f32 = 2.0;
+
+/// True when `max` or more debris pieces already float within
+/// [`DEBRIS_CROWD_RADIUS`] of `point`: sustained fire at one spot (Rivet Gun,
+/// Scrap Shotgun) then sprays no more, so it does not fill the
+/// `entity::MAX_DEBRIS` cap and evict older gameplay debris.
+pub fn debris_crowded(ctx: &Ctx, point: Vec3, max: usize) -> bool {
+    ctx.view
+        .entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Debris && e.pos.distance(point) < DEBRIS_CROWD_RADIUS)
+        .count()
+        >= max
+}
+
 /// Turns `vel` towards `desired` by at most `max_angle` radians, keeping
 /// its speed (homing, guidance).
 pub fn steer_towards(vel: Vec3, desired: Vec3, max_angle: f32) -> Vec3 {

@@ -1,6 +1,6 @@
 // Plasma Repeater: energy primary. Rapid bolts at 33 u/s. Malus: high energy drain. Lasting
 // effect: melts shallow pits into terrain.
-// Behaviour: crates/ls-sim/src/weapons/energy/plasma_repeater.rs (TODO(wave-B): generic fallback until implemented).
+// Behaviour: crates/ls-sim/src/weapons/energy/plasma_repeater.rs.
 // `params` are read by the weapon module (`WeaponDef::param`); numbers are tuning starting points.
 WeaponDef(
     id: "plasma_repeater",
@@ -8,13 +8,23 @@ WeaponDef(
     family: Energy,
     slot: Primary,
     speed: 33.0,
-    lifetime_secs: 3.0,
-    damage: 5.0,
+    // 1.5 s reach (50 u) keeps about 15 bolts in flight per shooter (bandwidth).
+    lifetime_secs: 1.5,
+    // 30 DPS: 34 bolts, 3.3 s to kill a Tinker, about one kill per full tank.
+    damage: 3.0,
+    // 10 bolts/s at 3 energy each: 30 energy/s, three times the Tinker's regeneration.
     fire_interval_secs: 0.1,
     cost: Energy(3.0),
     projectile_radius: 0.18,
     knockback: 0.5,
     shield: Wears(1.0),
     visual: (shape: Orb, color: (90, 200, 255), scale: 1.0),
-    params: { "pit_radius": 0.4 },
+    params: {
+        // Every `pit_every`-th bolt melts a shallow pit of `pit_radius` u (scaled by rock strength).
+        "pit_radius": 0.4,
+        "pit_every": 2.0,
+        // Every hit leaves the rock hot for `hot_secs` within `hot_radius` u.
+        "hot_radius": 0.6,
+        "hot_secs": 10.0,
+    },
 )

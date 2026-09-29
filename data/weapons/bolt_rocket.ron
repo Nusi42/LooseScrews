@@ -1,5 +1,6 @@
 // Bolt Rocket: dumbfire ordnance secondary, limited count.
 // Design doc: "Dumbfire, 40 u/s. Malus: small blast. Lasting effect: 2 u crater" (diameter -> radius 1.0).
+// M2 plan: 30 direct damage plus splash.
 // Behaviour: crates/ls-sim/src/weapons/ordnance/bolt_rocket.rs (implemented: the generic hooks are the M1 behaviour).
 WeaponDef(
     id: "bolt_rocket",
@@ -8,7 +9,7 @@ WeaponDef(
     slot: Secondary,
     speed: 40.0,
     lifetime_secs: 4.0,
-    damage: 35.0,
+    damage: 30.0,
     fire_interval_secs: 0.75,
     cost: Count(1),
     projectile_radius: 0.2,

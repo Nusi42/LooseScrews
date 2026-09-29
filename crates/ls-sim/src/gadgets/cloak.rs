@@ -46,6 +46,57 @@ mod tests {
     #[cfg(target_arch = "wasm32")]
     use wasm_bindgen_test::wasm_bindgen_test as test;
 
+    /// Scenario in a world: the reveal radius is 6 u, firing reveals for
+    /// exactly 0.5 s, moving costs 3x the drain (9 energy/s while boosting,
+    /// when nothing regenerates) and an empty cloak drops, revealing the ship.
+    #[test]
+    fn world_reveal_radius_fire_window_and_moving_drain() {
+        use crate::gadgets::test_util::*;
+        use crate::{Buttons, InputCmd};
+
+        let mut w = world_with_gadget("cloak");
+        let mut t = room();
+        let a = w.add_player(Some(0), ShipType::Tinker).unwrap();
+        let b = w.add_player(Some(1), ShipType::Tinker).unwrap();
+        place(&mut w, a, Vec3::ZERO, Vec3::NEG_Z);
+        place(&mut w, b, Vec3::new(6.5, 0.0, 0.0), Vec3::NEG_Z);
+        run(&mut w, &mut t, &press(a, Buttons::GADGET), 1);
+        assert!(w.ship(a).unwrap().gadget_active);
+        assert!(!w.ship_visible_to(b, a), "6.5 u away: hidden");
+        place(&mut w, b, Vec3::new(5.9, 0.0, 0.0), Vec3::NEG_Z);
+        assert!(w.ship_visible_to(b, a), "inside 6 u: seen");
+        place(&mut w, b, Vec3::new(20.0, 0.0, 0.0), Vec3::NEG_Z);
+        assert!(!w.ship_visible_to(b, a));
+        // Fire: visible for 30 ticks (0.5 s), then hidden again.
+        run(&mut w, &mut t, &press(a, Buttons::FIRE_PRIMARY), 1);
+        let fired = w.ship(a).unwrap().last_fired_tick.expect("fired");
+        while w.tick() < fired + 29 {
+            run(&mut w, &mut t, &[], 1);
+            assert!(w.ship_visible_to(b, a), "tick {}", w.tick() - fired);
+        }
+        run(&mut w, &mut t, &[], 1);
+        assert!(!w.ship_visible_to(b, a), "0.5 s after the shot");
+        // Moving (boosting: no regen) drains 3 x 3 = 9 energy/s.
+        let boost = [(
+            a,
+            InputCmd::idle(0)
+                .with_thrust(Vec3::X)
+                .with_buttons(Buttons::BOOST),
+        )];
+        run(&mut w, &mut t, &boost, 10);
+        let s = w.ship_mut(a).unwrap();
+        s.energy = 50.0;
+        s.boost = 100.0;
+        run(&mut w, &mut t, &boost, 60);
+        let e = w.ship(a).unwrap().energy;
+        assert!((e - 41.0).abs() < 0.05, "{e}");
+        // Out of energy: the cloak drops and the enemy sees the ship.
+        w.ship_mut(a).unwrap().energy = 0.1;
+        run(&mut w, &mut t, &boost, 2);
+        assert!(!w.ship(a).unwrap().gadget_active);
+        assert!(w.ship_visible_to(b, a));
+    }
+
     #[test]
     fn hidden_from_distant_enemies_unless_firing() {
         let t = GadgetTable::builtin();

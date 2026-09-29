@@ -22,6 +22,8 @@
 pub mod cloak;
 pub mod decoy;
 pub mod shield;
+#[cfg(test)]
+mod test_util;
 
 use std::collections::BTreeMap;
 use std::fmt::Debug;

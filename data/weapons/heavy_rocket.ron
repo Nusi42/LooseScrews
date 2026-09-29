@@ -1,7 +1,10 @@
 // Heavy Rocket: ordnance secondary. 20 u/s, 8 u blast. Malus: very slow; hurts you at close
 // range. Lasting effect: 6 u crater that can open a passage between tunnels.
-// Behaviour: crates/ls-sim/src/weapons/ordnance/heavy_rocket.rs (TODO(wave-B): generic fallback until implemented).
-// `params` are read by the weapon module (`WeaponDef::param`); numbers are tuning starting points.
+// Behaviour: crates/ls-sim/src/weapons/ordnance/heavy_rocket.rs (implemented: the generic
+// dumbfire rocket driven by these numbers).
+// Damage 70 direct (M2 damage scale); the 8 u splash also hits the shooter (the close-range
+// malus); crater radius 3 u = the design doc's 6 u diameter, enough to break through about
+// 2.5 u of ordinary rock.
 WeaponDef(
     id: "heavy_rocket",
     name: "Heavy Rocket",

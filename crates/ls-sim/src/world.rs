@@ -250,6 +250,17 @@ pub struct PickupSpawn {
     pub respawn_tick: u64,
     /// Entity id of the current content (replication).
     pub id: u32,
+    /// How far the current content was moved off the spawn point (Magnet
+    /// Sneeze, [`Command::MovePickup`]); zero again when new content spawns.
+    #[serde(default)]
+    pub offset: Vec3,
+}
+
+impl PickupSpawn {
+    /// Where the current content is (spawn point plus [`Self::offset`]).
+    pub fn content_pos(&self) -> Vec3 {
+        self.pos + self.offset
+    }
 }
 
 /// Things that happened during a tick, for clients, the server and tests.
@@ -448,6 +459,7 @@ impl World {
                 content: None,
                 respawn_tick: 0,
                 id: 0,
+                offset: Vec3::ZERO,
             })
             .collect();
         let behaviors = config
@@ -547,6 +559,18 @@ impl World {
     pub fn ship_mut(&mut self, id: PlayerId) -> Option<&mut ShipState> {
         self.ships.get_mut(&id)
     }
+
+    /// Moves a ship by `delta` together with the newest sample of its trail
+    /// (Borrowed Time history), so the history matches the moved ship. Used
+    /// by the server to undo a lag-compensation offset after a step.
+    pub fn shift_ship(&mut self, id: PlayerId, delta: Vec3) {
+        if let Some(s) = self.ships.get_mut(&id) {
+            s.pos += delta;
+        }
+        if let Some(p) = self.trails.get_mut(&id).and_then(|t| t.points.back_mut()) {
+            p.0 += delta;
+        }
+    }
     pub fn projectiles(&self) -> &[Projectile] {
         &self.projectiles
     }
@@ -580,6 +604,11 @@ impl World {
             wreck: false,
         });
         id
+    }
+
+    #[cfg(test)]
+    pub(crate) fn trail_for_test(&self, id: PlayerId, ticks_ago: u64) -> Option<(Vec3, Vec3, f32)> {
+        self.trails.get(&id).and_then(|t| t.get(ticks_ago))
     }
 
     #[cfg(test)]
@@ -845,7 +874,10 @@ impl World {
                 (WeaponSlot::Primary, Buttons::FIRE_PRIMARY),
                 (WeaponSlot::Secondary, Buttons::FIRE_SECONDARY),
             ] {
-                let pressed = cmd.buttons.contains(button);
+                // A pilot guiding a missile cannot launch another secondary
+                // (one Eyeball at a time).
+                let guiding = slot == WeaponSlot::Secondary && controlled.contains(&id);
+                let pressed = cmd.buttons.contains(button) && !guiding;
                 self.trigger(&cfg, terrain, id, slot, pressed, overdrive, &mut events);
             }
             if let Some(ship) = self.ships.get_mut(&id) {
@@ -938,6 +970,8 @@ impl World {
             projectiles_stepping: &self.stepping,
             projectiles_stepped: &self.stepped,
             entities: &self.entities,
+            pickups: &self.pickups,
+            scrap_piles: &self.scrap,
             terrain: &tref,
             layers: &tref,
             inputs: &self.inputs,
@@ -1689,6 +1723,17 @@ impl World {
                         }
                     }
                 }
+                Command::MovePickup { id, delta } => {
+                    if let Some(pile) = self.scrap.iter_mut().find(|s| s.id == id) {
+                        pile.pos += delta;
+                    } else if let Some(sp) = self
+                        .pickups
+                        .iter_mut()
+                        .find(|sp| sp.content.is_some() && sp.id == id)
+                    {
+                        sp.offset += delta;
+                    }
+                }
                 Command::ImpulseEntity { id, dv } => {
                     if let Some(e) = self.entities.iter_mut().find(|e| e.id == id) {
                         e.vel += dv / e.mass();
@@ -2023,7 +2068,7 @@ impl World {
             }
             for ship in self.ships.values_mut() {
                 let reach = PICKUP_RADIUS + cfg.tuning(ship.ship_type).radius;
-                if !ship.alive || ship.pos.distance_squared(sp.pos) > reach * reach {
+                if !ship.alive || ship.pos.distance_squared(sp.content_pos()) > reach * reach {
                     continue;
                 }
                 let taken = match kind {
@@ -2034,6 +2079,7 @@ impl World {
                 };
                 if taken {
                     sp.content = None;
+                    sp.offset = Vec3::ZERO;
                     sp.respawn_tick = now + cfg.resolved.pickup_table[entry as usize].respawn_ticks;
                     events.push(Event::PickupTaken {
                         spawn: i as u16,
@@ -2102,6 +2148,7 @@ impl World {
             let id = self.alloc_entity_id();
             self.pickups[i].content = Some((entry as u16, kind));
             self.pickups[i].id = id;
+            self.pickups[i].offset = Vec3::ZERO;
             if let PickupKind::Scrap { amount } = kind {
                 self.scrap.push(ScrapPile {
                     id,
@@ -2286,7 +2333,7 @@ impl World {
                 id: sp.id,
                 kind,
                 visual,
-                pos: sp.pos,
+                pos: sp.content_pos(),
                 vel: Vec3::ZERO,
                 rot: Quat::IDENTITY,
                 owner: None,
@@ -2355,6 +2402,7 @@ impl World {
         h.write_u32(self.pickups.len() as u32);
         for sp in &self.pickups {
             h.write_vec3(sp.pos);
+            h.write_vec3(sp.offset);
             h.write_u64(sp.respawn_tick);
             h.write_u32(sp.id);
             match sp.content {

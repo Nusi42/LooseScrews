@@ -1,8 +1,11 @@
 // Borrowed Time: special secondary. Rewinds your position, velocity and hull by 3 s. Malus:
 // weapons offline for 3 s; a ghost stays visible at the old spot for 3 s. Lasting effect:
-// terrain damage is not rewound, so the scars stay. The fallback fires a harmless slow pulse.
-// Behaviour: crates/ls-sim/src/weapons/specials/borrowed_time.rs (TODO(wave-B): generic fallback until implemented).
-// `params` are read by the weapon module (`WeaponDef::param`); numbers are tuning starting points.
+// terrain damage is not rewound, so the scars stay.
+// Behaviour: crates/ls-sim/src/weapons/specials/borrowed_time.rs (implemented). No real shot:
+// rewinds position, velocity and hull by `rewind_secs` (the world keeps 3 s of history), weapons
+// offline for `offline_secs`, a ghost at the old spot for `ghost_secs`; terrain is not rewound.
+// `speed`/`lifetime_secs` only shape the harmless, motionless time pulse left at the old spot.
+// Numbers are tuning starting points.
 WeaponDef(
     id: "borrowed_time",
     name: "Borrowed Time",

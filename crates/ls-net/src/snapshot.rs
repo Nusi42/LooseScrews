@@ -7,16 +7,22 @@
 //! has_baseline        1 bit, then (tick - baseline_tick) as u8 (1..=255)
 //! ack_input           zigzag varint of (ack_input - tick) as i32
 //! match_ticks_left    varint
+//! ship_motion         [delta: 1 bit "changed"] 3 varints (per-axis motion
+//!                     scale, see below)
 //! edits               varint edit_base, varint count, then each edit
 //! scores              [delta: 1 bit "changed"] varint count + varint each
-//! ships               u32 presence mask (bit i = ship id i), then per ship
-//!                     in id order: full core state, or (delta, ship in
-//!                     baseline) a change bit + per-field diffs
+//! ships               u32 presence mask (bit i = ship id i), [delta: 3 x 4
+//!                     bits typical residual widths - 1 for position,
+//!                     velocity, orientation], then per ship in id order:
+//!                     full core state, or (delta, ship in baseline) a
+//!                     change bit + predicted residuals (below)
 //! projectiles         id list (below) of projectiles: full state (kind,
 //!                     owner, state byte, position, velocity) or diffs
-//! entities            id list of entities: full state (kind, visual, owner,
-//!                     team, position, velocity and rotation with presence
-//!                     bits, 4 state bytes) or diffs
+//! entities            [delta: 4 bits typical drift width - 1] id list of
+//!                     entities: full state (kind, visual, owner, team,
+//!                     position, velocity and rotation with presence bits,
+//!                     4 state bytes) or diffs (a drifting entity: 1 bit +
+//!                     a non-zero residual group of its position)
 //! players             full: varint count, then per player: u8 id, u8 team,
 //!                     u8 ship type, u8 gadget, name. Delta: 1 bit
 //!                     "changed"; if changed a u32 presence mask, then per
@@ -39,16 +45,46 @@
 //! players' ships) costs no extra bit.
 //!
 //! Delta fields are compared as packed integers, so a delta decodes to
-//! exactly the packed snapshot the server encoded. Vector components are
-//! sent as a 2-bit size class: unchanged, 4-bit or 8-bit zigzag difference,
-//! or the raw 16-bit value.
+//! exactly the packed snapshot the server encoded: compression never adds
+//! error beyond the quantization in [`crate::quant`].
+//!
+//! # Ship deltas
+//!
+//! A changed ship sends residuals against predictions both ends compute in
+//! integers from the baseline ship and the snapshot's `ship_motion` (packed
+//! position steps per velocity step per tick, fixed point with
+//! [`MOTION_SCALE_SHIFT`] fraction bits, filled by
+//! [`Quantizer::pack_snapshot`](crate::Quantizer::pack_snapshot); zero
+//! disables prediction):
+//!
+//! ```text
+//! position     residual group against base.pos + base.vel x motion x age
+//! velocity     1 bit predictor (0: base.vel; 1: 2 x displacement / (motion
+//!              x age) - base.vel, i.e. constant acceleration), then a
+//!              residual group
+//! orientation  1 bit "changed"; if changed 1 bit "same dropped component":
+//!              a non-zero residual group of the three 10-bit field
+//!              differences, else the raw 32-bit quaternion
+//! flags        1 bit "changed" [+ u16]
+//! status       1 bit "changed" [+ 1 bit present + 4 bytes]
+//! ```
+//!
+//! A **residual group** is 1 bit "non-zero", then one width for all three
+//! components coded against the section's typical width `b` (`0` = b,
+//! `10` = b - 1, `110` = b + 1, `1110` = b - 2, `1111` + 4 bits), then three
+//! zigzag values of that width (differences modulo 2^16). The encoder picks
+//! each typical width to make the snapshot's width codes shortest. A thrusting,
+//! turning ship costs about 70 bits instead of about 130 with plain diffs.
+//!
+//! Other projectile and entity vector components are sent as a 2-bit size class:
+//! unchanged, 4-bit or 8-bit zigzag difference, or the raw 16-bit value.
 
 use std::collections::VecDeque;
 
 use crate::bits::{unzigzag16, zigzag16, BitReader, BitWriter};
 use crate::error::{DecodeError, EncodeError};
 use crate::quant::pack_quat;
-use crate::quant::PackedVec3;
+use crate::quant::{PackedVec3, MOTION_SCALE_SHIFT};
 use crate::wire::{
     read_edit, ship_flags, write_edit, NetPlayer, PackedEntity, PackedProjectile, PackedShip,
     PackedSnapshot, ShipStatus, TerrainEditBits, EDIT_MIN_BITS, ENTITY_MIN_BITS, MAX_PLAYER_NAME,
@@ -359,18 +395,334 @@ fn read_vec_diff(r: &mut BitReader, base: PackedVec3) -> Result<PackedVec3, Deco
     ])
 }
 
-fn write_ship_delta(w: &mut BitWriter, s: &PackedShip, b: &PackedShip) {
-    let changed = s != b;
-    w.write_bool(changed);
-    if !changed {
-        return;
+/// Rounded `num / den` (halves round up) for `den > 0`.
+#[inline]
+fn div_round(num: i64, den: i64) -> i64 {
+    let (q, r) = (num.div_euclid(den), num.rem_euclid(den));
+    if 2 * r >= den {
+        q + 1
+    } else {
+        q
     }
-    write_vec_diff(w, s.pos, b.pos);
-    w.write_bool(s.rot != b.rot);
-    if s.rot != b.rot {
-        w.write_u32(s.rot);
+}
+
+/// Signed value of a packed velocity component.
+#[inline]
+fn signed(v: u16) -> i64 {
+    v as i16 as i64
+}
+
+/// Ballistic position prediction: the baseline position moved by the
+/// baseline velocity for `age` ticks, in packed integers only (both ends
+/// compute it bit for bit). Clamped to the packed range like the quantizer.
+fn predict_pos(base: &PackedShip, motion: &[u32; 3], age: u32) -> PackedVec3 {
+    let mut out = base.pos;
+    for i in 0..3 {
+        let disp = div_round(
+            signed(base.vel[i]) * motion[i] as i64 * age as i64,
+            1 << MOTION_SCALE_SHIFT,
+        );
+        out[i] = (base.pos[i] as i64 + disp).clamp(0, u16::MAX as i64) as u16;
     }
-    write_vec_diff(w, s.vel, b.vel);
+    out
+}
+
+/// Velocity predicted from the displacement over `age` ticks, assuming
+/// constant acceleration: `2 x mean velocity - baseline velocity`. Keeps the
+/// baseline velocity on an axis without a motion scale.
+fn predict_vel_from_motion(
+    base: &PackedShip,
+    pos: PackedVec3,
+    motion: &[u32; 3],
+    age: u32,
+) -> PackedVec3 {
+    let mut out = base.vel;
+    for i in 0..3 {
+        if motion[i] == 0 || age == 0 {
+            continue;
+        }
+        let d = pos[i] as i64 - base.pos[i] as i64;
+        let v = div_round((2 * d) << MOTION_SCALE_SHIFT, motion[i] as i64 * age as i64)
+            - signed(base.vel[i]);
+        out[i] = v.clamp(-(i16::MAX as i64), i16::MAX as i64) as i16 as u16;
+    }
+    out
+}
+
+/// `cur - pred` per component, modulo 2^16 (exact both ways).
+#[inline]
+fn residual(cur: PackedVec3, pred: PackedVec3) -> [i16; 3] {
+    [
+        cur[0].wrapping_sub(pred[0]) as i16,
+        cur[1].wrapping_sub(pred[1]) as i16,
+        cur[2].wrapping_sub(pred[2]) as i16,
+    ]
+}
+
+#[inline]
+fn apply_residual(pred: PackedVec3, r: [i16; 3]) -> PackedVec3 {
+    [
+        pred[0].wrapping_add(r[0] as u16),
+        pred[1].wrapping_add(r[1] as u16),
+        pred[2].wrapping_add(r[2] as u16),
+    ]
+}
+
+/// Bits needed for the zigzag form of the largest residual component
+/// (0 for an all-zero residual).
+#[inline]
+fn resid_width(r: [i16; 3]) -> u32 {
+    let m = r.iter().map(|&c| zigzag16(c)).max().unwrap_or(0);
+    16 - m.leading_zeros()
+}
+
+/// Approximate bits of a residual (used to pick a velocity predictor).
+#[inline]
+fn resid_cost(r: [i16; 3]) -> u32 {
+    match resid_width(r) {
+        0 => 1,
+        w => 1 + 4 + 3 * w,
+    }
+}
+
+/// Per-snapshot typical widths of the ship residual groups (position,
+/// velocity, orientation), each `1..=16`. Widths are coded relative to them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct WidthBase([u32; 3]);
+
+const W_POS: usize = 0;
+const W_VEL: usize = 1;
+const W_ROT: usize = 2;
+
+impl WidthBase {
+    fn write(&self, w: &mut BitWriter) {
+        for b in self.0 {
+            w.write_bits((b - 1) as u64, 4);
+        }
+    }
+
+    fn read(r: &mut BitReader) -> Result<WidthBase, DecodeError> {
+        let mut out = [0u32; 3];
+        for b in &mut out {
+            *b = r.read_bits(4)? as u32 + 1;
+        }
+        Ok(WidthBase(out))
+    }
+
+    /// For each group, the base width that makes the width codes of all
+    /// changed ships in the snapshot shortest.
+    fn of(deltas: &[ShipDelta]) -> WidthBase {
+        let mut counts = [[0u32; 17]; 3];
+        for d in deltas {
+            let groups = [
+                Some(d.pos),
+                Some(d.vel),
+                match d.rot {
+                    RotDelta::Fields(f) => Some(f),
+                    _ => None,
+                },
+            ];
+            for (g, r) in groups.into_iter().enumerate() {
+                if let Some(r) = r {
+                    counts[g][resid_width(r) as usize] += 1;
+                }
+            }
+        }
+        WidthBase([
+            best_width_base(&counts[0]),
+            best_width_base(&counts[1]),
+            best_width_base(&counts[2]),
+        ])
+    }
+}
+
+/// Bits of the width code for `width` against base `b` (see [`write_width`]).
+#[inline]
+fn width_code_bits(width: u32, b: u32) -> u32 {
+    match width as i32 - b as i32 {
+        0 => 1,
+        -1 => 2,
+        1 => 3,
+        -2 => 4,
+        _ => 8,
+    }
+}
+
+/// The base width (1..=16) minimizing the width codes for `counts[width]`
+/// groups of each width (index 0, all-zero groups, send no width).
+fn best_width_base(counts: &[u32; 17]) -> u32 {
+    let mut best = (u64::MAX, 1);
+    for b in 1..=16 {
+        let bits: u64 = (1..=16u32)
+            .map(|w| counts[w as usize] as u64 * width_code_bits(w, b) as u64)
+            .sum();
+        if bits < best.0 {
+            best = (bits, b);
+        }
+    }
+    best.1
+}
+
+/// Width code against a base width `b`, shortest for the widths busy
+/// snapshots show most (the largest of three residuals clusters at and
+/// just below the typical width): `0` = b, `10` = b - 1, `110` = b + 1,
+/// `1110` = b - 2, `1111` + 4 bits `width - 1`.
+fn write_width(w: &mut BitWriter, width: u32, b: u32) {
+    let prefix = match width as i32 - b as i32 {
+        0 => 0,
+        -1 => 1,
+        1 => 2,
+        -2 => 3,
+        _ => 4,
+    };
+    for _ in 0..prefix {
+        w.write_bool(true);
+    }
+    if prefix < 4 {
+        w.write_bool(false);
+    } else {
+        w.write_bits((width - 1) as u64, 4);
+    }
+}
+
+fn read_width(r: &mut BitReader, b: u32) -> Result<u32, DecodeError> {
+    let mut prefix = 0;
+    while prefix < 4 && r.read_bool()? {
+        prefix += 1;
+    }
+    let width = match prefix {
+        0 => b as i32,
+        1 => b as i32 - 1,
+        2 => b as i32 + 1,
+        3 => b as i32 - 2,
+        _ => r.read_bits(4)? as i32 + 1,
+    };
+    if !(1..=16).contains(&width) {
+        return Err(DecodeError::Invalid("residual width out of range"));
+    }
+    Ok(width as u32)
+}
+
+/// Three non-zero residuals sharing one width (coded against `base`), then
+/// each component as a `width`-bit zigzag value.
+fn write_resid3_nz(w: &mut BitWriter, r: [i16; 3], base: u32) {
+    let width = resid_width(r).max(1);
+    write_width(w, width, base);
+    for c in r {
+        w.write_bits(zigzag16(c) as u64, width);
+    }
+}
+
+fn read_resid3_nz(r: &mut BitReader, base: u32) -> Result<[i16; 3], DecodeError> {
+    let width = read_width(r, base)?;
+    let mut out = [0i16; 3];
+    for c in &mut out {
+        *c = unzigzag16(r.read_bits(width)? as u16);
+    }
+    Ok(out)
+}
+
+/// 1 bit "non-zero", then [`write_resid3_nz`].
+fn write_resid3(w: &mut BitWriter, r: [i16; 3], base: u32) {
+    let nz = r != [0; 3];
+    w.write_bool(nz);
+    if nz {
+        write_resid3_nz(w, r, base);
+    }
+}
+
+fn read_resid3(r: &mut BitReader, base: u32) -> Result<[i16; 3], DecodeError> {
+    if r.read_bool()? {
+        read_resid3_nz(r, base)
+    } else {
+        Ok([0; 3])
+    }
+}
+
+/// The three 10-bit fields of a smallest-three quaternion.
+#[inline]
+fn quat_fields(q: u32) -> [i16; 3] {
+    [
+        ((q >> 20) & 0x3FF) as i16,
+        ((q >> 10) & 0x3FF) as i16,
+        (q & 0x3FF) as i16,
+    ]
+}
+
+#[derive(Debug, Clone, Copy)]
+enum RotDelta {
+    Same,
+    /// Same dropped component: differences of the three 10-bit fields.
+    Fields([i16; 3]),
+    Raw(u32),
+}
+
+/// A changed ship's residuals against its baseline state.
+#[derive(Debug, Clone, Copy)]
+struct ShipDelta {
+    pos: [i16; 3],
+    /// Velocity predicted from the displacement (else: baseline velocity).
+    vel_from_motion: bool,
+    vel: [i16; 3],
+    rot: RotDelta,
+}
+
+impl ShipDelta {
+    /// Residuals of `s` against its baseline `b` (`age` ticks older,
+    /// `motion` from the snapshot header).
+    fn new(s: &PackedShip, b: &PackedShip, motion: &[u32; 3], age: u32) -> ShipDelta {
+        let pos = residual(s.pos, predict_pos(b, motion, age));
+        // Velocity: against the baseline velocity or against the velocity
+        // the displacement implies, whichever is cheaper.
+        let from_base = residual(s.vel, b.vel);
+        let from_motion = residual(s.vel, predict_vel_from_motion(b, s.pos, motion, age));
+        let vel_from_motion = resid_cost(from_motion) < resid_cost(from_base);
+        let rot = if s.rot == b.rot {
+            RotDelta::Same
+        } else if s.rot >> 30 == b.rot >> 30 {
+            let (cf, bf) = (quat_fields(s.rot), quat_fields(b.rot));
+            RotDelta::Fields([cf[0] - bf[0], cf[1] - bf[1], cf[2] - bf[2]])
+        } else {
+            RotDelta::Raw(s.rot)
+        };
+        ShipDelta {
+            pos,
+            vel_from_motion,
+            vel: if vel_from_motion {
+                from_motion
+            } else {
+                from_base
+            },
+            rot,
+        }
+    }
+}
+
+/// Writes a changed ship's diffs (the "changed" bit is already written).
+/// See the module docs for the layout.
+fn write_ship_delta(
+    w: &mut BitWriter,
+    s: &PackedShip,
+    b: &PackedShip,
+    d: &ShipDelta,
+    wb: WidthBase,
+) {
+    write_resid3(w, d.pos, wb.0[W_POS]);
+    w.write_bool(d.vel_from_motion);
+    write_resid3(w, d.vel, wb.0[W_VEL]);
+    match d.rot {
+        RotDelta::Same => w.write_bool(false),
+        RotDelta::Fields(f) => {
+            w.write_bool(true);
+            w.write_bool(true);
+            write_resid3_nz(w, f, wb.0[W_ROT]);
+        }
+        RotDelta::Raw(q) => {
+            w.write_bool(true);
+            w.write_bool(false);
+            w.write_u32(q);
+        }
+    }
     w.write_bool(s.flags != b.flags);
     if s.flags != b.flags {
         w.write_u16(s.flags);
@@ -384,13 +736,42 @@ fn write_ship_delta(w: &mut BitWriter, s: &PackedShip, b: &PackedShip) {
     }
 }
 
-fn read_ship_delta(r: &mut BitReader, b: &PackedShip) -> Result<PackedShip, DecodeError> {
+fn read_ship_delta(
+    r: &mut BitReader,
+    b: &PackedShip,
+    motion: &[u32; 3],
+    age: u32,
+    wb: WidthBase,
+) -> Result<PackedShip, DecodeError> {
     if !r.read_bool()? {
         return Ok(*b);
     }
-    let pos = read_vec_diff(r, b.pos)?;
-    let rot = if r.read_bool()? { r.read_u32()? } else { b.rot };
-    let vel = read_vec_diff(r, b.vel)?;
+    let pos = apply_residual(predict_pos(b, motion, age), read_resid3(r, wb.0[W_POS])?);
+    let vel_pred = if r.read_bool()? {
+        predict_vel_from_motion(b, pos, motion, age)
+    } else {
+        b.vel
+    };
+    let vel = apply_residual(vel_pred, read_resid3(r, wb.0[W_VEL])?);
+    let rot = if r.read_bool()? {
+        if r.read_bool()? {
+            let d = read_resid3_nz(r, wb.0[W_ROT])?;
+            let bf = quat_fields(b.rot);
+            let mut rot = b.rot & (3 << 30);
+            for (i, shift) in [20u32, 10, 0].into_iter().enumerate() {
+                let f = bf[i] as i32 + d[i] as i32;
+                if !(0..=0x3FF).contains(&f) {
+                    return Err(DecodeError::Invalid("rotation diff out of range"));
+                }
+                rot |= (f as u32) << shift;
+            }
+            rot
+        } else {
+            r.read_u32()?
+        }
+    } else {
+        b.rot
+    };
     let flags = if r.read_bool()? {
         let f = r.read_u16()?;
         if f & ship_flags::WIRE_RESERVED != 0 {
@@ -527,16 +908,36 @@ fn read_entity_full(r: &mut BitReader, id: u16) -> Result<PackedEntity, DecodeEr
     })
 }
 
+/// Whether a changed entity differs from its baseline only in position
+/// (debris drifting).
+#[inline]
+fn entity_pos_only(e: &PackedEntity, b: &PackedEntity) -> bool {
+    PackedEntity { pos: e.pos, ..*b } == *e
+}
+
+/// Typical width of the position residual groups of drifting entities.
+fn entity_width(cur: &[PackedEntity], base: &[PackedEntity]) -> u32 {
+    let mut counts = [0u32; 17];
+    for e in cur {
+        if let Ok(i) = base.binary_search_by_key(&e.id, |b| b.id) {
+            let b = &base[i];
+            if e != b && entity_pos_only(e, b) {
+                counts[resid_width(residual(e.pos, b.pos)) as usize] += 1;
+            }
+        }
+    }
+    best_width_base(&counts)
+}
+
 /// Diffs of a changed entity against its baseline state: 1 bit "only the
-/// position moved" (debris drifting: three component diffs), else every
-/// field group with a change bit.
-fn write_entity_delta(w: &mut BitWriter, e: &PackedEntity, b: &PackedEntity) {
-    let pos_only = PackedEntity { pos: e.pos, ..*b } == *e;
+/// position moved" (debris drifting: a non-zero residual group coded
+/// against the snapshot's typical entity width `ew`), else every field
+/// group with a change bit.
+fn write_entity_delta(w: &mut BitWriter, e: &PackedEntity, b: &PackedEntity, ew: u32) {
+    let pos_only = entity_pos_only(e, b);
     w.write_bool(pos_only);
     if pos_only {
-        for i in 0..3 {
-            write_comp_diff(w, e.pos[i], b.pos[i]);
-        }
+        write_resid3_nz(w, residual(e.pos, b.pos), ew);
         return;
     }
     let meta = e.kind != b.kind || e.visual != b.visual || e.owner != b.owner || e.team != b.team;
@@ -561,13 +962,13 @@ fn write_entity_delta(w: &mut BitWriter, e: &PackedEntity, b: &PackedEntity) {
     }
 }
 
-fn read_entity_delta(r: &mut BitReader, b: &PackedEntity) -> Result<PackedEntity, DecodeError> {
+fn read_entity_delta(
+    r: &mut BitReader,
+    b: &PackedEntity,
+    ew: u32,
+) -> Result<PackedEntity, DecodeError> {
     if r.read_bool()? {
-        let pos = [
-            read_comp_diff(r, b.pos[0])?,
-            read_comp_diff(r, b.pos[1])?,
-            read_comp_diff(r, b.pos[2])?,
-        ];
+        let pos = apply_residual(b.pos, read_resid3_nz(r, ew)?);
         return Ok(PackedEntity { pos, ..*b });
     }
     let (kind, visual, owner, team) = if r.read_bool()? {
@@ -721,7 +1122,7 @@ fn write_list<T: ListItem>(
     cur: &[T],
     base: Option<&[T]>,
     full: fn(&mut BitWriter, &T),
-    delta: fn(&mut BitWriter, &T, &T),
+    delta: impl Fn(&mut BitWriter, &T, &T),
 ) {
     let Some(base) = base else {
         write_full_list(w, cur.iter(), full);
@@ -755,7 +1156,7 @@ fn read_list<T: ListItem>(
     max: usize,
     min_bits: usize,
     full: fn(&mut BitReader, u16) -> Result<T, DecodeError>,
-    delta: fn(&mut BitReader, &T) -> Result<T, DecodeError>,
+    delta: impl Fn(&mut BitReader, &T) -> Result<T, DecodeError>,
 ) -> Result<Vec<T>, DecodeError> {
     let mut out: Vec<T> = Vec::new();
     let Some(base) = base else {
@@ -848,6 +1249,15 @@ pub fn write_snapshot(
     }
     w.write_varint(zigzag32(snap.ack_input.wrapping_sub(snap.tick) as i32) as u64);
     w.write_varint(snap.match_ticks_left as u64);
+    let motion_changed = baseline.is_none_or(|b| b.ship_motion != snap.ship_motion);
+    if baseline.is_some() {
+        w.write_bool(motion_changed);
+    }
+    if motion_changed {
+        for k in snap.ship_motion {
+            w.write_varint(k as u64);
+        }
+    }
 
     w.write_varint(snap.edit_base as u64);
     w.write_varint(snap.edits.len() as u64);
@@ -866,11 +1276,31 @@ pub fn write_snapshot(
         }
     }
 
+    let age = baseline_age.unwrap_or(0) as u32;
     let mask = snap.ships.iter().fold(0u32, |m, s| m | (1 << s.id));
     w.write_u32(mask);
-    for s in &snap.ships {
+    // Against a baseline: the residuals of every changed ship first, so the
+    // typical widths can lead the section.
+    let deltas: Vec<Option<ShipDelta>> = snap
+        .ships
+        .iter()
+        .map(|s| {
+            let bs = baseline.and_then(|b| b.ship(s.id))?;
+            (s != bs).then(|| ShipDelta::new(s, bs, &snap.ship_motion, age))
+        })
+        .collect();
+    let widths = WidthBase::of(&deltas.iter().flatten().copied().collect::<Vec<_>>());
+    if baseline.is_some() {
+        widths.write(w);
+    }
+    for (s, d) in snap.ships.iter().zip(&deltas) {
         match baseline.and_then(|b| b.ship(s.id)) {
-            Some(bs) => write_ship_delta(w, s, bs),
+            Some(bs) => {
+                w.write_bool(d.is_some());
+                if let Some(d) = d {
+                    write_ship_delta(w, s, bs, d, widths);
+                }
+            }
             None => write_ship_full(w, s),
         }
     }
@@ -882,12 +1312,20 @@ pub fn write_snapshot(
         write_projectile_full,
         write_projectile_delta,
     );
+    let ew = match baseline {
+        Some(b) => {
+            let ew = entity_width(&snap.entities, &b.entities);
+            w.write_bits((ew - 1) as u64, 4);
+            ew
+        }
+        None => 1,
+    };
     write_list(
         w,
         &snap.entities,
         baseline.map(|b| &b.entities[..]),
         write_entity_full,
-        write_entity_delta,
+        |w, e, b| write_entity_delta(w, e, b, ew),
     );
 
     match baseline {
@@ -929,6 +1367,15 @@ pub fn read_snapshot(
     };
     let ack_input = tick.wrapping_add(unzigzag32(r.read_varint_u32()?) as u32);
     let match_ticks_left = r.read_varint_u32()?;
+    let ship_motion = match baseline {
+        Some(b) if !r.read_bool()? => b.ship_motion,
+        _ => [
+            r.read_varint_u32()?,
+            r.read_varint_u32()?,
+            r.read_varint_u32()?,
+        ],
+    };
+    let age = baseline_tick.map_or(0, |t| tick.wrapping_sub(t));
 
     let edit_base = r.read_varint_u32()?;
     let n_edits = r.read_len(MAX_EDITS_PER_SNAPSHOT, EDIT_MIN_BITS)?;
@@ -953,13 +1400,17 @@ pub fn read_snapshot(
     };
 
     let mask = r.read_u32()?;
+    let widths = match baseline {
+        Some(_) => WidthBase::read(r)?,
+        None => WidthBase([1; 3]),
+    };
     let mut ships = Vec::with_capacity(mask.count_ones() as usize);
     for id in 0..MAX_SHIPS {
         if mask & (1 << id) == 0 {
             continue;
         }
         let ship = match baseline.and_then(|b| b.ship(id)) {
-            Some(bs) => read_ship_delta(r, bs)?,
+            Some(bs) => read_ship_delta(r, bs, &ship_motion, age, widths)?,
             None => read_ship_full(r, id)?,
         };
         ships.push(ship);
@@ -973,13 +1424,17 @@ pub fn read_snapshot(
         read_projectile_full,
         read_projectile_delta,
     )?;
+    let ew = match baseline {
+        Some(_) => r.read_bits(4)? as u32 + 1,
+        None => 1,
+    };
     let entities = read_list(
         r,
         baseline.map(|b| &b.entities[..]),
         MAX_ENTITIES_PER_SNAPSHOT,
         ENTITY_LIST_MIN_BITS,
         read_entity_full,
-        read_entity_delta,
+        |r, b| read_entity_delta(r, b, ew),
     )?;
 
     let players = match baseline {
@@ -1000,6 +1455,7 @@ pub fn read_snapshot(
             players,
             scores,
             match_ticks_left,
+            ship_motion,
         },
         baseline_tick,
     ))
@@ -1152,6 +1608,21 @@ mod tests {
             players: random_players(rng),
             scores: (0..rng.below(4)).map(|_| rng.below(70_000)).collect(),
             match_ticks_left: rng.below(18_000),
+            ship_motion: random_motion(rng),
+        }
+    }
+
+    /// Motion scales: none, the default quantizer's, random and extreme.
+    fn random_motion(rng: &mut Pcg32) -> [u32; 3] {
+        match rng.below(4) {
+            0 => [0; 3],
+            1 => Quantizer::default().ship_motion_scale(),
+            2 => [
+                rng.next_u32() >> 8,
+                rng.below(1 << 16),
+                rng.next_u32() >> 12,
+            ],
+            _ => [u32::MAX, 1, u32::MAX],
         }
     }
 
@@ -1263,6 +1734,9 @@ mod tests {
         if rng.chance(0.05) {
             next.players = random_players(rng);
         }
+        if rng.chance(0.05) {
+            next.ship_motion = random_motion(rng);
+        }
         if rng.chance(0.3) {
             next.edits.push(
                 TerrainEdit::SubtractSphere {
@@ -1340,9 +1814,10 @@ mod tests {
         let mut next = base.clone();
         next.tick += 2;
         let delta = encode(&next, Some(&base));
-        // header (4 + 1 + 1) + ack/time/edit/score varints + mask 4 + 32 bits
-        // for ships + 64 bits (unchanged) for entities + two empty new-item
-        // lists + 1 bit players.
+        // header (4 + 1 + 1) + ack/time/edit/score varints + motion bit +
+        // mask 4 + 12 bits widths + 32 bits for ships + 4 bits entity width
+        // + 64 bits (unchanged) for entities + two empty new-item lists + 1
+        // bit players.
         assert!(delta.len() <= 24 + 4 + 8 + 2 + 1, "{} bytes", delta.len());
         assert_eq!(decode(&delta, &base).0, next);
     }
@@ -1513,13 +1988,140 @@ mod tests {
         assert!(full.len() <= 1200, "fits one datagram");
     }
 
-    /// Delta snapshots with 32 moving ships, debris at its cap (64 pieces)
-    /// all drifting after an explosion, 40 pickups and 8 wrecks, against a
-    /// baseline two snapshots old: one datagram and within the 17 KB/s
-    /// budget at 30 Hz. Resting items cost one bit each.
+    /// A dogfighting ship for the bandwidth tests, stepped at 60 Hz with the
+    /// ship tuning's orders of magnitude (`data/ships`): thrust 24 to 30
+    /// u/s^2 along a ship-local direction that changes every quarter to half
+    /// second, per-axis speed cap 17 u/s (boost), continuous yaw and pitch at
+    /// up to `turn` rad/s plus roll, bouncing off the level walls.
+    struct BusyShip {
+        ship: NetShip,
+        thrust: Vec3,
+        omega: Vec3,
+        accel: f32,
+        hold: u32,
+    }
+
+    impl BusyShip {
+        fn new(rng: &mut Pcg32, id: u8) -> BusyShip {
+            BusyShip {
+                ship: NetShip {
+                    id,
+                    pos: Vec3::new(
+                        rng.range_f32(20.0, 236.0),
+                        rng.range_f32(20.0, 108.0),
+                        rng.range_f32(20.0, 236.0),
+                    ),
+                    vel: Vec3::new(
+                        rng.range_f32(-12.0, 12.0),
+                        rng.range_f32(-12.0, 12.0),
+                        rng.range_f32(-12.0, 12.0),
+                    ),
+                    rot: Quat::from_axis_angle(
+                        Vec3::new(
+                            rng.range_f32(-1.0, 1.0),
+                            rng.range_f32(-1.0, 1.0),
+                            rng.range_f32(0.1, 1.0),
+                        )
+                        .normalize(),
+                        rng.range_f32(-3.0, 3.0),
+                    ),
+                    flags: ship_flags::with_team(ship_flags::ALIVE, id % 2),
+                    status: None,
+                },
+                thrust: Vec3::ZERO,
+                omega: Vec3::ZERO,
+                accel: rng.range_f32(24.0, 30.0),
+                hold: 0,
+            }
+        }
+
+        fn tick(&mut self, rng: &mut Pcg32, turn: f32) {
+            const DT: f32 = 1.0 / 60.0;
+            if self.hold == 0 {
+                self.hold = 15 + rng.below(16);
+                self.thrust = Vec3::new(
+                    rng.range_f32(-1.0, 1.0),
+                    rng.range_f32(-1.0, 1.0),
+                    rng.range_f32(-1.0, -0.2),
+                );
+                self.omega = Vec3::new(
+                    rng.range_f32(-turn, turn),
+                    rng.range_f32(-turn, turn),
+                    rng.range_f32(-2.0, 2.0),
+                );
+            }
+            self.hold -= 1;
+            let s = &mut self.ship;
+            s.rot = (s.rot * Quat::from_scaled_axis(self.omega * DT)).normalize();
+            s.vel += (s.rot * self.thrust) * (self.accel * DT);
+            s.vel = s.vel.clamp(Vec3::splat(-17.0), Vec3::splat(17.0));
+            s.pos += s.vel * DT;
+            let (lo, hi) = ([2.0, 2.0, 2.0], [254.0, 126.0, 254.0]);
+            let (mut p, mut v) = ([s.pos.x, s.pos.y, s.pos.z], [s.vel.x, s.vel.y, s.vel.z]);
+            for i in 0..3 {
+                if p[i] < lo[i] || p[i] > hi[i] {
+                    v[i] = -v[i] * 0.2;
+                    p[i] = p[i].clamp(lo[i], hi[i]);
+                }
+            }
+            s.pos = Vec3::new(p[0], p[1], p[2]);
+            s.vel = Vec3::new(v[0], v[1], v[2]);
+        }
+    }
+
+    /// Runs 32 busy ships for `seconds`, snapshots every 2 ticks (30 Hz),
+    /// and returns (mean, max) bytes of the ship section of a delta against
+    /// the snapshot `age` ticks older. The ship section is measured as a
+    /// snapshot with nothing but ships minus the same snapshot without them.
+    fn busy_ship_deltas(seed: u64, turn: f32, age: u32, seconds: u32) -> (f64, usize) {
+        let quant = Quantizer::default();
+        let mut rng = Pcg32::new(seed, 0);
+        let mut ships: Vec<BusyShip> = (0..MAX_SHIPS)
+            .map(|id| BusyShip::new(&mut rng, id))
+            .collect();
+        let mut history: Vec<PackedSnapshot> = Vec::new();
+        let (mut total, mut worst, mut n) = (0usize, 0usize, 0usize);
+        for tick in 1..=seconds * 60 {
+            for s in &mut ships {
+                s.tick(&mut rng, turn);
+            }
+            if tick % 2 != 0 {
+                continue;
+            }
+            let snap = quant.pack_snapshot(&Snapshot {
+                tick,
+                ack_input: tick,
+                ships: ships.iter().map(|s| s.ship).collect(),
+                ..Default::default()
+            });
+            if let Some(base) = history.iter().find(|b| b.tick + age == tick) {
+                let bytes = encode(&snap, Some(base));
+                assert_eq!(decode(&bytes, base).0, snap);
+                let empty = {
+                    let (mut b, mut s) = (base.clone(), snap.clone());
+                    b.ships.clear();
+                    s.ships.clear();
+                    encode(&s, Some(&b)).len()
+                };
+                let ship_bytes = bytes.len() - empty;
+                total += ship_bytes;
+                worst = worst.max(ship_bytes);
+                n += 1;
+            }
+            history.push(snap);
+        }
+        (total as f64 / n as f64, worst)
+    }
+
+    /// Delta snapshots with 32 busy ships (every ship thrusting and turning,
+    /// see [`BusyShip`]), debris at its cap (64 pieces) all drifting after an
+    /// explosion, 40 pickups and 8 wrecks: one datagram and within the 17
+    /// KB/s budget at 30 Hz for baselines up to 6 ticks old (100 ms round
+    /// trip). Resting items cost one bit each.
     #[test]
     fn bandwidth_32_ships_64_debris() {
-        const BUDGET: usize = 17 * 1024;
+        // 32 ships x 18 B x 30 Hz (the documented budget).
+        const BUDGET: usize = 17_280;
         let quant = Quantizer::default();
         let mut rng = Pcg32::new(29, 0);
         let players: Vec<NetPlayer> = (0..MAX_SHIPS)
@@ -1531,23 +2133,8 @@ mod tests {
                 name: format!("player{id}"),
             })
             .collect();
-        let mut ships: Vec<NetShip> = (0..MAX_SHIPS)
-            .map(|id| NetShip {
-                id,
-                pos: Vec3::new(
-                    rng.range_f32(20.0, 236.0),
-                    rng.range_f32(20.0, 108.0),
-                    rng.range_f32(20.0, 236.0),
-                ),
-                vel: Vec3::new(
-                    rng.range_f32(-20.0, 20.0),
-                    rng.range_f32(-20.0, 20.0),
-                    rng.range_f32(-20.0, 20.0),
-                ),
-                rot: Quat::from_axis_angle(Vec3::new(0.3, 1.0, -0.2), rng.range_f32(-3.0, 3.0)),
-                flags: ship_flags::with_team(ship_flags::ALIVE, id % 2),
-                status: None,
-            })
+        let mut ships: Vec<BusyShip> = (0..MAX_SHIPS)
+            .map(|id| BusyShip::new(&mut rng, id))
             .collect();
         let centre = Vec3::new(128.0, 64.0, 128.0);
         // Debris: sent without velocity (clients interpolate positions).
@@ -1586,13 +2173,13 @@ mod tests {
                 state: [i as u8 % 27, 10, 0, 0],
             })
             .collect();
-        let snapshot = |tick: u32, ships: &[NetShip], debris: &[(NetEntity, Vec3)]| {
+        let snapshot = |tick: u32, ships: &[BusyShip], debris: &[(NetEntity, Vec3)]| {
             let mut entities: Vec<NetEntity> = debris.iter().map(|(e, _)| *e).collect();
             entities.extend(fixed.iter().copied());
             quant.pack_snapshot(&Snapshot {
                 tick,
                 ack_input: tick + 4,
-                ships: ships.to_vec(),
+                ships: ships.iter().map(|s| s.ship).collect(),
                 entities,
                 players: players.clone(),
                 scores: vec![31_000, 29_500],
@@ -1600,52 +2187,296 @@ mod tests {
                 ..Default::default()
             })
         };
-        let base = snapshot(1000, &ships, &debris);
-        let dt = 2.0 / 60.0;
-        for s in &mut ships {
-            let accel = Vec3::new(
-                rng.range_f32(-30.0, 30.0),
-                rng.range_f32(-30.0, 30.0),
-                rng.range_f32(-30.0, 30.0),
+        // Warm up so every ship is mid-manoeuvre.
+        for _ in 0..30 {
+            for s in &mut ships {
+                s.tick(&mut rng, 4.0);
+            }
+        }
+        let mut history = vec![snapshot(1000, &ships, &debris)];
+        let mut worst = 0usize;
+        for step in 1..=3u32 {
+            for _ in 0..2 {
+                for s in &mut ships {
+                    s.tick(&mut rng, 4.0);
+                }
+                for (e, v) in &mut debris {
+                    e.pos += *v * (1.0 / 60.0);
+                }
+            }
+            history.push(snapshot(1000 + 2 * step, &ships, &debris));
+        }
+        let next = history.last().unwrap();
+        for base in &history[..3] {
+            let age = next.tick - base.tick;
+            let delta = encode(next, Some(base));
+            let (back, _) = decode(&delta, base);
+            assert_eq!(&back, next);
+            // The entity part: the same snapshots without entities.
+            let ships_only = {
+                let (mut b, mut n) = (base.clone(), next.clone());
+                b.entities.clear();
+                n.entities.clear();
+                encode(&n, Some(&b)).len()
+            };
+            let entity_bytes = delta.len() - ships_only;
+            println!(
+                "32 busy ships + 64 moving debris + 48 resting items, baseline {age} ticks old: delta {} B ({} B/s at 30 Hz; ships and header {ships_only} B, entities {entity_bytes} B), full {} B",
+                delta.len(),
+                delta.len() * 30,
+                encode(next, None).len()
             );
-            s.vel += accel * dt;
-            s.pos += s.vel * dt;
-            s.rot = Quat::from_axis_angle(Vec3::Y, 0.1) * s.rot;
+            assert!(delta.len() <= 1200, "fits one datagram: {} B", delta.len());
+            worst = worst.max(delta.len());
         }
-        for (e, v) in &mut debris {
-            e.pos += *v * dt;
-        }
-        let next = snapshot(1002, &ships, &debris);
-        let delta = encode(&next, Some(&base));
-        let (back, _) = decode(&delta, &base);
-        assert_eq!(back, next);
-        // The entity part: the same snapshots without entities.
-        let ships_only = {
-            let (mut b, mut n) = (base.clone(), next.clone());
-            b.entities.clear();
-            n.entities.clear();
-            encode(&n, Some(&b)).len()
-        };
-        let entity_bytes = delta.len() - ships_only;
-        println!(
-            "32 ships + 64 moving debris + 48 resting items: delta {} B ({} B/s at 30 Hz; ships {ships_only} B, entities {entity_bytes} B), full {} B",
-            delta.len(),
-            delta.len() * 30,
-            encode(&next, None).len()
-        );
-        assert!(delta.len() <= 1200, "fits one datagram: {} B", delta.len());
-        // M1 measured 377 B (11.3 KB/s) for 32 moving ships; the entities
-        // must fit in the rest of the 17 KB/s budget.
-        assert!(
-            (377 + entity_bytes) * 30 <= BUDGET,
-            "entities {entity_bytes} B per snapshot"
-        );
+        assert!(worst * 30 <= BUDGET, "busy delta {worst} B per snapshot");
         // Nothing moved: the whole entity list costs a bit per item.
-        let same = snapshot(1002, &ships, &debris);
+        let same = snapshot(2000, &ships, &debris);
         let mut later = same.clone();
-        later.tick = 1004;
+        later.tick = 2002;
         let idle = encode(&later, Some(&same));
         assert!(idle.len() < 60, "unchanged snapshot {} B", idle.len());
+    }
+
+    /// Busy ship deltas over several seconds and baseline ages. M1's
+    /// encoding (raw rotations, unpredicted 4/8/16-bit diffs) needed about
+    /// 515 B per snapshot for the ship section at age 2; the predictive
+    /// encoding must leave room for the entities (about 160 B) and the
+    /// header in the 576 B a 17,280 B/s budget allows per 30 Hz snapshot.
+    #[test]
+    fn busy_ship_deltas_fit_the_budget() {
+        const PER_SNAPSHOT: f64 = 17_280.0 / 30.0;
+        for (age, turn, limit) in [
+            (2, 4.0, 315.0),
+            (4, 4.0, 350.0),
+            (6, 4.0, 375.0),
+            (2, 8.0, 330.0),
+        ] {
+            let (mean, worst) = busy_ship_deltas(31 + age as u64, turn, age, 4);
+            println!(
+                "32 busy ships, turning {turn} rad/s, baseline {age} ticks old: ship section mean {mean:.0} B, worst {worst} B (budget {PER_SNAPSHOT:.0} B per snapshot)"
+            );
+            assert!(mean <= limit, "age {age}: mean {mean:.0} B");
+            assert!(
+                (worst as f64) < PER_SNAPSHOT - 160.0,
+                "age {age}: worst {worst} B"
+            );
+        }
+    }
+
+    /// Bits one changed ship adds to a delta (the ship section's mask and
+    /// typical widths are there without ships too).
+    fn one_ship_delta_bits(base: PackedShip, cur: PackedShip, age: u32) -> usize {
+        let motion = Quantizer::default().ship_motion_scale();
+        let snap = |tick: u32, ship: Option<PackedShip>| PackedSnapshot {
+            tick,
+            ack_input: tick,
+            ships: ship.into_iter().collect(),
+            ship_motion: motion,
+            ..Default::default()
+        };
+        let (b, n) = (snap(100, Some(base)), snap(100 + age, Some(cur)));
+        let bits = |b: &PackedSnapshot, n: &PackedSnapshot| {
+            let mut w = BitWriter::new();
+            write_snapshot(&mut w, n, Some(b)).unwrap();
+            w.bit_len()
+        };
+        let with = bits(&b, &n);
+        let bytes = encode(&n, Some(&b));
+        assert_eq!(decode(&bytes, &b).0, n, "exact round trip");
+        with - bits(&snap(100, None), &snap(100 + age, None))
+    }
+
+    /// The motion scale matches the quantizer: a ship cruising at constant
+    /// velocity lands within a position step of the ballistic prediction,
+    /// and its delta (new position only) costs a few bits.
+    #[test]
+    fn cruising_ship_is_predicted() {
+        let quant = Quantizer::default();
+        let motion = quant.ship_motion_scale();
+        assert!(motion.iter().all(|&k| k > 0));
+        let mut rng = Pcg32::new(41, 0);
+        let mut worst_bits = 0;
+        for _ in 0..200 {
+            let v = Vec3::new(
+                rng.range_f32(-17.0, 17.0),
+                rng.range_f32(-17.0, 17.0),
+                rng.range_f32(-17.0, 17.0),
+            );
+            let start = Vec3::new(
+                rng.range_f32(40.0, 216.0),
+                rng.range_f32(30.0, 100.0),
+                rng.range_f32(40.0, 216.0),
+            );
+            let age = 1 + rng.below(8);
+            let ship = |pos: Vec3| {
+                quant.pack_ship(&NetShip {
+                    id: 3,
+                    pos,
+                    vel: v,
+                    rot: Quat::IDENTITY,
+                    flags: ship_flags::ALIVE,
+                    status: None,
+                })
+            };
+            let base = ship(start);
+            let cur = ship(start + v * (age as f32 / 60.0));
+            let pred = predict_pos(&base, &motion, age);
+            for (i, (&c, &p)) in cur.pos.iter().zip(&pred).enumerate() {
+                let err = (c as i32 - p as i32).abs();
+                assert!(err <= 1, "axis {i}: {err} steps off at age {age}");
+            }
+            // 1 changed + position (at most 1 + 8 + 3 x 2) + velocity 2 +
+            // orientation, flags, status 3; 18 raw bytes as a full ship.
+            let bits = one_ship_delta_bits(base, cur, age);
+            assert!(bits <= 1 + 15 + 2 + 3, "{bits} bits");
+            worst_bits = worst_bits.max(bits);
+        }
+        println!("cruising ship: worst {worst_bits} bits per delta");
+    }
+
+    /// Accelerating: the displacement predicts the new velocity to within
+    /// the position quantization, far closer than the baseline velocity.
+    #[test]
+    fn accelerating_ship_velocity_is_predicted_from_motion() {
+        let quant = Quantizer::default();
+        let motion = quant.ship_motion_scale();
+        let (v0, a) = (Vec3::new(5.0, -3.0, 9.0), Vec3::new(20.0, 12.0, -25.0));
+        let age = 6;
+        let t = age as f32 / 60.0;
+        let p0 = Vec3::new(100.0, 60.0, 90.0);
+        let ship = |pos: Vec3, vel: Vec3| {
+            quant.pack_ship(&NetShip {
+                id: 0,
+                pos,
+                vel,
+                rot: Quat::IDENTITY,
+                flags: ship_flags::ALIVE,
+                status: None,
+            })
+        };
+        let base = ship(p0, v0);
+        let cur = ship(p0 + v0 * t + a * (0.5 * t * t), v0 + a * t);
+        let d = ShipDelta::new(&cur, &base, &motion, age);
+        assert!(d.vel_from_motion);
+        let naive = resid_width(residual(cur.vel, base.vel));
+        assert!(resid_width(d.vel) + 3 <= naive, "{d:?} vs {naive} bits");
+        assert!(resid_width(d.pos) <= 6, "{d:?}");
+        one_ship_delta_bits(base, cur, age);
+    }
+
+    /// Extreme packed values, ages and motion scales round-trip exactly
+    /// (wrapping residuals, clamped predictions, dropped-component switches).
+    #[test]
+    fn ship_delta_extremes_round_trip() {
+        let mut rng = Pcg32::new(42, 0);
+        let edge = |rng: &mut Pcg32| match rng.below(5) {
+            0 => 0u16,
+            1 => u16::MAX,
+            2 => 0x8001, // -32767
+            3 => 0x7FFF,
+            _ => rng.next_u32() as u16,
+        };
+        for _ in 0..3000 {
+            let motion = match rng.below(3) {
+                0 => [u32::MAX; 3],
+                1 => Quantizer::default().ship_motion_scale(),
+                _ => [0, rng.next_u32(), 1],
+            };
+            let mut ship = || PackedShip {
+                id: 7,
+                pos: [edge(&mut rng), edge(&mut rng), edge(&mut rng)],
+                vel: [edge(&mut rng), edge(&mut rng), edge(&mut rng)],
+                rot: if rng.chance(0.5) {
+                    (rng.below(4) << 30) | (1022 << 20) | rng.below(1023)
+                } else {
+                    rng.next_u32() & !(0x3FF << 10) // field 1 = 0
+                },
+                flags: rng.next_u32() as u16 & !ship_flags::WIRE_RESERVED,
+                status: None,
+            };
+            let (a, b) = (ship(), ship());
+            let age = 1 + rng.below(MAX_BASELINE_AGE);
+            let base = PackedSnapshot {
+                tick: 500,
+                ships: vec![a],
+                ship_motion: motion,
+                ..Default::default()
+            };
+            let next = PackedSnapshot {
+                tick: 500 + age,
+                ships: vec![b],
+                ship_motion: motion,
+                ..Default::default()
+            };
+            let bytes = encode(&next, Some(&base));
+            assert_eq!(decode(&bytes, &base).0, next);
+        }
+    }
+
+    /// Hostile deltas: an orientation field pushed out of its 10-bit range
+    /// is an error, not a wrapped quaternion.
+    #[test]
+    fn rotation_diff_out_of_range_is_rejected() {
+        let base_ship = PackedShip {
+            id: 0,
+            pos: [100; 3],
+            vel: [0; 3],
+            rot: (3 << 30) | (1000 << 20) | (511 << 10) | 511,
+            flags: 0,
+            status: None,
+        };
+        let base = PackedSnapshot {
+            tick: 10,
+            ships: vec![base_ship],
+            ..Default::default()
+        };
+        // Hand-built delta: header, mask, widths, ship with field 0 + 40.
+        let mut w = BitWriter::new();
+        w.write_u32(12);
+        w.write_bool(true);
+        w.write_u8(2);
+        w.write_varint(zigzag32(-12) as u64);
+        w.write_varint(0);
+        w.write_bool(false); // motion unchanged
+        w.write_varint(0);
+        w.write_varint(0);
+        w.write_bool(false); // scores unchanged
+        w.write_u32(1);
+        WidthBase([1, 1, 7]).write(&mut w);
+        w.write_bool(true); // changed
+        w.write_bool(false); // position residual zero
+        w.write_bool(false); // velocity predictor
+        w.write_bool(false); // velocity residual zero
+        w.write_bool(true); // orientation changed
+        w.write_bool(true); // same dropped component
+        write_resid3_nz(&mut w, [40, 0, 0], 7);
+        let bytes = w.finish();
+        assert_eq!(
+            read_snapshot(&mut BitReader::new(&bytes), &base).unwrap_err(),
+            DecodeError::Invalid("rotation diff out of range")
+        );
+    }
+
+    /// The motion scale travels in full snapshots and only when it changes
+    /// in deltas; a decoded snapshot carries it for later deltas.
+    #[test]
+    fn motion_scale_is_carried_and_inherited() {
+        let quant = Quantizer::default();
+        let full = quant.pack_snapshot(&Snapshot {
+            tick: 50,
+            ..Default::default()
+        });
+        assert_eq!(full.ship_motion, quant.ship_motion_scale());
+        let (back, _) = decode(&encode(&full, None), &NoBaselines);
+        assert_eq!(back.ship_motion, full.ship_motion);
+        let mut next = full.clone();
+        next.tick = 52;
+        let same = encode(&next, Some(&full));
+        next.ship_motion = [1, 2, 3];
+        let changed = encode(&next, Some(&full));
+        assert!(changed.len() > same.len());
+        assert_eq!(decode(&changed, &full).0.ship_motion, [1, 2, 3]);
     }
 
     #[test]

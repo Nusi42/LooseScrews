@@ -263,6 +263,12 @@ pub struct PackedSnapshot {
     pub players: Vec<NetPlayer>,
     pub scores: Vec<u32>,
     pub match_ticks_left: u32,
+    /// Per-axis ship motion scale for delta prediction (see
+    /// [`Quantizer::ship_motion_scale`](crate::Quantizer::ship_motion_scale)):
+    /// packed position steps one packed ship velocity step moves per tick, in
+    /// units of `2^-MOTION_SCALE_SHIFT`. Zero disables prediction (deltas
+    /// stay exact, only larger). [`Quantizer::pack_snapshot`] fills it.
+    pub ship_motion: [u32; 3],
 }
 
 impl PackedSnapshot {
@@ -515,6 +521,7 @@ impl Quantizer {
             players,
             scores: s.scores.clone(),
             match_ticks_left: s.match_ticks_left,
+            ship_motion: self.ship_motion_scale(),
         }
     }
 

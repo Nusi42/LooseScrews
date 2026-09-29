@@ -1,7 +1,11 @@
-// Decoy: a copy of your ship that draws fire. Integrity equals your max hull; it lasts
-// `duration_secs`, then snaps back to you like a rubber band and hits the first ship on its path
-// (teammates and you included) for 99% of its remaining integrity. Press G to launch.
-// Behaviour: crates/ls-sim/src/gadgets/decoy.rs (TODO(wave-B): return hit). Schema: `ls_sim::GadgetDef`.
+// Decoy: a copy of your ship that draws fire (projectiles hit it; seekers home on it).
+// Integrity equals your max hull; it drifts along your
+// aim at `launch_speed` for `duration_secs`, then snaps back to you like a rubber band at
+// `return_speed` and hits the first ship on its path (teammates and you included, no
+// friendly-fire scaling) for `return_fraction` (99%) of its remaining integrity, with
+// `return_knockback_per_damage` u/s of push per point. A return that reaches nobody within
+// `return_max_secs` fizzles. Press G to launch.
+// Behaviour: crates/ls-sim/src/gadgets/decoy.rs. Schema: `ls_sim::GadgetDef`.
 GadgetDef(
     id: "decoy",
     name: "Decoy",
@@ -10,5 +14,11 @@ GadgetDef(
     cooldown_secs: 10.0,
     duration_secs: 6.0,
     visual: (shape: Decoy, color: (255, 255, 255), scale: 1.0),
-    params: { "return_fraction": 0.99, "return_speed": 60.0, "launch_speed": 12.0 },
+    params: {
+        "return_fraction": 0.99,
+        "return_speed": 60.0,
+        "return_max_secs": 3.0,
+        "return_knockback_per_damage": 0.2,
+        "launch_speed": 12.0,
+    },
 )

@@ -19,6 +19,7 @@ depth: [determinism.md](determinism.md).
 | Time | `Tick(u64)` at `TICK_HZ = 60`; `DT = 1.0 / 60.0` (`f32`, bits `0x3c888889`) |
 | Durations from data | seconds in RON, converted with `Tick::ticks_for_secs` |
 | Level box | `ls_worldgen::Generator::bounds()`: `[0,256] x [0,128] x [0,256]` u at the default size, min corner at the origin (not centred); sealed by 2 u walls, outside counts as solid |
+| Connection network | Generator version 2: every level carves 8 caverns (4 x 2 grid; the outer columns in the team spawn zones) and 9 + 3 tunnels of radius 4 u linking them, applied last as `max(terrain, carve)` (`ls_worldgen::network`); tunnel centre lines keep at least 3 u of clearance. `ls_game::setup` only places spawns and pickups with a straight 1.5 u (`CONNECT_MARGIN`) link to it |
 
 ## Determinism
 
@@ -35,14 +36,17 @@ tests are in [determinism.md](determinism.md). The contract part is the RNG stre
   | `ls_sim::world::RNG_STREAM_PICKUPS` | `0x5349_4d5f_5049_434b` ("SIM_PICK") | Weapon pickup rolls, seeded with `Pcg32::from_seed(match_seed, ..)` |
   | `ls_game::setup::RNG_STREAM_SPAWNS` | `0x4741_4d45_5f53_504e` ("GAME_SPN") | Team spawn point placement, `Pcg32::from_seed(world_seed, ..)` |
   | `ls_game::setup::RNG_STREAM_PICKUP_POINTS` | `0x4741_4d45_5f50_4b50` ("GAME_PKP") | Pickup point placement, `Pcg32::from_seed(world_seed, ..)` |
-  | `ls_sim::behavior::RNG_STREAM_MODULES` | `0x5349_4d5f_4d4f_4453` ("SIM_MODS") | Weapon and gadget modules (`Ctx::rng(key)`): `Pcg32::new(mix64(match_seed ^ mix64(key ^ tick.rotate_left(32))), ..)`, a private stream per key and tick |
+  | `ls_sim::behavior::RNG_STREAM_MODULES` | `0x5349_4d5f_4d4f_4453` ("SIM_MODS") | Weapon and gadget modules (`Ctx::rng(key)`): `Pcg32::new(mix64(match_seed ^ mix64(key ^ tick.rotate_left(32))), ..)`, a private stream per key and tick. Seed Grenade growth uses the same stream id keyed only by the match seed and the projectile id (no tick: `seed_grenade::growth`) |
 
   The simulation's `match_seed` (`WorldConfig::seed`) is
   `mix64(world_seed ^ ls_game::setup::MATCH_SEED_SALT)` with the salt `0x4d41_5443_485f_5345`
   ("MATCH_SE"). Spawn and pickup placement reads only the pristine generated level, so every
   peer derives the same `MatchSetup` from the share code and rule set.
 
-  `ls-worldgen` draws no RNG streams: its noise and features are integer hashes of the seed.
+  `ls-worldgen` draws no PCG streams: its noise and features are integer hashes of the seed,
+  and the connection network (generator version 2, `ls_worldgen::network`) draws from a
+  `SplitMix64` seeded by its own `Seeds::connect` value, appended last to `Seeds` so the
+  earlier derived seeds are unchanged.
   (`ls-bots` uses its own stream for bot behaviour; it is not part of the deterministic core.)
 - `det::tests::golden_bits` and the RNG reference-vector tests run on native and on wasm32
   (commands in [determinism.md](determinism.md#the-wasm-cross-check)); they must stay
@@ -78,7 +82,9 @@ pub enum TerrainEdit {
 - `radius` is in u. The design doc gives crater sizes as **diameters**, so weapon data
   stores `crater_radius = diameter / 2` (e.g. the 2 u Bolt Rocket crater is
   `crater_radius: 1.0`).
-- `Surface` sets timed surface states on the surface cells whose centre is within `radius`:
+- `Surface` sets timed surface states on the surface cells whose centre is within `radius`
+  (the query `GameTerrain::surface_states_near` instead counts every 1 u surface cell that
+  overlaps the query sphere, so a ship scraping a wall finds the state of the cell under it):
   for every bit in `states` (`ls_math::SurfaceStates`: `HOT` 1, `CHARGED` 2, `GLOW` 4; other
   bits ignored) the cell's expiry tick becomes `until` (absolute simulation tick; `0` clears).
   A state is active while `tick < until`; the cell's other states are kept. Default durations

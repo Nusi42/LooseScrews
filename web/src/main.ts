@@ -32,6 +32,8 @@ import { NameTags, nameTagModel } from "./ui/nameTags.ts";
 import { EndScreen, endScreenModel, Scoreboard, scoreboardModel } from "./ui/scoreboard.ts";
 import { showLoading, showStartScreen, type StartOptions } from "./ui/startScreen.ts";
 import { loadWasm } from "./wasm/load.ts";
+import { addRuleEditorLink, showRuleEditor, wantsRuleEditor } from "./rules/editor.ts";
+import { parseInvite } from "./rules/model.ts";
 import type { WasmApi } from "./wasm/api.ts";
 
 /** Largest frame time passed to the simulation; longer stalls (tab switch) are clamped. */
@@ -63,6 +65,12 @@ async function start(): Promise<void> {
   const canvas = mustGet("game", HTMLCanvasElement);
   const ui = mustGet("ui", HTMLDivElement);
 
+  // `?editor=rules`: the rule set editor (no game core or GPU needed).
+  if (wantsRuleEditor(location)) {
+    showRuleEditor(ui, { baseUrl: location.href, ...parseInvite(location.href) });
+    return;
+  }
+
   let api: WasmApi;
   try {
     api = await loadWasm();
@@ -71,6 +79,7 @@ async function start(): Promise<void> {
     return;
   }
 
+  const editorLink = addRuleEditorLink(ui, location.href);
   const options = await showStartScreen(ui, (code) => {
     const info = api.checkShareCode(code);
     try {
@@ -79,6 +88,7 @@ async function start(): Promise<void> {
       info.free();
     }
   });
+  editorLink.remove();
 
   let renderer: Renderer;
   try {

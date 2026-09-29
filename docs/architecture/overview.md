@@ -86,12 +86,15 @@ flowchart LR
 ## From share code to rendered frame
 
 1. **Share code.** The server gets `--code` (or makes a random one) and a rule set
-   (`--ruleset`, default the embedded Paint the Void rules). `ls_server::match_config` decodes
+   (`--ruleset` file or `LR...` rule set code, default the embedded Paint the Void rules, plus
+   `--ban` and `--balance-list`; see [server.md](server.md#cli)). `ls_server::match_config` decodes
    the code (`ShareCode`: generator version, seed, 7 sliders, CRC-8) and validates the rule set
    against the built-in weapon table (`RuleSet::resolve`).
-2. **Server world.** `ls_game::setup::build_match` creates the `Generator` from the code, wraps
-   a `ChunkStore` in `GameTerrain`, computes spawn and pickup points from the pristine level
-   (`match_setup`, seeded RNG streams) and builds the `ls_sim::World` at tick 0. `Room::new`
+2. **Server world.** `ls_game::setup::build_match` creates the `Generator` from the code (the
+   last generator stage carves the connection network of caverns and tunnels that links both
+   team ends, `ls_worldgen::network`), wraps a `ChunkStore` in `GameTerrain`, computes spawn and
+   pickup points from the pristine level (`match_setup`, seeded RNG streams; every point must
+   reach the network in a straight line with 1.5 u of clearance) and builds the `ls_sim::World` at tick 0. `Room::new`
    pregenerates every chunk (paint coverage needs all surface cells).
 3. **Handshake.** The browser (or a bot) connects, sends `Hello`, and receives a `Welcome` with
    its wire id and team, the share code, the rule set RON text, the quantization ranges, the

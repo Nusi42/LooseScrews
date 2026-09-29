@@ -1,6 +1,7 @@
 // Scrap Laser: energy primary, the laser-speed baseline (30 u/s, 3 s lifetime).
-// Design doc: "Straight bolts at 30 u/s; 6 upgrade levels found as pickups. Malus: weak at level 1."
-// Behaviour: crates/ls-sim/src/weapons/energy/scrap_laser.rs (implemented: the generic hooks are the M1 behaviour).
+// Design doc: "Straight bolts at 30 u/s; 6 upgrade levels found as pickups. Malus: weak at level 1.
+// Lasting effect: scorch marks; hit metal glows hot for 10 s."
+// Behaviour: crates/ls-sim/src/weapons/energy/scrap_laser.rs.
 WeaponDef(
     id: "scrap_laser",
     name: "Scrap Laser",
@@ -8,16 +9,21 @@ WeaponDef(
     slot: Primary,
     speed: 30.0,
     lifetime_secs: 3.0,
-    damage: 8.0,
+    // M2 plan: level 1 bolt 6, level 6 bolt 14 (Tinker hull 100).
+    damage: 6.0,
     fire_interval_secs: 0.25,
     cost: Energy(3.0),
     projectile_radius: 0.15,
     splash: None,
-    knockback: 1.0,
+    // 0.125 u/s of knockback per damage point (unchanged from M1).
+    knockback: 0.75,
     terrain: (crater_radius: 0.0, paint_radius: 0.0),
     shield: Wears(1.0),
-    // Level 1 is weak; each pickup adds a level (up to 6), +30% base damage per level.
+    // Level 1 is weak; each upgrade pickup adds a level (up to 6), +26.67% of the level 1
+    // damage per level: 6 -> 14.
     max_level: 6,
-    damage_per_level: 0.3,
+    damage_per_level: 0.26667,
     visual: (shape: Bolt, color: (255, 70, 50), scale: 1.0),
+    // Hit rock glows hot (SurfaceStates::HOT) within `hot_radius` u for `hot_secs`.
+    params: { "hot_radius": 0.5, "hot_secs": 10.0 },
 )

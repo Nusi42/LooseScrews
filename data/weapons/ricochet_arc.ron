@@ -1,6 +1,6 @@
 // Ricochet Arc: energy primary. Bolts bounce off walls up to 3 times. Malus: bounces can hit
 // you. Lasting effect: chips terrain at every bounce.
-// Behaviour: crates/ls-sim/src/weapons/energy/ricochet_arc.rs (TODO(wave-B): generic fallback until implemented).
+// Behaviour: crates/ls-sim/src/weapons/energy/ricochet_arc.rs.
 // `params` are read by the weapon module (`WeaponDef::param`); numbers are tuning starting points.
 WeaponDef(
     id: "ricochet_arc",
@@ -16,5 +16,10 @@ WeaponDef(
     knockback: 0.6,
     shield: Wears(1.0),
     visual: (shape: Arc, color: (255, 240, 90), scale: 1.0),
-    params: { "bounces": 3.0, "chip_radius": 0.3 },
+    params: {
+        // Reflections off walls before the bolt ends; it can hit its owner after the first.
+        "bounces": 3.0,
+        // Crater chipped at every bounce and at the final hit (scaled by rock strength).
+        "chip_radius": 0.3,
+    },
 )

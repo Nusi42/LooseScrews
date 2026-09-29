@@ -25,7 +25,7 @@ use crate::ruleset::ResolvedRules;
 use crate::ship::{PlayerId, ShipState};
 use crate::terrain::{paint_team_id, TerrainLayers};
 use crate::visual::VisualTable;
-use crate::world::Projectile;
+use crate::world::{PickupSpawn, Projectile, ScrapPile};
 use crate::{
     Event, GadgetTable, InputCmd, ShipTable, ShipTuning, WeaponDef, WeaponId, WeaponTable,
 };
@@ -93,6 +93,9 @@ pub enum CueKind {
     Gadget = 10,
     /// Decoy snapped back to its owner.
     DecoyReturn = 11,
+    /// An overheld charge started burning `source`'s hull (`value` = hull
+    /// per second; Fusion Charger).
+    Overcharge = 12,
     /// Free for modules; `value` is module-defined.
     Custom = 255,
 }
@@ -113,6 +116,7 @@ impl CueKind {
             9 => MuzzleFlash,
             10 => Gadget,
             11 => DecoyReturn,
+            12 => Overcharge,
             _ => Custom,
         }
     }
@@ -176,6 +180,10 @@ pub enum Command {
     ImpulseShip { target: PlayerId, dv: Vec3 },
     /// Adds `dv / mass` to an entity's velocity (wakes resting debris).
     ImpulseEntity { id: u32, dv: Vec3 },
+    /// Moves a scrap pile, or the content of a pickup spawn point, whose
+    /// entity id is `id` by `delta` (the spawn point itself stays; Magnet
+    /// Sneeze).
+    MovePickup { id: u32, delta: Vec3 },
     /// Damages an entity (debris, decoy); `hp <= 0` removes it.
     DamageEntity {
         id: u32,
@@ -238,6 +246,10 @@ pub struct View<'a> {
     /// ... and the ones already stepped. Both empty in other stages.
     pub projectiles_stepped: &'a [Projectile],
     pub entities: &'a [Entity],
+    /// Pickup spawn points (content at [`PickupSpawn::content_pos`]).
+    pub pickups: &'a [PickupSpawn],
+    /// Scrap piles, scrap pickups and wrecks.
+    pub scrap_piles: &'a [ScrapPile],
     pub terrain: &'a dyn TerrainQuery,
     /// Surface states and rock materials (see [`TerrainLayers`]).
     pub layers: &'a dyn TerrainLayers,
@@ -571,6 +583,11 @@ impl<'a> Ctx<'a> {
 
     pub fn impulse_entity(&mut self, id: u32, dv: Vec3) {
         self.push(Command::ImpulseEntity { id, dv });
+    }
+
+    /// See [`Command::MovePickup`].
+    pub fn move_pickup(&mut self, id: u32, delta: Vec3) {
+        self.push(Command::MovePickup { id, delta });
     }
 
     /// See [`Command::ImpulseProjectile`].

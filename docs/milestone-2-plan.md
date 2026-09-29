@@ -1,6 +1,6 @@
 # Milestone 2 — Arsenal and physics
 
-Status: in progress (wave A integrated, wave B next) · Design source: [design/game-design-doc.md](design/game-design-doc.md) · M1 plan: [implementation-plan.md](implementation-plan.md)
+Status: in progress (waves A and B integrated, wave C next) · Design source: [design/game-design-doc.md](design/game-design-doc.md) · M1 plan: [implementation-plan.md](implementation-plan.md)
 
 Milestone 2 turns the four-weapon vertical slice into the full combat sandbox from the design doc: every weapon, all four ship types, gadgets, lasting physical effects (debris, surface states, dust) and configurable match rules. It also fixes two M1 issues found in soak testing and closes the M1 gaps that M2 depends on.
 
@@ -43,12 +43,16 @@ The design doc gives behavior but not every number; these defaults live in `data
 | Surface states | Stored per surface cell next to paint: hot (10 s, visual), charged (15 s, drains 5 energy/s from ships scraping it), glow (30 s, light) |
 | Rule set codes | Rule sets serialize to a compact code like share codes (`LR` prefix); invite links carry world + rule set codes |
 | Data hash | `Hello` carries a hash of all loaded `data/` files; the server rejects mismatches with a clear message |
+| Time to kill (wave B) | Primaries tuned to 3-8 s on a Tinker at point blank: Scatter Laser 3 per bolt, Plasma Repeater 3 (1.5 s reach), Corkscrew 0.5 s between volleys (2 s reach), Rivet Gun 10/s at half a scrap per rivet, Railspike 1.5 s between shots. The Scrap Laser at level 6 (1.75 s) is above the band by the table's numbers, on purpose: it takes five upgrade pickups |
+| Paint Thrower colours | The design doc's paint effects (red bouncy, blue slippery, yellow sticky) need a colour choice beyond the team colour; they move to M3. In M2 the Paint Thrower paints the team colour for Paint the Void |
+| Balance list | `ls-server --balance-list` bans apply on top of any rule set; its tuning multiplies the rule set's (rounded to twentieths), so a list meant to weaken a weapon never strengthens it; its shield overrides replace the rule set's |
+| Level connectivity | Generator version 2 carves a network of caverns and 4 u tunnels linking both team ends into every level; spawns and pickups must reach it (`ls_game::setup::CONNECT_MARGIN`) |
 
 ## 3. Waves
 
 | Wave | Work | Owner areas |
 | --- | --- | --- |
-| A1 | Fix issue A: global navigation for bots (coarse open-space grid + A*), hunting enemies across the level; regression test on the soak world `LS04-PNEY-V86Z-VXZM-K4M6-8001-8F8T` | `crates/ls-bots` |
+| A1 | Fix issue A: global navigation for bots (coarse open-space grid + A*), hunting enemies across the level; regression test on the soak world `LS04-PNEY-V86Z-VXZM-K4M6-8001-8F8T` (generator version 2: `LS08-PNEY-V86Z-VXZM-K4M6-8001-8F8P`, same seed and sliders) | `crates/ls-bots` |
 | A1 | Fix issue B: find why full snapshots and input starvation repeat after joins/restarts; fix root cause; regression test asserting ≤ 1 full snapshot per join in steady state | `crates/ls-game`, `crates/ls-server`, `crates/ls-net` |
 | A2 | Framework: weapon behavior registry with one module per weapon (stubs for all), projectile kinds, charge/guided/beam mechanics hooks, ship types from data, gadget slot, debris entities, generic entity replication in `ls-net` with data-driven visuals, data hash in handshake, rule set v2 + codes | `crates/ls-sim`, `crates/ls-net`, `crates/ls-game`, `data/` |
 | A3 | Surface states and terrain strength in worldgen; generic entity rendering in the client (pickups, scrap, wrecks, debris, names, data-driven projectile visuals) | `crates/ls-worldgen`; `crates/ls-wasm` + `web/` |
@@ -78,13 +82,45 @@ Wave B must fill: the 23 weapon modules still marked `TODO(wave-B)` and the Deco
 `ctx.crater_exact` scaled by `ctx.view.instability`; Leech Arc charged surfaces as
 `TerrainEdit::Surface` edits (the drain is already a framework step); Magnet Sneeze with
 `ctx.impulse_projectile` and `ctx.material_at`; Scatter Laser / Corkscrew fans from
-`Shot::shots`. Data numbers still at the M1 values that differ from the table above: Scrap
-Laser 8 per bolt at level 1 (+30 % per level, 20 at level 6; plan: 6 to 14, i.e. `damage: 6.0`,
-`damage_per_level: 0.2667`) and Bolt Rocket 35 direct (plan: 30); changing them re-blesses
-`REPLAY_GOLDEN_HASH` and needs the M1 tests that pin 8.0 / 35.0 updated. Open: busy 32-ship
-deltas (every ship turning and thrusting) reach about 515 B per snapshot on their own, above
-the 17 KB/s budget at 30 Hz (ship rotation deltas are the next saving); `userDocs/` does not
-describe the new bot behaviour yet (wave D).
+`Shot::shots`. (Done in wave B, see below.)
+
+### Wave B status (integrated)
+
+Done: every weapon module (energy, kinetic, ordnance I and II with the Tectonic Charge,
+specials) and every gadget (Decoy return hit) implements its design-doc behaviour with
+scenario tests next to the module; `weapons::tests` now fails if any module falls back
+(`docs/architecture/arsenal-framework.md#the-arsenal-as-built`). Plan numbers applied (Scrap
+Laser 6 to 14, Bolt Rocket 30) and primaries retuned to the 3-8 s time to kill (see the
+decisions table). Integration fixes: one guided Eyeball at a time (the world skips the
+secondary while guiding), Magnet Sneeze pulls pickups and scrap piles (`Command::MovePickup`,
+`PickupSpawn::offset`, `View::pickups` / `scrap_piles`), lag compensation keeps Swap Harpoon
+swaps and Borrowed Time rewinds (`restore_offsets`, `World::shift_ship`), terrain edit and
+debris rates capped (Corkscrew grooves, Echo Cannon scorch, `weapons::debris_crowded`),
+`CueKind::Overcharge` for the Fusion Charger burn, Leech Arc beam cue every 3rd arc, Tectonic
+Charge rides debris and decoys, Prox Mine honours friendly fire off, Stalker Mine can be
+pulled loose. Rule set codes version 3 (diffs against the default, `LR6V-69CM-G006-58R`),
+`ls-server --ruleset <file|code> --ban --balance-list`, the browser rule set editor
+(`?editor=rules`) and `data/rulesets/sandbox_all_weapons.ron`. Generator version 2 carves a
+cavern and tunnel network into every level (share codes now start `LS08`/`LS0B`; the M1 codes
+in tests and tools were re-encoded with the same seeds and sliders). Protocol 3 compresses
+ship deltas (busy 32-ship fights fit the 17,280 B/s budget for baselines up to 6 ticks old).
+`SIM_BEHAVIOR_VERSION` 3; `REPLAY_GOLDEN_HASH` re-blessed (native and wasm32 agree).
+
+Checks at integration: workspace tests, clippy, fmt, wasm32 unit tests, bots release tests
+(navigation sweep over the LS08 soak world), web typecheck/tests/build, determinism
+cross-check; e2e over WebSocket and WebTransport (7 bots, 90 s) and a full sandbox match with
+8 bots (0 desyncs, worst window tick p99 3.7 ms, under the 4 ms budget but with little margin
+while other builds ran on the machine).
+
+Open for wave C/D: the client (`ls-wasm` ShotPredictor) still predicts straight bolts (it draws
+a stray bolt for the instant Leech Arc and mis-predicts Scatter / Corkscrew fans); client
+visuals for the new cues and states (Leech beam, muzzle flash, decoy return, overcharge,
+ghost, spike marker, glow, riding Tectonic Charge); bots use only the laser, Rivet Gun and
+secondaries; Leech Arc re-acquires its target every arc (a real lock needs per-weapon state);
+paint colour effects are M3; no permanent scorch surface state (scorch is long-lived `HOT`);
+projectile deltas have no motion prediction yet (busy fights with many shots in flight exceed
+the budget); the rule set editor has been checked by its Node tests only, not in a browser;
+`userDocs/` describe none of wave B yet (wave D).
 
 ## 4. Acceptance criteria
 

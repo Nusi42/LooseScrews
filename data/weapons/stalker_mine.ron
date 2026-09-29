@@ -1,23 +1,27 @@
 // Stalker Mine: ordnance secondary. Creeps toward ships within 10 u. Malus: slow. Lasting
 // effect: leaves a scorched trail along its path.
-// Behaviour: crates/ls-sim/src/weapons/ordnance/stalker_mine.rs (TODO(wave-B): generic fallback until implemented).
-// `params` are read by the weapon module (`WeaponDef::param`); numbers are tuning starting points.
+// Behaviour: crates/ls-sim/src/weapons/ordnance/stalker_mine.rs (implemented).
+// `params` are read by the weapon module (`WeaponDef::param`): launched at `speed`, slowing by
+// `launch_drag` per second, sticks to walls; armed after `arm_secs`; creeps at `creep_speed`
+// u/s at the nearest visible enemy within `detect_radius` u and goes off within
+// `trigger_radius` u; every `scorch_spacing` u of creeping within `scorch_radius` u of rock it
+// scorches the surface (hot state) for `scorch_secs`. Crater radius 1 u = a 2 u diameter.
 WeaponDef(
     id: "stalker_mine",
     name: "Stalker Mine",
     family: Ordnance,
     slot: Secondary,
-    speed: 3.0,
+    speed: 6.0,
     lifetime_secs: 60.0,
     damage: 35.0,
     fire_interval_secs: 0.75,
     cost: Count(1),
     projectile_radius: 0.3,
-    splash: Some((radius: 3.0, damage: 25.0, hits_owner: true)),
+    splash: Some((radius: 4.0, damage: 45.0, hits_owner: true)),
     knockback: 7.0,
     terrain: (crater_radius: 1.0),
     shield: Wears(1.0),
     max_ammo: 5,
     visual: (shape: Mine, color: (160, 255, 80), scale: 1.0),
-    params: { "arm_secs": 1.0, "detect_radius": 10.0, "creep_speed": 4.0, "trigger_radius": 1.5 },
+    params: { "arm_secs": 1.0, "detect_radius": 10.0, "creep_speed": 4.0, "trigger_radius": 1.5, "launch_drag": 1.5, "scorch_spacing": 1.5, "scorch_radius": 1.5, "scorch_secs": 60.0 },
 )

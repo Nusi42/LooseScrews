@@ -1,6 +1,10 @@
 // Scrap Shotgun: kinetic primary. 8 pellets at 200 u/s. Malus: useless at range. Lasting
 // effect: pockmarks walls and sprays fresh debris.
-// Behaviour: crates/ls-sim/src/weapons/kinetic/scrap_shotgun.rs (TODO(wave-B): generic fallback until implemented).
+// Behaviour: crates/ls-sim/src/weapons/kinetic/scrap_shotgun.rs (`projectiles` pellets in a random
+// cone of `spread_deg` half angle, new pattern every shot; 30 u range (lifetime); pellet damage
+// falls off from full at `falloff_start` u to `falloff_min` at `falloff_end` u; each pellet digs a
+// `pockmark_radius` pit and the last `debris_per_shot` pellets that hit rock spray
+// debris of toughness `debris_hp`).
 // `params` are read by the weapon module (`WeaponDef::param`); numbers are tuning starting points.
 WeaponDef(
     id: "scrap_shotgun",
@@ -8,7 +12,7 @@ WeaponDef(
     family: Kinetic,
     slot: Primary,
     speed: 200.0,
-    lifetime_secs: 0.5,
+    lifetime_secs: 0.15,
     damage: 3.0,
     fire_interval_secs: 0.8,
     cost: Scrap(4.0),
@@ -18,5 +22,17 @@ WeaponDef(
     projectiles: 8,
     spread_deg: 6.0,
     visual: (shape: Pellet, color: (200, 170, 130), scale: 0.8),
-    params: { "pockmark_radius": 0.25, "debris_per_shot": 1.0 },
+    params: {
+        "pockmark_radius": 0.25,
+        "debris_per_shot": 2.0,
+        "debris_radius": 0.3,
+        "debris_speed": 5.0,
+        "debris_scrap": 0.5,
+        "debris_hp": 10.0,
+        // No new debris while this many pieces float within 2 u of the hit.
+        "debris_crowd": 2.0,
+        "falloff_start": 8.0,
+        "falloff_end": 24.0,
+        "falloff_min": 0.3,
+    },
 )

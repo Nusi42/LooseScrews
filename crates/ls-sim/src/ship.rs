@@ -632,4 +632,210 @@ mod tests {
         }
         assert!(b.pos.x <= 500.0 - t.radius + 1e-3, "{:?}", b.pos);
     }
+
+    /// Design doc ship table, flown: the top speed each type reaches
+    /// (boosting on the 3-axis diagonal) relative to the 30 u/s laser, and
+    /// how fast each turns (Skitter fastest, Hauler slowest).
+    #[test]
+    fn ship_types_fly_at_their_design_speeds_and_turn_rates() {
+        let table = crate::ShipTable::builtin();
+        let room = big_room();
+        let mut turned = Vec::new();
+        for (ty, ratio) in [
+            (ShipType::Skitter, 0.98),
+            (ShipType::Tinker, 0.95),
+            (ShipType::Hauler, 0.85),
+            (ShipType::Tug, 0.90),
+        ] {
+            let t = table.get(ty);
+            let mut s = ShipState::new(PlayerId(0), 0, ty, t, Vec3::ZERO, Quat::IDENTITY);
+            s.boost = t.boost_max;
+            let input = InputCmd::idle(0)
+                .with_thrust(DIAG)
+                .with_buttons(Buttons::BOOST);
+            for _ in 0..90 {
+                simulate_movement(&mut s, &input, t, &room);
+            }
+            let top = s.speed();
+            assert!((top / 30.0 - ratio).abs() < 0.006, "{ty:?}: {top} u/s");
+            assert!(top < 30.0, "{ty:?} never outruns a laser");
+            // A sixth of a second of full yaw input (under half a turn).
+            let mut s = ShipState::new(PlayerId(0), 0, ty, t, Vec3::ZERO, Quat::IDENTITY);
+            let yaw = InputCmd {
+                look_yaw: 1.0,
+                ..InputCmd::idle(0)
+            };
+            for _ in 0..10 {
+                simulate_movement(&mut s, &yaw, t, &room);
+            }
+            let f = s.orientation.forward();
+            let angle = det::atan2(-f.x, -f.z);
+            let expected = t.max_turn_rate * 10.0 / 60.0;
+            assert!(
+                (angle - expected).abs() < 1e-3,
+                "{ty:?}: {angle} vs {expected}"
+            );
+            turned.push((ty, angle));
+        }
+        let angle = |ty| turned.iter().find(|(t, _)| *t == ty).unwrap().1;
+        assert!(angle(ShipType::Skitter) > angle(ShipType::Tinker));
+        assert!(angle(ShipType::Tinker) > angle(ShipType::Tug));
+        assert!(angle(ShipType::Tug) > angle(ShipType::Hauler));
+    }
+
+    /// Design doc: the Tug passes scrap to teammates (hull first, at
+    /// `scrap_pass_rate`), never to enemies or ships out of reach; other
+    /// types cannot pass scrap.
+    #[test]
+    fn tug_passes_scrap_only_to_teammates_in_reach() {
+        use crate::{MatchSetup, SpawnPoint, World, WorldConfig};
+        let spawn = |x: f32, team| SpawnPoint {
+            pos: Vec3::new(x, 0.0, 0.0),
+            team,
+            orientation: Quat::IDENTITY,
+        };
+        let setup = MatchSetup {
+            spawns: vec![spawn(-5.0, 0), spawn(5.0, 1)],
+            pickup_points: vec![],
+            instability: 0,
+        };
+        let mut w = World::new(WorldConfig::paint_the_void(3, setup)).unwrap();
+        let mut room = BoxRoomTerrain::centered(Vec3::splat(60.0));
+        let tug = w.add_player(Some(0), ShipType::Tug).unwrap();
+        let enemy = w.add_player(Some(1), ShipType::Tinker).unwrap();
+        let far_mate = w.add_player(Some(0), ShipType::Hauler).unwrap();
+        let rate = crate::ShipTable::builtin()
+            .get(ShipType::Tug)
+            .scrap_pass_rate;
+        let reach = crate::ShipTable::builtin()
+            .get(ShipType::Tug)
+            .scavenge_radius;
+        assert!(rate > 0.0);
+        let set = |w: &mut World, id, pos: Vec3, hull: f32, scrap: f32| {
+            let s = w.ship_mut(id).unwrap();
+            s.pos = pos;
+            s.vel = Vec3::ZERO;
+            s.hull = hull;
+            s.scrap = scrap;
+        };
+        set(&mut w, tug, Vec3::ZERO, 110.0, 50.0);
+        set(&mut w, enemy, Vec3::new(1.5, 0.0, 0.0), 50.0, 0.0);
+        set(
+            &mut w,
+            far_mate,
+            Vec3::new(0.0, 0.0, reach + 1.0),
+            50.0,
+            0.0,
+        );
+        let scavenge = [(tug, InputCmd::idle(0).with_buttons(Buttons::SCAVENGE))];
+        for _ in 0..30 {
+            w.step(&mut room, &scavenge);
+        }
+        assert_eq!(w.ship(tug).unwrap().scrap, 50.0, "nobody to pass to");
+        assert_eq!(w.ship(enemy).unwrap().hull, 50.0);
+        // The teammate comes into reach: hull first, then its scrap store.
+        set(
+            &mut w,
+            far_mate,
+            Vec3::new(0.0, 0.0, reach - 0.5),
+            145.0,
+            0.0,
+        );
+        for _ in 0..60 {
+            w.step(&mut room, &scavenge);
+        }
+        let m = w.ship(far_mate).unwrap();
+        assert!((w.ship(tug).unwrap().scrap - (50.0 - rate)).abs() < 1e-3);
+        assert!((m.hull - 150.0).abs() < 1e-3, "{}", m.hull);
+        assert!((m.scrap - (rate - 5.0)).abs() < 1e-3, "{}", m.scrap);
+    }
+
+    /// A room whose walls are charged from tick 0 to `until` (a stand-in for
+    /// Leech Arc surface states, which only the real chunk store keeps).
+    struct ChargedRoom {
+        inner: BoxRoomTerrain,
+        until: u64,
+    }
+
+    impl TerrainQuery for ChargedRoom {
+        fn sdf(&self, p: Vec3) -> f32 {
+            self.inner.sdf(p)
+        }
+        fn bounds(&self) -> Aabb {
+            self.inner.bounds()
+        }
+    }
+
+    impl crate::SimTerrain for ChargedRoom {
+        fn apply_edit(&mut self, _edit: &ls_math::terrain::TerrainEdit) {}
+        fn surface_states_near(
+            &self,
+            center: Vec3,
+            radius: f32,
+            now: u64,
+        ) -> ls_math::terrain::SurfaceStates {
+            if now < self.until && self.inner.sdf(center) <= radius {
+                ls_math::terrain::SurfaceStates::CHARGED
+            } else {
+                ls_math::terrain::SurfaceStates::NONE
+            }
+        }
+    }
+
+    /// M2 plan: charged surfaces drain 5 energy/s from ships scraping them
+    /// (on top of the normal regen); ships in open space are not drained.
+    #[test]
+    fn scraping_a_charged_surface_drains_five_energy_per_second() {
+        use crate::{MatchSetup, SpawnPoint, World, WorldConfig};
+        let spawn = |x: f32, team| SpawnPoint {
+            pos: Vec3::new(x, 0.0, 0.0),
+            team,
+            orientation: Quat::IDENTITY,
+        };
+        let setup = MatchSetup {
+            spawns: vec![spawn(-5.0, 0), spawn(5.0, 1)],
+            pickup_points: vec![],
+            instability: 0,
+        };
+        let mut w = World::new(WorldConfig::paint_the_void(3, setup)).unwrap();
+        let mut t = ChargedRoom {
+            inner: BoxRoomTerrain::centered(Vec3::new(40.0, 20.0, 40.0)),
+            until: 120,
+        };
+        let a = w.add_player(Some(0), ShipType::Tinker).unwrap();
+        let b = w.add_player(Some(1), ShipType::Tinker).unwrap();
+        // a sits on the floor (y = -10), pressing into it; b floats free.
+        let floor_y = -10.0 + ShipTuning::tinker().radius;
+        for (id, pos) in [(a, Vec3::new(0.0, floor_y, 0.0)), (b, Vec3::ZERO)] {
+            let s = w.ship_mut(id).unwrap();
+            s.pos = pos;
+            s.energy = 50.0;
+        }
+        let press_down = InputCmd::idle(0).with_thrust(Vec3::NEG_Y);
+        let inputs = [(a, press_down), (b, InputCmd::idle(0))];
+        for _ in 0..60 {
+            w.step(&mut t, &inputs);
+        }
+        let ea = w.ship(a).unwrap().energy;
+        let eb = w.ship(b).unwrap().energy;
+        assert!(w.ship(a).unwrap().in_contact);
+        // Regen 10/s for both; a loses 5/s to the charged floor.
+        assert!((eb - 60.0).abs() < 0.05, "{eb}");
+        assert!((ea - 55.0).abs() < 0.05, "{ea}");
+        // After the charge expires (tick 120) the drain stops.
+        for _ in 0..60 {
+            w.step(&mut t, &inputs);
+        }
+        let (ea, eb) = (w.ship(a).unwrap().energy, w.ship(b).unwrap().energy);
+        assert!(
+            (ea - 60.0).abs() < 0.1 && (eb - 70.0).abs() < 0.1,
+            "{ea} {eb}"
+        );
+        for _ in 0..60 {
+            w.step(&mut t, &inputs);
+        }
+        let (ea2, eb2) = (w.ship(a).unwrap().energy, w.ship(b).unwrap().energy);
+        assert!((ea2 - ea - 10.0).abs() < 0.05, "{ea} -> {ea2}");
+        assert!((eb2 - eb - 10.0).abs() < 0.05, "{eb} -> {eb2}");
+    }
 }

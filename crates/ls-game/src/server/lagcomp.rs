@@ -190,7 +190,7 @@ pub fn plan_compensation(
         if world
             .pickups()
             .iter()
-            .any(|sp| sp.content.is_some() && sp.pos.distance(rewound) <= reach)
+            .any(|sp| sp.content.is_some() && sp.content_pos().distance(rewound) <= reach)
         {
             continue;
         }

@@ -144,11 +144,38 @@ impl GameTerrain {
         self.store.borrow().now() as u64
     }
 
-    /// Surface states active at `tick` on the cells within `radius` of
-    /// `center` (e.g. a charged wall under a scraping ship).
+    /// Surface states active at `tick` on the surface cells (1 u cubes) that
+    /// overlap the sphere of `radius` around `center` (e.g. a charged wall
+    /// under a scraping ship). Overlap, not the cell centre, decides: a ship
+    /// touching a wall is within a fraction of a unit of the surface but up
+    /// to a cell diagonal away from the centre of the cell holding its state.
     pub fn surface_states_near(&self, center: Vec3, radius: f32, tick: u64) -> SurfaceStates {
+        if !center.is_finite() || !(0.0..=64.0).contains(&radius) {
+            return SurfaceStates::NONE;
+        }
         let now = tick.min(u32::MAX as u64) as u32;
-        self.store.borrow().surface_states_near(center, radius, now)
+        let store = self.store.borrow();
+        let cell = |v: f32| ls_math::det::floor(v) as i32;
+        let (lo, hi) = (center - Vec3::splat(radius), center + Vec3::splat(radius));
+        // Squared distance from `c` to the unit interval starting at `g`.
+        let axis = |c: f32, g: i32| {
+            let d = (g as f32 - c).max(c - (g as f32 + 1.0)).max(0.0);
+            d * d
+        };
+        let r2 = radius * radius;
+        let mut bits = 0u8;
+        for z in cell(lo.z)..=cell(hi.z) {
+            let dz = axis(center.z, z);
+            for y in cell(lo.y)..=cell(hi.y) {
+                let dy = axis(center.y, y);
+                for x in cell(lo.x)..=cell(hi.x) {
+                    if dz + dy + axis(center.x, x) <= r2 {
+                        bits |= store.surface_states_at_cell([x, y, z], now).bits();
+                    }
+                }
+            }
+        }
+        SurfaceStates(bits)
     }
 
     /// Surface states active at `tick` on the cell containing `p`.
@@ -500,6 +527,84 @@ mod tests {
         r.apply_wire_sequence(0, &wire).unwrap();
         assert_eq!(r.state_hash(), t.state_hash());
         assert_eq!(r.edit_log_hash(), t.edit_log_hash());
+    }
+
+    /// M2 plan: a charged surface (Leech Arc) drains 5 energy/s from a ship
+    /// scraping it. The simulation reads the states through
+    /// `SimTerrain::surface_states_near`, which this adapter answers from the
+    /// chunk store; a ship in open space is not drained, and the drain ends
+    /// with the charge.
+    #[test]
+    fn charged_rock_drains_ships_scraping_it_through_the_adapter() {
+        use ls_math::Quat;
+        use ls_sim::{InputCmd, MatchSetup, ShipTuning, ShipType, SpawnPoint, World, WorldConfig};
+
+        let mut t = small_terrain(7);
+        let p = rock_point(&t);
+        let n = ls_math::terrain::sdf_gradient(|q| t.sdf(q), p);
+        let open = open_point(&t);
+        // The trait answers like the store, at the tick it is asked for.
+        let until = 120u64;
+        t.apply_edit(&TerrainEdit::Surface {
+            center: p,
+            radius: 3.0,
+            states: SurfaceStates::CHARGED.bits(),
+            until: until as u32,
+        });
+        assert!(SimTerrain::surface_states_near(&t, p, 1.0, 10).contains(SurfaceStates::CHARGED));
+        assert_eq!(
+            SimTerrain::surface_states_near(&t, p, 1.0, until),
+            SurfaceStates::NONE
+        );
+        assert_eq!(
+            SimTerrain::surface_states_near(&t, open, 1.0, 10),
+            SurfaceStates::NONE
+        );
+
+        let spawn = |pos, team| SpawnPoint {
+            pos,
+            team,
+            orientation: Quat::IDENTITY,
+        };
+        let setup = MatchSetup {
+            spawns: vec![spawn(open, 0), spawn(open, 1)],
+            pickup_points: vec![],
+            instability: 0,
+        };
+        let mut w = World::new(WorldConfig::paint_the_void(5, setup)).unwrap();
+        let a = w.add_player(Some(0), ShipType::Tinker).unwrap();
+        let b = w.add_player(Some(1), ShipType::Tinker).unwrap();
+        let radius = ShipTuning::tinker().radius;
+        {
+            // a presses its nose into the charged wall; b floats in the open.
+            let s = w.ship_mut(a).unwrap();
+            s.pos = p + n * (radius + 0.05);
+            s.orientation = Quat::from_rotation_arc(Vec3::NEG_Z, -n);
+            s.energy = 50.0;
+            let s = w.ship_mut(b).unwrap();
+            s.pos = open;
+            s.energy = 50.0;
+        }
+        let into_wall = InputCmd::idle(0).with_thrust(Vec3::NEG_Z);
+        let inputs = [(a, into_wall), (b, InputCmd::idle(0))];
+        for _ in 0..60 {
+            w.step(&mut t, &inputs);
+        }
+        let (ea, eb) = (w.ship(a).unwrap().energy, w.ship(b).unwrap().energy);
+        assert!(w.ship(a).unwrap().in_contact, "scraping the wall");
+        assert!((eb - 60.0).abs() < 0.05, "regen only: {eb}");
+        assert!((ea - 55.0).abs() < 0.2, "regen minus 5/s: {ea}");
+        // The charge expires at tick 120: from then on both regenerate alike.
+        for _ in 0..60 {
+            w.step(&mut t, &inputs);
+        }
+        let (ea, eb) = (w.ship(a).unwrap().energy, w.ship(b).unwrap().energy);
+        for _ in 0..30 {
+            w.step(&mut t, &inputs);
+        }
+        let (ea2, eb2) = (w.ship(a).unwrap().energy, w.ship(b).unwrap().energy);
+        assert!((ea2 - ea - 5.0).abs() < 0.05, "{ea} -> {ea2}");
+        assert!((eb2 - eb - 5.0).abs() < 0.05, "{eb} -> {eb2}");
     }
 
     #[test]

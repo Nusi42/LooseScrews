@@ -1,6 +1,9 @@
 // Swarm Pod: ordnance secondary. 30 u/s; releases 6 homing blobs on impact. Malus: blobs are
 // weak alone. Lasting effect: scatter of small craters.
-// Behaviour: crates/ls-sim/src/weapons/ordnance/swarm_pod.rs (TODO(wave-B): generic fallback until implemented).
+// Behaviour: crates/ls-sim/src/weapons/ordnance/swarm_pod.rs (on any impact the pod releases
+// `blobs` blobs scattered off the surface; after `blob_scatter_secs` they home on the nearest
+// enemy ship or decoy within `blob_range` (line of sight) at `turn_rate` rad/s; each blob does
+// `blob_damage` with `blob_knockback`, no splash, and digs a `blob_crater_radius` crater in rock).
 // `params` are read by the weapon module (`WeaponDef::param`); numbers are tuning starting points.
 WeaponDef(
     id: "swarm_pod",
@@ -19,5 +22,16 @@ WeaponDef(
     shield: Wears(1.0),
     max_ammo: 5,
     visual: (shape: Rocket, color: (255, 170, 40), scale: 1.1),
-    params: { "blobs": 6.0, "blob_speed": 15.0, "blob_damage": 6.0, "blob_lifetime_secs": 3.0, "blob_crater_radius": 0.5, "turn_rate": 2.0 },
+    params: {
+        "blobs": 6.0,
+        "blob_speed": 15.0,
+        "blob_damage": 6.0,
+        "blob_knockback": 1.5,
+        "blob_radius": 0.12,
+        "blob_lifetime_secs": 3.0,
+        "blob_crater_radius": 0.5,
+        "blob_range": 30.0,
+        "blob_scatter_secs": 0.15,
+        "turn_rate": 4.0,
+    },
 )

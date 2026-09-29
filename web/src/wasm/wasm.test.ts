@@ -56,11 +56,11 @@ test("WASM golden hashes match the native fixture", { skip }, async () => {
 
 test("WASM share-code check, hello packet and practice game", { skip }, async () => {
   const wasm = await load();
-  const ok = wasm.checkShareCode("ls04 0000 0000 000a k4m6 8001 8f1p");
+  const ok = wasm.checkShareCode("ls08 0000 0000 000a k4m6 8001 8f1t");
   assert.equal(ok.ok, true);
-  assert.equal(ok.code, "LS04-0000-0000-000A-K4M6-8001-8F1P");
+  assert.equal(ok.code, "LS08-0000-0000-000A-K4M6-8001-8F1T");
   ok.free();
-  const bad = wasm.checkShareCode("LS04-0000-0000-000A-K4M7-8001-8F1P");
+  const bad = wasm.checkShareCode("LS08-0000-0000-000A-K4M7-8001-8F1T");
   assert.equal(bad.ok, false);
   assert.match(bad.error, /checksum/i);
   bad.free();

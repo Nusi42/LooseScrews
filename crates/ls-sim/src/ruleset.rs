@@ -219,10 +219,14 @@ pub struct RuleSet {
 }
 
 const PAINT_THE_VOID_RON: &str = include_str!("../../../data/rulesets/paint_the_void.ron");
+const SANDBOX_ALL_WEAPONS_RON: &str =
+    include_str!("../../../data/rulesets/sandbox_all_weapons.ron");
 
 /// Embedded rule set files (data hash).
-pub const BUILTIN_RULESETS: [(&str, &str); 1] =
-    [("rulesets/paint_the_void.ron", PAINT_THE_VOID_RON)];
+pub const BUILTIN_RULESETS: [(&str, &str); 2] = [
+    ("rulesets/paint_the_void.ron", PAINT_THE_VOID_RON),
+    ("rulesets/sandbox_all_weapons.ron", SANDBOX_ALL_WEAPONS_RON),
+];
 
 impl RuleSet {
     /// Parses a rule set from RON (structure only; use [`RuleSet::resolve`] to
@@ -253,6 +257,13 @@ impl RuleSet {
     /// The default Paint the Void rule set, embedded from `data/rulesets/paint_the_void.ron`.
     pub fn paint_the_void() -> RuleSet {
         RuleSet::from_ron("paint_the_void.ron", PAINT_THE_VOID_RON)
+            .expect("built-in rule set is valid RON")
+    }
+
+    /// The sandbox rule set (every weapon and gadget as a pickup, every
+    /// ship type), embedded from `data/rulesets/sandbox_all_weapons.ron`.
+    pub fn sandbox_all_weapons() -> RuleSet {
+        RuleSet::from_ron("sandbox_all_weapons.ron", SANDBOX_ALL_WEAPONS_RON)
             .expect("built-in rule set is valid RON")
     }
 
@@ -509,6 +520,139 @@ impl RuleSet {
             respawn_ticks: Tick::ticks_for_secs(mode.respawn_secs),
             allowed_ship_types: self.allowed_ship_types.clone(),
         })
+    }
+}
+
+impl RuleSet {
+    /// Bans a weapon: availability `Banned`, and it leaves the pickups,
+    /// upgrade pickups and the starting loadout (so the result still
+    /// resolves). Tuning and shield overrides stay (they have no effect).
+    pub fn ban_weapon(&mut self, id: &str) {
+        self.weapons.insert(id.to_string(), Availability::Banned);
+        self.pickups.remove(id);
+        self.upgrade_pickups.remove(id);
+        let lo = &mut self.starting_loadout;
+        lo.primaries.retain(|w| w != id);
+        lo.secondaries.retain(|(w, _)| w != id);
+    }
+
+    /// Bans a gadget: availability `Banned`, no pickups, and it leaves the
+    /// loadout's gadget slot.
+    pub fn ban_gadget(&mut self, id: &str) {
+        self.gadgets.insert(id.to_string(), Availability::Banned);
+        self.gadget_pickups.remove(id);
+        if self.starting_loadout.gadget.as_deref() == Some(id) {
+            self.starting_loadout.gadget = None;
+        }
+    }
+}
+
+/// A server-wide balance list (design doc, balance control: "if a weapon
+/// turns out to be overpowered, it is banned or weakened ... at once"),
+/// applied on top of whatever rule set the server runs
+/// (`ls-server --balance-list <file>`, re-read before every match).
+///
+/// ```ron
+/// BalanceList(
+///     bans: ["tectonic_charge"],
+///     gadget_bans: [],
+///     // Multiplies the rule set's multipliers for these weapons.
+///     tuning: { "railspike": (damage: 0.8, fire_rate: 1.0, ammo: 1.0) },
+///     // Replaces the rule set's shield setting for these weapons.
+///     shield_overrides: { "heavy_rocket": Wears(1.5) },
+/// )
+/// ```
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct BalanceList {
+    /// Weapons banned server-wide.
+    #[serde(default)]
+    pub bans: Vec<String>,
+    /// Gadgets banned server-wide.
+    #[serde(default)]
+    pub gadget_bans: Vec<String>,
+    /// Per-weapon multipliers, applied on top of the rule set's entry for
+    /// the weapon (products rounded to twentieths, the rule set code's
+    /// precision): a list meant to weaken a weapon weakens it on every
+    /// server, whatever the host's rule set says.
+    #[serde(default)]
+    pub tuning: BTreeMap<String, WeaponTuning>,
+    /// Per-weapon shield interaction; replaces the rule set's override.
+    #[serde(default)]
+    pub shield_overrides: BTreeMap<String, ShieldInteraction>,
+}
+
+impl BalanceList {
+    pub fn from_ron(source_name: &str, text: &str) -> Result<BalanceList, SimError> {
+        ron::from_str(text).map_err(|e| SimError::Parse {
+            source_name: source_name.to_string(),
+            message: e.to_string(),
+        })
+    }
+
+    /// Loads and validates a balance list file against the tables.
+    pub fn load(
+        path: impl AsRef<Path>,
+        weapons: &WeaponTable,
+        gadgets: &GadgetTable,
+    ) -> Result<BalanceList, SimError> {
+        let path = path.as_ref();
+        let text = std::fs::read_to_string(path).map_err(|e| SimError::Io {
+            path: path.display().to_string(),
+            message: e.to_string(),
+        })?;
+        let list = BalanceList::from_ron(&path.display().to_string(), &text)?;
+        list.validate(weapons, gadgets)?;
+        Ok(list)
+    }
+
+    /// Every id must exist.
+    pub fn validate(&self, weapons: &WeaponTable, gadgets: &GadgetTable) -> Result<(), SimError> {
+        for id in self
+            .bans
+            .iter()
+            .chain(self.tuning.keys())
+            .chain(self.shield_overrides.keys())
+        {
+            weapons.require(id)?;
+        }
+        for id in &self.gadget_bans {
+            gadgets.require(id)?;
+        }
+        Ok(())
+    }
+
+    /// Whether the list changes nothing.
+    pub fn is_empty(&self) -> bool {
+        self.bans.is_empty()
+            && self.gadget_bans.is_empty()
+            && self.tuning.is_empty()
+            && self.shield_overrides.is_empty()
+    }
+
+    /// Applies the list to a rule set (bans, then tuning and shield entries).
+    pub fn apply(&self, rules: &mut RuleSet) {
+        for id in &self.bans {
+            rules.ban_weapon(id);
+        }
+        for id in &self.gadget_bans {
+            rules.ban_gadget(id);
+        }
+        for (id, t) in &self.tuning {
+            let cur = rules.tuning.get(id).copied().unwrap_or_default();
+            // Twentieths: the effective rules keep a rule set code.
+            let mul = |a: f32, b: f32| ((a * b * 20.0).round() / 20.0).clamp(0.0, 12.75);
+            rules.tuning.insert(
+                id.clone(),
+                WeaponTuning {
+                    damage: mul(cur.damage, t.damage),
+                    fire_rate: mul(cur.fire_rate, t.fire_rate).max(0.05),
+                    ammo: mul(cur.ammo, t.ammo),
+                },
+            );
+        }
+        for (id, s) in &self.shield_overrides {
+            rules.shield_overrides.insert(id.clone(), *s);
+        }
     }
 }
 
@@ -786,5 +930,116 @@ mod tests {
         let mut r = base;
         r.allowed_ship_types.clear();
         assert!(r.resolve(&weapons).is_err());
+    }
+
+    #[test]
+    fn bans_remove_weapons_everywhere_and_still_resolve() {
+        let weapons = WeaponTable::builtin();
+        let gadgets = GadgetTable::builtin();
+        let mut r = RuleSet::paint_the_void();
+        // A loadout weapon, a pickup, an upgrade and the loadout gadget.
+        for id in ["scrap_laser", "bolt_rocket", "tectonic_charge"] {
+            r.ban_weapon(id);
+        }
+        r.ban_gadget("shield");
+        let res = r.resolve(&weapons).unwrap();
+        for id in ["scrap_laser", "bolt_rocket", "tectonic_charge"] {
+            let w = weapons.find(id).unwrap();
+            assert!(res.availability(w).is_banned(), "{id}");
+            assert!(!res.loadout_primaries.contains(&w));
+            assert!(res.loadout_secondaries.iter().all(|(x, _)| *x != w));
+            assert!(!res.pickup_table.iter().any(|e| matches!(
+                e.kind,
+                PickupKind::Weapon { weapon, .. } | PickupKind::Upgrade { weapon } if weapon == w
+            )));
+        }
+        let shield = gadgets.find("shield").unwrap();
+        assert!(res.gadget_availability(shield).is_banned());
+        assert_eq!(res.loadout_gadget, None);
+        assert!(!res
+            .pickup_table
+            .iter()
+            .any(|e| matches!(e.kind, PickupKind::Gadget { gadget } if gadget == shield)));
+    }
+
+    #[test]
+    fn sandbox_offers_every_weapon_gadget_and_ship_type_as_pickups() {
+        let weapons = WeaponTable::builtin();
+        let gadgets = GadgetTable::builtin();
+        let r = RuleSet::sandbox_all_weapons();
+        let res = r.resolve_with(&weapons, &gadgets).unwrap();
+        for (id, def) in weapons.iter() {
+            assert!(res.availability(id).as_pickup(), "{}", def.id);
+            assert!(
+                res.pickup_table
+                    .iter()
+                    .any(|e| matches!(e.kind, PickupKind::Weapon { weapon, .. } if weapon == id)),
+                "{} has a pickup",
+                def.id
+            );
+        }
+        for (id, def) in gadgets.iter() {
+            assert!(res.gadget_availability(id).as_pickup(), "{}", def.id);
+        }
+        assert_eq!(r.allowed_ship_types.len(), 4);
+        // It has a rule set code like any other.
+        let code = r.to_code().unwrap();
+        assert_eq!(RuleSet::from_code(&code).unwrap().to_code().unwrap(), code);
+    }
+
+    #[test]
+    fn balance_list_applies_on_top_of_a_rule_set() {
+        let weapons = WeaponTable::builtin();
+        let gadgets = GadgetTable::builtin();
+        let text = r#"BalanceList(
+            bans: ["railspike"],
+            gadget_bans: ["cloak"],
+            tuning: { "heavy_rocket": (damage: 0.8) },
+            shield_overrides: { "seeker": Blocked },
+        )"#;
+        let list = BalanceList::from_ron("balance.ron", text).unwrap();
+        list.validate(&weapons, &gadgets).unwrap();
+        assert!(!list.is_empty());
+        let mut r = RuleSet::paint_the_void();
+        r.tuning.insert(
+            "heavy_rocket".into(),
+            WeaponTuning {
+                damage: 2.0,
+                ..WeaponTuning::default()
+            },
+        );
+        list.apply(&mut r);
+        let res = r.resolve(&weapons).unwrap();
+        assert!(res
+            .availability(weapons.find("railspike").unwrap())
+            .is_banned());
+        assert!(res
+            .gadget_availability(gadgets.find("cloak").unwrap())
+            .is_banned());
+        let heavy = res.tuning(weapons.find("heavy_rocket").unwrap());
+        assert_eq!(
+            (heavy.damage, heavy.fire_rate),
+            (1.6, 1.0),
+            "multiplied: 2.0 x 0.8"
+        );
+        assert_eq!(
+            res.shield_interaction(weapons.find("seeker").unwrap()),
+            ShieldInteraction::Blocked
+        );
+        // An empty list (and an empty file) change nothing.
+        let empty = BalanceList::from_ron("e", "()").unwrap();
+        assert!(empty.is_empty());
+        let mut same = RuleSet::paint_the_void();
+        empty.apply(&mut same);
+        assert_eq!(same, RuleSet::paint_the_void());
+        // Unknown ids are errors.
+        let bad = BalanceList::from_ron("b", r#"(bans: ["laser_of_doom"])"#).unwrap();
+        assert!(matches!(
+            bad.validate(&weapons, &gadgets),
+            Err(SimError::UnknownWeapon(_))
+        ));
+        let bad = BalanceList::from_ron("b", r#"(gadget_bans: ["jetpack"])"#).unwrap();
+        assert!(bad.validate(&weapons, &gadgets).is_err());
+        assert!(BalanceList::from_ron("b", "(bans: 3)").is_err());
     }
 }

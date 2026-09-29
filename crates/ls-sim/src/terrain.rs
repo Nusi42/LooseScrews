@@ -70,8 +70,13 @@ pub trait SimTerrain: TerrainQuery {
         None
     }
 
-    /// Surface states (hot, charged, glow) active at tick `now` within
-    /// `radius` of `center`. Terrains without surface states report none.
+    /// Surface states (hot, charged, glow) active at tick `now` on the
+    /// surface within `radius` of `center`: for a cell grid, every surface
+    /// cell that overlaps the sphere counts (so a ship scraping a wall with
+    /// `radius` = its hull radius plus a margin finds the wall's states).
+    /// The world uses it for the charged-surface drain and hooks read it
+    /// through `Ctx::surface_states_near`. Terrains without surface states
+    /// report none.
     fn surface_states_near(&self, _center: Vec3, _radius: f32, _now: u64) -> SurfaceStates {
         SurfaceStates::NONE
     }

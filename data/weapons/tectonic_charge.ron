@@ -1,12 +1,23 @@
 // Tectonic Charge: ordnance secondary. Earthshaker-class, 15 u/s (the slowest projectile).
 // Sticks where it hits, 1.5 s fuse, main blast then 6 sub-charges that scatter up to 20 u and
 // explode 0.5 s later. Zones: core 4 u instant kill, damage 25 u (falloff), collapse 35 u
-// (terrain caves in, Instability sets how far cracks spread), shockwave 60 u (knockback, no
-// damage). Dust cloud 20 s, large debris field. One per map, 90 s respawn, a ship carries one;
-// damages its owner. The fallback is a plain slow rocket with a small crater (the real zones
-// are wave B).
-// Behaviour: crates/ls-sim/src/weapons/ordnance/tectonic_charge.rs (TODO(wave-B): generic fallback until implemented).
-// `params` are read by the weapon module (`WeaponDef::param`); numbers are tuning starting points.
+// (terrain caves in whatever the Instability says; Instability sets how far cracks spread),
+// shockwave 60 u (knockback, no damage). Dust cloud 20 s, large debris field, level-wide debris
+// jostle. One per map, 90 s respawn (rule set pickups), a ship carries one (max_ammo);
+// damages its owner.
+// Behaviour: crates/ls-sim/src/weapons/ordnance/tectonic_charge.rs (implemented).
+// `params` are read by the weapon module (`WeaponDef::param`):
+// - core: ships within `core_radius` take `core_damage` (a kill through any shield);
+// - damage zone: the splash damage below, falling off linearly to 0 at `damage_radius`;
+// - collapse: one exact `collapse_radius` crater; `crack_count` cracks run `crack_max` x
+//   Instability / 100 u further into the rock, craters of up to `crack_radius` every
+//   `crack_spacing` u;
+// - shockwave: `shockwave_strength` u/s outward at the centre, 0 at `shockwave_radius`;
+// - `sub_charges` scatter `sub_min_scatter`..`sub_scatter` u and explode `sub_delay_secs`
+//   later (`sub_damage` splash over `sub_radius`, `sub_crater` crater);
+// - aftermath: dust cloud (`dust_radius`, `dust_secs`), `debris_count` debris pieces with about
+//   `debris_scrap` scrap each, every debris piece in the level jostled by `jostle_speed` u/s.
+// `damage` is only the reference for damage multipliers (sub-charges scale with it).
 WeaponDef(
     id: "tectonic_charge",
     name: "Tectonic Charge",
@@ -18,11 +29,21 @@ WeaponDef(
     fire_interval_secs: 2.0,
     cost: Count(1),
     projectile_radius: 0.4,
-    splash: Some((radius: 25.0, damage: 80.0, hits_owner: true)),
+    splash: Some((radius: 25.0, damage: 110.0, hits_owner: true)),
     knockback: 20.0,
-    terrain: (crater_radius: 2.0),
+    terrain: (crater_radius: 0.0),
     shield: PassThrough(1.0),
     max_ammo: 1,
     visual: (shape: Charge, color: (255, 120, 0), scale: 2.0),
-    params: { "core_radius": 4.0, "damage_radius": 25.0, "collapse_radius": 35.0, "shockwave_radius": 60.0, "fuse_secs": 1.5, "sub_charges": 6.0, "sub_scatter": 20.0, "sub_delay_secs": 0.5, "dust_secs": 20.0 },
+    params: {
+        "core_radius": 4.0, "core_damage": 10000.0,
+        "damage_radius": 25.0,
+        "collapse_radius": 35.0, "crack_count": 8.0, "crack_max": 30.0, "crack_radius": 1.5, "crack_spacing": 2.5,
+        "shockwave_radius": 60.0, "shockwave_strength": 40.0,
+        "fuse_secs": 1.5,
+        "sub_charges": 6.0, "sub_scatter": 20.0, "sub_min_scatter": 8.0, "sub_delay_secs": 0.5,
+        "sub_damage": 35.0, "sub_radius": 6.0, "sub_crater": 2.5,
+        "dust_secs": 20.0, "dust_radius": 35.0,
+        "debris_count": 24.0, "debris_scrap": 6.0, "jostle_speed": 3.0,
+    },
 )

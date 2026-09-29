@@ -1,6 +1,10 @@
 // Rivet Gun: kinetic primary. Fires scrap, 6x laser speed, high rate of fire, light damage.
-// Design doc: "180 u/s, high rate of fire, light damage. Malus: burns through scrap fast."
-// Behaviour: crates/ls-sim/src/weapons/kinetic/rivet_gun.rs (implemented: the generic hooks are the M1 behaviour).
+// Design doc: "180 u/s, high rate of fire, light damage. Malus: burns through scrap fast.
+// Lasting effect: rivets embed in walls; knocks loose debris from weak terrain."
+// Behaviour: crates/ls-sim/src/weapons/kinetic/rivet_gun.rs (rivets embed as impacts without a
+// crater; in weak rock a rivet knocks a chunk loose with `weak_debris_chance`: a `chip_radius`
+// crater and a debris piece of `debris_radius` flying off at `debris_speed` with `debris_scrap`, toughness `debris_hp`).
+// `params` are read by the weapon module (`WeaponDef::param`); numbers are tuning starting points.
 WeaponDef(
     id: "rivet_gun",
     name: "Rivet Gun",
@@ -9,12 +13,25 @@ WeaponDef(
     speed: 180.0,
     lifetime_secs: 1.0,
     damage: 3.0,
-    fire_interval_secs: 0.08,
-    cost: Scrap(1.0),
+    // 10 rivets/s, still the fastest: 34 rivets, 3.3 s to kill a Tinker.
+    fire_interval_secs: 0.1,
+    // Half a scrap per rivet: a spawn load (20 scrap) is 40 rivets, enough for a kill; the
+    // gun still burns 5 scrap/s.
+    cost: Scrap(0.5),
     projectile_radius: 0.05,
     splash: None,
     knockback: 0.3,
     terrain: (crater_radius: 0.0, paint_radius: 0.0),
     shield: PassThrough(0.5),
     visual: (shape: Pellet, color: (190, 190, 200), scale: 0.7),
+    params: {
+        "weak_debris_chance": 0.2,
+        "chip_radius": 0.35,
+        "debris_radius": 0.3,
+        "debris_speed": 4.0,
+        "debris_scrap": 0.5,
+        "debris_hp": 10.0,
+        // No new chunk while this many debris pieces float within 2 u of the hit.
+        "debris_crowd": 2.0,
+    },
 )

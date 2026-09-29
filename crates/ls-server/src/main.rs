@@ -3,7 +3,16 @@
 //! ```text
 //! ls-server --bind 0.0.0.0:7777 --code <share code> \
 //!     --ruleset data/rulesets/paint_the_void.ron --max-players 8 --web-root web/dist
+//! ls-server --ruleset LR6V-69CM-G006-58R --ban tectonic_charge --ban railspike \
+//!     --balance-list balance.ron
 //! ```
+//!
+//! Rules: `--ruleset` takes a rule set file or an `LR...` rule set code (from
+//! the browser rule set editor); `--ban <weapon_id>` (repeatable) and
+//! `--balance-list <file>` (a `ls_sim::ruleset::BalanceList`: weapons and
+//! gadgets banned or retuned server-wide) apply on top. The balance list is
+//! re-read before every match. The effective rules are logged with their
+//! code and sent to every player in the `Welcome`.
 //!
 //! After a match ends, players see the result for `--intermission` seconds,
 //! then get `Disconnect` with `ls_game::MATCH_RESTART_REASON` and rejoin; the
@@ -21,7 +30,7 @@ use std::time::Duration;
 
 use anyhow::Context;
 use clap::Parser;
-use ls_server::{match_config, Server, ServerConfig};
+use ls_server::{match_config_with, Server, ServerConfig, ServerRules};
 use tracing_subscriber::EnvFilter;
 
 /// Command line arguments.
@@ -48,9 +57,19 @@ struct Args {
     #[arg(long)]
     code: Option<String>,
 
-    /// Rule set file (the built-in Paint the Void rules if omitted).
-    #[arg(long)]
-    ruleset: Option<PathBuf>,
+    /// Rule set file or LR rule set code (the built-in Paint the Void rules
+    /// if omitted).
+    #[arg(long, value_name = "FILE|CODE")]
+    ruleset: Option<String>,
+
+    /// Bans a weapon on top of the rule set (repeatable).
+    #[arg(long = "ban", value_name = "WEAPON_ID")]
+    bans: Vec<String>,
+
+    /// Balance list file (weapons banned or tuned server-wide, applied on
+    /// top of the rule set; re-read before every match).
+    #[arg(long, value_name = "FILE")]
+    balance_list: Option<PathBuf>,
 
     /// Maximum number of players.
     #[arg(long, default_value_t = 8, value_parser = clap::value_parser!(u8).range(1..=ls_net::MAX_SHIPS as i64))]
@@ -91,9 +110,16 @@ fn main() -> anyhow::Result<()> {
         .init();
     let args = Args::parse();
 
-    let match_cfg = match_config(args.code.as_deref(), args.ruleset.as_deref())
-        .context("invalid match configuration")?;
+    let rules = ServerRules::new(
+        args.ruleset.as_deref(),
+        args.bans.clone(),
+        args.balance_list.clone(),
+    )
+    .context("invalid match configuration")?;
+    let match_cfg =
+        match_config_with(args.code.as_deref(), &rules).context("invalid match configuration")?;
     let mut cfg = ServerConfig::new(args.bind, match_cfg);
+    cfg.rules = Some(rules);
     cfg.webtransport = (!args.no_webtransport).then(|| args.wt_bind.unwrap_or(args.bind));
     cfg.room.max_players = args.max_players;
     cfg.stats_interval = Duration::from_secs_f64(args.stats_interval);
@@ -175,5 +201,59 @@ fn display_addr(addr: SocketAddr) -> String {
         format!("localhost:{}", addr.port())
     } else {
         addr.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(args: &[&str]) -> Result<Args, clap::Error> {
+        Args::try_parse_from(std::iter::once("ls-server").chain(args.iter().copied()))
+    }
+
+    #[test]
+    fn rule_flags_parse() {
+        let a = parse(&[]).unwrap();
+        assert_eq!((a.ruleset, a.bans.len(), a.balance_list), (None, 0, None));
+        let a = parse(&[
+            "--ruleset",
+            "LR6V-69CM-G006-58R",
+            "--ban",
+            "railspike",
+            "--ban",
+            "tectonic_charge",
+            "--balance-list",
+            "balance.ron",
+        ])
+        .unwrap();
+        assert_eq!(a.ruleset.as_deref(), Some("LR6V-69CM-G006-58R"));
+        assert_eq!(a.bans, ["railspike", "tectonic_charge"]);
+        assert_eq!(a.balance_list, Some(PathBuf::from("balance.ron")));
+        let a = parse(&["--ruleset", "data/rulesets/paint_the_void.ron"]).unwrap();
+        assert_eq!(
+            a.ruleset.as_deref(),
+            Some("data/rulesets/paint_the_void.ron")
+        );
+        assert!(parse(&["--ban"]).is_err(), "--ban needs a weapon id");
+        assert!(parse(&["--balance-list"]).is_err());
+    }
+
+    /// What `main` does with the parsed flags, up to the match config.
+    #[test]
+    fn parsed_rule_flags_build_the_effective_rules() {
+        let code = ls_sim::RuleSet::paint_the_void().to_code().unwrap();
+        let a = parse(&["--ruleset", &code, "--ban", "railspike"]).unwrap();
+        let rules = ServerRules::new(a.ruleset.as_deref(), a.bans, a.balance_list).unwrap();
+        let mc = match_config_with(None, &rules).unwrap();
+        assert!(mc.rules.availability("railspike").is_banned());
+        assert!(!mc.rules.pickups.contains_key("railspike"));
+        let a = parse(&["--ban", "no_such_gun"]).unwrap();
+        let e = ServerRules::new(None, a.bans, None)
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("no_such_gun"), "{e}");
+        let a = parse(&["--ruleset", "LR00-0000"]).unwrap();
+        assert!(ServerRules::new(a.ruleset.as_deref(), vec![], None).is_err());
     }
 }

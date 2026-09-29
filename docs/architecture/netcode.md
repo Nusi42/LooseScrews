@@ -135,26 +135,39 @@ room sends `Message::Inventory` reliably to each client whenever its ship's inve
   encodes against the client's newest acknowledged snapshot (`choose_baseline`: age 1..=255
   ticks and still in history, else a full snapshot). Fields are compared as packed integers,
   so a delta decodes to exactly the packed snapshot the server built. Ships in the baseline
-  send a change bit plus per-field differences (2-bit size class: unchanged, 4-bit or 8-bit
-  zigzag difference, or the raw 16-bit value); new ones are sent in full; projectiles and
-  entities use the id lists above. The client
-  keeps the same 128-entry history, so every baseline the server may choose is available.
+  (protocol 3) send a change bit plus residuals against integer predictions: position against
+  `base.pos + base.vel x ship_motion x age`, velocity against the baseline velocity or
+  `2 x displacement / (ship_motion x age) - base.vel` (1 bit picks the cheaper), orientation as
+  smallest-three field differences while the dropped component stays the same (else the raw
+  32 bits); flags and status keep their change bits. Residuals go in groups of three sharing
+  one width, coded against a typical width per section (position, velocity, rotation; see
+  `crates/ls-net/src/snapshot.rs`). `ship_motion` (packed position steps per velocity step per
+  tick, 2^-20 fixed point, `Quantizer::ship_motion_scale`) is sent in full snapshots and in
+  deltas only when it changes; all prediction math is integer, so native and WASM decode the
+  same bits. New ships are sent in full; drifting entities use the same residual groups for
+  position; projectiles keep the 2-bit size-class differences; projectiles and entities use
+  the id lists above. The client keeps the same 128-entry history, so every baseline the
+  server may choose is available.
 - **Joins.** Snapshots to a client start with its first `Input` (sent once its session is
   built), so a join costs one full snapshot, plus one per snapshot interval of round trip until
   the client's first `ack_snapshot` arrives; after that every snapshot is a delta. Sending
   snapshots during level generation made each join cost ~8 full snapshots, starvation reports
   and prediction snaps (M1 issue B; regression test
   `a_join_costs_one_full_snapshot_and_starves_once` in `crates/ls-game/tests/netplay.rs`).
-- Budget: `bandwidth_32_ships_at_30_hz` in `ls-net` proves 32 ships x 18 B x 30 Hz fits
-  17 KiB/s before delta compression. `bandwidth_32_ships_64_debris` measures a delta with 32
-  moving ships, debris at its cap (64 pieces drifting after an explosion), 40 pickups and 8
-  wrecks: the entities add about 160 B (1 datagram in all), inside the budget next to the
-  377 B M1 measured for 32 moving ships. Busy ships (turning and thrusting all the time) cost
-  up to about 515 B on their own, above the budget; ship deltas (rotation) are the next thing
-  to shrink. In practice a 3-bot local run measures about 4 KiB/s of snapshots for the whole
-  server.
+- Budget: 32 ships x 18 B x 30 Hz = 17,280 B/s (576 B per snapshot).
+  `bandwidth_32_ships_at_30_hz` in `ls-net` proves full snapshots fit before delta
+  compression. `bandwidth_32_ships_64_debris` (ls-net) and `busy_fight_fits_the_bandwidth_budget`
+  (ls-game, real ship physics via `simulate_movement`) measure 32 busy ships (thrusting,
+  turning up to 4 to 9 rad/s), 64 drifting debris and 48 resting items: whole deltas of about
+  460 / 520 / 557 B against baselines 2 / 4 / 6 ticks old (up to 16.7 KB/s), inside the
+  budget; protocol 2 needed about 515 B for the busy ships alone. The margin is thin:
+  baselines older than about 100 ms, more moving debris (a Tectonic Charge jostles every piece)
+  or many projectiles in flight (not in these tests; projectile deltas have no motion
+  prediction yet) go over. In practice a 3-bot local run measures about 4 KiB/s of snapshots
+  for the whole server.
 - Events (hits, kills, respawns, match end, cues such as warnings and blinding) are batched
-  per snapshot into an `Events` message on the reliable channel.
+  per snapshot into an `Events` message on the reliable channel and sent to every client
+  (no distance filter: level-wide cues such as `TectonicLaunch` and `Shockwave` rely on it).
 
 ## Terrain edit replication
 

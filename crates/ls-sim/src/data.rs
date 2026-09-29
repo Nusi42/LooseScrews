@@ -74,7 +74,7 @@ pub fn hash_files<'a>(files: impl IntoIterator<Item = (&'a str, &'a str)>) -> u6
 /// behaviour code must not join and desync silently. Bump it together with
 /// `REPLAY_GOLDEN_HASH` (`crates/ls-sim/src/tests.rs`) whenever behaviour
 /// changes without a data change.
-pub const SIM_BEHAVIOR_VERSION: u32 = 2;
+pub const SIM_BEHAVIOR_VERSION: u32 = 3;
 
 /// Hash of the embedded data set plus [`SIM_BEHAVIOR_VERSION`] (computed once).
 pub fn data_hash() -> u64 {
@@ -99,7 +99,7 @@ mod tests {
     #[test]
     fn hash_is_stable_and_sensitive() {
         let files = builtin_files();
-        assert_eq!(files.len(), 27 + 3 + 4 + 1);
+        assert_eq!(files.len(), 27 + 3 + 4 + 2);
         assert_eq!(
             data_hash(),
             with_behavior_version(hash_files(files.clone()))

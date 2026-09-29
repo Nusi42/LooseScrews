@@ -26,9 +26,11 @@ in `ls-net` and its glue in `ls-game`. The M2 scope and design decisions are in
 Every weapon already has a module file, a data file and a registry entry. A module starts as
 the **generic fallback**: all trait defaults, which together are the M1 weapon (straight
 projectile, or the data's `projectiles`/`spread_deg` pattern, direct damage, splash,
-knockback, the data's crater and paint, charge from the data's `charge`). The four M1 weapons
-(Scrap Laser, Rivet Gun, Bolt Rocket, Paint Thrower) are exactly these defaults and report
-`implemented() == true`; the others are marked `TODO(wave-B)` with a list of the hooks they need.
+knockback, the data's crater and paint, charge from the data's `charge`). Since wave B every
+one of the 27 weapon modules and the 3 gadget modules implements its design-doc behaviour and
+reports `implemented() == true`; `weapons::tests::every_weapon_has_a_module_and_a_data_file`
+fails if a module falls back again. What each one does is in
+[The arsenal as built](#the-arsenal-as-built) below.
 
 To implement one (say `crates/ls-sim/src/weapons/kinetic/railspike.rs`):
 
@@ -93,13 +95,16 @@ fires with `charge = min(held / max_secs, 1)` and damage and knockback times `1 
 - 1) * charge`; releasing before `min_secs` cancels; switching weapons drops the charge.
 
 Guided projectiles: set `proj_flags::CONTROLS_OWNER` (usually in `fire`); while such a
-projectile lives, the owner's ship gets no thrust or look (it drifts: the Eyeball malus) and
-`update` reads the owner's look input with `ctx.input(p.owner)`. The client predicts the
+projectile lives, the owner's ship gets no thrust or look (it drifts: the Eyeball malus), the
+world does not fire the owner's secondary (one guided missile at a time), and `update` reads
+the owner's look input with `ctx.input(p.owner)`. The client predicts the
 freeze from the replicated state bit (`ls_game::client::GUIDED_STATE_BIT`); the eyeball camera
 is wave C.
 
 Instant weapons (Leech Arc): `fire` spawns no projectile and queues its effect directly
-(`ctx.target_in_cone`, `ctx.drain_energy`, `ctx.damage_proportional`, a `CueKind::Beam` cue).
+(`ctx.target_in_cone`, `ctx.drain_energy`, `ctx.damage_proportional`), plus a `CueKind::Beam`
+cue every `beam_every`-th arc whose `value` is the ticks it covers (a cue per arc would cost
+10 events per second per user). They emit no `Event::Fired`; the beam cue is their shot.
 
 ### Context helpers (`Ctx`)
 
@@ -111,14 +116,18 @@ except the one whose hook runs), `trail` (a ship's position, velocity and hull u
 `rng`, and `ctx.view` for the tables (`weapons`, `gadgets`, `ship_types`, `rules`, `visuals`),
 the level's `instability` slider (0-100, Tectonic collapse scaling) and state (`ships`,
 `projectiles` plus `projectiles_stepping` / `projectiles_stepped` while projectiles are
-stepped, `entities`, `terrain`, `layers`, `inputs`).
+stepped, `entities`, `pickups` (content at `PickupSpawn::content_pos`), `scrap_piles`,
+`terrain`, `layers`, `inputs`). `weapons::debris_crowded(ctx, point, max)` tells whether
+`max` debris pieces already float within 2 u (Rivet Gun and Scrap Shotgun spray no more then,
+so sustained fire does not fill the debris cap).
 
 Writing (each queues a `Command`): `damage` / `damage_proportional` (knockback proportional to
 damage), `splash`, `shockwave` (knockback only), `edit` / `crater` (scaled by rock strength) /
 `crater_exact` (not scaled) / `grow` / `paint` / `channel`, `spawn_projectile` (see
 `weapons::projectile_for` and `sub_projectile`), `spawn_entity` / `spawn_debris`,
 `impulse_ship`, `impulse_entity`, `impulse_projectile` (another projectile; a stuck one is
-pulled loose: Magnet Sneeze pulling mines in), `remove_projectile`, `drain_energy`, `blind`,
+pulled loose: Magnet Sneeze pulling mines in), `move_pickup` (moves a scrap pile, or a pickup's
+content off its spawn point, by a delta: Magnet Sneeze), `remove_projectile`, `drain_energy`, `blind`,
 `swap`, `rewind`, `disable_weapons`, `adjust_hull`, `cue`, `emit`, and `detonate` (the default
 impact).
 
@@ -137,6 +146,10 @@ set tuning and charge multipliers), splash knockback scales with the falloff, an
   report none). Charged rock drains ships that scrape it: a framework step right after each
   ship's movement (`in_contact` and `CHARGED` within radius + 0.2 u) takes the Leech Arc data's
   `charged_drain_per_sec` (default 5 energy/s, `world::CHARGED_DRAIN_PER_SEC`).
+  `GameTerrain::surface_states_near` counts every 1 u surface cell that overlaps the query
+  sphere (not only cells whose centre is inside), so a ship scraping a wall finds the state of
+  the cell under it. There is no permanent scorch state: scorch trails (Stalker Mine, Echo
+  Cannon, Scatter Laser) are `HOT` edits with a long `until`.
 - **Materials**: `ctx.material_at(p)` (`SimTerrain::material_at`) for weak-wall effects
   (Magnet Sneeze ripping chunks off weak rock).
 - **Strength**: `ctx.crater` (and `detonate`, `channel`) scales a crater by the rock material
@@ -178,9 +191,9 @@ relevance), `entity_tick` / `entity_expired`.
 
 | Gadget | Status |
 | --- | --- |
-| Shield | Implemented: self-damage -75%; enemy hits by the weapon's `ShieldInteraction` (rule set override applied): `Blocked` (energy pays, hull never), `Wears(f)` (energy pays `f` per damage point, the rest reaches the hull), `PassThrough(f)` (`f` reaches the hull); drops at 0 energy |
+| Shield | Implemented: self-damage -75%; enemy hits by the weapon's `ShieldInteraction` (rule set override applied): `Blocked` (energy pays, hull never), `Wears(f)` (each damage point costs `f x energy_per_damage` energy; the hull takes only what the energy cannot cover), `PassThrough(f)` (`f` reaches the hull, the rest is absorbed for free); upkeep `drain_per_sec`; drops at 0 energy; knockback is not reduced |
 | Cloak | Implemented: hidden from enemies beyond 6 u unless it fired in the last 0.5 s (`World::ship_visible_to`, used by the server's snapshot filter); 3x drain while moving |
-| Decoy | Fallback: launches a shootable decoy entity (integrity = max hull, 6 s); TODO(wave-B): the rubber-band return hit (the gadget's `entity_tick` can now switch the decoy to `kinematic` and drive it back through `&mut Entity`, and `entity_expired` can extend its life) |
+| Decoy | Implemented: launches a shootable decoy entity (integrity = the owner's max hull) that enemy projectiles hit and Seekers and Swarm blobs lock onto. After 6 s it turns `kinematic` and rubber-bands back at `return_speed` (60 u/s), sweeping its path each tick: the first living ship on it (the owner if nobody is in the way, teammates included) takes 99% of the decoy's remaining integrity with `return_knockback_per_damage` knockback, without friendly-fire scaling; the owner gets the kill credit; a `DecoyReturn` cue goes out. It vanishes if its owner is gone and fizzles after `return_max_secs` (3 s) |
 
 ## Ship types
 
@@ -204,11 +217,11 @@ wrecks). `World::entity_views` flattens everything but ships and projectiles int
 
 | Kind | State bytes |
 | --- | --- |
-| Weapon pickup | weapon id, ammo, 0, 0 |
+| Weapon pickup | weapon id, ammo, 0, 0 (position: `PickupSpawn::content_pos`, the spawn point plus the offset a Magnet Sneeze moved it by) |
 | Upgrade / gadget pickup | weapon / gadget id, 0, 0, 0 |
 | Scrap pile, wreck | scrap (whole units, max 255), 0, 0, 0 |
 | Debris | scrap, resting (0/1), radius in tenths of a unit, 0 |
-| Decoy | integrity percent, module state, 0, 0 |
+| Decoy | integrity percent, module state (ship type index in the low nibble, `0x80` while returning), 0, 0 |
 | Dust cloud | radius in whole units, module state bytes 1-3 |
 | Ghost, marker | the module's `Entity::state` |
 
@@ -227,7 +240,7 @@ the weapon's visual, entities their own. Renderers map `Shape` to a mesh and tin
 `Shape::ALL` lists every shape in index order (declared together with the enum, so it cannot
 miss one).
 
-## Replication (`ls-net` protocol 2)
+## Replication (`ls-net` protocol 3)
 
 | Wire item | Contents |
 | --- | --- |
@@ -235,7 +248,7 @@ miss one).
 | `Snapshot::players` | `NetPlayer`: ship id, team, ship type, gadget id (255 none), name; 1 bit when unchanged against the baseline, else only the changed players |
 | `Message::Inventory` | the own ship's weapons (id, ammo, level), selected primary and secondary, gadget; reliable, sent when it changes |
 | `NetProjectile::state` | replicated projectile flags (`proj_flags` low byte: stuck, armed, hits owner, guided, returning) |
-| `NetEvent::Cue` | `CueKind` byte, source and target ship ids, position, value (warnings, blinding, charge start, gadget on/off, shockwave, beam, swap, rewind) |
+| `NetEvent::Cue` | `CueKind` byte, source and target ship ids, position, value (Polite warning, blinding, charge start, Tectonic launch and armed, shockwave, Leech beam, swap, rewind, Railspike muzzle flash, gadget on/off, decoy return, Fusion overcharge); sent to every client |
 | Ship flags | bit 6 `GADGET_ACTIVE` (alias `SHIELDED`), weapon id in bits 10-14 (0-31) |
 | `Hello` | adds `data_hash` and `ship_type`; `Welcome` adds `ship_type` and `data_hash` |
 | `Message::SelectShip` | ship type for the next respawn (reliable) |
@@ -266,10 +279,66 @@ multipliers) per weapon, `mutators` (none supported yet), and the loadout `gadge
 weapons never fire (`can_fire`), are never granted (`give_weapon`, pickups) and never spawn
 (`update_pickup_spawns` zeroes their weight); tests in `tests_arsenal.rs` and the room tests.
 
-Rule set codes (`RuleSet::to_code` / `from_code`): `LR` + Crockford base32 in groups of four,
-format in `rulecode.rs` (version 2, the number of weapons and gadgets the code covers, name,
-mode, every setting, CRC-16). Codes from an older build (fewer weapons: the registry is
-append-only) decode with the missing weapons banned; codes from a newer build are rejected
-with "code from a newer build". Encoding fails for values
-the format cannot carry exactly, so a code always decodes to the rule set it was made from;
-the default Paint the Void rules take about 210 symbols (270 characters with dashes).
+Rule set codes (`RuleSet::to_code` / `from_code`, format in `rulecode.rs`): `LR` + Crockford
+base32 in groups of four. Version 3 (what `to_code` prints) stores only the differences from
+the mode's default rule set (`data/rulesets/paint_the_void.ron`) plus a 16-bit fingerprint of
+that default: the default rules are `LR6V-69CM-G006-58R` (18 characters), a ban adds about 3
+symbols. A diff code made against a different default is rejected ("ask for the full code").
+Version 2 (`to_full_code`, about 270 characters) stores every setting; `to_code` uses it when
+it is shorter. Both carry the weapon and gadget counts (the registry is append-only: codes
+from an older build decode with the missing weapons banned, codes from a newer build are
+rejected) and a CRC-16. Encoding fails for values the format cannot carry exactly (tuning in
+twentieths, shield fractions in hundredths), so a code always decodes to the rule set it was
+made from. `RuleSet::ban_weapon` / `ban_gadget` remove the item from availability, pickups and
+the loadout at once.
+
+Server-side bans and balance list: `ls-server --ban <weapon>` and `--balance-list <file>`
+(`BalanceList`: bans, gadget bans, tuning multiplied onto the rule set's and rounded to
+twentieths, shield overrides that replace the rule set's), re-read before every match; see
+[server.md](server.md#cli). The browser rule set editor (`web/src/rules/`, open with
+`?editor=rules`) reproduces the encoder, decoder and validation bit for bit; its catalog
+(`web/src/rules/catalog.ts`) is generated from the data by the Rust test
+`web_catalog_is_current` (`LS_BLESS_RULES_CATALOG=1 cargo test -p ls-sim --lib rulecode`).
+
+Built-in rule sets: `paint_the_void.ron` (default) and `sandbox_all_weapons.ron` (every weapon
+and gadget as a pickup with even weights and short respawns, every ship type; the arsenal e2e
+run uses it).
+
+## The arsenal as built
+
+Numbers are in each weapon's data file; the module file's docs list the parameters it reads.
+Crater sizes in the design doc are diameters (`crater_radius` is half). Cone parameters are
+named for what they hold: `cone_deg` is a full apex angle (Seeker: 30 = 15 degrees either
+side), `*_half_deg` / `lock_half_angle_deg` are half angles (Leech Arc, Magnet Sneeze).
+Damage is balanced for a 3-8 s time to kill on a 100-hull Tinker at point blank (M2 plan);
+the Scrap Laser at level 6 (14 per 0.25 s, 1.75 s) is above that band by the plan's numbers.
+
+| Weapon | Bonus / mechanics | Malus | Lasting effect |
+| --- | --- | --- | --- |
+| Scrap Laser | 30 u/s bolts, 6 damage at level 1 to 14 at level 6 (upgrade pickups) | weak at level 1 | hit rock stays `HOT` 10 s (no re-edit while hot) |
+| Scatter Laser | 3 bolts 8 degrees apart; fans alternate horizontal / vertical per shot (`Shot::shots`) | damage and knockback fall to 40% at the end of the bolt's life | fan of scorch (`HOT`) marks |
+| Plasma Repeater | 33 u/s, 10 bolts/s, 3 damage, 1.5 s reach | 30 energy/s against 10/s regeneration | every 2nd bolt melts a 0.4 u pit; hits stay hot |
+| Fusion Charger | hold up to 2 s: up to 4x damage and knockback (framework charge) | past 2 s it burns 10 hull/s (never below 1; `Overcharge` cue) | melts a channel 1-5 u deep with charge, through thin walls; shoves debris aside |
+| Corkscrew | 5 bolts in a line that spins around the aim axis (1 turn/s), widening up to `max_radius` 4 u; knockback along the shot axis | only the centre bolt connects at range | the 4 spinning bolts etch 2-crater grooves (already carved spots skipped): spirals |
+| Ricochet Arc | bounces off walls up to 3 times; can hit its owner after the first bounce | self-hits | 0.3 u chip at every bounce |
+| Leech Arc | instant 12 u arc to the nearest visible enemy in a 30 degree half-cone: 2 damage and 2 energy drained per arc, 10 arcs/s; re-acquired every arc | nothing beyond 12 u (still pays) | touched rock `CHARGED` 15 s; the framework drains 5 energy/s from ships scraping it |
+| Rivet Gun | 180 u/s, 10 rivets/s, 3 damage, half a scrap each | burns 5 scrap/s | rivets embed (impact, no crater); weak rock: 20% chance of a chip crater and a debris chunk (not while 2 pieces float near) |
+| Railspike | 270 u/s, 35 damage, pierces every ship and debris piece and walls up to 2 u (straight hole) | 1.5 s between shots; `MuzzleFlash` cue, firing uncloaks for 0.5 s | straight holes through thin rock; 0.3 u dent in thick rock |
+| Scrap Shotgun | 8 pellets at 200 u/s in a random 6 degree cone | 30 u range, damage falls to 30% by 24 u | pockmarks; the last 2 pellets spray debris (not while 2 pieces float near) |
+| Bolt Rocket | 40 u/s dumbfire, 30 direct + 2.5 u splash | slow | 2 u crater |
+| Seeker | re-targets every tick to the nearest enemy ship or enemy Decoy in its cone within 60 u and line of sight, 2.5 rad/s turn | fooled by decoys; a boosting pilot outflies it | 2 u crater |
+| Quicksilver | fastest ordnance, 45 u/s | small 1.5 u blast | 2 u crater |
+| Eyeball | guided by the owner's look input (turn capped at 3 rad/s); flies straight if the owner dies | the owner's ship drifts without thrust or look; one guided at a time | 4 u crater |
+| Swarm Pod | the pod hits like a rocket and releases 6 homing blobs on any impact | blobs are weak alone | scatter of small craters |
+| Heavy Rocket | 70 direct, 8 u splash | 20 u/s; its splash hurts the shooter | 6 u crater that opens passages |
+| Flash Pod | bursts on impact or after 3 s: blinds every pilot within 15 u in line of sight for 2 s (`blind`, `Blinded` cue) | blinds you and teammates too | nearby surfaces `GLOW` 30 s |
+| Prox Mine | dropped behind, arms after 1 s, triggers within 2 u, 40 + 5 u splash | hurts owner and teammates at full damage (unless friendly fire is off) | sticks to walls; 3 u crater |
+| Stalker Mine | armed, creeps at 4 u/s toward the nearest visible enemy within 10 u | slow; a pilot who notices it flies away | `HOT` scorch every 1.5 u for 60 s |
+| Tectonic Charge | the design table: core 4 u kill, damage 25 u, collapse 35 u (`crater_exact`), shockwave 60 u, 1.5 s fuse, 6 sub-charges; cracks scale with Instability | slow, 1 per map, hurts the owner | dust cloud 20 s, debris field, level-wide jostle; rides ships, debris and decoys it sticks to |
+| Echo Cannon | records its path, flies back along it after 2 s (can hit twice) | the return leg hits its owner (the Shield cuts it) | scorch marks along the path (every 2nd point, capped) and at impacts |
+| Swap Harpoon | swaps positions and velocities with the ship it hits (`Swapped` cue; lag compensation keeps the swap) | 4 s cooldown | spike marker in walls; holding Scavenge next to it grabs it |
+| Paint Thrower | paints the team colour (Paint the Void scoring) | no damage | paint stays until painted over; the design doc's colour effects (bouncy, slippery, sticky) are deferred to M3 (M2 plan decision) |
+| Borrowed Time | rewinds position, velocity and hull by 3 s (`trail`), ghost entity at the old spot | weapons offline 3 s | craters made meanwhile stay |
+| Magnet Sneeze | cone pull: debris, enemy ships, pickups and scrap piles (they jump up to 10 u towards you) | pulls every other projectile in too, stuck mines included | rips chunks off weak rock |
+| Polite Laser | 1.5 s charge, 75 damage; `PoliteWarning` cue to the target (repeated to a new target in the aim) | the target is warned | clean holes through thin walls |
+| Seed Grenade | grows a deterministic cluster of `AddSphere` cover (never inside a ship; floating cover in mid-air) | the cover blocks your shots too | lasting rock; 2% rubber duck |

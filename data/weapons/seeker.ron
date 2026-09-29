@@ -1,6 +1,8 @@
 // Seeker: ordnance secondary. Homes on the nearest target in a 30 degree cone, 25 u/s. Malus:
 // can be outflown or fooled by the Decoy. Lasting effect: 2 u crater.
-// Behaviour: crates/ls-sim/src/weapons/ordnance/seeker.rs (TODO(wave-B): generic fallback until implemented).
+// Behaviour: crates/ls-sim/src/weapons/ordnance/seeker.rs (every tick: nearest enemy ship or enemy
+// decoy inside `cone_deg` (full apex angle) around its flight direction, within `range` and in
+// line of sight; turns at most `turn_rate` rad/s; flies straight without a target).
 // `params` are read by the weapon module (`WeaponDef::param`); numbers are tuning starting points.
 WeaponDef(
     id: "seeker",
@@ -19,5 +21,5 @@ WeaponDef(
     shield: Wears(1.0),
     max_ammo: 10,
     visual: (shape: Missile, color: (255, 90, 90), scale: 1.0),
-    params: { "cone_deg": 30.0, "turn_rate": 2.5 },
+    params: { "cone_deg": 30.0, "turn_rate": 2.5, "range": 60.0 },
 )

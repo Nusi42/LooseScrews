@@ -1,6 +1,6 @@
 // Corkscrew: energy primary. 5 bolts in a rotating fan. Malus: wide pattern wastes energy at
 // long range. Lasting effect: etches spiral grooves into walls.
-// Behaviour: crates/ls-sim/src/weapons/energy/corkscrew.rs (TODO(wave-B): generic fallback until implemented).
+// Behaviour: crates/ls-sim/src/weapons/energy/corkscrew.rs.
 // `params` are read by the weapon module (`WeaponDef::param`); numbers are tuning starting points.
 WeaponDef(
     id: "corkscrew",
@@ -8,15 +8,31 @@ WeaponDef(
     family: Energy,
     slot: Primary,
     speed: 30.0,
-    lifetime_secs: 3.0,
+    // 2 s reach (60 u) still shows the long-range malus and keeps about 20 bolts in flight.
+    lifetime_secs: 2.0,
     damage: 3.0,
-    fire_interval_secs: 0.35,
+    // 15 per volley at point blank: 7 volleys, 3.0 s to kill a Tinker.
+    fire_interval_secs: 0.5,
     cost: Energy(6.0),
     projectile_radius: 0.12,
     knockback: 0.3,
     shield: Wears(1.0),
+    // A line of 5 bolts; neighbours `spread_deg` apart: the fan opens like a cone.
     projectiles: 5,
-    spread_deg: 10.0,
+    spread_deg: 6.0,
     visual: (shape: Bolt, color: (120, 255, 140), scale: 0.8),
-    params: { "spiral_radius": 1.0, "spin_hz": 2.0, "groove_radius": 0.25 },
+    params: {
+        // The fan spins around the aim axis in flight (turns per second) and each shot starts
+        // `shot_rotate_deg` further round.
+        "spin_hz": 1.0,
+        "shot_rotate_deg": 36.0,
+        // The fan stops widening at `max_radius` u from the axis (outer bolts stay near
+        // laser speed).
+        "max_radius": 4.0,
+        // Each bolt etches a groove of `groove_segments` craters of `groove_radius` u,
+        // `groove_step` u apart, along its spin direction.
+        "groove_radius": 0.25,
+        "groove_step": 0.3,
+        "groove_segments": 2.0,
+    },
 )

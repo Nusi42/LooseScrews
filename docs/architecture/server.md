@@ -84,7 +84,20 @@ is logged at shutdown.
 ls-server --bind 0.0.0.0:7777 [--wt-bind <addr> | --no-webtransport] --code <share code> \
     --ruleset data/rulesets/paint_the_void.ron --max-players 8 --web-root web/dist \
     --stats-interval 10 --intermission 10 [--exit-when-empty]
+ls-server --ruleset LR6V-69CM-G006-58R --ban tectonic_charge --balance-list balance.ron
 ```
+
+Rules (`crates/ls-server/src/rules.rs`): `--ruleset` takes a file or an `LR...` rule set code
+(an existing file wins; text that looks like a code is decoded). `--ban <weapon_id>`
+(repeatable) and `--balance-list <file>` (`ls_sim::ruleset::BalanceList`: `bans`,
+`gadget_bans`, `tuning` multipliers applied on top of the rule set's (rounded to twentieths),
+`shield_overrides` that replace the rule set's) apply on top: effective rules = rule set, then
+balance list, then bans, validated at startup. The balance list is re-read before every match;
+if it fails to load, the server warns and keeps the previous rules. The effective rules are
+what the `Welcome` carries and the simulation enforces, logged with their code at each match
+start (`ServerHandle::rules_code` keeps the first match's code). Built-in rule sets:
+`data/rulesets/paint_the_void.ron` (default) and `data/rulesets/sandbox_all_weapons.ron`
+(every weapon and gadget as a pickup, every ship type; used by the arsenal e2e run).
 
 `--web-root` defaults to `web/dist` if it exists, so `cargo run -p ls-server --release` after
 `npm run build` in `web/` serves the client at `http://localhost:7777`. `--exit-when-empty` shuts
@@ -186,7 +199,7 @@ Global navigation (`src/nav.rs`, M1 issue A):
   restarts the stall clock instead, and blocked links are re-tested after 30 s.
 
 Tests: `tests/nav_sweep.rs` (release only, about 20 s): three bots on the soak world
-`LS04-PNEY-V86Z-VXZM-K4M6-8001-8F8T` and nine random worlds must hit each other within 60 s,
+`LS08-PNEY-V86Z-VXZM-K4M6-8001-8F8P` and nine random worlds must hit each other within 60 s,
 and a 5-minute match on the soak world must still see hits in its last minute. `LS_NAV_TRACE=1`
 prints positions, modes and routes.
 

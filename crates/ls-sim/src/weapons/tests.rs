@@ -422,15 +422,13 @@ fn every_weapon_has_a_module_and_a_data_file() {
         assert_eq!(def.family, m.family, "{}", m.id);
         assert_eq!(behavior(m.id).id(), m.id);
     }
-    let implemented: Vec<&str> = MODULES
+    // Wave B filled every module: none relies on the generic fallback.
+    let fallback: Vec<&str> = MODULES
         .iter()
-        .filter(|m| m.behavior.implemented())
+        .filter(|m| !m.behavior.implemented())
         .map(|m| m.id)
         .collect();
-    assert_eq!(
-        implemented,
-        ["scrap_laser", "rivet_gun", "bolt_rocket", "paint_thrower"]
-    );
+    assert!(fallback.is_empty(), "still on the fallback: {fallback:?}");
     assert_eq!(
         behavior("homebrew").id(),
         "",
@@ -474,9 +472,15 @@ fn every_weapon_fires_with_its_fallback() {
         let mut ev = run(&mut w, &mut t, &hold, 130);
         // Charge weapons fire on release.
         ev.extend(run(&mut w, &mut t, &[], 1));
+        // Instant weapons (Leech Arc) spawn no projectile: their shot is
+        // the beam cue.
         let fired = ev
             .iter()
-            .filter(|e| matches!(e, Event::Fired { .. }))
+            .filter(|e| match e {
+                Event::Fired { .. } => true,
+                Event::Cue(c) => c.kind == CueKind::Beam,
+                _ => false,
+            })
             .count();
         assert!(fired >= 1, "{} never fired", m.id);
         let visual = w.visuals().projectile(wid);

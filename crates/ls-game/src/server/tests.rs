@@ -634,3 +634,49 @@ fn banned_weapons_are_enforced_by_the_room() {
         }
     }
 }
+
+#[test]
+fn lag_compensation_undo_follows_swaps_and_rewinds() {
+    use super::lagcomp::Displacement;
+    use super::restore_offsets;
+    use ls_sim::{Cue, CueKind};
+    let (a, b, c) = (PlayerId(1), PlayerId(2), PlayerId(3));
+    let off = Vec3::new(3.0, 0.0, 0.0);
+    let comp = [
+        Displacement {
+            player: b,
+            offset: off,
+            projectile: 7,
+        },
+        Displacement {
+            player: c,
+            offset: Vec3::new(0.0, 1.0, 0.0),
+            projectile: 8,
+        },
+        Displacement {
+            player: c,
+            offset: Vec3::new(0.0, 1.0, 0.0),
+            projectile: 9,
+        },
+    ];
+    let cue = |kind, source, target| {
+        Event::Cue(Cue {
+            kind,
+            source: Some(source),
+            target: Some(target),
+            pos: Vec3::ZERO,
+            value: 0,
+        })
+    };
+    // No teleport: every compensated ship goes back by its offsets.
+    let plain = restore_offsets(&comp, &[]);
+    assert_eq!(plain, vec![(b, -off), (c, Vec3::new(0.0, -2.0, 0.0))]);
+    // a harpoons the compensated b: a now stands where b appeared (b's
+    // present position + off) and takes b's correction; b stands at a's
+    // present position and needs none.
+    let swapped = restore_offsets(&comp, &[cue(CueKind::Swapped, a, b)]);
+    assert_eq!(swapped, vec![(a, -off), (c, Vec3::new(0.0, -2.0, 0.0))]);
+    // A rewound ship keeps its recorded position.
+    let rewound = restore_offsets(&comp, &[cue(CueKind::Rewound, c, c)]);
+    assert_eq!(rewound, vec![(b, -off)]);
+}

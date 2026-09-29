@@ -1,7 +1,7 @@
 // Fusion Charger: energy primary. Hold up to 2 s; damage and knockback scale with charge.
 // Malus: charging past 2 s burns your own hull. Lasting effect: melts a channel along its path
 // and shoves debris aside.
-// Behaviour: crates/ls-sim/src/weapons/energy/fusion_charger.rs (TODO(wave-B): generic fallback until implemented).
+// Behaviour: crates/ls-sim/src/weapons/energy/fusion_charger.rs.
 // `params` are read by the weapon module (`WeaponDef::param`); numbers are tuning starting points.
 WeaponDef(
     id: "fusion_charger",
@@ -10,6 +10,7 @@ WeaponDef(
     slot: Primary,
     speed: 30.0,
     lifetime_secs: 3.0,
+    // 12 at no charge, 48 at full charge (damage_mult 4).
     damage: 12.0,
     fire_interval_secs: 1.0,
     cost: Energy(12.0),
@@ -18,5 +19,20 @@ WeaponDef(
     shield: PassThrough(0.5),
     charge: Some((max_secs: 2.0, damage_mult: 4.0)),
     visual: (shape: Orb, color: (200, 90, 255), scale: 1.6),
-    params: { "overcharge_hull_per_sec": 10.0, "channel_radius": 0.8 },
+    params: {
+        // Hull burned per second while the trigger is held past the 2 s full charge.
+        "overcharge_hull_per_sec": 10.0,
+        // Channel melted into rock: crater radius (half at no charge, full at full charge) and
+        // depth budget from `channel_depth_min` (no charge) to `channel_depth_max` (full); a
+        // thinner wall is melted through. The entry stays hot for `hot_secs`.
+        "channel_radius": 0.8,
+        "channel_depth_min": 1.0,
+        "channel_depth_max": 5.0,
+        "hot_secs": 10.0,
+        // Debris within `shove_radius` u of the bolt is pushed sideways at `shove_accel` u/s^2;
+        // debris in its path is flung at `shove_hit_speed` u/s (both times 1 + charge).
+        "shove_radius": 1.5,
+        "shove_accel": 120.0,
+        "shove_hit_speed": 12.0,
+    },
 )

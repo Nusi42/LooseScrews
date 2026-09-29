@@ -1,7 +1,12 @@
 // Prox Mine: ordnance secondary. Dropped behind you, arms after 1 s. Malus: hurts you and
 // teammates. Lasting effect: sticks to walls; 3 u crater.
-// Behaviour: crates/ls-sim/src/weapons/ordnance/prox_mine.rs (TODO(wave-B): generic fallback until implemented).
-// `params` are read by the weapon module (`WeaponDef::param`); numbers are tuning starting points.
+// Behaviour: crates/ls-sim/src/weapons/ordnance/prox_mine.rs (implemented).
+// `params` are read by the weapon module (`WeaponDef::param`): dropped `drop_behind` u behind
+// the ship, drifting backwards at `speed` and slowing by `drift_drag` per second (about 5 u of
+// drift); armed after `arm_secs`; goes off when any ship (owner and teammates included) is
+// within `trigger_radius` u; `full_friendly_fire` 1 = teammates take full damage whatever the
+// rule set's friendly fire percentage (friendly fire off still protects them). `damage` goes to a ship that touches it, the splash to everyone
+// around. Crater radius 1.5 u = the design doc's 3 u diameter.
 WeaponDef(
     id: "prox_mine",
     name: "Prox Mine",
@@ -13,11 +18,11 @@ WeaponDef(
     fire_interval_secs: 0.5,
     cost: Count(1),
     projectile_radius: 0.3,
-    splash: Some((radius: 4.0, damage: 30.0, hits_owner: true)),
+    splash: Some((radius: 5.0, damage: 50.0, hits_owner: true)),
     knockback: 8.0,
     terrain: (crater_radius: 1.5),
     shield: Wears(1.0),
     max_ammo: 5,
     visual: (shape: Mine, color: (255, 80, 80), scale: 1.0),
-    params: { "arm_secs": 1.0, "trigger_radius": 4.0, "drop_behind": 1.0 },
+    params: { "arm_secs": 1.0, "trigger_radius": 2.0, "drop_behind": 1.0, "drift_drag": 1.0, "full_friendly_fire": 1.0 },
 )

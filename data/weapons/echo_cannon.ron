@@ -1,15 +1,19 @@
 // Echo Cannon: special primary. Projectile returns along the same path after 2 s, so it can
 // hit twice. Malus: the returning shot can hit you. Lasting effect: scorch trail along the
 // out-and-back path.
-// Behaviour: crates/ls-sim/src/weapons/specials/echo_cannon.rs (TODO(wave-B): generic fallback until implemented).
-// `params` are read by the weapon module (`WeaponDef::param`); numbers are tuning starting points.
+// Behaviour: crates/ls-sim/src/weapons/specials/echo_cannon.rs (implemented).
+// Out leg records a path point every `record_ticks`, passes through ships it hits and waits at a
+// wall; after `return_after_secs` it flies back along the points and on past the muzzle (lifetime
+// = 2 x return time + a margin, so an owner who stayed put is hit). Scorch trail: path points
+// within `scorch_reach` u of rock and impacts heat the rock (`scorch_radius` u, `scorch_secs`),
+// at most `max_scorch_edits` per shot. Numbers are tuning starting points.
 WeaponDef(
     id: "echo_cannon",
     name: "Echo Cannon",
     family: Special,
     slot: Primary,
     speed: 30.0,
-    lifetime_secs: 4.0,
+    lifetime_secs: 4.5,
     damage: 12.0,
     fire_interval_secs: 0.8,
     cost: Energy(8.0),
@@ -17,5 +21,15 @@ WeaponDef(
     knockback: 1.5,
     shield: Wears(1.0),
     visual: (shape: Orb, color: (180, 140, 255), scale: 1.2),
-    params: { "return_after_secs": 2.0 },
+    params: {
+        "return_after_secs": 2.0,
+        "record_ticks": 4.0,
+        "scorch_reach": 1.5,
+        // Every `scorch_every`-th recorded point near rock gets a mark of `scorch_radius`; at
+        // most `max_scorch_edits` per shot (every mark is a networked, logged edit).
+        "scorch_radius": 1.5,
+        "scorch_secs": 10.0,
+        "scorch_every": 2.0,
+        "max_scorch_edits": 6.0,
+    },
 )

@@ -1,6 +1,6 @@
 // Quicksilver: ordnance secondary. Fastest missile, 45 u/s. Malus: small blast. Lasting
 // effect: 2 u crater.
-// Behaviour: crates/ls-sim/src/weapons/ordnance/quicksilver.rs (TODO(wave-B): generic fallback until implemented).
+// Behaviour: crates/ls-sim/src/weapons/ordnance/quicksilver.rs (implemented: the generic hooks with these numbers).
 // `params` are read by the weapon module (`WeaponDef::param`); numbers are tuning starting points.
 WeaponDef(
     id: "quicksilver",

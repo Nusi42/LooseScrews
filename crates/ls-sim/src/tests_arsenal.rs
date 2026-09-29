@@ -149,7 +149,7 @@ fn ship_types_spawn_with_their_numbers() {
     let mut ev = run(&mut w, &mut t, &press(ha, Buttons::FIRE_PRIMARY), 1);
     ev.extend(run(&mut w, &mut t, &[], 20));
     assert!(
-        (damage_to(&ev, sk) - 8.0 * 1.2).abs() < 1e-4,
+        (damage_to(&ev, sk) - 6.0 * 1.2).abs() < 1e-4,
         "{}",
         damage_to(&ev, sk)
     );
@@ -296,7 +296,7 @@ fn shield_cuts_self_splash_and_uses_weapon_interactions() {
     let (dmg, _) = enemy_hit(None);
     assert_eq!(dmg, 0.0);
     let (dmg, _) = enemy_hit(Some(ShieldInteraction::PassThrough(0.5)));
-    assert!((dmg - 4.0).abs() < 1e-4, "{dmg}");
+    assert!((dmg - 3.0).abs() < 1e-4, "{dmg}");
     let (dmg, _) = enemy_hit(Some(ShieldInteraction::Blocked));
     assert_eq!(dmg, 0.0);
 }
@@ -394,8 +394,9 @@ fn decoy_launches_draws_fire_and_expires() {
         .find(|e| e.kind == EntityKind::Decoy)
         .map(|e| e.hp);
     assert!(hp.is_some_and(|h| h < 100.0), "{hp:?}");
-    // Six seconds after launch it is gone (return hit is wave B).
-    run(&mut w, &mut t, &[], 330);
+    // After six seconds it rubber-bands back and hits the first ship on its
+    // path, then it is gone.
+    run(&mut w, &mut t, &[], 450);
     assert!(!w.entities().iter().any(|e| e.kind == EntityKind::Decoy));
 }
 
@@ -490,7 +491,7 @@ fn tuning_multipliers_change_damage_rate_and_ammo() {
     place(&mut w, b, Vec3::ZERO, Vec3::Z);
     let mut ev = run(&mut w, &mut t, &press(a, Buttons::FIRE_PRIMARY), 1);
     ev.extend(run(&mut w, &mut t, &[], 20));
-    assert!((damage_to(&ev, b) - 16.0).abs() < 1e-4);
+    assert!((damage_to(&ev, b) - 12.0).abs() < 1e-4);
     // Fire interval 0.25 s / 2 = 8 ticks: 8 shots in 60 ticks instead of 4.
     let ev = run(&mut w, &mut t, &press(a, Buttons::FIRE_PRIMARY), 60);
     assert!(fired(&ev) >= 7, "{}", fired(&ev));

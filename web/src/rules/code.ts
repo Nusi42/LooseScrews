@@ -1,0 +1,792 @@
+// Rule set codes (`LR...`) in TypeScript: a bit-exact mirror of
+// crates/ls-sim/src/rulecode.rs (format versions 2 = full and 3 = diff against the
+// mode's default rule set; see the module docs there). The Node tests check this
+// file against the vectors the Rust side generates into catalog.ts, so a code made
+// in the browser is exactly the code the server decodes.
+
+import {
+  AVAILABILITIES,
+  type Availability,
+  type Catalog,
+  type Loadout,
+  type ModeRules,
+  type PickupRule,
+  type RuleSetData,
+  type ScrapPickupRule,
+  type ShieldInteraction,
+  type ShipTypeName,
+  type WeaponTuning,
+} from "./types.ts";
+
+export const RULE_CODE_PREFIX = "LR";
+export const FULL_VERSION = 2;
+export const DIFF_VERSION = 3;
+export const MAX_NAME = 31;
+const ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+const NAME_CHARS = " ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-";
+const WEAPON_BITS = 6;
+const GADGET_BITS = 4;
+
+/** Encoding or decoding failed; `message` is meant for players. */
+export class RuleCodeError extends Error {
+  override name = "RuleCodeError";
+}
+
+function fail(message: string): never {
+  throw new RuleCodeError(message);
+}
+
+class Bits {
+  bits: number[] = [];
+
+  push(v: number, n: number): void {
+    for (let i = n - 1; i >= 0; i--) this.bits.push(Math.floor(v / 2 ** i) % 2);
+  }
+
+  flag(v: boolean): void {
+    this.bits.push(v ? 1 : 0);
+  }
+}
+
+function pack(bits: readonly number[]): number[] {
+  const out = new Array<number>(Math.ceil(bits.length / 8)).fill(0);
+  bits.forEach((b, i) => {
+    if (b) out[i >> 3] = (out[i >> 3] ?? 0) | (0x80 >> (i % 8));
+  });
+  return out;
+}
+
+class Reader {
+  pos = 0;
+  readonly bits: readonly number[];
+
+  constructor(bits: readonly number[]) {
+    this.bits = bits;
+  }
+
+  read(n: number): number {
+    if (this.pos + n > this.bits.length) fail("code is too short");
+    let v = 0;
+    for (let i = 0; i < n; i++) v = v * 2 + (this.bits[this.pos++] ?? 0);
+    return v;
+  }
+
+  flag(): boolean {
+    return this.read(1) === 1;
+  }
+}
+
+export function crc16(bytes: readonly number[]): number {
+  let crc = 0xffff;
+  for (const b of bytes) {
+    crc ^= b << 8;
+    for (let i = 0; i < 8; i++) crc = crc & 0x8000 ? ((crc << 1) ^ 0x1021) & 0xffff : (crc << 1) & 0xffff;
+  }
+  return crc;
+}
+
+/** `v` as an exact multiple of `1/steps` in `0..=max` steps (Rust `fixed`). */
+function fixed(v: number, steps: number, max: number, what: string): number {
+  if (!Number.isFinite(v) || v < 0) fail(`${what} ${v} must be >= 0`);
+  const q = Math.round(v * steps);
+  if (q > max || q / steps !== v) fail(`${what} ${v} is not a multiple of ${1 / steps} up to ${max / steps}`);
+  return q;
+}
+
+function indexOf(ids: readonly string[], id: string, what: string): number {
+  const i = ids.indexOf(id);
+  if (i < 0) fail(`${what} \`${id}\` has no rule set code index`);
+  return i;
+}
+
+function checkInt(v: number, max: number, what: string): number {
+  if (!Number.isInteger(v) || v < 0 || v > max) fail(`${what} must be a whole number 0..${max}`);
+  return v;
+}
+
+function writeRule(b: Bits, r: PickupRule, what: string): void {
+  b.push(fixed(r.weight, 4, 255, what), 8);
+  b.push(fixed(r.respawn_secs, 1, 1023, what), 10);
+  if (r.ammo > 63 || r.max_on_map > 15) fail(`${what}: ammo <= 63 and max_on_map <= 15`);
+  checkInt(r.ammo, 63, `${what} ammo`);
+  checkInt(r.max_on_map, 15, `${what} max_on_map`);
+  b.flag(r.ammo !== 0);
+  if (r.ammo !== 0) b.push(r.ammo, 6);
+  b.flag(r.max_on_map !== 0);
+  if (r.max_on_map !== 0) b.push(r.max_on_map, 4);
+}
+
+function readRule(r: Reader): PickupRule {
+  const weight = r.read(8) / 4;
+  const respawn_secs = r.read(10);
+  const ammo = r.flag() ? r.read(6) : 0;
+  const max_on_map = r.flag() ? r.read(4) : 0;
+  return { weight, respawn_secs, ammo, max_on_map };
+}
+
+function writeName(b: Bits, name: string): void {
+  if (new TextEncoder().encode(name).length > MAX_NAME) fail(`name longer than ${MAX_NAME} characters`);
+  b.push(name.length, 5);
+  for (const c of name) {
+    const i = NAME_CHARS.indexOf(c);
+    if (i < 0) fail("name may only use letters, digits, spaces and '-'");
+    b.push(i, 6);
+  }
+}
+
+function readName(r: Reader): string {
+  const len = r.read(5);
+  let name = "";
+  for (let i = 0; i < len; i++) name += NAME_CHARS[r.read(6)];
+  return name;
+}
+
+function writeMode(b: Bits, m: ModeRules): void {
+  if (!Number.isInteger(m.teams) || m.teams < 0 || m.teams > 7) fail("teams must be <= 7");
+  b.push(m.teams, 3);
+  b.push(fixed(m.match_secs, 1, 65535, "match_secs"), 16);
+  b.push(fixed(m.respawn_secs, 10, 255, "respawn_secs"), 8);
+}
+
+function readMode(r: Reader): ModeRules {
+  const teams = r.read(3);
+  const match_secs = r.read(16);
+  const respawn_secs = r.read(8) / 10;
+  return { kind: "PaintTheVoid", teams, match_secs, respawn_secs };
+}
+
+function percent(v: number, what: string): number {
+  if (!Number.isInteger(v) || v < 0 || v > 100) fail(`${what} must be <= 100`);
+  return v;
+}
+
+function shipMask(types: readonly ShipTypeName[], catalog: Catalog): number {
+  let m = 0;
+  for (const t of types) {
+    const i = catalog.shipTypes.indexOf(t);
+    if (i < 0) fail(`unknown ship type ${t}`);
+    m |= 1 << i;
+  }
+  return m;
+}
+
+function shipsFromMask(mask: number, catalog: Catalog): ShipTypeName[] {
+  return catalog.shipTypes.filter((_, i) => mask & (1 << i));
+}
+
+function mutatorMask(mutators: readonly string[]): number {
+  let m = 0;
+  for (const x of mutators) {
+    if (x === "Instagib") m |= 1;
+    else fail(`unknown mutator ${x}`);
+  }
+  return m;
+}
+
+function mutatorsFromMask(mask: number): string[] {
+  return mask & 1 ? ["Instagib"] : [];
+}
+
+function writeLoadout(b: Bits, lo: Loadout, weapons: readonly string[], gadgets: readonly string[]): void {
+  if (lo.primaries.length > 31 || lo.secondaries.length > 15) fail("loadout too large");
+  b.push(lo.primaries.length, 5);
+  for (const id of lo.primaries) b.push(indexOf(weapons, id, "weapon"), WEAPON_BITS);
+  b.push(lo.secondaries.length, 4);
+  for (const [id, n] of lo.secondaries) {
+    b.push(indexOf(weapons, id, "weapon"), WEAPON_BITS);
+    if (!Number.isInteger(n) || n < 0 || n > 255) fail("loadout counts must be <= 255");
+    b.push(n, 8);
+  }
+  b.push(lo.gadget === null ? 0 : indexOf(gadgets, lo.gadget, "gadget") + 1, 3);
+}
+
+function readLoadout(r: Reader, weapons: readonly string[], gadgets: readonly string[]): Loadout {
+  const weaponId = (i: number): string => weapons[i] ?? fail("weapon index out of range");
+  const primaries: string[] = [];
+  for (let n = r.read(5); n > 0; n--) primaries.push(weaponId(r.read(WEAPON_BITS)));
+  const secondaries: [string, number][] = [];
+  for (let n = r.read(4); n > 0; n--) {
+    const id = weaponId(r.read(WEAPON_BITS));
+    secondaries.push([id, r.read(8)]);
+  }
+  const g = r.read(3);
+  const gadget = g === 0 ? null : (gadgets[g - 1] ?? fail("gadget index out of range"));
+  return { primaries, secondaries, gadget };
+}
+
+function writeScrap(b: Bits, s: ScrapPickupRule): void {
+  b.push(fixed(s.weight, 4, 255, "scrap weight"), 8);
+  b.push(fixed(s.respawn_secs, 1, 1023, "scrap respawn"), 10);
+  b.push(fixed(s.amount, 1, 255, "scrap amount"), 8);
+}
+
+function readScrap(r: Reader): ScrapPickupRule {
+  const weight = r.read(8) / 4;
+  const respawn_secs = r.read(10);
+  const amount = r.read(8);
+  return { weight, respawn_secs, amount };
+}
+
+function writeShield(b: Bits, s: ShieldInteraction): void {
+  const [kind, v] =
+    s.kind === "Blocked"
+      ? [0, 0]
+      : s.kind === "Wears"
+        ? [1, fixed(s.value, 100, 255, "shield wear")]
+        : [2, fixed(s.value, 100, 100, "shield pass-through")];
+  b.push(kind, 2);
+  b.push(v, 8);
+}
+
+function readShield(r: Reader): ShieldInteraction {
+  const kind = r.read(2);
+  const value = r.read(8) / 100;
+  if (kind === 0) return { kind: "Blocked", value: 0 };
+  if (kind === 1) return { kind: "Wears", value };
+  if (kind === 2) return { kind: "PassThrough", value };
+  fail("unknown shield interaction");
+}
+
+function writeTuning(b: Bits, t: WeaponTuning): void {
+  b.push(fixed(t.damage, 20, 255, "damage multiplier"), 8);
+  b.push(fixed(t.fire_rate, 20, 255, "fire rate multiplier"), 8);
+  b.push(fixed(t.ammo, 20, 255, "ammo multiplier"), 8);
+}
+
+function readTuning(r: Reader): WeaponTuning {
+  const damage = r.read(8) / 20;
+  const fire_rate = r.read(8) / 20;
+  const ammo = r.read(8) / 20;
+  return { damage, fire_rate, ammo };
+}
+
+// ---------------------------------------------------------------------------
+// Equality and canonical form
+
+export function eqRule(a: PickupRule | undefined, b: PickupRule | undefined): boolean {
+  if (!a || !b) return a === b;
+  return a.weight === b.weight && a.respawn_secs === b.respawn_secs && a.ammo === b.ammo && a.max_on_map === b.max_on_map;
+}
+
+function eqScrap(a: ScrapPickupRule | null, b: ScrapPickupRule | null): boolean {
+  if (!a || !b) return a === b;
+  return a.weight === b.weight && a.respawn_secs === b.respawn_secs && a.amount === b.amount;
+}
+
+function eqShield(a: ShieldInteraction | undefined, b: ShieldInteraction | undefined): boolean {
+  if (!a || !b) return a === b;
+  // Rust compares the enum: Blocked carries no value.
+  return a.kind === b.kind && (a.kind === "Blocked" || a.value === b.value);
+}
+
+function eqTuning(a: WeaponTuning | undefined, b: WeaponTuning | undefined): boolean {
+  if (!a || !b) return a === b;
+  return a.damage === b.damage && a.fire_rate === b.fire_rate && a.ammo === b.ammo;
+}
+
+function eqMode(a: ModeRules, b: ModeRules): boolean {
+  return a.kind === b.kind && a.teams === b.teams && a.match_secs === b.match_secs && a.respawn_secs === b.respawn_secs;
+}
+
+export function eqLoadout(a: Loadout, b: Loadout): boolean {
+  return (
+    a.gadget === b.gadget &&
+    a.primaries.length === b.primaries.length &&
+    a.primaries.every((p, i) => p === b.primaries[i]) &&
+    a.secondaries.length === b.secondaries.length &&
+    a.secondaries.every(([id, n], i) => id === b.secondaries[i]?.[0] && n === b.secondaries[i]?.[1])
+  );
+}
+
+function eqMap<T>(a: Record<string, T>, b: Record<string, T>, eq: (x: T | undefined, y: T | undefined) => boolean): boolean {
+  const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
+  for (const k of keys) if (!eq(a[k], b[k])) return false;
+  return true;
+}
+
+/** Deep equality of two rule sets (as Rust's `PartialEq`, maps unordered). */
+export function rulesEqual(a: RuleSetData, b: RuleSetData): boolean {
+  return (
+    a.name === b.name &&
+    eqMode(a.mode, b.mode) &&
+    eqMap(a.weapons, b.weapons, (x, y) => x === y) &&
+    eqMap(a.gadgets, b.gadgets, (x, y) => x === y) &&
+    eqLoadout(a.starting_loadout, b.starting_loadout) &&
+    eqMap(a.pickups, b.pickups, eqRule) &&
+    eqMap(a.upgrade_pickups, b.upgrade_pickups, eqRule) &&
+    eqMap(a.gadget_pickups, b.gadget_pickups, eqRule) &&
+    eqScrap(a.scrap_pickup, b.scrap_pickup) &&
+    eqMap(a.shield_overrides, b.shield_overrides, eqShield) &&
+    eqMap(a.tuning, b.tuning, eqTuning) &&
+    a.friendly_fire_percent === b.friendly_fire_percent &&
+    a.allowed_ship_types.length === b.allowed_ship_types.length &&
+    a.allowed_ship_types.every((t, i) => t === b.allowed_ship_types[i]) &&
+    a.absurdity === b.absurdity &&
+    a.mutators.length === b.mutators.length &&
+    a.mutators.every((m, i) => m === b.mutators[i])
+  );
+}
+
+/** A deep copy. */
+export function cloneRules(r: RuleSetData): RuleSetData {
+  return structuredClone(r);
+}
+
+export function availabilityOf(r: RuleSetData, id: string): Availability {
+  return r.weapons[id] ?? "Banned";
+}
+
+export function gadgetAvailabilityOf(r: RuleSetData, id: string): Availability {
+  return r.gadgets[id] ?? "Banned";
+}
+
+export function asPickup(a: Availability): boolean {
+  return a === "LoadoutAndPickup" || a === "PickupOnly";
+}
+
+export function inLoadout(a: Availability): boolean {
+  return a === "LoadoutAndPickup" || a === "LoadoutOnly";
+}
+
+/** What decoding returns: banned entries left out, ship types in index order. */
+export function canonical(r: RuleSetData, catalog: Catalog): RuleSetData {
+  const c = cloneRules(r);
+  for (const [k, a] of Object.entries(c.weapons)) if (a === "Banned") delete c.weapons[k];
+  for (const [k, a] of Object.entries(c.gadgets)) if (a === "Banned") delete c.gadgets[k];
+  c.allowed_ship_types = shipsFromMask(shipMask(r.allowed_ship_types, catalog), catalog);
+  c.mutators = mutatorsFromMask(mutatorMask(r.mutators));
+  return c;
+}
+
+function checkIds(r: RuleSetData, weapons: readonly string[], gadgets: readonly string[]): void {
+  const lo = r.starting_loadout;
+  for (const id of [
+    ...Object.keys(r.weapons),
+    ...Object.keys(r.pickups),
+    ...Object.keys(r.upgrade_pickups),
+    ...Object.keys(r.shield_overrides),
+    ...Object.keys(r.tuning),
+    ...lo.primaries,
+    ...lo.secondaries.map(([w]) => w),
+  ]) {
+    indexOf(weapons, id, "weapon");
+  }
+  for (const id of [...Object.keys(r.gadgets), ...Object.keys(r.gadget_pickups), ...(lo.gadget === null ? [] : [lo.gadget])]) {
+    indexOf(gadgets, id, "gadget");
+  }
+}
+
+function pick<T>(map: Record<string, T>, keep: (id: string) => boolean): Record<string, T> {
+  const out: Record<string, T> = {};
+  for (const [k, v] of Object.entries(map)) if (keep(k)) out[k] = v;
+  return out;
+}
+
+/** The mode default restricted to the covered weapons and gadgets (Rust `base_for`). */
+function baseFor(mode: number, weapons: readonly string[], gadgets: readonly string[], catalog: Catalog): RuleSetData {
+  if (mode !== 0) fail("unknown mode");
+  const base = cloneRules(catalog.defaults.PaintTheVoid);
+  const w = (id: string): boolean => weapons.includes(id);
+  const g = (id: string): boolean => gadgets.includes(id);
+  base.weapons = pick(base.weapons, w);
+  base.pickups = pick(base.pickups, w);
+  base.upgrade_pickups = pick(base.upgrade_pickups, w);
+  base.shield_overrides = pick(base.shield_overrides, w);
+  base.tuning = pick(base.tuning, w);
+  base.gadgets = pick(base.gadgets, g);
+  base.gadget_pickups = pick(base.gadget_pickups, g);
+  const lo = base.starting_loadout;
+  lo.primaries = lo.primaries.filter(w);
+  lo.secondaries = lo.secondaries.filter(([id]) => w(id));
+  if (lo.gadget !== null && !g(lo.gadget)) lo.gadget = null;
+  return canonical(base, catalog);
+}
+
+/** Drops pickups and loadout entries the availability no longer allows (Rust `implied_by_availability`). */
+export function impliedByAvailability(r: RuleSetData): void {
+  const wa = (id: string): Availability => availabilityOf(r, id);
+  const ga = (id: string): Availability => gadgetAvailabilityOf(r, id);
+  r.pickups = pick(r.pickups, (id) => asPickup(wa(id)));
+  r.upgrade_pickups = pick(r.upgrade_pickups, (id) => asPickup(wa(id)));
+  r.gadget_pickups = pick(r.gadget_pickups, (id) => asPickup(ga(id)));
+  const lo = r.starting_loadout;
+  lo.primaries = lo.primaries.filter((id) => inLoadout(wa(id)));
+  lo.secondaries = lo.secondaries.filter(([id]) => inLoadout(wa(id)));
+  if (lo.gadget !== null && !inLoadout(ga(lo.gadget))) lo.gadget = null;
+}
+
+// ---------------------------------------------------------------------------
+// Encoding
+
+function headerCounts(b: Bits, weapons: readonly string[], gadgets: readonly string[]): void {
+  if (weapons.length > 63 || gadgets.length > 15) fail("too many weapons or gadgets for the code format");
+  b.push(weapons.length, 6);
+  b.push(gadgets.length, 4);
+}
+
+function writeAll<T>(b: Bits, ids: readonly string[], map: Record<string, T>, write: (b: Bits, v: T, id: string) => void): void {
+  for (const id of ids) {
+    const v = map[id];
+    b.flag(v !== undefined);
+    if (v !== undefined) write(b, v, id);
+  }
+}
+
+function fullPayload(r: RuleSetData, weapons: readonly string[], gadgets: readonly string[], catalog: Catalog): Bits {
+  const b = new Bits();
+  b.push(FULL_VERSION, 4);
+  headerCounts(b, weapons, gadgets);
+  writeName(b, r.name);
+  b.push(0, 2);
+  writeMode(b, r.mode);
+  b.push(percent(r.friendly_fire_percent, "friendly fire"), 7);
+  b.push(percent(r.absurdity, "absurdity"), 7);
+  b.push(shipMask(r.allowed_ship_types, catalog), 4);
+  b.push(mutatorMask(r.mutators), 4);
+  checkIds(r, weapons, gadgets);
+  for (const w of weapons) b.push(AVAILABILITIES.indexOf(availabilityOf(r, w)), 2);
+  for (const g of gadgets) b.push(AVAILABILITIES.indexOf(gadgetAvailabilityOf(r, g)), 2);
+  writeLoadout(b, r.starting_loadout, weapons, gadgets);
+  writeAll(b, weapons, r.pickups, writeRule);
+  writeAll(b, weapons, r.upgrade_pickups, writeRule);
+  writeAll(b, gadgets, r.gadget_pickups, writeRule);
+  b.flag(r.scrap_pickup !== null);
+  if (r.scrap_pickup !== null) writeScrap(b, r.scrap_pickup);
+  writeAll(b, weapons, r.shield_overrides, writeShield);
+  writeAll(b, weapons, r.tuning, writeTuning);
+  return b;
+}
+
+function writeChanges(b: Bits, ids: readonly string[], idxBits: number, changed: (id: string) => boolean, write: (id: string) => void): void {
+  const list = ids.map((id, i) => [id, i] as const).filter(([id]) => changed(id));
+  b.flag(list.length > 0);
+  if (list.length === 0) return;
+  b.push(list.length - 1, idxBits);
+  for (const [id, i] of list) {
+    b.push(i, idxBits);
+    write(id);
+  }
+}
+
+function writeMapDiff<T>(
+  b: Bits,
+  ids: readonly string[],
+  idxBits: number,
+  map: Record<string, T>,
+  base: Record<string, T>,
+  eq: (x: T | undefined, y: T | undefined) => boolean,
+  write: (b: Bits, v: T, id: string) => void,
+): void {
+  writeChanges(
+    b,
+    ids,
+    idxBits,
+    (id) => !eq(map[id], base[id]),
+    (id) => {
+      const v = map[id];
+      b.flag(v !== undefined);
+      if (v !== undefined) write(b, v, id);
+    },
+  );
+}
+
+function fingerprint(base: RuleSetData, weapons: readonly string[], gadgets: readonly string[], catalog: Catalog): number {
+  const b = fullPayload(base, weapons, gadgets, catalog);
+  return crc16(pack(b.bits));
+}
+
+function diffPayload(rules: RuleSetData, weapons: readonly string[], gadgets: readonly string[], catalog: Catalog): Bits {
+  checkIds(rules, weapons, gadgets);
+  const r = canonical(rules, catalog);
+  let base = baseFor(0, weapons, gadgets, catalog);
+  const b = new Bits();
+  b.push(DIFF_VERSION, 4);
+  headerCounts(b, weapons, gadgets);
+  b.push(0, 2);
+  b.push(fingerprint(base, weapons, gadgets, catalog), 16);
+
+  b.flag(r.name !== base.name);
+  if (r.name !== base.name) writeName(b, r.name);
+  const modeChanged = !eqMode(r.mode, base.mode);
+  b.flag(modeChanged);
+  if (modeChanged) writeMode(b, r.mode);
+  for (const [v, bv, what] of [
+    [r.friendly_fire_percent, base.friendly_fire_percent, "friendly fire"],
+    [r.absurdity, base.absurdity, "absurdity"],
+  ] as const) {
+    b.flag(v !== bv);
+    if (v !== bv) b.push(percent(v, what), 7);
+  }
+  for (const [v, bv] of [
+    [shipMask(r.allowed_ship_types, catalog), shipMask(base.allowed_ship_types, catalog)],
+    [mutatorMask(r.mutators), mutatorMask(base.mutators)],
+  ] as const) {
+    b.flag(v !== bv);
+    if (v !== bv) b.push(v, 4);
+  }
+  const avail = (ids: readonly string[], bits: number, get: (x: RuleSetData, id: string) => Availability): void =>
+    writeChanges(
+      b,
+      ids,
+      bits,
+      (id) => get(r, id) !== get(base, id),
+      (id) => b.push(AVAILABILITIES.indexOf(get(r, id)), 2),
+    );
+  avail(weapons, WEAPON_BITS, availabilityOf);
+  avail(gadgets, GADGET_BITS, gadgetAvailabilityOf);
+  base = cloneRules(base);
+  base.weapons = { ...r.weapons };
+  base.gadgets = { ...r.gadgets };
+  impliedByAvailability(base);
+  const loChanged = !eqLoadout(r.starting_loadout, base.starting_loadout);
+  b.flag(loChanged);
+  if (loChanged) writeLoadout(b, r.starting_loadout, weapons, gadgets);
+  writeMapDiff(b, weapons, WEAPON_BITS, r.pickups, base.pickups, eqRule, writeRule);
+  writeMapDiff(b, weapons, WEAPON_BITS, r.upgrade_pickups, base.upgrade_pickups, eqRule, writeRule);
+  writeMapDiff(b, gadgets, GADGET_BITS, r.gadget_pickups, base.gadget_pickups, eqRule, writeRule);
+  const scrapChanged = !eqScrap(r.scrap_pickup, base.scrap_pickup);
+  b.flag(scrapChanged);
+  if (scrapChanged) {
+    b.flag(r.scrap_pickup !== null);
+    if (r.scrap_pickup !== null) writeScrap(b, r.scrap_pickup);
+  }
+  writeMapDiff(b, weapons, WEAPON_BITS, r.shield_overrides, base.shield_overrides, eqShield, writeShield);
+  writeMapDiff(b, weapons, WEAPON_BITS, r.tuning, base.tuning, eqTuning, writeTuning);
+  return b;
+}
+
+function finish(b: Bits): string {
+  const crc = crc16(pack(b.bits));
+  b.push(crc, 16);
+  while (b.bits.length % 5 !== 0) b.bits.push(0);
+  let out = RULE_CODE_PREFIX;
+  for (let i = 0; i * 5 < b.bits.length; i++) {
+    if (i > 0 && i % 4 === 2) out += "-";
+    let v = 0;
+    for (let j = 0; j < 5; j++) v = v * 2 + (b.bits[i * 5 + j] ?? 0);
+    out += ALPHABET[v];
+  }
+  return out;
+}
+
+function ids(catalog: Catalog): { weapons: string[]; gadgets: string[] } {
+  return { weapons: catalog.weapons.map((w) => w.id), gadgets: catalog.gadgets.map((g) => g.id) };
+}
+
+/** The short code (diff against the mode default, or the full code when shorter). Throws `RuleCodeError`. */
+export function encodeRules(r: RuleSetData, catalog: Catalog): string {
+  const { weapons, gadgets } = ids(catalog);
+  const full = fullPayload(r, weapons, gadgets, catalog);
+  const diff = diffPayload(r, weapons, gadgets, catalog);
+  return finish(diff.bits.length <= full.bits.length ? diff : full);
+}
+
+/** The full (version 2) code. Throws `RuleCodeError`. */
+export function encodeFullRules(r: RuleSetData, catalog: Catalog): string {
+  const { weapons, gadgets } = ids(catalog);
+  return finish(fullPayload(r, weapons, gadgets, catalog));
+}
+
+// ---------------------------------------------------------------------------
+// Decoding
+
+/** Normalized code text: uppercase, no dashes/whitespace, O->0 and I/L->1 after the prefix. */
+export function normalizeRuleCode(raw: string): string {
+  const s = raw.toUpperCase().replace(/[\s-]+/g, "");
+  if (!s.startsWith(RULE_CODE_PREFIX)) return s;
+  return RULE_CODE_PREFIX + s.slice(2).replace(/O/g, "0").replace(/[IL]/g, "1");
+}
+
+/** Prints a normalized code in groups of four (`LRab-cdef-...`). */
+export function formatRuleCode(raw: string): string {
+  const n = normalizeRuleCode(raw);
+  const body = n.slice(RULE_CODE_PREFIX.length);
+  let out = RULE_CODE_PREFIX;
+  for (let i = 0; i < body.length; i++) {
+    if (i >= 2 && (i - 2) % 4 === 0) out += "-";
+    out += body[i];
+  }
+  return out;
+}
+
+function symbols(code: string): number[] {
+  const n = normalizeRuleCode(code);
+  if (!n.startsWith(RULE_CODE_PREFIX)) fail("a rule set code starts with LR");
+  const bits: number[] = [];
+  for (const c of n.slice(RULE_CODE_PREFIX.length)) {
+    const v = ALPHABET.indexOf(c);
+    if (v < 0) fail(`invalid character \`${c}\``);
+    for (let i = 4; i >= 0; i--) bits.push((v >> i) & 1);
+  }
+  return bits;
+}
+
+function readAll<T>(r: Reader, ids: readonly string[], read: (r: Reader) => T): Record<string, T> {
+  const out: Record<string, T> = {};
+  for (const id of ids) if (r.flag()) out[id] = read(r);
+  return out;
+}
+
+function readChanges(r: Reader, ids: readonly string[], idxBits: number, apply: (id: string) => void): void {
+  if (!r.flag()) return;
+  const n = r.read(idxBits) + 1;
+  let last = -1;
+  for (let k = 0; k < n; k++) {
+    const i = r.read(idxBits);
+    if (i <= last || i >= ids.length) fail("corrupt code (bad index list)");
+    last = i;
+    apply(ids[i] as string);
+  }
+}
+
+function readMapDiff<T>(
+  r: Reader,
+  ids: readonly string[],
+  idxBits: number,
+  map: Record<string, T>,
+  eq: (x: T | undefined, y: T | undefined) => boolean,
+  read: (r: Reader) => T,
+): void {
+  readChanges(r, ids, idxBits, (id) => {
+    const v = r.flag() ? read(r) : undefined;
+    if (eq(v, map[id])) fail("corrupt code (an entry equals the default)");
+    if (v === undefined) delete map[id];
+    else map[id] = v;
+  });
+}
+
+function readAvailabilityDiff(r: Reader, ids: readonly string[], idxBits: number, map: Record<string, Availability>): void {
+  readChanges(r, ids, idxBits, (id) => {
+    const a = AVAILABILITIES[r.read(2)] as Availability;
+    if (a === (map[id] ?? "Banned")) fail("corrupt code (an entry equals the default)");
+    if (a === "Banned") delete map[id];
+    else map[id] = a;
+  });
+}
+
+/** A value error found while parsing; reported only if the checksum matches. */
+type Parsed = { rules: RuleSetData } | { error: string };
+
+function readFull(r: Reader, weapons: readonly string[], gadgets: readonly string[], catalog: Catalog): Parsed {
+  const name = readName(r);
+  const mode = r.read(2);
+  const m = readMode(r);
+  const friendly_fire_percent = r.read(7);
+  const absurdity = r.read(7);
+  const allowed_ship_types = shipsFromMask(r.read(4), catalog);
+  const mutators = mutatorsFromMask(r.read(4));
+  const wmap: Record<string, Availability> = {};
+  for (const w of weapons) {
+    const a = AVAILABILITIES[r.read(2)] as Availability;
+    if (a !== "Banned") wmap[w] = a;
+  }
+  const gmap: Record<string, Availability> = {};
+  for (const g of gadgets) {
+    const a = AVAILABILITIES[r.read(2)] as Availability;
+    if (a !== "Banned") gmap[g] = a;
+  }
+  const starting_loadout = readLoadout(r, weapons, gadgets);
+  const pickups = readAll(r, weapons, readRule);
+  const upgrade_pickups = readAll(r, weapons, readRule);
+  const gadget_pickups = readAll(r, gadgets, readRule);
+  const scrap_pickup = r.flag() ? readScrap(r) : null;
+  const shield_overrides = readAll(r, weapons, readShield);
+  const tuning = readAll(r, weapons, readTuning);
+  if (mode !== 0) return { error: "unknown mode" };
+  return {
+    rules: {
+      name,
+      mode: m,
+      weapons: wmap,
+      gadgets: gmap,
+      starting_loadout,
+      pickups,
+      upgrade_pickups,
+      gadget_pickups,
+      scrap_pickup,
+      shield_overrides,
+      tuning,
+      friendly_fire_percent,
+      allowed_ship_types,
+      absurdity,
+      mutators,
+    },
+  };
+}
+
+function readDiff(r: Reader, weapons: readonly string[], gadgets: readonly string[], catalog: Catalog): Parsed {
+  const mode = r.read(2);
+  const fp = r.read(16);
+  if (mode !== 0) return { error: "unknown mode" };
+  const out = baseFor(mode, weapons, gadgets, catalog);
+  const baseFp = fingerprint(out, weapons, gadgets, catalog);
+  if (r.flag()) out.name = readName(r);
+  if (r.flag()) out.mode = readMode(r);
+  if (r.flag()) out.friendly_fire_percent = r.read(7);
+  if (r.flag()) out.absurdity = r.read(7);
+  if (r.flag()) out.allowed_ship_types = shipsFromMask(r.read(4), catalog);
+  let unknownMutator = false;
+  if (r.flag()) {
+    const mask = r.read(4);
+    unknownMutator = (mask & ~1) !== 0;
+    out.mutators = mutatorsFromMask(mask);
+  }
+  readAvailabilityDiff(r, weapons, WEAPON_BITS, out.weapons);
+  readAvailabilityDiff(r, gadgets, GADGET_BITS, out.gadgets);
+  impliedByAvailability(out);
+  if (r.flag()) {
+    const lo = readLoadout(r, weapons, gadgets);
+    if (eqLoadout(lo, out.starting_loadout)) fail("corrupt code (an entry equals the default)");
+    out.starting_loadout = lo;
+  }
+  readMapDiff(r, weapons, WEAPON_BITS, out.pickups, eqRule, readRule);
+  readMapDiff(r, weapons, WEAPON_BITS, out.upgrade_pickups, eqRule, readRule);
+  readMapDiff(r, gadgets, GADGET_BITS, out.gadget_pickups, eqRule, readRule);
+  if (r.flag()) {
+    const s = r.flag() ? readScrap(r) : null;
+    if (eqScrap(s, out.scrap_pickup)) fail("corrupt code (an entry equals the default)");
+    out.scrap_pickup = s;
+  }
+  readMapDiff(r, weapons, WEAPON_BITS, out.shield_overrides, eqShield, readShield);
+  readMapDiff(r, weapons, WEAPON_BITS, out.tuning, eqTuning, readTuning);
+  if (fp !== baseFp) return { error: "code made against different default rules (another game version); ask for the full code" };
+  if (unknownMutator) return { error: "unknown mutator (code from a newer build?)" };
+  return { rules: out };
+}
+
+/** Decodes a code of either format into canonical rules. Throws `RuleCodeError`. */
+export function decodeRules(code: string, catalog: Catalog): RuleSetData {
+  const bits = symbols(code);
+  const r = new Reader(bits);
+  const version = r.read(4);
+  if (version !== FULL_VERSION && version !== DIFF_VERSION) {
+    fail(`code version ${version}, this build reads versions ${FULL_VERSION} and ${DIFF_VERSION}`);
+  }
+  const nw = r.read(6);
+  const ng = r.read(4);
+  const all = ids(catalog);
+  if (nw > all.weapons.length || ng > all.gadgets.length) {
+    fail(
+      `code from a newer build (${nw} weapons, ${ng} gadgets; this build knows ${all.weapons.length} and ${all.gadgets.length})`,
+    );
+  }
+  const weapons = all.weapons.slice(0, nw);
+  const gadgets = all.gadgets.slice(0, ng);
+  const parsed = version === FULL_VERSION ? readFull(r, weapons, gadgets, catalog) : readDiff(r, weapons, gadgets, catalog);
+  const payload = r.pos;
+  const crc = r.read(16);
+  const rest = bits.slice(r.pos);
+  if (rest.length >= 5 || rest.some((b) => b)) fail("trailing data after the checksum");
+  if (crc16(pack(bits.slice(0, payload))) !== crc) fail("checksum mismatch (typo?)");
+  if ("error" in parsed) fail(parsed.error);
+  return parsed.rules;
+}
+
+/** The format version of a code (2 full, 3 diff), or null if it has none. */
+export function codeVersion(code: string): number | null {
+  try {
+    return new Reader(symbols(code)).read(4);
+  } catch {
+    return null;
+  }
+}

@@ -6,28 +6,34 @@
 //! pristine generated terrain, so every peer computes the same setup from the
 //! same share code (see `docs/architecture/contracts.md`).
 //!
-//! 1. Random candidates in the team's spawn zone (or the whole level for
-//!    pickups) snapped to nearby open space with the preferred clearance
-//!    ([`SPAWN_CLEARANCE`], [`PICKUP_CLEARANCE`]).
-//! 2. If that finds nothing (dense levels, high Enclosure, often have no point
-//!    at all with that much clearance, because their SDF is a conservative
-//!    distance bound), points are drawn from a lattice scan of the level
-//!    ([`SCAN_STEP`]) with less clearance, down to [`MIN_CLEARANCE`]
-//!    ([`SPAWN_CLEARANCE_LEVELS`], [`PICKUP_CLEARANCE_LEVELS`]); spawn
-//!    searches widen from the zone to the team's half of the level and to a
-//!    finer lattice ([`FINE_SCAN_STEP`]). Step 1 is skipped when the scan
-//!    shows it cannot succeed, which keeps setup fast on every level.
+//! 1. A lattice scan of the level ([`SCAN_STEP`]) lists open points and
+//!    their clearance (pristine generator SDF).
+//! 2. Spawn points are drawn from the team's spawn zone, then from its half
+//!    of the level, then from a finer lattice ([`FINE_SCAN_STEP`]); pickup
+//!    points from the whole scan. Draws take the most free space first
+//!    ([`SPAWN_CLEARANCE_LEVELS`], [`PICKUP_CLEARANCE_LEVELS`]): dense levels
+//!    and high Enclosure often have little space with the preferred
+//!    clearance, because their SDF is a conservative distance bound.
+//! 3. Every spawn and pickup point must reach the level's connection network
+//!    ([`ls_worldgen::Network`], caverns and tunnels that link both team
+//!    ends) in a straight line keeping [`CONNECT_MARGIN`] of free space, so
+//!    all of them share one connected open volume: no spawn or pickup sits
+//!    in an isolated pocket. If a team finds no such point at all, it
+//!    spawns in the network caverns of its end of the level. The tunnels and
+//!    caverns themselves keep at least 3 u of clearance; the short link from
+//!    a point to them only [`CONNECT_MARGIN`] (1.5 u, less up to about 0.13 u
+//!    between trace samples), so the last stretch out of a spawn can be as
+//!    narrow as about 2.7 u across: enough for a Hauler (radius 0.65).
 //!
 //! Every slider combination gets a valid setup (see the sweep test).
 
 use ls_math::rng::mix64;
-use ls_math::terrain::TerrainQuery;
 use ls_math::{Aabb, Pcg32, Quat, Vec3};
 use ls_sim::{
     GadgetTable, GameData, MatchSetup, RuleSet, ShipTable, SpawnPoint, WeaponTable, World,
     WorldConfig,
 };
-use ls_worldgen::{Generator, ShareCode};
+use ls_worldgen::{Generator, RegionSampler, ShareCode};
 
 use crate::{GameError, GameTerrain};
 
@@ -67,12 +73,13 @@ pub const SCAN_STEP: f32 = 4.0;
 /// Lattice spacing of the second scan, when a team finds no open space on
 /// the coarse lattice (u).
 pub const FINE_SCAN_STEP: f32 = 2.0;
+/// Free space kept along the straight line from every spawn and pickup
+/// point to the connection network (u); over twice the largest ship radius.
+pub const CONNECT_MARGIN: f32 = 1.5;
+/// Nearest network centre-line points tried per spawn or pickup point.
+const LINK_TRIES: usize = 4;
 /// Distance kept between placed points and the sealing walls (u).
 const WALL_MARGIN: f32 = 4.0;
-/// Candidate draws per point before giving up on step 1.
-const ATTEMPTS_PER_POINT: usize = 64;
-/// Search radius (lattice steps) of `find_open_point` around a candidate.
-const OPEN_SEARCH_RADIUS: i32 = 6;
 
 /// Everything that defines a match: world, rules and data tables.
 #[derive(Debug, Clone)]
@@ -180,67 +187,65 @@ pub fn match_setup(
     );
     let centre = inner.center();
     let open = scan_open_space(&gen, inner, SCAN_STEP);
+    let sampler = gen.sparse_region_sampler(room);
+    let linked = |p: Vec3| linked(&gen, &sampler, p);
 
     let mut rng = Pcg32::from_seed(code.seed, RNG_STREAM_SPAWNS);
     let mut spawns = Vec::new();
     for team in 0..teams {
         let zone = spawn_zone(inner, team, teams);
         let mut placed: Vec<Vec3> = Vec::new();
-        let spaced =
-            |p: Vec3, placed: &[Vec3]| placed.iter().all(|q| q.distance(p) >= SPAWN_SPACING);
-        // Step 1, only if the scan saw room for all spawns in the zone.
-        let roomy = open
-            .iter()
-            .filter(|(p, v)| *v >= SPAWN_CLEARANCE && zone.contains(*p))
-            .count();
-        if roomy >= SPAWNS_PER_TEAM {
-            let mut attempts = 0;
-            while placed.len() < SPAWNS_PER_TEAM && attempts < SPAWNS_PER_TEAM * ATTEMPTS_PER_POINT
-            {
-                attempts += 1;
-                let Some(p) = open_candidate(&mut rng, zone, SPAWN_CLEARANCE, terrain) else {
-                    continue;
-                };
-                if spaced(p, &placed) {
-                    placed.push(p);
-                }
+        let spaced = |p: Vec3, placed: &[Vec3]| {
+            placed.iter().all(|q| q.distance(p) >= SPAWN_SPACING) && linked(p)
+        };
+        let half = team_half(inner, team, teams);
+        for area in [zone, half] {
+            let cands = on_own_side(within(&open, area), centre.x, team, teams);
+            pick(
+                &mut rng,
+                &cands,
+                &SPAWN_CLEARANCE_LEVELS,
+                SPAWNS_PER_TEAM,
+                &mut placed,
+                spaced,
+            );
+            if placed.len() >= SPAWNS_PER_TEAM {
+                break;
             }
         }
         if placed.is_empty() {
-            // Step 2 on a copy of the stream, so the next team's step 1
-            // draws do not depend on whether this team needed it.
-            let mut rng = rng.clone();
-            let half = team_half(inner, team, teams);
-            for area in [zone, half] {
-                let cands = on_own_side(within(&open, area), centre.x, team, teams);
-                pick(
-                    &mut rng,
-                    &cands,
-                    &SPAWN_CLEARANCE_LEVELS,
-                    SPAWNS_PER_TEAM,
-                    &mut placed,
-                    spaced,
-                );
-                if !placed.is_empty() {
-                    break;
-                }
-            }
-            if placed.is_empty() {
-                let cands = on_own_side(
-                    scan_open_space(&gen, half, FINE_SCAN_STEP),
-                    centre.x,
-                    team,
-                    teams,
-                );
-                pick(
-                    &mut rng,
-                    &cands,
-                    &SPAWN_CLEARANCE_LEVELS,
-                    SPAWNS_PER_TEAM,
-                    &mut placed,
-                    spaced,
-                );
-            }
+            let cands = on_own_side(
+                scan_open_space(&gen, half, FINE_SCAN_STEP),
+                centre.x,
+                team,
+                teams,
+            );
+            pick(
+                &mut rng,
+                &cands,
+                &SPAWN_CLEARANCE_LEVELS,
+                SPAWNS_PER_TEAM,
+                &mut placed,
+                spaced,
+            );
+        }
+        if placed.is_empty() {
+            // The network caverns at this team's end always qualify.
+            let net = gen.network();
+            let hubs = match (teams, team) {
+                (1, _) => net.hubs(),
+                (_, 0) => net.low_x_hubs(),
+                _ => net.high_x_hubs(),
+            };
+            let cands: Vec<(Vec3, f32)> = hubs.iter().map(|h| (*h, gen.sample(*h))).collect();
+            pick(
+                &mut rng,
+                &on_own_side(cands, centre.x, team, teams),
+                &[MIN_CLEARANCE],
+                SPAWNS_PER_TEAM,
+                &mut placed,
+                spaced,
+            );
         }
         if placed.is_empty() {
             return Err(GameError::Setup(format!("no open space for team {team}")));
@@ -261,32 +266,16 @@ pub fn match_setup(
             .iter()
             .all(|s| s.pos.distance(p) >= PICKUP_SPAWN_DISTANCE)
             && placed.iter().all(|q| q.distance(p) >= PICKUP_SPACING)
+            && linked(p)
     };
-    // Step 1, only if at least 1% of the scanned lattice has the preferred
-    // clearance (with less, random draws mostly miss and step 1 is slow).
-    let roomy = open.iter().filter(|(_, v)| *v >= PICKUP_CLEARANCE).count();
-    if roomy * 100 >= lattice_points(inner, SCAN_STEP) {
-        let mut attempts = 0;
-        while pickups.len() < PICKUP_POINTS && attempts < PICKUP_POINTS * ATTEMPTS_PER_POINT {
-            attempts += 1;
-            let Some(p) = open_candidate(&mut rng, inner, PICKUP_CLEARANCE, terrain) else {
-                continue;
-            };
-            if accept(p, &pickups) {
-                pickups.push(p);
-            }
-        }
-    }
-    if pickups.is_empty() {
-        pick(
-            &mut rng,
-            &open,
-            &PICKUP_CLEARANCE_LEVELS,
-            PICKUP_POINTS,
-            &mut pickups,
-            accept,
-        );
-    }
+    pick(
+        &mut rng,
+        &open,
+        &PICKUP_CLEARANCE_LEVELS,
+        PICKUP_POINTS,
+        &mut pickups,
+        accept,
+    );
 
     Ok(MatchSetup {
         spawns,
@@ -302,6 +291,13 @@ pub fn build_match(cfg: &MatchConfig) -> Result<(World, GameTerrain), GameError>
     let setup = match_setup(&cfg.code, &cfg.rules, &terrain)?;
     let world = World::new(cfg.world_config(setup))?;
     Ok((world, terrain))
+}
+
+/// Whether `p` reaches the connection network in a straight line keeping
+/// [`CONNECT_MARGIN`] (levels too small for a network accept every point).
+fn linked(gen: &Generator, sampler: &RegionSampler, p: Vec3) -> bool {
+    let net = gen.network();
+    net.hubs().is_empty() || net.reaches(|x| sampler.sample(x), p, CONNECT_MARGIN, LINK_TRIES)
 }
 
 /// Team `team`'s spawn zone: a slab at one end of the level along x.
@@ -335,24 +331,6 @@ fn side(inner: Aabb, team: u8, teams: u8, depth: f32) -> Aabb {
     }
 }
 
-/// Draws a random point in `zone` and snaps it to nearby open space with the
-/// given clearance, if the snapped point is still inside the zone.
-fn open_candidate(
-    rng: &mut Pcg32,
-    zone: Aabb,
-    clearance: f32,
-    terrain: &GameTerrain,
-) -> Option<Vec3> {
-    let p = Vec3::new(
-        rng.range_f32(zone.min.x, zone.max.x),
-        rng.range_f32(zone.min.y, zone.max.y),
-        rng.range_f32(zone.min.z, zone.max.z),
-    );
-    let q = terrain.find_open_point(p, clearance, OPEN_SEARCH_RADIUS)?;
-    (zone.contains(q) && terrain.sdf(q) >= clearance.min(ls_worldgen::chunk::SDF_CLAMP))
-        .then_some(q)
-}
-
 /// Lattice points (cell centres of spacing `step`) inside `area` with at
 /// least [`MIN_CLEARANCE`] of free space in the pristine level, with their
 /// clearance, in scan order (x fastest, then y, then z).
@@ -379,13 +357,6 @@ fn scan_open_space(gen: &Generator, area: Aabb, step: f32) -> Vec<(Vec3, f32)> {
         }
     }
     out
-}
-
-/// Number of lattice points [`scan_open_space`] samples in `area`.
-fn lattice_points(area: Aabb, step: f32) -> usize {
-    let size = area.size();
-    let count = |s: f32| ((s / step) as usize).max(1);
-    count(size.x) * count(size.y) * count(size.z)
 }
 
 /// The candidates inside `area`, in order.
@@ -449,7 +420,9 @@ fn facing(dir: Vec3) -> Quat {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ls_worldgen::Sliders;
+    use ls_math::terrain::TerrainQuery;
+    use ls_worldgen::network::segment_clear;
+    use ls_worldgen::{ClearanceGrid, Sliders};
     #[cfg(target_arch = "wasm32")]
     use wasm_bindgen_test::wasm_bindgen_test as test;
 
@@ -486,6 +459,20 @@ mod tests {
                     assert!(other.pos.distance(sp.pos) >= SPAWN_SPACING, "{c}");
                 }
             }
+        }
+        // Every spawn and pickup reaches the connection network.
+        let gen = t.generator();
+        for p in s
+            .spawns
+            .iter()
+            .map(|sp| sp.pos)
+            .chain(s.pickup_points.iter().copied())
+        {
+            assert!(
+                gen.network().hubs().is_empty()
+                    || gen.reaches_network(p, CONNECT_MARGIN, LINK_TRIES),
+                "{c}: {p:?} does not reach the network"
+            );
         }
         assert!(!s.pickup_points.is_empty(), "{c}: no pickup points");
         assert!(s.pickup_points.len() <= PICKUP_POINTS);
@@ -525,11 +512,17 @@ mod tests {
         assert_ne!(other.unwrap(), a);
     }
 
-    /// Regression: this code used to fail with "no open space for team 0"
-    /// (no point of the level has 3 u of clearance).
+    /// Regression: under generator version 1 this code failed with "no open
+    /// space for team 0" (no point of the level had 3 u of clearance). The
+    /// version 2 network now carves spawn caverns into every level, so this
+    /// checks that the former cramped world still hosts a match; the
+    /// clearance fallbacks for cramped levels are covered by the slider
+    /// sweep (`every_slider_combination_hosts_a_match`).
     #[test]
     fn cramped_share_code_hosts_a_match() {
-        let c = ShareCode::decode("LS04-0000-00VT-PVXV-WPA6-8001-8F6R").unwrap();
+        // The code was made by generator version 1; same seed and sliders.
+        let old = ShareCode::decode("LS04-0000-00VT-PVXV-WPA6-8001-8F6R").unwrap();
+        let c = ShareCode::new(old.seed, old.sliders);
         assert_eq!((c.sliders.enclosure, c.sliders.density), (75, 20));
         let cfg = MatchConfig::paint_the_void(c);
         let (world, terrain) = build_match(&cfg).unwrap();
@@ -565,6 +558,61 @@ mod tests {
                     assert_eq!(world.tick(), 0);
                 }
             }
+        }
+    }
+
+    /// Independent check with a flood fill over the level's clearance
+    /// lattice: every spawn and pickup has a clear straight line (keeping
+    /// [`CONNECT_MARGIN`]) to a network centre-line point that lies in the
+    /// main open volume, the flood-fill component that also holds both
+    /// teams' spawn caverns.
+    fn check_flood_fill(c: &ShareCode, t: &GameTerrain, s: &MatchSetup) {
+        let gen = t.generator();
+        let grid = ClearanceGrid::level(&gen);
+        let main = grid.main_component(&gen).expect("main component");
+        let net = gen.network();
+        for hub in net.low_x_hubs().iter().chain(net.high_x_hubs()) {
+            assert_eq!(grid.nearest_component(*hub, 2.0), Some(main), "{c}");
+        }
+        for p in s
+            .spawns
+            .iter()
+            .map(|sp| sp.pos)
+            .chain(s.pickup_points.iter().copied())
+        {
+            let ok = net.link_targets(p).into_iter().take(LINK_TRIES).any(|q| {
+                segment_clear(|x| gen.sample(x), p, q, CONNECT_MARGIN)
+                    && grid.nearest_component(q, 2.0) == Some(main)
+            });
+            assert!(ok, "{c}: {p:?} is cut off from the main volume");
+        }
+    }
+
+    #[test]
+    fn spawns_and_pickups_share_one_open_volume() {
+        // Debug builds are slow: one cavern world; release sweeps more.
+        let codes: Vec<ShareCode> = if cfg!(debug_assertions) {
+            vec![code(2024)]
+        } else {
+            let mut v = Vec::new();
+            for seed in [1u64, 2024] {
+                for e in [0u8, 25, 50, 75, 100] {
+                    for d in [0u8, 50, 100] {
+                        v.push(ShareCode::new(
+                            seed ^ ((e as u64) << 8 | d as u64),
+                            Sliders::new(e, d),
+                        ));
+                    }
+                }
+            }
+            v
+        };
+        let rules = RuleSet::paint_the_void();
+        for c in codes {
+            let t = GameTerrain::from_code(&c).unwrap();
+            let s = match_setup(&c, &rules, &t).unwrap();
+            check_setup(&c, &t, &s);
+            check_flood_fill(&c, &t, &s);
         }
     }
 

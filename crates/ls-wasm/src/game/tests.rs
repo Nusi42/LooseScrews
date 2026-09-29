@@ -198,7 +198,7 @@ fn surface_states_reach_the_mesh_flags_and_expire() {
 #[test]
 fn practice_rejects_bad_share_codes() {
     assert!(GameCore::practice("LS00-nope", 1).is_err());
-    let typo = "LS04-0000-0000-000A-K4M7-8001-8F1P";
+    let typo = "LS08-0000-0000-000A-K4M7-8001-8F1T";
     assert!(GameCore::practice(typo, 1)
         .unwrap_err()
         .contains("checksum"));

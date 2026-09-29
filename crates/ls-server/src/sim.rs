@@ -39,6 +39,7 @@ use tokio::sync::oneshot;
 use tracing::{debug, info, warn};
 
 use crate::link::SimLink;
+use crate::rules::{describe, ServerRules};
 use crate::stats::{inc, set, SharedStats};
 use crate::timing::{wait_until, TickScheduler, TickTimes, TICK_PERIOD};
 
@@ -77,6 +78,8 @@ impl std::fmt::Debug for SimCommand {
 pub struct RoomInfo {
     pub share_code: String,
     pub ruleset: String,
+    /// Rule set code of the effective rules (empty if not encodable).
+    pub rules_code: String,
 }
 
 /// Sim thread settings.
@@ -89,6 +92,9 @@ pub struct SimParams {
     /// How long a finished match stays on screen before everyone is sent
     /// off to rejoin the next one.
     pub intermission: Duration,
+    /// Rebuilds the rules before every new match (re-reading the balance
+    /// list); `None` keeps `match_cfg.rules`.
+    pub rules: Option<ServerRules>,
 }
 
 /// Why a client is removed (for the log and the counters).
@@ -171,12 +177,17 @@ pub fn spawn(
             let info = RoomInfo {
                 share_code: params.match_cfg.code.encode().unwrap_or_default(),
                 ruleset: params.match_cfg.rules.name.clone(),
+                rules_code: params.match_cfg.rules.to_code().unwrap_or_default(),
             };
             info!(
                 share_code = %info.share_code,
                 ruleset = %info.ruleset,
                 build_ms = started.elapsed().as_millis() as u64,
                 "match ready"
+            );
+            info!(
+                "rules: {}",
+                describe(&params.match_cfg.rules, &params.match_cfg.weapons)
             );
             let mut sim = Sim::new(params, room, commands, shutdown, stats);
             if ready.send(Ok(info)).is_err() {
@@ -340,6 +351,7 @@ impl Sim {
     /// Replaces a finished match with a fresh one (only while nobody plays).
     fn new_match(&mut self) {
         let started = Instant::now();
+        self.reload_rules();
         match Room::new(self.params.match_cfg.clone(), self.params.room_cfg) {
             Ok(room) => {
                 let old = self.room.stats();
@@ -363,6 +375,26 @@ impl Sim {
                 );
             }
             Err(e) => warn!(error = %e, "could not start a new match"),
+        }
+    }
+
+    /// Rebuilds the effective rules (re-reading the balance list) for the
+    /// next match; on an error the previous rules stay.
+    fn reload_rules(&mut self) {
+        let Some(rules) = &self.params.rules else {
+            return;
+        };
+        let cfg = &mut self.params.match_cfg;
+        match rules.effective(&cfg.weapons, &cfg.gadgets) {
+            Ok(r) if r == cfg.rules => {}
+            Ok(r) => {
+                cfg.rules = r;
+                info!(
+                    "rules changed (balance list): {}",
+                    describe(&cfg.rules, &cfg.weapons)
+                );
+            }
+            Err(e) => warn!(error = %e, "could not reload the rules; keeping the previous ones"),
         }
     }
 
@@ -618,6 +650,7 @@ mod tests {
             room_cfg,
             stats_interval: Duration::from_secs(10),
             intermission: Duration::from_millis(50), // 3 ticks
+            rules: None,
         };
         let room = Room::new(params.match_cfg.clone(), room_cfg).unwrap();
         let (tx, rx) = mpsc::channel();
@@ -817,6 +850,74 @@ mod tests {
         assert_eq!(st.matches, 2);
         assert_eq!(st.tick, 1);
         assert_eq!(st.total_ticks, ticks + 1);
+    }
+
+    /// The rule set in the `Welcome` of a message list.
+    fn welcome_rules(msgs: &[Message]) -> ls_sim::RuleSet {
+        let w = msgs
+            .iter()
+            .find_map(|m| match m {
+                Message::Welcome(w) => Some(w),
+                _ => None,
+            })
+            .expect("a Welcome");
+        ls_sim::RuleSet::from_ron(&w.ruleset_name, std::str::from_utf8(&w.ruleset).unwrap())
+            .unwrap()
+    }
+
+    /// Ends the match and runs the intermission until everyone is sent off.
+    fn finish_match(s: &mut Sim) {
+        s.room.world_mut().mode_mut().phase = MatchPhase::Ended { winner: None };
+        for _ in 0..4 {
+            s.tick();
+        }
+        assert!(s.clients.is_empty());
+    }
+
+    #[tokio::test]
+    async fn welcome_carries_the_effective_rules_and_the_balance_list_reloads() {
+        let list =
+            std::env::temp_dir().join(format!("ls-server-sim-balance-{}.ron", std::process::id()));
+        std::fs::write(&list, r#"(bans: ["railspike"])"#).unwrap();
+        let rules =
+            ServerRules::new(None, vec!["tectonic_charge".into()], Some(list.clone())).unwrap();
+        let (mut s, _tx) = sim(2);
+        let mc = &mut s.params.match_cfg;
+        mc.rules = rules.effective(&mc.weapons, &mc.gadgets).unwrap();
+        s.room = Room::new(s.params.match_cfg.clone(), s.params.room_cfg).unwrap();
+        s.params.rules = Some(rules);
+
+        let a = join(&mut s, 1, LinkConfig::default());
+        s.tick();
+        let r = welcome_rules(&frames(&a));
+        assert!(r.availability("railspike").is_banned(), "balance list");
+        assert!(r.availability("tectonic_charge").is_banned(), "--ban");
+        assert!(!r.availability("seeker").is_banned());
+
+        // The host edits the list: the next match plays the new rules.
+        std::fs::write(&list, r#"(bans: ["seeker"])"#).unwrap();
+        finish_match(&mut s);
+        let b = join(&mut s, 2, LinkConfig::default());
+        s.tick();
+        let r = welcome_rules(&frames(&b));
+        assert!(r.availability("seeker").is_banned());
+        assert!(!r.availability("railspike").is_banned());
+        assert!(r.availability("tectonic_charge").is_banned());
+        let seeker = s.room.match_config().weapons.find("seeker").unwrap();
+        assert!(s
+            .room
+            .world()
+            .resolved_rules()
+            .availability(seeker)
+            .is_banned());
+
+        // A broken list keeps the previous rules.
+        std::fs::write(&list, "(bans: [").unwrap();
+        finish_match(&mut s);
+        let c = join(&mut s, 3, LinkConfig::default());
+        s.tick();
+        assert_eq!(welcome_rules(&frames(&c)), r);
+        std::fs::remove_file(&list).unwrap();
     }
 
     #[test]

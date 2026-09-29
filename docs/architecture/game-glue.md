@@ -233,7 +233,11 @@ first applied input on (before that it is still setting up and has predicted not
   simulation would not hit anything at least as early, the target is displaced for this one
   step so that after its own movement it sits exactly at the rewound position. `World::step`
   then resolves the hit with its normal rules (damage, friendly fire, knockback, kill credit,
-  events) and the room moves the target back.
+  events) and the room moves the target back (`World::shift_ship`, which also corrects the
+  newest Borrowed Time trail sample). Ships the step teleported keep their new place: after a
+  Swap Harpoon swap (`CueKind::Swapped`) the two ships exchange their corrections (each now
+  stands where the other was, so it takes the other's offset), and a Borrowed Time rewind
+  (`CueKind::Rewound`) needs none (`restore_offsets` in `ls_game::server`).
 - Guards: no displacement when the target fires or scavenges this tick, when a pickup is in
   reach of the rewound position, or when its movement would differ there (terrain contact).
   Projectiles are not compensated on the tick they are fired. Splash from other explosions in

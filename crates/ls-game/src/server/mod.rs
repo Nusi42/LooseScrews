@@ -556,10 +556,8 @@ impl Room {
             }
             let list: Vec<(PlayerId, InputCmd)> = inputs.into_iter().collect();
             report.events = self.world.step(&mut self.terrain, &list);
-            for d in &report.compensated {
-                if let Some(s) = self.world.ship_mut(d.player) {
-                    s.pos -= d.offset;
-                }
+            for (player, delta) in restore_offsets(&report.compensated, &report.events) {
+                self.world.shift_ship(player, delta);
             }
             self.stats.compensated_hits += report.compensated.len() as u64;
             for e in &report.events {
@@ -888,5 +886,39 @@ fn message_name(m: &Message) -> &'static str {
     }
 }
 
+/// The moves that undo lag compensation after a step: each compensated ship
+/// goes back by its offset, except that ships teleported by the step keep
+/// their new place. A Swap Harpoon swap (`CueKind::Swapped`) exchanges the
+/// two ships' present positions, so each takes the other's correction; a
+/// Borrowed Time rewind (`CueKind::Rewound`) put the ship at a recorded
+/// position, which needs none.
+fn restore_offsets(
+    compensated: &[lagcomp::Displacement],
+    events: &[Event],
+) -> Vec<(PlayerId, Vec3)> {
+    let mut restore: BTreeMap<PlayerId, Vec3> = BTreeMap::new();
+    for d in compensated {
+        *restore.entry(d.player).or_insert(Vec3::ZERO) -= d.offset;
+    }
+    for e in events {
+        let Event::Cue(c) = e else { continue };
+        match (c.kind, c.source, c.target) {
+            (ls_sim::CueKind::Swapped, Some(a), Some(b)) => {
+                let da = restore.remove(&a).unwrap_or(Vec3::ZERO);
+                let db = restore.remove(&b).unwrap_or(Vec3::ZERO);
+                restore.insert(a, db);
+                restore.insert(b, da);
+            }
+            (ls_sim::CueKind::Rewound, _, Some(t)) => {
+                restore.insert(t, Vec3::ZERO);
+            }
+            _ => {}
+        }
+    }
+    restore
+        .into_iter()
+        .filter(|(_, d)| *d != Vec3::ZERO)
+        .collect()
+}
 #[cfg(test)]
 mod tests;

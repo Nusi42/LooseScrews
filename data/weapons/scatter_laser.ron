@@ -1,6 +1,6 @@
 // Scatter Laser: energy primary. 3 bolts in an alternating fan. Malus: damage spreads thin at
 // range. Lasting effect: fan-shaped scorch pattern.
-// Behaviour: crates/ls-sim/src/weapons/energy/scatter_laser.rs (TODO(wave-B): generic fallback until implemented).
+// Behaviour: crates/ls-sim/src/weapons/energy/scatter_laser.rs.
 // `params` are read by the weapon module (`WeaponDef::param`); numbers are tuning starting points.
 WeaponDef(
     id: "scatter_laser",
@@ -9,7 +9,8 @@ WeaponDef(
     slot: Primary,
     speed: 30.0,
     lifetime_secs: 3.0,
-    damage: 4.0,
+    // 9 per volley at point blank: 12 volleys, 3.3 s to kill a Tinker.
+    damage: 3.0,
     fire_interval_secs: 0.3,
     cost: Energy(4.5),
     projectile_radius: 0.15,
@@ -18,5 +19,15 @@ WeaponDef(
     projectiles: 3,
     spread_deg: 8.0,
     visual: (shape: Bolt, color: (255, 150, 60), scale: 0.9),
-    params: { "fan_alternate": 1.0 },
+    params: {
+        // 1: fans alternate horizontal (even shots) / vertical (odd shots); 0: always horizontal.
+        "fan_alternate": 1.0,
+        // Bolt damage and knockback fall linearly from full after `falloff_start` u of flight
+        // to `falloff_min` of it at the end of the bolt's lifetime.
+        "falloff_start": 8.0,
+        "falloff_min": 0.4,
+        // Scorch marks: hot rock for `hot_secs` within `scorch_radius` u of each bolt's hit.
+        "scorch_radius": 0.4,
+        "hot_secs": 10.0,
+    },
 )

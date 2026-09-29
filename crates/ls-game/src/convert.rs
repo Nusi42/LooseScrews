@@ -557,4 +557,194 @@ mod tests {
         let p = NetConv::player_to_net(0, &"x".repeat(40), &s);
         assert_eq!((p.ship_type, p.name.len()), (2, 32));
     }
+
+    /// Bytes per 30 Hz snapshot of a busy fight with real ship physics: 32
+    /// ships of all four types flown by `ls_sim::simulate_movement` in a
+    /// level-sized room, every pilot thrusting (a third boosting) and
+    /// turning at up to `turn` rad/s plus rolling, with inputs changing
+    /// every quarter to half second; 64 debris pieces drifting from an
+    /// explosion, 48 resting pickups and wrecks, 32 players. Every snapshot
+    /// goes through `Message` against the one `age` ticks older and is
+    /// checked against the simulation within the quantization bounds.
+    /// Returns (mean total, worst total, mean ship section) in bytes.
+    fn busy_fight_bytes(seed: u64, turn: f32, age: u32) -> (f64, usize, f64) {
+        use ls_math::terrain::BoxRoomTerrain;
+        use ls_math::Pcg32;
+        use ls_net::{Message, NetEntity, PackedSnapshot, Snapshot, SnapshotHistory, SnapshotMsg};
+        use ls_sim::simulate_movement;
+
+        let level = Aabb::new(Vec3::ZERO, Vec3::new(256.0, 128.0, 256.0));
+        let room = BoxRoomTerrain::new(level);
+        let c = conv();
+        let q = *c.quantizer();
+        let mut rng = Pcg32::new(seed, 0);
+        let mut ships: Vec<(ShipState, InputCmd, u32)> = (0..32u16)
+            .map(|i| {
+                let ty = ShipType::ALL[i as usize % 4];
+                let pos = Vec3::new(
+                    rng.range_f32(20.0, 236.0),
+                    rng.range_f32(20.0, 108.0),
+                    rng.range_f32(20.0, 236.0),
+                );
+                let axis = Vec3::new(
+                    rng.range_f32(-1.0, 1.0),
+                    rng.range_f32(-1.0, 1.0),
+                    rng.range_f32(0.1, 1.0),
+                )
+                .normalize();
+                let rot = Quat::from_axis_angle(axis, rng.range_f32(-3.0, 3.0));
+                let s = ShipState::new(PlayerId(i), (i % 2) as u8, ty, c.tuning_for(ty), pos, rot);
+                (s, InputCmd::idle(0), 0)
+            })
+            .collect();
+        let players: Vec<_> = ships
+            .iter()
+            .map(|(s, _, _)| NetConv::player_to_net(s.player.0 as u8, "pilot", s))
+            .collect();
+        let centre = Vec3::new(128.0, 64.0, 128.0);
+        let mut debris: Vec<(NetEntity, Vec3)> = (0..64u16)
+            .map(|i| {
+                let dir = Vec3::new(
+                    rng.range_f32(-1.0, 1.0),
+                    rng.range_f32(-1.0, 1.0),
+                    rng.range_f32(-1.0, 1.0),
+                )
+                .normalize_or_zero();
+                let e = NetEntity {
+                    id: 100 + i * 3,
+                    kind: 0,
+                    visual: 0,
+                    owner: NO_SHIP,
+                    team: NO_SHIP,
+                    pos: centre + dir * rng.range_f32(1.0, 8.0),
+                    vel: Vec3::ZERO,
+                    rot: Quat::IDENTITY,
+                    state: [3, 0, 8, 0],
+                };
+                (e, dir * rng.range_f32(0.5, 6.0))
+            })
+            .collect();
+        let resting: Vec<NetEntity> = (0..48u16)
+            .map(|i| NetEntity {
+                id: 400 + i,
+                kind: if i < 40 { 1 } else { 5 },
+                visual: 12 + i % 20,
+                owner: NO_SHIP,
+                team: NO_SHIP,
+                pos: Vec3::new(5.0 * i as f32, 30.0, 200.0),
+                vel: Vec3::ZERO,
+                rot: Quat::IDENTITY,
+                state: [i as u8 % 27, 10, 0, 0],
+            })
+            .collect();
+        let msg = |snapshot: PackedSnapshot, base: u32| {
+            Message::Snapshot(Box::new(SnapshotMsg {
+                baseline: Some(base),
+                snapshot,
+            }))
+        };
+        let mut history = SnapshotHistory::default();
+        let (mut total, mut worst, mut ship_total, mut n) = (0usize, 0usize, 0usize, 0usize);
+        for tick in 1..=240u32 {
+            for (s, input, hold) in &mut ships {
+                if *hold == 0 {
+                    *hold = 15 + rng.below(16);
+                    *input = InputCmd {
+                        tick: tick as u64,
+                        thrust: Vec3::new(
+                            rng.range_f32(-1.0, 1.0),
+                            rng.range_f32(-1.0, 1.0),
+                            rng.range_f32(-1.0, -0.3),
+                        ),
+                        look_pitch: rng.range_f32(-turn, turn) / 60.0,
+                        look_yaw: rng.range_f32(-turn, turn) / 60.0,
+                        roll: rng.range_f32(-1.0, 1.0),
+                        buttons: if rng.chance(0.33) {
+                            Buttons::BOOST
+                        } else {
+                            Buttons::NONE
+                        },
+                        weapon_select: 0,
+                    };
+                }
+                *hold -= 1;
+                let t = c.tuning_for(s.ship_type).clone();
+                simulate_movement(s, input, &t, &room);
+            }
+            for (e, v) in &mut debris {
+                e.pos += *v * (1.0 / 60.0);
+            }
+            if tick % 2 != 0 {
+                continue;
+            }
+            let net: Vec<_> = ships
+                .iter()
+                .map(|(s, _, _)| c.ship_to_net(s.player.0 as u8, s, false))
+                .collect();
+            let mut entities: Vec<NetEntity> = debris.iter().map(|(e, _)| *e).collect();
+            entities.extend(resting.iter().copied());
+            let snap = q.pack_snapshot(&Snapshot {
+                tick,
+                ack_input: tick,
+                ships: net.clone(),
+                entities,
+                players: players.clone(),
+                scores: vec![31_000, 29_500],
+                match_ticks_left: 9_000,
+                ..Default::default()
+            });
+            if let Some(base) = history.get(tick.wrapping_sub(age)) {
+                let bytes = msg(snap.clone(), base.tick).encode_with(&history).unwrap();
+                let Message::Snapshot(back) = Message::decode_with(&bytes, &history).unwrap()
+                else {
+                    panic!("not a snapshot");
+                };
+                assert_eq!(back.snapshot, snap);
+                // Quantization bounds hold through the delta encoding.
+                let half_pos = q.position_step() * 0.5 + Vec3::splat(1e-4);
+                for (orig, got) in net.iter().zip(&back.snapshot.ships) {
+                    let got = q.unpack_ship(got);
+                    let e = (got.pos - orig.pos).abs();
+                    assert!(e.x <= half_pos.x && e.y <= half_pos.y && e.z <= half_pos.z);
+                    let ev = (got.vel - orig.vel).abs().max_element();
+                    assert!(ev <= q.ship_velocity_step() * 0.5 + 1e-5);
+                    assert!(rotation_error(got.rot, orig.rot) < 0.3f32.to_radians());
+                }
+                // The ship section: the same pair of snapshots without ships.
+                let mut no_ships = SnapshotHistory::default();
+                let mut b = base.clone();
+                b.ships.clear();
+                no_ships.push(b);
+                let mut s = snap.clone();
+                s.ships.clear();
+                let rest = msg(s, base.tick).encode_with(&no_ships).unwrap().len();
+                total += bytes.len();
+                worst = worst.max(bytes.len());
+                ship_total += bytes.len() - rest;
+                n += 1;
+            }
+            history.push(snap);
+        }
+        let n = n as f64;
+        (total as f64 / n, worst, ship_total as f64 / n)
+    }
+
+    /// Bandwidth with real ship physics: a busy fight (32 thrusting,
+    /// turning ships, 64 drifting debris, 48 resting items) stays within
+    /// the 17 KB/s budget at 30 Hz (576 B per snapshot) for baselines up to
+    /// 6 ticks (100 ms) old. Protocol 2 needed about 515 B for the busy
+    /// ships alone at age 2.
+    #[test]
+    fn busy_fight_fits_the_bandwidth_budget() {
+        // The documented budget: 32 ships x 18 B x 30 Hz = 17,280 B/s.
+        const PER_SNAPSHOT: usize = 17_280 / 30;
+        for (age, turn) in [(2, 4.0), (4, 4.0), (6, 4.0), (2, 9.0)] {
+            let (mean, worst, ships) = busy_fight_bytes(90 + age as u64, turn, age);
+            println!(
+                "busy fight, turning up to {turn} rad/s, baseline {age} ticks old: mean {mean:.0} B, worst {worst} B ({} B/s), ships {ships:.0} B",
+                worst * 30
+            );
+            assert!(worst <= PER_SNAPSHOT, "age {age}, turn {turn}: {worst} B");
+        }
+    }
 }

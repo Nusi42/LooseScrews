@@ -867,7 +867,7 @@ mod tests {
 
     #[test]
     fn share_code_info_mirrors_the_check() {
-        let ok = super::check_share_code("LS04-0000-0000-000A-K4M6-8001-8F1P");
+        let ok = super::check_share_code("LS08-0000-0000-000A-K4M6-8001-8F1T");
         assert!(ok.ok);
         assert_eq!(ok.seed, "42");
         assert_eq!(ok.sliders.len(), 7);

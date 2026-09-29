@@ -1,7 +1,10 @@
 // Flash Pod: ordnance secondary. Blinds pilots within 15 u for 2 s. Malus: no damage. Lasting
 // effect: surfaces glow for 30 s, lighting dark caverns and anyone inside.
-// Behaviour: crates/ls-sim/src/weapons/ordnance/flash_pod.rs (TODO(wave-B): generic fallback until implemented).
-// `params` are read by the weapon module (`WeaponDef::param`); numbers are tuning starting points.
+// Behaviour: crates/ls-sim/src/weapons/ordnance/flash_pod.rs (implemented).
+// `params` are read by the weapon module (`WeaponDef::param`): the burst (on a wall, ship,
+// debris or at the end of its lifetime) blinds every pilot within `blind_radius` u that can see
+// it (`blind_needs_sight`: 1 = terrain blocks the flash), shooter and teammates included, for
+// `blind_secs`; surfaces within `glow_radius` u glow for `glow_secs`. No damage, no knockback.
 WeaponDef(
     id: "flash_pod",
     name: "Flash Pod",
@@ -16,5 +19,5 @@ WeaponDef(
     shield: Blocked,
     max_ammo: 5,
     visual: (shape: Grenade, color: (255, 255, 200), scale: 1.0),
-    params: { "blind_radius": 15.0, "blind_secs": 2.0, "glow_secs": 30.0, "glow_radius": 8.0 },
+    params: { "blind_radius": 15.0, "blind_secs": 2.0, "blind_needs_sight": 1.0, "glow_secs": 30.0, "glow_radius": 8.0 },
 )

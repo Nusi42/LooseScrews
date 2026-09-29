@@ -9,7 +9,6 @@ use std::time::Duration;
 
 use ls_game::server::{Room, RoomConfig};
 use ls_game::MatchConfig;
-use ls_sim::{RuleSet, WeaponTable};
 use ls_worldgen::{ShareCode, Sliders};
 use thiserror::Error;
 use tokio::sync::{oneshot, watch};
@@ -18,6 +17,7 @@ use tracing::info;
 
 use crate::endpoint::{CertHash, ConnSettings, Endpoint, EndpointContext, Hub};
 use crate::http::HttpEndpoint;
+use crate::rules::ServerRules;
 use crate::sim::{self, RoomInfo, SimCommand, SimParams};
 use crate::stats::{SharedStats, StatsSnapshot};
 use crate::wt::WebTransportEndpoint;
@@ -55,6 +55,10 @@ pub struct ServerConfig {
     /// How long a finished match stays on screen before players are sent
     /// off to rejoin the next one (see [`crate::sim`]).
     pub intermission: Duration,
+    /// Where the rules come from. When set, the effective rules (rule set,
+    /// balance list, bans) are rebuilt before every new match, re-reading
+    /// the balance list; `None` keeps `match_cfg.rules` for every match.
+    pub rules: Option<ServerRules>,
 }
 
 impl ServerConfig {
@@ -71,33 +75,38 @@ impl ServerConfig {
             conn: ConnSettings::default(),
             stats_interval: Duration::from_secs(10),
             intermission: sim::DEFAULT_INTERMISSION,
+            rules: None,
         }
     }
 }
 
 /// Builds the match configuration from CLI-style inputs: a share code (a
-/// fresh random world if `None`) and a rule set file (the built-in Paint the
-/// Void rules if `None`). Weapons and ship tuning are the built-in tables,
-/// which the clients use too. The rule set is validated against them.
+/// fresh random world if `None`) and a rule set file or `LR` code (the
+/// built-in Paint the Void rules if `None`). Weapons and ship tuning are the
+/// built-in tables, which the clients use too. The rule set is validated
+/// against them.
 pub fn match_config(
     code: Option<&str>,
     ruleset: Option<&Path>,
+) -> Result<MatchConfig, ServerError> {
+    let ruleset = ruleset.map(|p| p.to_string_lossy().into_owned());
+    let rules = ServerRules::new(ruleset.as_deref(), Vec::new(), None)?;
+    match_config_with(code, &rules)
+}
+
+/// [`match_config`] with the effective rules of `rules` (rule set, balance
+/// list and bans).
+pub fn match_config_with(
+    code: Option<&str>,
+    rules: &ServerRules,
 ) -> Result<MatchConfig, ServerError> {
     let code = match code {
         Some(text) => ShareCode::decode(text)?,
         None => ShareCode::new(random_seed(), Sliders::default()),
     };
-    let rules = match ruleset {
-        Some(path) => RuleSet::load(path)?,
-        None => RuleSet::paint_the_void(),
-    };
-    let weapons = WeaponTable::builtin();
-    rules.resolve(&weapons)?;
-    Ok(MatchConfig {
-        rules,
-        weapons,
-        ..MatchConfig::paint_the_void(code)
-    })
+    let mut cfg = MatchConfig::paint_the_void(code);
+    cfg.rules = rules.effective(&cfg.weapons, &cfg.gadgets)?;
+    Ok(cfg)
 }
 
 /// A seed for a random world (wall clock and process id; not deterministic
@@ -134,6 +143,7 @@ impl Server {
             room_cfg: config.room,
             stats_interval: config.stats_interval,
             intermission: config.intermission,
+            rules: config.rules.clone(),
         };
         let sim_thread = sim::spawn(params, cmd_rx, sim_stop.clone(), stats.clone(), ready_tx)?;
         let room = match ready_rx.await {
@@ -170,6 +180,7 @@ impl Server {
             addr = %local_addr,
             share_code = %handle.room.share_code,
             ruleset = %handle.room.ruleset,
+            rules_code = %handle.room.rules_code,
             max_players = config.room.max_players,
             "listening (http + websocket at /ws)"
         );
@@ -212,6 +223,14 @@ impl ServerHandle {
 
     pub fn ruleset_name(&self) -> &str {
         &self.room.ruleset
+    }
+
+    /// Rule set code of the first match's effective rules (empty if the
+    /// rules cannot be encoded as a code). It is not updated when a changed
+    /// balance list alters the rules of a later match; the log line at each
+    /// match start shows the current code.
+    pub fn rules_code(&self) -> &str {
+        &self.room.rules_code
     }
 
     /// Current counters.

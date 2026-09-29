@@ -1,8 +1,13 @@
 // Magnet Sneeze: special secondary. Cone pulls loose debris and enemies toward you; great for
 // scavenging. Malus: also pulls in mines thrown at you. Lasting effect: rips loose chunks off
 // weak walls.
-// Behaviour: crates/ls-sim/src/weapons/specials/magnet_sneeze.rs (TODO(wave-B): generic fallback until implemented).
-// `params` are read by the weapon module (`WeaponDef::param`); numbers are tuning starting points.
+// Behaviour: crates/ls-sim/src/weapons/specials/magnet_sneeze.rs (implemented). Acts at once
+// on everything in a `cone_half_deg` cone within `range` u (line of sight): debris gets
+// `pull_speed`, enemy ships `ship_pull_speed`, everyone else's projectiles and mines
+// `projectile_pull_speed` (u/s towards you), pickups and scrap piles jump `pickup_pull` u towards
+// you; weak rock hit by one of `chunk_rays` rays loses a
+// `chunk_radius` chunk (crater + debris with `chunk_scrap` scrap), at most `max_chunks`.
+// `speed`/`lifetime_secs` shape the harmless sneeze blob. Numbers are tuning starting points.
 WeaponDef(
     id: "magnet_sneeze",
     name: "Magnet Sneeze",
@@ -17,5 +22,18 @@ WeaponDef(
     shield: Blocked,
     max_ammo: 5,
     visual: (shape: Blob, color: (150, 150, 255), scale: 1.0),
-    params: { "cone_deg": 45.0, "range": 20.0, "pull_speed": 15.0, "chunk_radius": 0.6 },
+    params: {
+        "cone_half_deg": 30.0,
+        "range": 20.0,
+        "pull_speed": 15.0,
+        "ship_pull_speed": 10.0,
+        "projectile_pull_speed": 12.0,
+        // Pickups and scrap piles jump `pickup_pull` u towards you, stopping `pickup_stop` u short.
+        "pickup_pull": 10.0,
+        "pickup_stop": 1.5,
+        "chunk_radius": 0.6,
+        "chunk_rays": 5.0,
+        "max_chunks": 3.0,
+        "chunk_scrap": 2.0,
+    },
 )

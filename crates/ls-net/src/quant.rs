@@ -34,6 +34,10 @@ const VEL_MAX: f32 = 32767.0;
 /// Largest value of a 10-bit smallest-three component; 511 is zero.
 const ROT_MAX: f32 = 511.0;
 const SQRT_2: f32 = core::f32::consts::SQRT_2;
+/// Simulation ticks per second (the unit of snapshot ticks).
+pub const TICKS_PER_SECOND: f64 = 60.0;
+/// Fixed-point shift of [`Quantizer::ship_motion_scale`].
+pub const MOTION_SCALE_SHIFT: u32 = 20;
 const INV_SQRT_2: f32 = core::f32::consts::FRAC_1_SQRT_2;
 
 /// Quantization ranges shared by server and clients. The server sends its
@@ -126,6 +130,28 @@ impl Quantizer {
     #[inline]
     pub fn ship_velocity_step(&self) -> f32 {
         self.config.max_ship_speed / VEL_MAX
+    }
+
+    /// Per-axis ship motion scale used by delta snapshots to predict a
+    /// ship's packed position from its packed velocity: how many position
+    /// steps one velocity step moves in one tick, as a fixed-point number
+    /// with [`MOTION_SCALE_SHIFT`] fraction bits. The server sends it in the
+    /// snapshot, so the client never recomputes it (no float agreement is
+    /// needed); prediction only shrinks residuals, it never changes values.
+    pub fn ship_motion_scale(&self) -> [u32; 3] {
+        let vel_step = self.config.max_ship_speed as f64 / VEL_MAX as f64;
+        let one = (1u64 << MOTION_SCALE_SHIFT) as f64;
+        let size = self.config.bounds.max - self.config.bounds.min;
+        let k = |extent: f32| {
+            let pos_step = extent as f64 / POS_MAX as f64;
+            let v = (vel_step / TICKS_PER_SECOND / pos_step * one).round();
+            if v.is_finite() {
+                v.clamp(0.0, u32::MAX as f64) as u32
+            } else {
+                0
+            }
+        };
+        [k(size.x), k(size.y), k(size.z)]
     }
 
     /// Size of one projectile velocity step.

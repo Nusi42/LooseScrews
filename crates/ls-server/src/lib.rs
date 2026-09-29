@@ -14,6 +14,8 @@
 //!   `GET /cert-hash` and upgrades `/ws` to a WebSocket ([`ws`]);
 //!   [`wt::WebTransportEndpoint`] accepts WebTransport sessions on a UDP port
 //!   (datagrams for unreliable packets, a framed stream for reliable ones).
+//! - [`rules`]: match rules from the command line (rule set file or code,
+//!   bans, a balance list re-read before every match).
 //! - [`server`]: [`ServerConfig`], [`Server::start`] and [`ServerHandle`]
 //!   (graceful shutdown, stats, room inspection).
 //!
@@ -22,6 +24,7 @@
 pub mod endpoint;
 pub mod http;
 pub mod link;
+pub mod rules;
 pub mod server;
 pub mod sim;
 pub mod stats;
@@ -30,7 +33,10 @@ pub mod ws;
 pub mod wt;
 
 pub use endpoint::{CertHashInfo, ConnSettings, Endpoint, EndpointContext, Hub};
-pub use server::{match_config, Server, ServerConfig, ServerError, ServerHandle};
+pub use rules::{load_rule_set, ServerRules};
+pub use server::{
+    match_config, match_config_with, Server, ServerConfig, ServerError, ServerHandle,
+};
 pub use stats::StatsSnapshot;
 
 /// Default bind address for the game server.

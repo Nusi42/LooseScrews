@@ -1,0 +1,19 @@
+// Bolt Rocket: dumbfire ordnance secondary, limited count.
+// Design doc: "Dumbfire, 40 u/s. Malus: small blast. Lasting effect: 2 u crater" (diameter -> radius 1.0).
+WeaponDef(
+    id: "bolt_rocket",
+    name: "Bolt Rocket",
+    family: Ordnance,
+    slot: Secondary,
+    speed: 40.0,
+    lifetime_secs: 4.0,
+    damage: 35.0,
+    fire_interval_secs: 0.75,
+    cost: Count(1),
+    projectile_radius: 0.2,
+    splash: Some((radius: 2.5, damage: 20.0, hits_owner: true)),
+    knockback: 8.0,
+    terrain: (crater_radius: 1.0, paint_radius: 0.0),
+    shield: WearsDown,
+    max_ammo: 10,
+)

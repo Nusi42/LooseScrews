@@ -1,0 +1,21 @@
+[package]
+name = "ls-math"
+description = "Deterministic math for Loose Screws: vectors, quaternions, ticks, libm wrappers, RNG, shared terrain contracts"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+libm.workspace = true
+serde.workspace = true
+
+[dev-dependencies]
+ron.workspace = true
+
+# Lets the same unit tests run on wasm32 under Node:
+#   CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=wasm-bindgen-test-runner \
+#   cargo test -p ls-math --target wasm32-unknown-unknown
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test.workspace = true

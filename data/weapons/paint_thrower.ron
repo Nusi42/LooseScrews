@@ -1,0 +1,18 @@
+// Paint Thrower: special. Deals no damage; paints terrain in the shooter's team color
+// (the core tool of Paint the Void). Surface effects of paint colors come in a later milestone.
+WeaponDef(
+    id: "paint_thrower",
+    name: "Paint Thrower",
+    family: Special,
+    slot: Primary,
+    speed: 20.0,
+    lifetime_secs: 1.5,
+    damage: 0.0,
+    fire_interval_secs: 0.1,
+    cost: Energy(1.5),
+    projectile_radius: 0.3,
+    splash: None,
+    knockback: 0.0,
+    terrain: (crater_radius: 0.0, paint_radius: 2.0),
+    shield: Blocked,
+)

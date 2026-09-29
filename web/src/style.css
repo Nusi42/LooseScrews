@@ -1,0 +1,385 @@
+:root {
+  --bg: #0b0d12;
+  --panel: rgba(8, 10, 16, 0.62);
+  --text: #e6e8ee;
+  --muted: #9aa1b2;
+  --accent: #ffb347;
+  --hull: #e8e2d4;
+  --hull-low: #ff5a4a;
+  --energy: #58c7ff;
+  --boost: #ffd54a;
+  --team-0: #ff6b1a;
+  --team-1: #2698ff;
+  --error: #ff8a80;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  overflow: hidden;
+}
+
+#game {
+  display: block;
+  width: 100vw;
+  height: 100vh;
+  cursor: crosshair;
+}
+
+#ui {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+}
+
+.hidden {
+  display: none !important;
+}
+
+/* ---- Full-screen screens (start, error) ---- */
+
+.screen {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  box-sizing: border-box;
+  background: radial-gradient(ellipse at center, rgba(20, 24, 36, 0.92), rgba(5, 6, 10, 0.97));
+  pointer-events: auto;
+}
+
+.start-card,
+.error-card {
+  width: min(460px, 100%);
+  padding: 28px;
+  border-radius: 12px;
+  background: rgba(16, 19, 28, 0.9);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+  box-sizing: border-box;
+}
+
+.start-card h1,
+.error-card h1 {
+  margin: 0 0 4px;
+  font-size: 32px;
+  letter-spacing: 0.02em;
+}
+
+.tagline {
+  margin: 0 0 20px;
+  color: var(--muted);
+}
+
+.field {
+  display: block;
+}
+
+.field span {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 13px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.field input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  background: rgba(0, 0, 0, 0.35);
+  color: var(--text);
+  font: 16px ui-monospace, "Cascadia Mono", Consolas, monospace;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.field input::placeholder {
+  text-transform: none;
+  letter-spacing: normal;
+  color: #6b7285;
+}
+
+.field input:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.field input.invalid {
+  border-color: var(--error);
+}
+
+.field-error {
+  min-height: 1.2em;
+  margin: 6px 0 10px;
+  color: var(--error);
+  font-size: 14px;
+}
+
+.check {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 18px;
+  font-size: 14px;
+}
+
+button {
+  font: inherit;
+  cursor: pointer;
+}
+
+.play,
+.error-card button {
+  width: 100%;
+  padding: 12px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--accent);
+  color: #1a1206;
+  font-weight: 700;
+  font-size: 18px;
+}
+
+.play:hover,
+.error-card button:hover {
+  filter: brightness(1.08);
+}
+
+.controls-hint {
+  margin: 16px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.error-detail {
+  color: var(--error);
+}
+
+/* ---- HUD ---- */
+
+.hud {
+  position: absolute;
+  inset: 0;
+  font-variant-numeric: tabular-nums;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
+}
+
+.hud-crosshair {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 18px;
+  height: 18px;
+  margin: -9px 0 0 -9px;
+  border: 2px solid rgba(255, 255, 255, 0.7);
+  border-radius: 50%;
+  box-sizing: border-box;
+}
+
+.hud-crosshair::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 2px;
+  height: 2px;
+  margin: -1px 0 0 -1px;
+  background: #fff;
+}
+
+.hud-top {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+
+.hud-timer {
+  font-size: 26px;
+  font-weight: 700;
+}
+
+.hud-paint {
+  display: flex;
+  gap: 14px;
+}
+
+.hud-paint-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+}
+
+.hud-paint-bar {
+  width: 90px;
+  height: 8px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.12);
+  overflow: hidden;
+}
+
+.hud-paint-fill {
+  height: 100%;
+  width: 0;
+}
+
+.team-0 .hud-paint-fill {
+  background: var(--team-0);
+}
+
+.team-1 .hud-paint-fill {
+  background: var(--team-1);
+}
+
+.hud-panel {
+  position: absolute;
+  bottom: 16px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+.hud-left {
+  left: 16px;
+  display: grid;
+  gap: 6px;
+  min-width: 220px;
+}
+
+.hud-right {
+  right: 16px;
+  text-align: right;
+  min-width: 140px;
+}
+
+.hud-meter {
+  display: grid;
+  grid-template-columns: 56px 1fr 36px;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.hud-meter-name {
+  color: var(--muted);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.hud-meter-bar {
+  height: 8px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.12);
+  overflow: hidden;
+}
+
+.hud-meter-fill {
+  height: 100%;
+  width: 100%;
+  transition: width 80ms linear;
+}
+
+.hull .hud-meter-fill {
+  background: var(--hull);
+}
+
+.hull .hud-meter-bar.low .hud-meter-fill {
+  background: var(--hull-low);
+}
+
+.energy .hud-meter-fill {
+  background: var(--energy);
+}
+
+.boost .hud-meter-fill {
+  background: var(--boost);
+}
+
+.hud-meter-value {
+  text-align: right;
+}
+
+.hud-weapon {
+  font-weight: 700;
+  font-size: 16px;
+}
+
+.hud-ammo {
+  font-size: 22px;
+  margin-bottom: 4px;
+}
+
+.hud-scrap {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  align-items: baseline;
+}
+
+.hud-flags {
+  position: absolute;
+  bottom: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 10px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.hud-flag.scavenge {
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.hud-debug {
+  position: absolute;
+  top: 8px;
+  left: 12px;
+  font: 12px ui-monospace, Consolas, monospace;
+  color: var(--muted);
+}
+
+.hud-prompt {
+  position: absolute;
+  top: 58%;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 8px 14px;
+  border-radius: 8px;
+  background: var(--panel);
+  font-size: 15px;
+}
+
+@media (max-width: 640px) {
+  .hud-left {
+    min-width: 0;
+    left: 8px;
+    bottom: 8px;
+  }
+  .hud-right {
+    right: 8px;
+    bottom: 8px;
+    min-width: 0;
+  }
+  .hud-flags {
+    display: none;
+  }
+}

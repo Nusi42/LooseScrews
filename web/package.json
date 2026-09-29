@@ -1,0 +1,19 @@
+{
+  "name": "loose-screws-web",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "npm run typecheck && vite build",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.test.json",
+    "test": "node --test \"src/**/*.test.ts\"",
+    "preview": "vite preview"
+  },
+  "devDependencies": {
+    "@types/node": "26.6.3",
+    "@webgpu/types": "0.1.74",
+    "typescript": "7.0.2",
+    "vite": "8.3.1"
+  }
+}

@@ -1,0 +1,18 @@
+// Rivet Gun: kinetic primary. Fires scrap, 6x laser speed, high rate of fire, light damage.
+// Design doc: "180 u/s, high rate of fire, light damage. Malus: burns through scrap fast."
+WeaponDef(
+    id: "rivet_gun",
+    name: "Rivet Gun",
+    family: Kinetic,
+    slot: Primary,
+    speed: 180.0,
+    lifetime_secs: 1.0,
+    damage: 3.0,
+    fire_interval_secs: 0.08,
+    cost: Scrap(1.0),
+    projectile_radius: 0.05,
+    splash: None,
+    knockback: 0.3,
+    terrain: (crater_radius: 0.0, paint_radius: 0.0),
+    shield: PassThrough(0.5),
+)

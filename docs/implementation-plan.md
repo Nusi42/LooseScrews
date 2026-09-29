@@ -1,6 +1,6 @@
 # Loose Screws — Implementation Plan
 
-Status: Milestone 1 (vertical slice) in progress · Source design: [design/game-design-doc.md](design/game-design-doc.md)
+Status: Milestone 1 (vertical slice) in progress — waves 1 and 2 done · Source design: [design/game-design-doc.md](design/game-design-doc.md)
 
 Milestone 1 proves the three riskiest parts of the design before anything else is built:
 
@@ -17,7 +17,7 @@ Everything else in the design (full arsenal, ship types, comedy director, other 
 | Ship | One ship type (Tinker): hull, energy, boost, scrap, overdrive gamble, per-axis thrust cap, horizon assist | Skitter, Hauler, Tug; gadgets |
 | Weapons | Scrap Laser (energy), Rivet Gun (kinetic, fires scrap), Bolt Rocket (ordnance, craters), Paint Thrower (special, needed for Paint the Void) | Rest of arsenal, Tectonic Charge, specials |
 | World | Seeded SDF generator with Enclosure and Density active (other five sliders encoded but inert), 32³ chunks, surface-nets mesher then dual contouring, sphere-subtract terrain edits, paint layer | Gravity wells, palette, instability collapses, debris physics |
-| Share codes | seed + all 7 sliders + generator version + checksum, Crockford base32, ≤ 26 chars | Rule set codes |
+| Share codes | seed + all 7 sliders + generator version + checksum: 26 Crockford base32 symbols, printed as `LSxx-xxxx-…` (34 chars) | Rule set codes |
 | Match rules | Data-driven weapon definitions and one rule set format (availability, loadout, pickups, friendly fire), loaded from `data/` | Rule set editor UI, live balance list |
 | Mode | Paint the Void, 2 teams, up to 8 players, one server process | All other modes |
 | Networking | Authoritative server, 60 Hz tick, 30 Hz snapshots, quantized ship state (~18 B), input commands, prediction + reconciliation, 100 ms interpolation, lag-compensated hits; WebSocket transport first, WebTransport second | WebRTC fallback, Tauri UDP, lobby service, regions |
@@ -80,7 +80,7 @@ userDocs/               Player-facing manuals and hosting guides
 
 ### 4.2 ls-worldgen
 - `Sliders { enclosure, density, verticality, gravity_chaos, palette, absurdity, instability }` as `u8` 0–100.
-- `ShareCode`: encode/decode seed (u64) + 7 sliders (7 bits each) + generator version (u8) + 8-bit checksum → Crockford base32, grouped with dashes and prefixed `LS`, at most 26 characters. Round-trip and corruption tests.
+- `ShareCode`: encode/decode seed (u64) + 7 sliders (7 bits each) + generator version (u8) + 8-bit checksum → 26 Crockford base32 symbols (130 bits including 1 pad bit), printed with an `LS` prefix and dashes (34 characters). Input ignores case, dashes and spaces. Round-trip and corruption tests.
 - `Generator::sample(p) -> f32` SDF: Enclosure blends open sky (sparse floating islands) → caverns → dense mine shafts; Density adds pillars and floating rocks. Level bounds are a finite box (default 256 × 128 × 256 u), sealed at the edges.
 - `ChunkStore`: 32³ cells per chunk, lazily generated, edit log applied on top; `apply(TerrainEdit)` returns dirty chunk coordinates.
 - Meshers: `surface_nets(chunk) -> Mesh` (positions, normals, indices, per-vertex paint team) and `dual_contouring(chunk)`; both seam-free across chunk borders.
@@ -104,7 +104,7 @@ userDocs/               Player-facing manuals and hosting guides
 - Quantized ship state ≤ 18 B: position 3 × 16 bit within level bounds, smallest-three quaternion in 32 bits, velocity 3 × 16 bit, flags 16 bit.
 - Snapshot delta against the last acked snapshot.
 - `Transport` trait with send-unreliable, send-reliable, recv; implementations live in `ls-server` and the web client.
-- **Done when:** round-trip property tests, a size test proving the 18 B budget, and a bandwidth estimate test for 32 ships at 30 Hz ≤ 17 KB/s before delta compression.
+- **Done when:** round-trip property tests, a size test proving the 18 B budget, and a bandwidth estimate test: 32 ships x 18 B x 30 Hz of ship data ≤ 17 KiB/s, whole snapshot including header ≤ 18 KiB/s, before delta compression.
 
 ### 4.5 ls-server
 - CLI: `ls-server --bind 0.0.0.0:7777 --code <share code> --ruleset data/rulesets/paint_the_void.ron --max-players 8`.
@@ -145,7 +145,7 @@ Work runs as orchestrated waves of parallel work packages. Packages in the same 
 
 - `cargo test --workspace` for all Rust crates; `cargo clippy --workspace -- -D warnings`.
 - `cargo build -p ls-wasm --target wasm32-unknown-unknown --release` + `wasm-bindgen` + Node script comparing golden hashes with native.
-- `npm run build` and `npm run typecheck` in `web/`.
+- `npm run typecheck`, `npm test` and `npm run build` in `web/`.
 - Replay tests: recorded input streams must produce identical state hashes.
 - Soak test: server + 7 bots for 10 minutes, checks tick time and desync counters.
 - `tools/ci.ps1` and `tools/ci.sh` run all of the above in order.

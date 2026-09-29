@@ -1,0 +1,30 @@
+// Default rule set for Paint the Void (M1): two teams, 5 minute match.
+// Weapons not listed under `weapons` are Banned.
+RuleSet(
+    name: "Paint the Void",
+    mode: PaintTheVoid((
+        teams: 2,
+        match_secs: 300.0,
+        respawn_secs: 3.0,
+    )),
+    weapons: {
+        "scrap_laser": LoadoutAndPickup,
+        "rivet_gun": PickupOnly,
+        "bolt_rocket": LoadoutAndPickup,
+        "paint_thrower": LoadoutOnly,
+    },
+    starting_loadout: (
+        primaries: ["scrap_laser", "paint_thrower"],
+        secondaries: [("bolt_rocket", 3)],
+        gadget: None,
+    ),
+    pickups: {
+        "scrap_laser": (weight: 1.0, respawn_secs: 30.0),
+        "rivet_gun": (weight: 2.0, respawn_secs: 20.0),
+        "bolt_rocket": (weight: 2.0, respawn_secs: 20.0, ammo: 3),
+    },
+    scrap_pickup: Some((weight: 3.0, respawn_secs: 15.0, amount: 30.0)),
+    friendly_fire_percent: 50,
+    allowed_ship_types: [Tinker],
+    absurdity: 20,
+)

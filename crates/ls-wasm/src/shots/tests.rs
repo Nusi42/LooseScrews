@@ -508,3 +508,386 @@ fn weapons_seen_on_own_projectiles_become_selectable() {
     assert_eq!(p.on_tick(k, &ship, &pick_rivet, t.fire(), &terrain), 1);
     assert_eq!(p.pending().last().unwrap().weapon, rivet);
 }
+
+/// Fires `weapon` (given to the ship) for `ticks` ticks with the predictor
+/// fed the exact world ship state; returns the predictor, the world and
+/// the fired projectile ids per tick. `reconcile` confirms every tick.
+fn run_weapon(
+    t: &Tables,
+    weapon: &str,
+    ticks: u64,
+    buttons: impl Fn(u64) -> u16,
+    reconcile: bool,
+) -> (ShotPredictor, World, Vec<(u64, Vec<u32>)>) {
+    let (mut w, me) = world();
+    let mut terrain = room();
+    w.give_weapon(me, weapon).unwrap();
+    let id = t.id(weapon);
+    let mut p = ShotPredictor::new(&t.rules);
+    p.carry([id]);
+    let mut fired_log = Vec::new();
+    for i in 0..ticks {
+        let c = InputCmd {
+            tick: w.tick() + 1,
+            ..cmd(buttons(i), id.0 + 1)
+        };
+        let before = w.ship(me).unwrap().clone();
+        // Plenty of energy for the predictor (the world regenerates it).
+        let mut res = resources(&before, t.id("bolt_rocket"));
+        res.energy = res.energy.max(1000.0);
+        p.on_snapshot_state(w.tick(), before.primary, res);
+        let events = w.step(&mut terrain, &[(me, c)]);
+        let tick = w.tick();
+        let fired: Vec<u32> = events
+            .iter()
+            .filter_map(|e| match e {
+                Event::Fired { projectile, .. } => Some(*projectile),
+                _ => None,
+            })
+            .collect();
+        let ship = w.ship(me).unwrap().clone();
+        let n = p.on_tick(tick, &ship, &c, t.fire(), &terrain);
+        // The Scrap Shotgun's random cone is drawn as its centre pellet only.
+        let expect = if weapon == "scrap_shotgun" {
+            fired.len().min(1)
+        } else {
+            fired.len()
+        };
+        assert_eq!(
+            n, expect,
+            "{weapon} tick {tick}: predicted {n}, fired {fired:?}"
+        );
+        if reconcile {
+            let own: Vec<NetProjectile> = w.projectiles().iter().map(net).collect();
+            p.reconcile_in(tick, &own, &terrain);
+        }
+        fired_log.push((tick, fired));
+    }
+    (p, w, fired_log)
+}
+
+/// The prediction nearest to `pos` at tick `t`.
+fn nearest(p: &ShotPredictor, pos: Vec3, t: f64) -> PredictedShot {
+    *p.pending()
+        .iter()
+        .filter(|s| s.index != u8::MAX)
+        .min_by(|a, b| {
+            a.pos_at(t)
+                .distance(pos)
+                .total_cmp(&b.pos_at(t).distance(pos))
+        })
+        .expect("a prediction")
+}
+
+/// Every projectile of the world has a prediction at the same position
+/// (within `tol`) at the world's tick.
+fn assert_predictions_match(p: &ShotPredictor, w: &World, tol: f32) {
+    let t = w.tick() as f64;
+    for real in w.projectiles() {
+        let best = nearest(p, real.pos, t);
+        assert_eq!(best.weapon, real.weapon);
+        let d = best.pos_at(t).distance(real.pos);
+        assert!(
+            d < tol,
+            "{:?} at {:?}: nearest prediction {d}",
+            real.weapon,
+            real.pos
+        );
+    }
+}
+
+#[test]
+fn scatter_laser_fans_alternate_like_the_simulation() {
+    let t = Tables::new();
+    // Three volleys: horizontal, vertical, horizontal.
+    let interval = t.weapons.get(t.id("scatter_laser")).fire_interval_ticks();
+    let (p, w, log) = run_weapon(
+        &t,
+        "scatter_laser",
+        2 * interval + 1,
+        |_| Buttons::FIRE_PRIMARY.0,
+        false,
+    );
+    let volleys: Vec<&(u64, Vec<u32>)> = log.iter().filter(|(_, f)| !f.is_empty()).collect();
+    assert_eq!(volleys.len(), 3);
+    assert!(volleys.iter().all(|(_, f)| f.len() == 3));
+    assert_predictions_match(&p, &w, 1e-3);
+    // Directions match too.
+    let now = w.tick() as f64;
+    for real in w.projectiles() {
+        assert!(nearest(&p, real.pos, now).vel.distance(real.vel) < 1e-3);
+    }
+    // The second fan is vertical: its bolts differ along the ship's up axis.
+    let second: Vec<_> = p.pending().iter().filter(|s| s.phase == 1).collect();
+    assert_eq!(second.len(), 3);
+    let up = w.ships().next().unwrap().orientation.up();
+    let spread_up = second
+        .iter()
+        .map(|s| s.vel.dot(up).abs())
+        .fold(0.0f32, f32::max);
+    assert!(spread_up > 1.0, "vertical fan: {spread_up}");
+    assert_eq!(p.shot_count(t.id("scatter_laser")), 3);
+}
+
+#[test]
+fn corkscrew_bolts_follow_the_spinning_helix() {
+    let t = Tables::new();
+    let interval = t.weapons.get(t.id("corkscrew")).fire_interval_ticks();
+    // Two volleys (the second rotated per shot), then 40 ticks of flight.
+    let (p, w, log) = run_weapon(
+        &t,
+        "corkscrew",
+        interval + 41,
+        |i| {
+            if i <= interval {
+                Buttons::FIRE_PRIMARY.0
+            } else {
+                0
+            }
+        },
+        false,
+    );
+    let fired: usize = log.iter().map(|(_, f)| f.len()).sum();
+    assert_eq!(fired, 10);
+    assert_eq!(w.projectiles().len(), 10, "all in flight in the big room");
+    assert_predictions_match(&p, &w, 1e-2);
+    // Velocities of helix bolts turn with the spin (the sim's velocity is
+    // the last tick's chord).
+    let now = w.tick() as f64;
+    for real in w.projectiles() {
+        let pred = nearest(&p, real.pos, now);
+        assert!(
+            pred.vel_at(now).distance(real.vel) < 0.05,
+            "{:?} vs {:?}",
+            pred.vel_at(now),
+            real.vel
+        );
+    }
+}
+
+#[test]
+fn fans_and_helices_are_confirmed_by_snapshots() {
+    let t = Tables::new();
+    for weapon in ["scatter_laser", "corkscrew", "scrap_shotgun"] {
+        let (p, _, log) = run_weapon(&t, weapon, 90, |_| Buttons::FIRE_PRIMARY.0, true);
+        let fired: usize = if weapon == "scrap_shotgun" {
+            log.iter().filter(|(_, f)| !f.is_empty()).count()
+        } else {
+            log.iter().map(|(_, f)| f.len()).sum()
+        };
+        let s = p.stats();
+        assert!(fired > 0, "{weapon}");
+        assert_eq!(s.predicted as usize, fired, "{weapon}");
+        if weapon != "scrap_shotgun" {
+            assert_eq!(
+                (s.confirmed, s.unpredicted, s.dropped),
+                (s.predicted, 0, 0),
+                "{weapon}"
+            );
+        } else {
+            // The shotgun's cone is random (seeded on the server): only the
+            // centre pellet is drawn; a pellet near it may still match.
+            assert!(s.dropped <= s.predicted, "{weapon}: {s:?}");
+        }
+    }
+}
+
+#[test]
+fn leech_arc_draws_no_bolt_but_still_spends_energy() {
+    let t = Tables::new();
+    let (p, w, log) = run_weapon(&t, "leech_arc", 30, |_| Buttons::FIRE_PRIMARY.0, false);
+    assert!(log.iter().all(|(_, f)| f.is_empty()), "the arc is instant");
+    assert!(w.projectiles().is_empty());
+    assert_eq!(p.stats().predicted, 0);
+    assert!(
+        p.pending().iter().all(|s| !s.visible_at(w.tick() as f64)),
+        "nothing drawn"
+    );
+    // The arcs' energy is still counted against later shots.
+    let spent: f32 = p.pending().iter().map(|s| s.cost).sum();
+    assert!(spent > 0.0);
+}
+
+#[test]
+fn charge_weapons_fire_on_release_and_polite_laser_by_itself() {
+    let t = Tables::new();
+    let fusion = t.weapons.get(t.id("fusion_charger"));
+    let full = ls_sim::WeaponDef::charge_ticks(fusion.charge.unwrap().max_secs);
+    // Hold for 60 ticks, release: exactly one shot, on the release tick.
+    let (p, w, log) = run_weapon(
+        &t,
+        "fusion_charger",
+        70,
+        |i| {
+            if i < 60 {
+                Buttons::FIRE_PRIMARY.0
+            } else {
+                0
+            }
+        },
+        false,
+    );
+    let shots: Vec<u64> = log
+        .iter()
+        .filter(|(_, f)| !f.is_empty())
+        .map(|(k, _)| *k)
+        .collect();
+    assert_eq!(shots.len(), 1, "{log:?}");
+    assert_predictions_match(&p, &w, 1e-3);
+    let s = p.pending().iter().find(|s| s.index != u8::MAX).unwrap();
+    assert!((s.charge - 60.0 / full as f32).abs() < 0.02, "{}", s.charge);
+    assert!(p.charge().is_none(), "released");
+
+    // While held, the charge is mirrored for the meter.
+    let (p, _, _) = run_weapon(&t, "fusion_charger", 30, |_| Buttons::FIRE_PRIMARY.0, false);
+    let c = p.charge().expect("charging");
+    assert_eq!(c.weapon, t.id("fusion_charger"));
+    assert_eq!(c.full_ticks, full);
+
+    // The Polite Laser fires by itself at full charge (1.5 s) while held.
+    let (p, w, log) = run_weapon(&t, "polite_laser", 100, |_| Buttons::FIRE_PRIMARY.0, false);
+    let shots: Vec<u64> = log
+        .iter()
+        .filter(|(_, f)| !f.is_empty())
+        .map(|(k, _)| *k)
+        .collect();
+    assert_eq!(shots.len(), 1, "{log:?}");
+    assert_predictions_match(&p, &w, 1e-3);
+    // Released early: nothing (min_secs is the full 1.5 s).
+    let (p, w, _) = run_weapon(
+        &t,
+        "polite_laser",
+        60,
+        |i| {
+            if i < 30 {
+                Buttons::FIRE_PRIMARY.0
+            } else {
+                0
+            }
+        },
+        false,
+    );
+    assert!(w.projectiles().is_empty());
+    assert_eq!(p.stats().predicted, 0);
+}
+
+#[test]
+fn wrong_fan_phase_is_corrected_from_a_snapshot() {
+    let t = Tables::new();
+    let scatter = t.id("scatter_laser");
+    let (mut w, me) = world();
+    let mut terrain = room();
+    w.give_weapon(me, "scatter_laser").unwrap();
+    // The server's scatter laser already fired once: its next fan is vertical.
+    w.ship_mut(me).unwrap().weapon_mut(scatter).unwrap().shots = 1;
+    let mut p = ShotPredictor::new(&t.rules);
+    p.carry([scatter]);
+    let interval = t.weapons.get(scatter).fire_interval_ticks();
+    let mut fired_ticks = Vec::new();
+    for i in 0..(interval + 1) {
+        let c = InputCmd {
+            tick: w.tick() + 1,
+            ..cmd(Buttons::FIRE_PRIMARY.0, scatter.0 + 1)
+        };
+        let before = w.ship(me).unwrap().clone();
+        let mut res = resources(&before, t.id("bolt_rocket"));
+        res.energy = 1000.0;
+        p.on_snapshot_state(w.tick(), before.primary, res);
+        w.step(&mut terrain, &[(me, c)]);
+        let tick = w.tick();
+        let ship = w.ship(me).unwrap().clone();
+        if p.on_tick(tick, &ship, &c, t.fire(), &terrain) > 0 {
+            fired_ticks.push(tick);
+        }
+        // One snapshot, right after the first volley went out.
+        if i == 0 {
+            let own: Vec<NetProjectile> = w.projectiles().iter().map(net).collect();
+            p.reconcile_in(tick, &own, &terrain);
+        }
+    }
+    assert_eq!(fired_ticks.len(), 2);
+    let s = p.stats();
+    assert!(s.rephased >= 1, "{s:?}");
+    assert_eq!(s.confirmed, 3, "{s:?}");
+    // The counter follows the server: the second volley is horizontal
+    // (server shot 2) and matches the world.
+    assert_eq!(p.shot_count(scatter), 3);
+    let last = *fired_ticks.last().unwrap();
+    let now = w.tick() as f64;
+    let second: Vec<_> = w
+        .projectiles()
+        .iter()
+        .filter(|x| x.spawn_tick == last)
+        .collect();
+    assert_eq!(second.len(), 3);
+    for real in second {
+        let d = nearest(&p, real.pos, now).pos_at(now).distance(real.pos);
+        assert!(d < 1e-3, "{d}");
+    }
+}
+
+#[test]
+fn offline_weapons_and_guided_eyeball_stop_predictions() {
+    let t = Tables::new();
+    let terrain = room();
+    let ship = alive_ship(&t);
+    let res = Resources {
+        hull: 100.0,
+        energy: 1000.0,
+        scrap: 100.0,
+        count: 3,
+    };
+    let both = cmd(Buttons::FIRE_PRIMARY.0 | Buttons::FIRE_SECONDARY.0, 0);
+
+    // Borrowed Time: nothing fires before the weapons are back.
+    let mut p = ShotPredictor::new(&t.rules);
+    p.on_snapshot_state(0, Some(t.id("scrap_laser")), res);
+    p.set_offline_until(10);
+    assert_eq!(p.on_tick(5, &ship, &both, t.fire(), &terrain), 0);
+    assert_eq!(p.on_tick(10, &ship, &both, t.fire(), &terrain), 2);
+
+    // Guiding an Eyeball: the primary fires, the secondary does not.
+    let mut p = ShotPredictor::new(&t.rules);
+    p.on_snapshot_state(0, Some(t.id("scrap_laser")), res);
+    p.set_guiding(true);
+    assert_eq!(p.on_tick(1, &ship, &both, t.fire(), &terrain), 1);
+    assert!(p.pending().iter().all(|s| s.weapon == t.id("scrap_laser")));
+    p.set_guiding(false);
+    assert_eq!(
+        p.on_tick(
+            2,
+            &ship,
+            &cmd(Buttons::FIRE_SECONDARY.0, 0),
+            t.fire(),
+            &terrain
+        ),
+        1
+    );
+}
+
+#[test]
+fn borrowed_time_takes_the_weapons_offline_as_it_fires() {
+    let t = Tables::new();
+    let terrain = room();
+    let ship = alive_ship(&t);
+    let bt = t.id("borrowed_time");
+    let laser = t.id("scrap_laser");
+    let res = Resources {
+        hull: 100.0,
+        energy: 100.0,
+        scrap: 100.0,
+        count: 3,
+    };
+    let mut p = ShotPredictor::new(&t.rules);
+    p.carry([bt]);
+    p.on_snapshot_state(0, Some(laser), res);
+    // The rewind is not drawn, but it is paid.
+    let rewind = cmd(Buttons::FIRE_SECONDARY.0, bt.0 + 1);
+    assert_eq!(p.on_tick(1, &ship, &rewind, t.fire(), &terrain), 0);
+    // Without waiting a round trip for the Rewound cue, no laser shot is
+    // predicted while the weapons are offline; afterwards it is.
+    let offline = ls_math::Tick::ticks_for_secs(t.weapons.get(bt).param("offline_secs", 3.0));
+    let fire = cmd(Buttons::FIRE_PRIMARY.0, laser.0 + 1);
+    assert_eq!(p.on_tick(30, &ship, &fire, t.fire(), &terrain), 0);
+    assert_eq!(p.on_tick(2 + offline, &ship, &fire, t.fire(), &terrain), 1);
+}

@@ -16,7 +16,9 @@
 use std::collections::BTreeMap;
 
 use ls_math::rng::mix64;
-use ls_math::terrain::{material_crater_scale, RayHit, SurfaceStates, TerrainEdit, TerrainQuery};
+use ls_math::terrain::{
+    material_crater_scale, RayHit, SurfaceStates, TerrainEdit, TerrainQuery, PAINT_PLAIN,
+};
 use ls_math::{Pcg32, Vec3};
 use serde::{Deserialize, Serialize};
 
@@ -89,13 +91,16 @@ pub enum CueKind {
     Rewound = 8,
     /// Muzzle flash that reveals the shooter (Railspike).
     MuzzleFlash = 9,
-    /// A gadget was switched on (`value` = gadget id) or off (`value` = 255).
+    /// A gadget was switched on, off or used; `value` per [`gadget_cue`].
     Gadget = 10,
     /// Decoy snapped back to its owner.
     DecoyReturn = 11,
     /// An overheld charge started burning `source`'s hull (`value` = hull
     /// per second; Fusion Charger).
     Overcharge = 12,
+    /// `source` switched its Paint Thrower colour (`value` =
+    /// `ls_math::terrain::PAINT_*`: 1 red, 2 blue, 3 yellow).
+    PaintColor = 13,
     /// Free for modules; `value` is module-defined.
     Custom = 255,
 }
@@ -117,8 +122,26 @@ impl CueKind {
             10 => Gadget,
             11 => DecoyReturn,
             12 => Overcharge,
+            13 => PaintColor,
             _ => Custom,
         }
+    }
+}
+
+/// `value`s of a [`CueKind::Gadget`] cue.
+pub mod gadget_cue {
+    /// Values below this are "switched on" with the gadget id.
+    pub const ON_MAX: u16 = 253;
+    /// A toggle gadget ran out of energy and switched off (no cooldown).
+    pub const EMPTY: u16 = 254;
+    /// A toggle gadget was switched off by its key (the cooldown starts).
+    pub const OFF: u16 = 255;
+    /// `USED | gadget id`: an instant gadget was used (the cooldown starts).
+    pub const USED: u16 = 0x100;
+
+    /// Whether a cue with this value starts the gadget's cooldown.
+    pub fn starts_cooldown(value: u16) -> bool {
+        value == OFF || value & USED != 0
     }
 }
 
@@ -218,6 +241,14 @@ pub enum Command {
         target: PlayerId,
         delta: f32,
         can_kill: bool,
+    },
+    /// Sets the module-owned state of a weapon the ship carries
+    /// (`ShipState::weapon_state`; 0 removes it): Paint Thrower colour,
+    /// Leech Arc lock. Ignored if the ship does not carry the weapon.
+    SetWeaponState {
+        ship: PlayerId,
+        weapon: WeaponId,
+        value: u32,
     },
     /// Emits an event as is (impacts, cues).
     Emit(Event),
@@ -414,8 +445,8 @@ impl<'a> Ctx<'a> {
         None
     }
 
-    /// Surface states (hot, charged, glow) active within `radius` of
-    /// `center` now (none on terrains without surface states).
+    /// Surface states (hot, charged, glow active now, and scorch) within
+    /// `radius` of `center` (none on terrains without surface states).
     pub fn surface_states_near(&self, center: Vec3, radius: f32) -> SurfaceStates {
         self.view
             .layers
@@ -540,15 +571,49 @@ impl<'a> Ctx<'a> {
         }
     }
 
-    /// Paints in a simulation team's colour.
+    /// Paints in a simulation team's colour, plain (no surface effect).
     pub fn paint(&mut self, center: Vec3, radius: f32, team: u8) {
+        self.paint_color(center, radius, team, PAINT_PLAIN);
+    }
+
+    /// Paints in a simulation team's colour with an effect colour
+    /// (`ls_math::terrain::PAINT_*`: red bouncy, blue slippery, yellow
+    /// sticky; Paint Thrower).
+    pub fn paint_color(&mut self, center: Vec3, radius: f32, team: u8, color: u8) {
         if radius > 0.0 {
             self.edit(TerrainEdit::Paint {
                 center,
                 radius,
                 team: paint_team_id(team),
+                color,
             });
         }
+    }
+
+    /// Scorches the surface within `radius` of `center` for good
+    /// ([`SurfaceStates::SCORCH`]), hot for `hot_secs` as well (0: no heat).
+    /// Skips the edit when the spot is already scorched (sustained fire on
+    /// one spot does not flood the edit log). Scorch trails and marks use
+    /// this instead of long-lived `HOT` edits.
+    pub fn scorch(&mut self, center: Vec3, radius: f32, hot_secs: f32) {
+        if radius <= 0.0
+            || self
+                .surface_states_near(center, radius * 0.5)
+                .contains(SurfaceStates::SCORCH)
+        {
+            return;
+        }
+        let hot = ls_math::Tick::ticks_for_secs(hot_secs.max(0.0)).min(u32::MAX as u64) as u32;
+        self.edit(TerrainEdit::scorch(center, radius, self.view.now, hot));
+    }
+
+    /// See [`Command::SetWeaponState`].
+    pub fn set_weapon_state(&mut self, ship: PlayerId, weapon: WeaponId, value: u32) {
+        self.push(Command::SetWeaponState {
+            ship,
+            weapon,
+            value,
+        });
     }
 
     /// A channel of craters from `a` to `b`, one every `spacing` u (at most 64).

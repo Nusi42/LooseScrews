@@ -12,7 +12,7 @@ them, and what to do when you change generator or simulation output on purpose.
 | --- | --- | --- |
 | `ls-math` | yes | Geometry, `det`, RNGs, terrain contracts |
 | `ls-worldgen` | yes | SDF, chunk store, edits, paint, surface states, material field, meshers |
-| `ls-sim` | yes | `World::step`, `simulate_movement`, weapons, rule sets |
+| `ls-sim` | yes | `World::step`, `simulate_movement` (incl. paint effects), every weapon and gadget module, entities and debris, rule sets and rule set codes |
 | `ls-net` | encoding only | Integer bit packing; clients quantize inputs exactly as the server decodes them |
 | `ls-game` | by construction | Pure logic on top of the above, no clocks or threads; match setup reads only the pristine level |
 | `ls-server`, `ls-bots`, `ls-wasm`, `web/` | no | Hosts: wall-clock time, sockets, threads; `ls-server` seeds random worlds from the clock on purpose |
@@ -42,7 +42,19 @@ the simulation):
 - **Edits on the wire** carry raw `f32` bits, not quantized values, so every peer applies the
   exact same CSG.
 - **Data:** gameplay numbers come from `data/*.ron`, embedded at compile time, so the server,
-  bots and browser build with the same values.
+  bots and browser build with the same values; the handshake's [data hash](#data-hash-and-behaviour-version)
+  refuses a client built from other files.
+- **Weapon and gadget modules** (`crates/ls-sim/src/weapons/`, `gadgets/`) follow the same
+  rules and add three of their own: randomness only from `ctx.rng(key)` (a private PCG32
+  stream per key and tick, keyed by the match seed; usually the projectile id as key, see
+  `RNG_STREAM_MODULES` in [contracts.md](contracts.md#determinism)); no state outside the
+  world (module structs are unit structs; per-projectile, per-entity and per-ship-weapon state
+  lives in the hashed fields `Projectile::vars`, `Entity::vars` / `state`,
+  `ShipState::weapon_state`); and changes only through queued commands, which the world
+  applies in a fixed order ([hook order](arsenal-framework.md#hook-order-per-tick)).
+- **Registries are append-only:** `weapons::registry::MODULES` and `gadgets::MODULES` order is
+  part of the rule set code format, so codes decode the same on every build that knows the
+  weapon.
 
 Reviewers check these rules; the tests below catch what slips through.
 
@@ -91,17 +103,47 @@ cargo test -p ls-sim replay_golden_hash
 ```
 
 When a behaviour change re-blesses `REPLAY_GOLDEN_HASH` without a `data/` change, also bump
-`ls_sim::SIM_BEHAVIOR_VERSION` (`crates/ls-sim/src/data.rs`): it is mixed into the data hash
-that `Hello` carries, so a cached client with older behaviour code is rejected instead of
-desyncing silently.
+`ls_sim::SIM_BEHAVIOR_VERSION` (see [below](#data-hash-and-behaviour-version)).
+
+The scripted match must keep exercising the systems: `replay_same_inputs_same_state_hash`
+asserts that it fires, damages, craters, kills, respawns, uses gadgets, takes pickups and
+switches paint colours. Its weapon selections are drawn from the weapon table's length, so
+adding a weapon changes the match; if a system drops out, adjust `scripted_inputs` or the
+seed, then re-bless.
 
 Sibling tests prove the replay is repeatable, that a cloned world continues identically, and
 that one changed input diverges the hash from that tick on.
 
+### Other pinned values
+
+| Constant or fixture | Test | Changes when |
+| --- | --- | --- |
+| `material_field_hash_is_pinned` constant | `cargo test -p ls-worldgen --lib material` | the rock material field changes |
+| `web/src/rules/catalog.ts` (generated) | `rulecode::tests::web_catalog_is_current` | weapon or gadget ids, names, slots, costs, levels, the registries or the default rule set change: `LS_BLESS_RULES_CATALOG=1 cargo test -p ls-sim --lib rulecode` |
+| Rule set codes quoted in docs and examples (the default is `LR6V-69CM-G006-58R`; the catalog holds the current one) | `rulecode::tests::web_catalog_is_current` | the code format, the default rule set, or the registries change: a new weapon or gadget changes every code, the default included (codes made by older builds still decode) |
+
+### Data hash and behaviour version
+
+`ls_sim::data_hash()` hashes every embedded `data/` file by path and content (weapons,
+gadgets, ships, the built-in rule sets) plus `ls_sim::SIM_BEHAVIOR_VERSION` (currently 4).
+`Hello` carries it and the server rejects a different hash with `DataMismatch`, so a browser
+that cached an old build, or a bot built from other data, is refused with a clear message
+instead of predicting with other numbers. Consequences:
+
+- Any data edit (even a comment) changes the hash: rebuild the server, the bots and the web
+  client together (`cargo build --release -p ls-server -p ls-bots`, `cd web && npm run build`).
+- A behaviour change without a data change must bump `SIM_BEHAVIOR_VERSION`
+  (`crates/ls-sim/src/data.rs`) in the same change as the new `REPLAY_GOLDEN_HASH`; the
+  version is what tells old and new builds apart.
+- A rule set is not part of the hash when it comes from a file or code at run time: the
+  server sends its RON text in the `Welcome` and both sides resolve it against the same
+  tables.
+
 ### Between peers at run time
 
-`GameTerrain::state_hash()` (`ls-game`: edit log hash, SDF on a 4 u lattice, paint cells and
-stored surface state expiry ticks around every edit) needs no full generation and is the terrain desync check. The `ls-game`
+`GameTerrain::state_hash()` (`ls-game`: edit count and lasting edits, SDF on a 4 u lattice,
+painted and scorched cells; `state_hash_at(tick)` adds the timed surface states running at
+`tick`) needs no full generation and is the terrain desync check. The `ls-game`
 netplay tests and the `ls-bots` room test assert that every client's hash equals the server's;
 the browser exposes it as `Game.terrainHash()` for debugging. Bots also count a prediction snap
 without a respawn, or a terrain edit gap, as a desync (exit code 1).
@@ -126,10 +168,21 @@ without a respawn, or a terrain edit gap, as a desync (exit code 1).
 4. Update share codes that are hard-coded elsewhere (the e2e default code in `tools/e2e.mjs`,
    tests, docs) since their version field changes.
 
-**Simulation behaviour, tuning or `data/` changed:** run the replay test, copy the printed hash
-(`replay hash 0x...`) into `REPLAY_GOLDEN_HASH` in `crates/ls-sim/src/tests.rs`, and say so in
-the commit. Any number in `data/weapons`, `data/rulesets/paint_the_void.ron` or
-`data/ships/tinker.ron` changes it.
+**Simulation behaviour, tuning or `data/` changed:** run the replay test
+(`cargo test -p ls-sim replay_golden_hash`), copy the printed hash (`replay hash 0x...`) into
+`REPLAY_GOLDEN_HASH` in `crates/ls-sim/src/tests.rs`, and say so in the commit. Any number in
+`data/weapons`, `data/gadgets`, `data/ships` or `data/rulesets/paint_the_void.ron` changes it,
+and so does a new weapon or gadget (ids shift). Without a data change, also bump
+`SIM_BEHAVIOR_VERSION`. Then run the wasm32 unit tests (below) to prove the new hash holds on
+wasm32 too.
+
+| Change | Re-bless |
+| --- | --- |
+| Generator, SDF, mesher, edit application | `GENERATOR_VERSION`, worldgen golden fixture, hard-coded share codes |
+| Rock material field | `material_field_hash_is_pinned` |
+| Sim behaviour without data change | `REPLAY_GOLDEN_HASH` and `SIM_BEHAVIOR_VERSION` |
+| Data file (numbers, new weapon or gadget) | `REPLAY_GOLDEN_HASH`; the web catalog if names, slots, costs, levels, registries or the default rule set changed |
+| Wire format | `ls_net::PROTOCOL_VERSION` (not a hash, but the same idea: old clients are refused) |
 
 Never re-bless to make an unexplained mismatch go away: first find out why the output changed.
 

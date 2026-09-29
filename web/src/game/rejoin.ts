@@ -11,6 +11,8 @@ export interface PlayerPrefs {
   horizonAssist: boolean;
   debugOverlay: boolean;
   controls: ControlSettings;
+  /** Ship type (ls-sim ShipType index) to ask for when joining. */
+  shipType?: number;
 }
 
 export interface RejoinOptions {

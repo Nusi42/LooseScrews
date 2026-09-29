@@ -2,22 +2,36 @@
 //! [`InputCmd`] per tick.
 //!
 //! Priorities, evaluated every tick:
-//! 1. **Scavenge** when hull is low: fly to the nearest known scrap source
+//! 0. **Guide** an Eyeball the bot launched: its look input steers the
+//!    missile towards the nearest enemy (the ship drifts meanwhile).
+//! 1. **Flee** from Tectonic Charge zones: a charge in flight or stuck
+//!    (seen as a projectile), or the rumble / crack cues
+//!    ([`Brain::on_cue`]), makes bots inside the collapse zone boost away
+//!    along a navigation route to a point outside it.
+//! 2. **Scavenge** when hull is low: fly to the nearest known scrap source
 //!    (pickup points and recent wrecks), hold still and hold scavenge until
 //!    the hull is repaired or the source runs dry.
-//! 2. **Combat** when an enemy is in range with line of sight: orbit at a
-//!    preferred distance, aim with lead for the equipped weapon's projectile
-//!    speed, fire the primary (Scrap Laser, or the Rivet Gun once picked up)
-//!    when the nose is on the lead point, and a Bolt Rocket now and then.
-//! 3. **Hunt** when an enemy is alive but out of sight or range: follow a
+//! 3. **Combat** when an enemy is in range with line of sight: orbit at the
+//!    distance the chosen primary likes, aim with lead for the equipped
+//!    weapon's projectile speed and fire when the nose is on the lead
+//!    point. Weapons are chosen by range and situation (see
+//!    [`combat`](self::combat)): lasers mid range, kinetic long range,
+//!    shotgun and Leech Arc close, homing ordnance at fleeing targets, mines
+//!    when chased, the Tectonic Charge on clusters, Borrowed Time at low
+//!    hull, and gadgets (shield against splash, cloak to approach, decoy
+//!    when chased).
+//! 4. **Collect** weapon, ammo and gadget pickups the bot wants that are
+//!    close enough (it has to pick weapons up to use them).
+//! 5. **Hunt** when an enemy is alive but out of sight or range: follow a
 //!    [`Navigator`] route to it across the level (to the enemy spawn area
 //!    when no enemy is alive), painting walls on the way. After
 //!    [`BrainConfig::hunt_secs`] without a fight, or at the end of a route
 //!    that cannot reach the enemy, the bot takes a break of
 //!    [`BrainConfig::hunt_break_secs`] to paint and wander.
-//! 4. **Paint and wander** otherwise: fly between random open-space points
+//! 6. **Paint and wander** otherwise: fly between random open-space points
 //!    (sometimes pickup points) and paint nearby walls with the Paint
-//!    Thrower.
+//!    Thrower, now and then cycling its colour
+//!    ([`BrainConfig::paint_colour_button`]); Magnet Sneeze pulls scrap in.
 //!
 //! Long trips (hunting, wandering, travel to scrap) follow navigation routes
 //! once the bot's grid is built (see [`crate::nav`]); before that, or when no
@@ -25,18 +39,26 @@
 //! through [`avoid_walls`], so bots stay clear of rock whatever the plan
 //! says; in narrow passages the route lowers the wall clearance and speed.
 
-use ls_game::client::ClientSession;
+mod combat;
+
+use ls_game::client::{ClientSession, GUIDED_STATE_BIT};
 use ls_game::ls_math::terrain::{TerrainEdit, TerrainQuery};
 use ls_game::ls_math::{Aabb, Pcg32, Quat, Vec3, DT, TICK_HZ};
 use ls_game::ls_net::ship_flags;
-use ls_game::ls_sim::{Buttons, InputCmd, ShipTuning, WeaponCost, WeaponId, WeaponTable};
+use ls_game::ls_sim::{
+    proj_flags, Buttons, GadgetId, InputCmd, ReplicatedKind, ShipTuning, ShipType, WeaponCost,
+    WeaponId,
+};
 
-use crate::aim::{aim_tolerance, clear_shot, lead_point};
+use crate::aim::clear_shot;
+pub use crate::arsenal::{Arsenal, Gun, Role};
 use crate::nav::{NavConfig, NavSteer, Navigator};
 use crate::steering::{
     angle_between, arrive, avoid_walls, look_toward, random_open_point, random_unit,
     thrust_for_velocity, SteerConfig,
 };
+
+use self::combat::{Danger, EyeballGuide, SecondaryIntent};
 
 /// Another ship the bot can see (alive only).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -48,16 +70,73 @@ pub struct Contact {
     pub vel: Vec3,
 }
 
+/// The gadget in the bot's slot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GadgetKind {
+    Shield,
+    Cloak,
+    Decoy,
+    /// A gadget the bots do not know (never used).
+    Other,
+}
+
+impl GadgetKind {
+    pub fn from_id(id: &str) -> GadgetKind {
+        match id {
+            "shield" => GadgetKind::Shield,
+            "cloak" => GadgetKind::Cloak,
+            "decoy" => GadgetKind::Decoy,
+            _ => GadgetKind::Other,
+        }
+    }
+}
+
+/// A projectile or mine in flight (from the newest snapshot).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ProjectileSeen {
+    /// Wire id.
+    pub id: u16,
+    pub weapon: WeaponId,
+    /// Ship id of the shooter.
+    pub owner: u8,
+    pub pos: Vec3,
+    pub vel: Vec3,
+    /// Its owner steers it (Eyeball).
+    pub guided: bool,
+    /// Stuck to a wall or ship (mines, Tectonic Charge).
+    pub stuck: bool,
+}
+
+/// What a pickup holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PickupItem {
+    Weapon(WeaponId),
+    Upgrade(WeaponId),
+    Gadget(GadgetKind),
+}
+
+/// A pickup lying in the level.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PickupSeen {
+    /// Wire entity id.
+    pub id: u16,
+    pub pos: Vec3,
+    pub item: PickupItem,
+}
+
 /// Everything the brain looks at for one decision.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Perception {
     /// Tick the command will be stamped with (monotonic).
     pub tick: u64,
+    /// This bot's ship (wire) id.
+    pub id: u8,
     pub pos: Vec3,
     pub vel: Vec3,
     pub orientation: Quat,
     pub alive: bool,
     pub team: u8,
+    pub ship_type: ShipType,
     /// Resources in absolute units (hull points, energy, boost, scrap).
     pub hull: f32,
     pub energy: f32,
@@ -65,22 +144,35 @@ pub struct Perception {
     pub scrap: f32,
     /// Selected primary weapon according to the newest snapshot.
     pub primary: Option<WeaponId>,
+    /// Selected secondary weapon (from the inventory).
+    pub secondary: Option<WeaponId>,
+    /// Carried weapons with their ammo (0 for non-count weapons), once the
+    /// server sent an inventory.
+    pub weapons: Option<Vec<(WeaponId, u32)>>,
+    pub gadget: Option<GadgetKind>,
+    /// The gadget is switched on (Shield, Cloak).
+    pub gadget_on: bool,
     /// Living ships other than this one.
     pub contacts: Vec<Contact>,
+    pub projectiles: Vec<ProjectileSeen>,
+    pub pickups: Vec<PickupSeen>,
+    /// Scrap piles, wrecks and debris holding scrap (position, scrap).
+    pub scrap_sources: Vec<(Vec3, f32)>,
 }
 
 impl Perception {
-    /// Reads the predicted local ship, the newest own status and the
-    /// interpolated remote ships from a session. `None` before the first
-    /// snapshot anchored the prediction.
+    /// Reads the predicted local ship, the newest own status and inventory,
+    /// the interpolated remote ships, projectiles and entities from a
+    /// session. `None` before the first snapshot anchored the prediction.
     pub fn from_session(s: &ClientSession) -> Option<Perception> {
         let ship = s.local_ship()?;
+        let ship_type = s.ship_type();
         let own = s
             .latest_snapshot()
             .and_then(|snap| snap.ships.iter().find(|n| n.id == s.player()));
         let (hull, energy, _boost, scrap) = own
             .and_then(|n| n.status)
-            .map(|st| s.conv().status_values(&st))
+            .map(|st| s.conv().status_values_for(ship_type, &st))
             .unwrap_or((ship.hull, ship.energy, ship.boost, ship.scrap));
         let contacts = s
             .remote_ships()
@@ -93,84 +185,100 @@ impl Perception {
                 vel: n.vel,
             })
             .collect();
+        let inv = s.inventory();
+        let n_weapons = s.weapons().len();
+        let weapon_id = |w: u8| ((w as usize) < n_weapons).then_some(WeaponId(w));
+        let weapons = inv.map(|i| {
+            i.weapons
+                .iter()
+                .filter_map(|w| weapon_id(w.weapon).map(|id| (id, u32::from(w.ammo))))
+                .collect()
+        });
+        let gadgets = s.gadgets();
+        let gadget = inv
+            .map(|i| i.gadget)
+            .filter(|g| (*g as usize) < gadgets.len())
+            .map(|g| GadgetKind::from_id(&gadgets.get(GadgetId(g)).id));
+        let projectiles = s
+            .projectiles()
+            .iter()
+            .filter_map(|q| {
+                Some(ProjectileSeen {
+                    id: q.id,
+                    weapon: weapon_id(q.kind)?,
+                    owner: q.owner,
+                    pos: q.pos,
+                    vel: q.vel,
+                    guided: q.state & GUIDED_STATE_BIT != 0,
+                    stuck: q.state & (proj_flags::STUCK as u8) != 0,
+                })
+            })
+            .collect();
+        let mut pickups = Vec::new();
+        let mut scrap_sources = Vec::new();
+        for e in s.entities() {
+            let item = match ReplicatedKind::from_u8(e.kind) {
+                Some(ReplicatedKind::WeaponPickup) => weapon_id(e.state[0]).map(PickupItem::Weapon),
+                Some(ReplicatedKind::UpgradePickup) => {
+                    weapon_id(e.state[0]).map(PickupItem::Upgrade)
+                }
+                Some(ReplicatedKind::GadgetPickup) => {
+                    ((e.state[0] as usize) < gadgets.len()).then(|| {
+                        PickupItem::Gadget(GadgetKind::from_id(
+                            &gadgets.get(GadgetId(e.state[0])).id,
+                        ))
+                    })
+                }
+                Some(
+                    ReplicatedKind::ScrapPile | ReplicatedKind::Wreck | ReplicatedKind::Debris,
+                ) => {
+                    if e.state[0] > 0 {
+                        scrap_sources.push((e.pos, f32::from(e.state[0])));
+                    }
+                    None
+                }
+                _ => None,
+            };
+            if let Some(item) = item {
+                pickups.push(PickupSeen {
+                    id: e.id,
+                    pos: e.pos,
+                    item,
+                });
+            }
+        }
         Some(Perception {
             tick: s.next_input_tick(),
+            id: s.player(),
             pos: ship.pos,
             vel: ship.vel,
             orientation: ship.orientation,
             alive: ship.alive,
             team: s.team(),
+            ship_type,
             hull,
             energy,
             // The prediction tracks boost exactly; the status byte lags.
             boost: ship.boost,
             scrap,
             primary: own.map(|n| WeaponId(ship_flags::weapon(n.flags))),
+            secondary: inv.and_then(|i| weapon_id(i.secondary)),
+            weapons,
+            gadget,
+            gadget_on: own.is_some_and(|n| n.flags & ship_flags::GADGET_ACTIVE != 0),
             contacts,
+            projectiles,
+            pickups,
+            scrap_sources,
         })
     }
-}
 
-/// What the brain needs to know about one weapon.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Gun {
-    pub id: WeaponId,
-    /// Projectile speed (u/s).
-    pub speed: f32,
-    /// Projectile lifetime (s).
-    pub lifetime: f32,
-    pub projectile_radius: f32,
-    pub cost: WeaponCost,
-}
-
-impl Gun {
-    /// Longest distance the projectile flies.
-    pub fn range(&self) -> f32 {
-        self.speed * self.lifetime
-    }
-}
-
-/// The M1 weapons by role. Any of them may be missing from a data set.
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
-pub struct Arsenal {
-    pub laser: Option<Gun>,
-    pub rivet: Option<Gun>,
-    pub rocket: Option<Gun>,
-    pub paint: Option<Gun>,
-}
-
-impl Arsenal {
-    pub fn from_table(table: &WeaponTable) -> Arsenal {
-        let gun = |name: &str| {
-            table.find(name).map(|id| {
-                let d = table.get(id);
-                Gun {
-                    id,
-                    speed: d.speed,
-                    lifetime: d.lifetime_secs,
-                    projectile_radius: d.projectile_radius,
-                    cost: d.cost,
-                }
-            })
-        };
-        Arsenal {
-            laser: gun("scrap_laser"),
-            rivet: gun("rivet_gun"),
-            rocket: gun("bolt_rocket"),
-            paint: gun("paint_thrower"),
+    /// The team of ship `id` (this bot's own or a visible contact).
+    pub fn team_of(&self, id: u8) -> Option<u8> {
+        if id == self.id {
+            return Some(self.team);
         }
-    }
-
-    /// The gun with this id, if it is one of the four.
-    pub fn gun(&self, id: WeaponId) -> Option<Gun> {
-        [self.laser, self.rivet, self.rocket, self.paint]
-            .into_iter()
-            .flatten()
-            .find(|g| g.id == id)
-    }
-
-    fn is_combat_primary(&self, id: WeaponId) -> bool {
-        self.laser.is_some_and(|g| g.id == id) || self.rivet.is_some_and(|g| g.id == id)
+        self.contacts.iter().find(|c| c.id == id).map(|c| c.team)
     }
 }
 
@@ -179,9 +287,13 @@ impl Arsenal {
 pub struct BrainConfig {
     pub steer: SteerConfig,
     pub nav: NavConfig,
-    /// Enemies further than this (u) are ignored.
+    /// Enemies further than this (u) are ignored (long-range weapons
+    /// extend it up to [`BrainConfig::long_engage_range`]).
     pub engage_range: f32,
-    /// Distance (u) the bot tries to keep from its target.
+    /// Engage range while carrying a long-range (kinetic) weapon.
+    pub long_engage_range: f32,
+    /// Distance (u) the bot tries to keep from its target (the chosen
+    /// primary's ideal band overrides it).
     pub preferred_range: f32,
     /// Start scavenging below this hull fraction.
     pub low_hull: f32,
@@ -202,7 +314,23 @@ pub struct BrainConfig {
     pub hunt_secs: f32,
     /// Length of a hunting break (paint and wander).
     pub hunt_break_secs: f32,
+    /// Pickups further than this (u) are not fetched.
+    pub collect_range: f32,
+    /// During a fight, wanted pickups within this range (u) are grabbed on
+    /// the way (the bot keeps shooting), if the hull is above `low_hull`.
+    pub combat_collect_range: f32,
+    /// Give up on a pickup after this many seconds.
+    pub collect_secs: f32,
+    /// Button that cycles the Paint Thrower's colour (see
+    /// [`PAINT_COLOUR_BUTTON`]; `None` never cycles).
+    pub paint_colour_button: Option<Buttons>,
 }
+
+/// The Paint Thrower colour cycle button (M2 plan: the V key cycles red
+/// bouncy, blue slippery, yellow sticky): `Buttons::WEAPON_MODE` ("weapon
+/// mode of the selected primary", acting on the press edge). Bots press it
+/// for single ticks.
+pub const PAINT_COLOUR_BUTTON: Option<Buttons> = Some(Buttons::WEAPON_MODE);
 
 impl Default for BrainConfig {
     fn default() -> Self {
@@ -210,6 +338,7 @@ impl Default for BrainConfig {
             steer: SteerConfig::default(),
             nav: NavConfig::default(),
             engage_range: 55.0,
+            long_engage_range: 85.0,
             preferred_range: 16.0,
             low_hull: 0.35,
             healed_hull: 0.85,
@@ -220,6 +349,10 @@ impl Default for BrainConfig {
             rocket_interval_secs: 1.5,
             hunt_secs: 90.0,
             hunt_break_secs: 8.0,
+            collect_range: 60.0,
+            combat_collect_range: 30.0,
+            collect_secs: 15.0,
+            paint_colour_button: PAINT_COLOUR_BUTTON,
         }
     }
 }
@@ -235,12 +368,21 @@ pub enum Mode {
     /// Travelling towards enemies out of sight (or their spawn area).
     Hunt,
     Scavenge,
+    /// Fetching a pickup.
+    Collect,
+    /// Getting out of a Tectonic Charge zone.
+    Flee,
+    /// Steering an Eyeball (the ship drifts).
+    Guide,
 }
+
+/// Highest weapon id the per-weapon counters track.
+pub const MAX_TRACKED_WEAPONS: usize = 32;
 
 /// Per-bot behavior counters (ticks spent per mode, trigger ticks per
 /// weapon; a trigger tick is a tick the button was held with that weapon
 /// equipped, not necessarily a shot).
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BrainCounters {
     pub wander_ticks: u64,
     pub paint_ticks: u64,
@@ -248,13 +390,49 @@ pub struct BrainCounters {
     /// Ticks spent flying towards enemies out of sight (global navigation).
     pub hunt_ticks: u64,
     pub scavenge_ticks: u64,
+    pub collect_ticks: u64,
+    pub flee_ticks: u64,
+    pub guide_ticks: u64,
     pub dead_ticks: u64,
     pub laser_triggers: u64,
     pub rivet_triggers: u64,
     pub rocket_triggers: u64,
     pub paint_triggers: u64,
+    /// Secondary trigger presses (any secondary).
+    pub secondary_triggers: u64,
+    /// Trigger ticks per weapon id (primaries and secondaries).
+    pub weapon_triggers: [u64; MAX_TRACKED_WEAPONS],
+    /// Gadget button presses.
+    pub gadget_presses: u64,
+    /// Paint colour cycle presses.
+    pub colour_presses: u64,
     /// Ticks the scavenge button was held.
     pub scavenge_holds: u64,
+}
+
+impl Default for BrainCounters {
+    fn default() -> Self {
+        BrainCounters {
+            wander_ticks: 0,
+            paint_ticks: 0,
+            combat_ticks: 0,
+            hunt_ticks: 0,
+            scavenge_ticks: 0,
+            collect_ticks: 0,
+            flee_ticks: 0,
+            guide_ticks: 0,
+            dead_ticks: 0,
+            laser_triggers: 0,
+            rivet_triggers: 0,
+            rocket_triggers: 0,
+            paint_triggers: 0,
+            secondary_triggers: 0,
+            weapon_triggers: [0; MAX_TRACKED_WEAPONS],
+            gadget_presses: 0,
+            colour_presses: 0,
+            scavenge_holds: 0,
+        }
+    }
 }
 
 impl BrainCounters {
@@ -264,12 +442,27 @@ impl BrainCounters {
         self.combat_ticks += o.combat_ticks;
         self.hunt_ticks += o.hunt_ticks;
         self.scavenge_ticks += o.scavenge_ticks;
+        self.collect_ticks += o.collect_ticks;
+        self.flee_ticks += o.flee_ticks;
+        self.guide_ticks += o.guide_ticks;
         self.dead_ticks += o.dead_ticks;
         self.laser_triggers += o.laser_triggers;
         self.rivet_triggers += o.rivet_triggers;
         self.rocket_triggers += o.rocket_triggers;
         self.paint_triggers += o.paint_triggers;
+        self.secondary_triggers += o.secondary_triggers;
+        for (a, b) in self.weapon_triggers.iter_mut().zip(o.weapon_triggers) {
+            *a += b;
+        }
+        self.gadget_presses += o.gadget_presses;
+        self.colour_presses += o.colour_presses;
         self.scavenge_holds += o.scavenge_holds;
+    }
+
+    fn trigger(&mut self, w: WeaponId) {
+        if let Some(c) = self.weapon_triggers.get_mut(w.0 as usize) {
+            *c += 1;
+        }
     }
 }
 
@@ -291,13 +484,16 @@ struct ScavengeJob {
     check_hull: f32,
 }
 
-/// Rivet Gun ownership is not in the snapshot; the bot finds out by trying
-/// to select it and watching the primary weapon bits.
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
-struct RivetProbe {
-    owned: bool,
-    probing_until: u64,
-    next_probe: u64,
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct CollectJob {
+    /// Wire entity id of the pickup.
+    id: u16,
+    pos: Vec3,
+    item: PickupItem,
+    started: u64,
+    /// First tick the bot was on the pickup (it stays if the server does
+    /// not hand it over, e.g. an upgrade past the top level).
+    reached: Option<u64>,
 }
 
 /// The per-bot decision maker. See the module docs.
@@ -306,6 +502,7 @@ pub struct Brain {
     cfg: BrainConfig,
     arsenal: Arsenal,
     tuning: ShipTuning,
+    ship_type: ShipType,
     bounds: Aabb,
     rng: Pcg32,
     mode: Mode,
@@ -315,8 +512,35 @@ pub struct Brain {
     next_target_scan: u64,
     strafe_sign: f32,
     next_strafe_flip: u64,
+    /// Distance kept from the target (from the chosen primary).
+    preferred_range: f32,
+
+    // ----- weapons (see `combat`) -----
+    /// Primary chosen for the current fight and when to choose again.
+    primary_choice: Option<WeaponId>,
+    next_primary_pick: u64,
+    /// Tick the trigger of a charge weapon went down, and when to let go.
+    charge_started: Option<u64>,
+    charge_release: u64,
+    next_charge: u64,
+    secondary_intent: Option<SecondaryIntent>,
+    next_secondary: u64,
     next_rocket: u64,
-    rivet: RivetProbe,
+    /// Tick the bot first carried a Tectonic Charge (this life).
+    tectonic_since: Option<u64>,
+    /// Trigger presses per weapon id this match (novelty: bots try weapons
+    /// they have not used yet).
+    used: Vec<u32>,
+    /// Newest tick this bot took damage, and whether from a splash weapon.
+    damaged_tick: Option<u64>,
+    splash_threat_until: u64,
+    danger: Option<Danger>,
+    flee_goal: Option<Vec3>,
+    eyeball: Option<EyeballGuide>,
+    next_gadget_press: u64,
+    decoy_ready: u64,
+    /// The gadget this bot likes to pick up.
+    gadget_pref: GadgetKind,
 
     wander: Option<Vec3>,
     wander_best: f32,
@@ -325,6 +549,12 @@ pub struct Brain {
     paint: Option<PaintJob>,
     next_paint_search: u64,
     painted: Vec<Vec3>,
+    colour_presses: u8,
+    next_colour_press: u64,
+
+    collect: Option<CollectJob>,
+    /// Pickups given up on (entity id, until).
+    skipped_pickups: Vec<(u16, u64)>,
 
     scrap_spots: Vec<Vec3>,
     wrecks: Vec<(Vec3, u64)>,
@@ -352,6 +582,8 @@ const EXHAUSTED_TICKS: u64 = 30 * TICK_HZ as u64;
 const SCAVENGE_CHECK_TICKS: u64 = 90;
 /// Give up on reaching a scrap source after this many ticks.
 const SCAVENGE_TRAVEL_TICKS: u64 = 20 * TICK_HZ as u64;
+/// A pickup given up on is ignored this long.
+const SKIP_PICKUP_TICKS: u64 = 40 * TICK_HZ as u64;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct Plan {
@@ -361,9 +593,11 @@ struct Plan {
     boost: bool,
     aim: Option<Vec3>,
     select: Option<WeaponId>,
+    select_secondary: Option<WeaponId>,
     fire_primary: bool,
     fire_secondary: bool,
     scavenge: bool,
+    gadget: bool,
     /// Wall clearance for [`avoid_walls`] instead of the configured one
     /// (narrow passages on a route).
     clearance: Option<f32>,
@@ -377,9 +611,11 @@ impl Plan {
             boost: false,
             aim: None,
             select: None,
+            select_secondary: None,
             fire_primary: false,
             fire_secondary: false,
             scavenge: false,
+            gadget: false,
             clearance: None,
         }
     }
@@ -399,10 +635,14 @@ impl Brain {
     ) -> Brain {
         let mut rng = Pcg32::from_seed(seed, RNG_STREAM_BRAIN);
         let strafe_sign = if rng.next_bool() { 1.0 } else { -1.0 };
+        let gadget_pref =
+            [GadgetKind::Shield, GadgetKind::Cloak, GadgetKind::Decoy][rng.below(3) as usize];
+        let used = vec![0; arsenal.len()];
         Brain {
             cfg,
             arsenal,
             tuning,
+            ship_type: ShipType::Tinker,
             bounds,
             rng,
             mode: Mode::Dead,
@@ -411,14 +651,35 @@ impl Brain {
             next_target_scan: 0,
             strafe_sign,
             next_strafe_flip: 0,
+            preferred_range: cfg.preferred_range,
+            primary_choice: None,
+            next_primary_pick: 0,
+            charge_started: None,
+            charge_release: 0,
+            next_charge: 0,
+            secondary_intent: None,
+            next_secondary: 0,
             next_rocket: 0,
-            rivet: RivetProbe::default(),
+            tectonic_since: None,
+            used,
+            damaged_tick: None,
+            splash_threat_until: 0,
+            danger: None,
+            flee_goal: None,
+            eyeball: None,
+            next_gadget_press: 0,
+            decoy_ready: 0,
+            gadget_pref,
             wander: None,
             wander_best: f32::MAX,
             wander_progress_tick: 0,
             paint: None,
             next_paint_search: 0,
             painted: Vec::new(),
+            colour_presses: 0,
+            next_colour_press: 0,
+            collect: None,
+            skipped_pickups: Vec::new(),
             scrap_spots,
             wrecks: Vec::new(),
             exhausted: Vec::new(),
@@ -445,9 +706,18 @@ impl Brain {
         &self.arsenal
     }
 
-    /// Whether the bot knows it carries the Rivet Gun.
-    pub fn has_rivet_gun(&self) -> bool {
-        self.rivet.owned
+    /// The ship type the brain flies (its tuning is used for steering).
+    pub fn ship_type(&self) -> ShipType {
+        self.ship_type
+    }
+
+    /// Switches to another ship type's tuning (the session reports the
+    /// type of the current life).
+    pub fn set_ship(&mut self, ship_type: ShipType, tuning: &ShipTuning) {
+        if self.ship_type != ship_type || self.tuning != *tuning {
+            self.ship_type = ship_type;
+            self.tuning = tuning.clone();
+        }
     }
 
     /// Sets the known scrap sources besides wrecks (the match's pickup points).
@@ -510,11 +780,14 @@ impl Brain {
             self.on_spawn(p.tick);
         }
         self.was_alive = true;
-        self.expire(p.tick);
-        if let (Some(r), Some(primary)) = (self.arsenal.rivet, p.primary) {
-            if r.id == primary {
-                self.rivet.owned = true;
-            }
+        self.expire(p);
+        self.observe_threats(p);
+
+        // An Eyeball in flight takes the look input; the ship only drifts.
+        if self.guide_eyeball(p, &mut cmd) {
+            self.mode = Mode::Guide;
+            counters.guide_ticks += 1;
+            return cmd;
         }
 
         let mut plan = Plan::new();
@@ -539,12 +812,24 @@ impl Brain {
         if target.is_some() {
             self.hunt_since = None;
         }
-        self.mode = if self.scavenge.is_some() {
+        self.mode = if self.plan_flee(p, terrain, &mut plan) {
+            Mode::Flee
+        } else if self.scavenge.is_some() {
             self.plan_scavenge(p, terrain, &mut plan);
             Mode::Scavenge
         } else if let Some(t) = target {
-            self.plan_orbit(p, terrain, &t, &mut plan);
-            Mode::Combat
+            // A wanted pickup close by is grabbed mid-fight (the bot keeps
+            // aiming and firing at its target); secondaries mostly come
+            // from pickups.
+            let near = self.cfg.combat_collect_range;
+            if hull_frac > self.cfg.low_hull && self.plan_collect(p, terrain, &mut plan, near) {
+                Mode::Collect
+            } else {
+                self.plan_orbit(p, terrain, &t, &mut plan);
+                Mode::Combat
+            }
+        } else if self.plan_collect(p, terrain, &mut plan, self.cfg.collect_range) {
+            Mode::Collect
         } else if self.plan_hunt(p, terrain, &mut plan) {
             Mode::Hunt
         } else {
@@ -559,12 +844,17 @@ impl Brain {
         if let Some(t) = target {
             self.plan_fire(p, &t, terrain, &mut plan);
             self.paint = None;
-        } else if self.mode != Mode::Scavenge {
-            self.plan_paint(p, terrain, &mut plan);
-            if self.paint.is_some() && self.mode == Mode::Wander {
-                self.mode = Mode::Paint;
+        } else {
+            self.charge_started = None;
+            if !matches!(self.mode, Mode::Scavenge | Mode::Flee) {
+                self.plan_paint(p, terrain, &mut plan);
+                if self.paint.is_some() && self.mode == Mode::Wander {
+                    self.mode = Mode::Paint;
+                }
             }
         }
+        self.plan_secondary(p, target.as_ref(), terrain, &mut plan);
+        self.plan_gadget(p, target.as_ref(), &mut plan);
 
         match self.mode {
             Mode::Wander => counters.wander_ticks += 1,
@@ -572,6 +862,9 @@ impl Brain {
             Mode::Combat => counters.combat_ticks += 1,
             Mode::Hunt => counters.hunt_ticks += 1,
             Mode::Scavenge => counters.scavenge_ticks += 1,
+            Mode::Collect => counters.collect_ticks += 1,
+            Mode::Flee => counters.flee_ticks += 1,
+            Mode::Guide => counters.guide_ticks += 1,
             Mode::Dead => counters.dead_ticks += 1,
         }
 
@@ -588,23 +881,73 @@ impl Brain {
         self.paint = None;
         self.scavenge = None;
         self.wander = None;
-        // Respawning resets the loadout to the rule set's starting weapons.
-        self.rivet = RivetProbe::default();
+        self.collect = None;
         self.nav.clear_route();
         self.hunt_target = None;
         self.hunt_since = None;
+        // Respawning resets the loadout to the rule set's starting weapons.
+        self.primary_choice = None;
+        self.charge_started = None;
+        self.secondary_intent = None;
+        self.tectonic_since = None;
+        self.eyeball = None;
+        self.flee_goal = None;
+        self.damaged_tick = None;
     }
 
     fn on_spawn(&mut self, now: u64) {
         self.wander = None;
         self.next_paint_search = now + 30;
         self.next_rocket = now + 60;
-        self.rivet.next_probe = now + 120;
+        self.next_secondary = now + 60;
+        self.next_gadget_press = now + 30;
     }
 
-    fn expire(&mut self, now: u64) {
+    fn expire(&mut self, p: &Perception) {
+        let now = p.tick;
         self.wrecks.retain(|(_, until)| *until > now);
         self.exhausted.retain(|(_, until)| *until > now);
+        self.skipped_pickups.retain(|(_, until)| *until > now);
+        if self.danger.is_some_and(|d| d.until <= now) {
+            self.danger = None;
+            self.flee_goal = None;
+        }
+    }
+
+    /// Carried weapons with ammo. Without an inventory from the server the
+    /// bot assumes the selected primary plus the default loadout.
+    fn owned(&self, p: &Perception) -> Vec<(WeaponId, u32)> {
+        if let Some(w) = &p.weapons {
+            return w.clone();
+        }
+        let mut v: Vec<(WeaponId, u32)> = Vec::new();
+        let mut add = |w: WeaponId, ammo: u32| {
+            if !v.iter().any(|(x, _)| *x == w) {
+                v.push((w, ammo));
+            }
+        };
+        if let Some(w) = p.primary {
+            add(w, 0);
+        }
+        for g in [self.arsenal.laser, self.arsenal.paint]
+            .into_iter()
+            .flatten()
+        {
+            add(g.id, 0);
+        }
+        if let Some(r) = self.arsenal.rocket {
+            add(r.id, 1);
+        }
+        v
+    }
+
+    /// Whether the bot can pay one shot of `gun` (keeping `reserve` energy).
+    fn can_pay(&self, p: &Perception, gun: &Gun, ammo: u32, reserve: f32) -> bool {
+        match gun.cost {
+            WeaponCost::Energy(c) => p.energy >= c + reserve,
+            WeaponCost::Scrap(c) => p.scrap >= c,
+            WeaponCost::Count(c) => ammo >= c.max(1),
+        }
     }
 
     // ----- targets -----------------------------------------------------------
@@ -615,6 +958,7 @@ impl Brain {
         terrain: &T,
     ) -> Option<Contact> {
         let enemy = |c: &&Contact| c.team != p.team;
+        let range = self.engage_range(p);
         let current = self
             .target
             .and_then(|id| p.contacts.iter().find(|c| c.id == id))
@@ -622,7 +966,7 @@ impl Brain {
             .copied();
         if p.tick < self.next_target_scan {
             // Between scans keep the target while it stays roughly in range.
-            let keep = current.filter(|c| c.pos.distance(p.pos) < self.cfg.engage_range * 1.2);
+            let keep = current.filter(|c| c.pos.distance(p.pos) < range * 1.2);
             self.target = keep.map(|c| c.id);
             return keep;
         }
@@ -630,7 +974,7 @@ impl Brain {
         let mut best: Option<(f32, Contact)> = None;
         for c in p.contacts.iter().filter(enemy) {
             let mut d = c.pos.distance(p.pos);
-            if d > self.cfg.engage_range {
+            if d > range {
                 continue;
             }
             // Hysteresis: prefer the current target unless another is much closer.
@@ -648,6 +992,22 @@ impl Brain {
         best.map(|(_, c)| c)
     }
 
+    /// Engage range: longer while carrying a long-range kinetic weapon.
+    fn engage_range(&self, p: &Perception) -> f32 {
+        let long = p.weapons.as_ref().is_some_and(|w| {
+            w.iter().any(|(id, _)| {
+                self.arsenal
+                    .gun(*id)
+                    .is_some_and(|g| matches!(g.role, Role::RivetGun | Role::Railspike))
+            })
+        });
+        if long {
+            self.cfg.long_engage_range.max(self.cfg.engage_range)
+        } else {
+            self.cfg.engage_range
+        }
+    }
+
     // ----- movement plans ----------------------------------------------------
 
     fn plan_orbit<T: TerrainQuery + ?Sized>(
@@ -658,11 +1018,12 @@ impl Brain {
         plan: &mut Plan,
     ) {
         let cruise = self.tuning.cruise_speed;
+        let preferred = self.preferred_range;
         let to = t.pos - p.pos;
         let dist = to.length().max(1e-3);
         // Far away (in caves the straight way in is usually blocked): close
         // in along a route, guns on the target.
-        if dist > self.cfg.preferred_range + 12.0
+        if dist > preferred + 12.0
             && self
                 .plan_travel(p, terrain, t.pos, cruise, false, plan)
                 .is_some()
@@ -680,7 +1041,7 @@ impl Brain {
             tangent = radial.any_orthonormal();
         }
         let binormal = radial.cross(tangent);
-        let radial_speed = ((dist - self.cfg.preferred_range) / 6.0).clamp(-1.0, 1.0) * cruise;
+        let radial_speed = ((dist - preferred) / 6.0).clamp(-1.0, 1.0) * cruise;
         let bob = (p.tick as f32 * 0.035).sin() * 0.35 * cruise;
         plan.desired_vel =
             radial * radial_speed + tangent * (self.strafe_sign * 0.6 * cruise) + binormal * bob;
@@ -947,83 +1308,142 @@ impl Brain {
         }
     }
 
-    // ----- weapons -----------------------------------------------------------
+    // ----- pickups -----------------------------------------------------------
 
-    fn has_energy(&self, p: &Perception, gun: &Gun, reserve: f32) -> bool {
-        match gun.cost {
-            WeaponCost::Energy(c) => p.energy >= c + reserve,
-            WeaponCost::Scrap(c) => p.scrap >= c,
-            WeaponCost::Count(_) => true,
-        }
-    }
-
-    fn plan_fire<T: TerrainQuery + ?Sized>(
-        &mut self,
-        p: &Perception,
-        t: &Contact,
-        terrain: &T,
-        plan: &mut Plan,
-    ) {
-        let dist = t.pos.distance(p.pos);
-        // Rivet Gun ownership probe.
-        if self.arsenal.rivet.is_some() && !self.rivet.owned && p.tick >= self.rivet.next_probe {
-            self.rivet.probing_until = p.tick + 30;
-            self.rivet.next_probe = p.tick + 10 * TICK_HZ as u64;
-        }
-        let probing = p.tick < self.rivet.probing_until && !self.rivet.owned;
-
-        // Weapon choice: Rivet Gun up close when owned and fed, else laser.
-        let wanted = match (self.arsenal.rivet, self.arsenal.laser) {
-            (Some(r), _) if (self.rivet.owned && dist < 30.0 && p.scrap >= 10.0) || probing => {
-                Some(r)
-            }
-            (_, Some(l)) => Some(l),
-            (Some(r), None) => Some(r),
-            (None, None) => None,
-        };
-        plan.select = wanted.map(|g| g.id);
-
-        // Aim for the weapon actually equipped if it is a combat primary
-        // (switching takes a round trip), otherwise for the one wanted.
-        let equipped = p
-            .primary
-            .filter(|w| self.arsenal.is_combat_primary(*w))
-            .and_then(|w| self.arsenal.gun(w));
-        let gun = equipped.or(wanted);
-        let hit_radius = self.tuning.radius;
-        if let Some(gun) = gun {
-            let aim = lead_point(p.pos, t.pos, t.vel, gun.speed, gun.lifetime).unwrap_or(t.pos);
-            plan.aim = Some(aim);
-            let err = angle_between(p.orientation.forward(), aim - p.pos);
-            let tol = aim_tolerance(dist, hit_radius + gun.projectile_radius);
-            if equipped.is_some()
-                && dist <= gun.range()
-                && err <= tol
-                && self.has_energy(p, &gun, 0.0)
-                && clear_shot(terrain, p.pos, aim, gun.projectile_radius)
-            {
-                plan.fire_primary = true;
-            }
-        }
-
-        // Bolt Rocket: medium range, tight aim, not too often.
-        if let Some(rocket) = self.arsenal.rocket {
-            let (lo, hi) = self.cfg.rocket_range;
-            if p.tick >= self.next_rocket && dist >= lo && dist <= hi.min(rocket.range()) {
-                if let Some(aim) = lead_point(p.pos, t.pos, t.vel, rocket.speed, rocket.lifetime) {
-                    let err = angle_between(p.orientation.forward(), aim - p.pos);
-                    let tol = aim_tolerance(dist, hit_radius + 1.0);
-                    if err <= tol && clear_shot(terrain, p.pos, aim, rocket.projectile_radius) {
-                        plan.fire_secondary = true;
-                        let jitter = self.rng.below(TICK_HZ) as u64;
-                        self.next_rocket = p.tick
-                            + (self.cfg.rocket_interval_secs * TICKS_PER_SEC) as u64
-                            + jitter;
-                    }
+    /// Whether the bot wants what `pickup` holds.
+    fn wants_pickup(&self, p: &Perception, owned: &[(WeaponId, u32)], item: PickupItem) -> bool {
+        match item {
+            PickupItem::Weapon(w) => {
+                let Some(g) = self.arsenal.gun(w) else {
+                    return false;
+                };
+                match owned.iter().find(|(x, _)| *x == w) {
+                    // Ammo for an empty count weapon.
+                    Some((_, ammo)) => matches!(g.cost, WeaponCost::Count(_)) && *ammo == 0,
+                    None => g.role != Role::PaintThrower,
                 }
             }
+            PickupItem::Upgrade(w) => owned.iter().any(|(x, _)| *x == w),
+            PickupItem::Gadget(kind) => match p.gadget {
+                None => kind != GadgetKind::Other,
+                // Swap only for the gadget this bot likes.
+                Some(current) => current != self.gadget_pref && kind == self.gadget_pref,
+            },
         }
     }
+
+    /// Fetches a wanted pickup within `range` u. False if there is none
+    /// (or no way to it); a job further away than `range` (a fetch started
+    /// out of combat) is kept for later.
+    fn plan_collect<T: TerrainQuery + ?Sized>(
+        &mut self,
+        p: &Perception,
+        terrain: &T,
+        plan: &mut Plan,
+        range: f32,
+    ) -> bool {
+        // The job ends when the pickup is gone (collected by anyone).
+        if let Some(job) = self.collect {
+            let still_there = p
+                .pickups
+                .iter()
+                .any(|q| q.id == job.id && q.item == job.item);
+            let refused = job.reached.is_some_and(|t| p.tick > t + 45);
+            let late =
+                refused || p.tick > job.started + (self.cfg.collect_secs * TICKS_PER_SEC) as u64;
+            if late {
+                self.skipped_pickups
+                    .push((job.id, p.tick + SKIP_PICKUP_TICKS));
+            }
+            if !still_there || late {
+                self.collect = None;
+                self.nav.clear_route();
+            }
+        }
+        if self
+            .collect
+            .is_some_and(|job| job.pos.distance(p.pos) > range)
+        {
+            return false;
+        }
+        if self.collect.is_none() {
+            let owned = self.owned(p);
+            // The one Tectonic Charge on the map is worth a longer trip: it
+            // counts as three times closer.
+            let weight = |q: &PickupSeen| {
+                let tectonic = matches!(q.item, PickupItem::Weapon(w)
+                    if self.arsenal.gun(w).is_some_and(|g| g.role == Role::TectonicCharge));
+                q.pos.distance(p.pos) / if tectonic { 3.0 } else { 1.0 }
+            };
+            self.collect = p
+                .pickups
+                .iter()
+                .filter(|q| !self.skipped_pickups.iter().any(|(id, _)| *id == q.id))
+                .filter(|q| weight(q) <= range)
+                .filter(|q| self.wants_pickup(p, &owned, q.item))
+                .min_by(|a, b| weight(a).total_cmp(&weight(b)))
+                .map(|q| CollectJob {
+                    id: q.id,
+                    pos: q.pos,
+                    item: q.item,
+                    started: p.tick,
+                    reached: None,
+                });
+        }
+        let Some(mut job) = self.collect else {
+            return false;
+        };
+        if job.reached.is_none() && job.pos.distance(p.pos) < 1.0 {
+            job.reached = Some(p.tick);
+            self.collect = Some(job);
+        }
+        // A new secondary swaps out the selected one when the slots are
+        // full: select the least useful one first (empty, else the rocket).
+        if let PickupItem::Weapon(w) = job.item {
+            if self.arsenal.gun(w).is_some_and(|g| !g.is_primary()) {
+                plan.select_secondary = self.secondary_to_drop(p);
+            }
+        }
+        let cruise = self.tuning.cruise_speed;
+        let dist = job.pos.distance(p.pos);
+        if dist < 6.0
+            || self
+                .plan_travel(p, terrain, job.pos, cruise, true, plan)
+                .is_none()
+        {
+            plan.desired_vel = arrive(p.pos, job.pos, cruise, 5.0);
+            plan.goal_dist = dist;
+            plan.clearance = Some(0.8);
+        }
+        true
+    }
+
+    /// The carried secondary to give up for a new one when every slot is
+    /// taken, or `None` if a slot is free.
+    fn secondary_to_drop(&self, p: &Perception) -> Option<WeaponId> {
+        let owned = p.weapons.as_ref()?;
+        let secondaries: Vec<(WeaponId, u32)> = owned
+            .iter()
+            .filter(|(w, _)| self.arsenal.gun(*w).is_some_and(|g| !g.is_primary()))
+            .copied()
+            .collect();
+        if secondaries.len() < self.tuning.secondary_slots as usize {
+            return None;
+        }
+        secondaries
+            .iter()
+            .min_by_key(|(w, ammo)| {
+                let keep = match self.arsenal.gun(*w).map(|g| g.role) {
+                    Some(Role::TectonicCharge) => 3,
+                    Some(Role::BoltRocket) => 1,
+                    _ => 2,
+                };
+                (*ammo > 0, keep)
+            })
+            .map(|(w, _)| *w)
+    }
+
+    // ----- paint -------------------------------------------------------------
 
     fn plan_paint<T: TerrainQuery + ?Sized>(
         &mut self,
@@ -1034,6 +1454,12 @@ impl Brain {
         let Some(paint) = self.arsenal.paint else {
             return;
         };
+        if p.weapons
+            .as_ref()
+            .is_some_and(|w| !w.iter().any(|(id, _)| *id == paint.id))
+        {
+            return;
+        }
         let range = self.cfg.paint_range.min(paint.range() * 0.9);
         if let Some(job) = self.paint {
             let dist = job.point.distance(p.pos);
@@ -1050,6 +1476,9 @@ impl Brain {
             self.paint = self.find_wall(p, terrain, range);
             if self.paint.is_none() {
                 self.next_paint_search = p.tick + 20;
+            } else if self.cfg.paint_colour_button.is_some() && self.rng.chance(0.4) {
+                // A new spot: now and then switch the effect colour.
+                self.colour_presses = 1 + self.rng.below(2) as u8;
             }
         }
         let Some(job) = self.paint else {
@@ -1063,7 +1492,7 @@ impl Brain {
         let err = angle_between(p.orientation.forward(), aim - p.pos);
         if p.primary == Some(paint.id)
             && err < 0.08
-            && self.has_energy(p, &paint, self.cfg.paint_energy_reserve)
+            && self.can_pay(p, &paint, 0, self.cfg.paint_energy_reserve)
             && clear_shot(terrain, p.pos, aim, paint.projectile_radius)
         {
             plan.fire_primary = true;
@@ -1157,426 +1586,67 @@ impl Brain {
         cmd.look_pitch = look.pitch;
         cmd.look_yaw = look.yaw;
 
-        if let Some(w) = plan.select {
-            if p.primary != Some(w) {
-                cmd.weapon_select = w.0 + 1;
-            }
+        // One selection per tick: a secondary about to be fired first, then
+        // the primary, then any other secondary change.
+        let primary_change = plan.select.filter(|w| p.primary != Some(*w));
+        let secondary_change = plan.select_secondary.filter(|w| p.secondary != Some(*w));
+        let select = match (primary_change, secondary_change) {
+            (_, Some(s)) if self.secondary_intent.is_some() => Some(s),
+            (Some(w), Some(s)) => Some(if p.tick.is_multiple_of(2) { w } else { s }),
+            (Some(w), None) => Some(w),
+            (None, s) => s,
+        };
+        if let Some(w) = select {
+            cmd.weapon_select = w.0 + 1;
         }
         if plan.fire_primary {
             cmd.buttons = cmd.buttons | Buttons::FIRE_PRIMARY;
-            let id = p.primary;
-            let is = |g: Option<Gun>| g.is_some() && g.map(|g| g.id) == id;
-            if is(self.arsenal.laser) {
-                counters.laser_triggers += 1;
-            } else if is(self.arsenal.rivet) {
-                counters.rivet_triggers += 1;
-            } else if is(self.arsenal.paint) {
-                counters.paint_triggers += 1;
+            if let Some(id) = p.primary {
+                counters.trigger(id);
+                self.note_used(id);
+                let is = |g: Option<Gun>| g.is_some_and(|g| g.id == id);
+                if is(self.arsenal.laser) {
+                    counters.laser_triggers += 1;
+                } else if is(self.arsenal.rivet) {
+                    counters.rivet_triggers += 1;
+                } else if is(self.arsenal.paint) {
+                    counters.paint_triggers += 1;
+                }
             }
         }
         if plan.fire_secondary {
             cmd.buttons = cmd.buttons | Buttons::FIRE_SECONDARY;
-            counters.rocket_triggers += 1;
+            counters.secondary_triggers += 1;
+            if let Some(id) = p.secondary.or(self.arsenal.rocket.map(|g| g.id)) {
+                counters.trigger(id);
+                self.note_used(id);
+                if self.arsenal.rocket.is_some_and(|g| g.id == id) {
+                    counters.rocket_triggers += 1;
+                }
+            }
         }
         if plan.scavenge {
             cmd.buttons = cmd.buttons | Buttons::SCAVENGE;
             counters.scavenge_holds += 1;
         }
+        if plan.gadget {
+            cmd.buttons = cmd.buttons | Buttons::GADGET;
+            counters.gadget_presses += 1;
+        }
+        // Paint colour: one press per few ticks while presses are pending,
+        // only with the Paint Thrower selected (the button is the selected
+        // primary's weapon mode).
+        let painting = self.arsenal.paint.is_some_and(|g| p.primary == Some(g.id));
+        if let Some(b) = self.cfg.paint_colour_button {
+            if painting && self.colour_presses > 0 && p.tick >= self.next_colour_press {
+                cmd.buttons = cmd.buttons | b;
+                self.colour_presses -= 1;
+                self.next_colour_press = p.tick + 12;
+                counters.colour_presses += 1;
+            }
+        }
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use ls_game::ls_math::terrain::BoxRoomTerrain;
-    use ls_game::ls_sim::{simulate_movement, PlayerId, ShipState, ShipType};
-
-    fn table() -> WeaponTable {
-        WeaponTable::builtin()
-    }
-
-    fn room() -> BoxRoomTerrain {
-        BoxRoomTerrain::centered(Vec3::new(80.0, 40.0, 80.0))
-    }
-
-    fn brain(terrain: &BoxRoomTerrain, spots: Vec<Vec3>) -> Brain {
-        Brain::new(
-            BrainConfig::default(),
-            Arsenal::from_table(&table()),
-            ShipTuning::tinker(),
-            terrain.bounds(),
-            spots,
-            7,
-        )
-    }
-
-    fn perception(pos: Vec3) -> Perception {
-        let t = ShipTuning::tinker();
-        Perception {
-            tick: 1000,
-            pos,
-            vel: Vec3::ZERO,
-            orientation: Quat::IDENTITY,
-            alive: true,
-            team: 0,
-            hull: t.hull_max,
-            energy: t.energy_max,
-            boost: t.boost_max,
-            scrap: t.scrap_max,
-            primary: table().find("scrap_laser"),
-            contacts: Vec::new(),
-        }
-    }
-
-    fn ship(p: &Perception) -> ShipState {
-        let mut s = ShipState::new(
-            PlayerId(0),
-            p.team,
-            ShipType::Tinker,
-            &ShipTuning::tinker(),
-            p.pos,
-            p.orientation,
-        );
-        s.vel = p.vel;
-        s
-    }
-
-    #[test]
-    fn arsenal_finds_the_m1_weapons() {
-        let a = Arsenal::from_table(&table());
-        assert_eq!(a.laser.unwrap().speed, 30.0);
-        assert_eq!(a.rivet.unwrap().speed, 180.0);
-        assert_eq!(a.rocket.unwrap().speed, 40.0);
-        assert_eq!(a.paint.unwrap().speed, 20.0);
-        assert_eq!(a.gun(a.paint.unwrap().id), a.paint);
-        assert!((a.paint.unwrap().range() - 30.0).abs() < 1e-4);
-    }
-
-    #[test]
-    fn dead_bot_idles() {
-        let t = room();
-        let mut b = brain(&t, vec![]);
-        let mut p = perception(Vec3::ZERO);
-        p.alive = false;
-        let mut c = BrainCounters::default();
-        let cmd = b.think(&p, &t, &mut c);
-        assert_eq!(cmd.thrust, Vec3::ZERO);
-        assert!(!cmd.buttons.contains(Buttons::FIRE_PRIMARY));
-        assert_eq!(b.mode(), Mode::Dead);
-        assert_eq!(c.dead_ticks, 1);
-    }
-
-    #[test]
-    fn aims_with_lead_and_fires_when_on_target() {
-        let t = room();
-        let mut b = brain(&t, vec![]);
-        let mut p = perception(Vec3::ZERO);
-        let enemy = Contact {
-            id: 3,
-            team: 1,
-            pos: Vec3::new(0.0, 0.0, -20.0),
-            vel: Vec3::new(10.0, 0.0, 0.0),
-        };
-        p.contacts = vec![
-            enemy,
-            // A team mate closer by is never a target.
-            Contact {
-                id: 4,
-                team: 0,
-                pos: Vec3::new(0.0, 0.0, -5.0),
-                vel: Vec3::ZERO,
-            },
-        ];
-        let laser = b.arsenal().laser.unwrap();
-        let lead = lead_point(p.pos, enemy.pos, enemy.vel, laser.speed, laser.lifetime).unwrap();
-        let mut c = BrainCounters::default();
-
-        // Nose straight at the target's current position: must turn towards
-        // the lead (to +X means negative yaw), not fire yet.
-        let cmd = b.think(&p, &t, &mut c);
-        assert_eq!(b.mode(), Mode::Combat);
-        assert_eq!(b.target(), Some(3));
-        assert!(cmd.look_yaw < 0.0, "{cmd:?}");
-        assert!(!cmd.buttons.contains(Buttons::FIRE_PRIMARY));
-
-        // Nose on the lead point: fire.
-        p.tick += 1;
-        p.orientation = Quat::from_rotation_arc(Vec3::NEG_Z, lead.normalize());
-        let cmd = b.think(&p, &t, &mut c);
-        assert!(cmd.buttons.contains(Buttons::FIRE_PRIMARY), "{cmd:?}");
-        assert_eq!(c.laser_triggers, 1);
-        // In rocket range with a tight aim at the rocket's lead? The rocket
-        // is faster, so its lead differs and it holds fire.
-        assert!(!cmd.buttons.contains(Buttons::FIRE_SECONDARY) || c.rocket_triggers == 1);
-    }
-
-    #[test]
-    fn does_not_fire_without_energy_or_line_of_sight() {
-        let mut t = room();
-        let mut b = brain(&t, vec![]);
-        let mut p = perception(Vec3::ZERO);
-        p.contacts = vec![Contact {
-            id: 1,
-            team: 1,
-            pos: Vec3::new(0.0, 0.0, -20.0),
-            vel: Vec3::ZERO,
-        }];
-        p.energy = 1.0;
-        let mut c = BrainCounters::default();
-        let cmd = b.think(&p, &t, &mut c);
-        assert!(!cmd.buttons.contains(Buttons::FIRE_PRIMARY));
-
-        // Rock between the two ships: no target at all.
-        t.apply(ls_game::ls_math::TerrainEdit::AddSphere {
-            center: Vec3::new(0.0, 0.0, -10.0),
-            radius: 3.0,
-        });
-        let mut b = brain(&t, vec![]);
-        p.energy = 100.0;
-        b.think(&p, &t, &mut c);
-        assert_eq!(b.target(), None);
-        assert_ne!(b.mode(), Mode::Combat);
-    }
-
-    #[test]
-    fn selects_the_rivet_gun_once_owned() {
-        let t = room();
-        let mut b = brain(&t, vec![]);
-        let rivet = b.arsenal().rivet.unwrap().id;
-        let mut p = perception(Vec3::ZERO);
-        p.contacts = vec![Contact {
-            id: 1,
-            team: 1,
-            pos: Vec3::new(0.0, 0.0, -15.0),
-            vel: Vec3::ZERO,
-        }];
-        let mut c = BrainCounters::default();
-        // The snapshot shows the Rivet Gun equipped: owned from now on.
-        p.primary = Some(rivet);
-        let cmd = b.think(&p, &t, &mut c);
-        assert!(b.has_rivet_gun());
-        assert!(cmd.buttons.contains(Buttons::FIRE_PRIMARY), "{cmd:?}");
-        assert_eq!(c.rivet_triggers, 1);
-        // Death resets the loadout.
-        p.alive = false;
-        b.think(&p, &t, &mut c);
-        assert!(!b.has_rivet_gun());
-    }
-
-    #[test]
-    fn paints_a_nearby_wall() {
-        let t = room();
-        let mut b = brain(&t, vec![]);
-        let paint = b.arsenal().paint.unwrap().id;
-        // 10 u in front of the -Z wall, looking at it.
-        let mut p = perception(Vec3::new(0.0, 0.0, -30.0));
-        let mut c = BrainCounters::default();
-        let mut s = ship(&p);
-        let mut selected = false;
-        for _ in 0..240 {
-            let cmd = b.think(&p, &t, &mut c);
-            if cmd.weapon_select == paint.0 + 1 {
-                selected = true;
-                // The server would switch the weapon.
-                p.primary = Some(paint);
-            }
-            simulate_movement(&mut s, &cmd, &ShipTuning::tinker(), &t);
-            p.pos = s.pos;
-            p.vel = s.vel;
-            p.orientation = s.orientation;
-            p.tick += 1;
-        }
-        assert!(selected, "never selected the Paint Thrower");
-        assert!(c.paint_triggers > 20, "{c:?}");
-        assert!(c.paint_ticks > 0);
-    }
-
-    #[test]
-    fn scavenges_when_hull_is_low() {
-        let t = room();
-        let spot = Vec3::new(20.0, 0.0, 0.0);
-        let mut b = brain(&t, vec![spot, Vec3::new(-30.0, 10.0, 30.0)]);
-        let mut p = perception(Vec3::new(-10.0, 0.0, 0.0));
-        p.hull = 20.0;
-        let mut c = BrainCounters::default();
-        let mut s = ship(&p);
-        let mut held = false;
-        for _ in 0..60 * 6 {
-            let cmd = b.think(&p, &t, &mut c);
-            assert_eq!(b.mode(), Mode::Scavenge);
-            if cmd.buttons.contains(Buttons::SCAVENGE) {
-                held = true;
-                assert!(p.pos.distance(spot) <= ShipTuning::tinker().scavenge_radius);
-                p.hull += 0.3; // the server repairs while in reach
-            }
-            simulate_movement(&mut s, &cmd, &ShipTuning::tinker(), &t);
-            p.pos = s.pos;
-            p.vel = s.vel;
-            p.orientation = s.orientation;
-            p.tick += 1;
-        }
-        assert!(held, "never held scavenge; ended at {:?}", p.pos);
-        // Healed past the threshold: back to normal.
-        p.hull = 90.0;
-        b.think(&p, &t, &mut c);
-        assert_ne!(b.mode(), Mode::Scavenge);
-    }
-
-    #[test]
-    fn dry_scrap_spot_is_abandoned() {
-        let t = room();
-        let a = Vec3::new(5.0, 0.0, 0.0);
-        let far = Vec3::new(-30.0, 10.0, 30.0);
-        let mut b = brain(&t, vec![a, far]);
-        let mut p = perception(a);
-        p.hull = 20.0;
-        let mut c = BrainCounters::default();
-        for _ in 0..(SCAVENGE_CHECK_TICKS + 5) {
-            b.think(&p, &t, &mut c);
-            p.tick += 1;
-        }
-        // No hull gained at `a`: the bot moves on to the other spot.
-        assert_eq!(b.scavenge.map(|j| j.spot), Some(far));
-        // Wrecks are sources too.
-        b.on_wreck(Vec3::new(4.0, 1.0, 0.0), p.tick);
-        assert!(b.wrecks.len() == 1);
-    }
-
-    #[test]
-    fn wanders_without_hitting_walls() {
-        let mut t = room();
-        t.apply(ls_game::ls_math::TerrainEdit::AddSphere {
-            center: Vec3::new(10.0, 0.0, 10.0),
-            radius: 8.0,
-        });
-        let mut b = brain(&t, vec![]);
-        let mut p = perception(Vec3::new(-20.0, 0.0, -20.0));
-        let mut s = ship(&p);
-        let mut c = BrainCounters::default();
-        let mut contacts = 0;
-        let start = p.pos;
-        let mut max_travel: f32 = 0.0;
-        for _ in 0..60 * 30 {
-            let cmd = b.think(&p, &t, &mut c);
-            let r = simulate_movement(&mut s, &cmd, &ShipTuning::tinker(), &t);
-            if r.contact {
-                contacts += 1;
-            }
-            p.pos = s.pos;
-            p.vel = s.vel;
-            p.orientation = s.orientation;
-            p.boost = s.boost;
-            p.energy = s.energy;
-            p.tick += 1;
-            max_travel = max_travel.max(p.pos.distance(start));
-        }
-        assert!(contacts < 10, "{contacts} ticks in contact with rock");
-        assert!(max_travel > 20.0, "bot did not move: {max_travel}");
-        assert!(c.wander_ticks + c.paint_ticks > 0);
-    }
-    /// Steps the bot through the flight model for up to `ticks` (until
-    /// `until` holds); returns the modes seen.
-    fn fly(
-        b: &mut Brain,
-        t: &BoxRoomTerrain,
-        p: &mut Perception,
-        ticks: u64,
-        mut until: impl FnMut(&Brain, &Perception) -> bool,
-    ) -> Vec<Mode> {
-        let mut s = ship(p);
-        let mut c = BrainCounters::default();
-        let mut modes = Vec::new();
-        for _ in 0..ticks {
-            let cmd = b.think(p, t, &mut c);
-            if !modes.contains(&b.mode()) {
-                modes.push(b.mode());
-            }
-            if until(b, p) {
-                break;
-            }
-            simulate_movement(&mut s, &cmd, &ShipTuning::tinker(), t);
-            p.pos = s.pos;
-            p.vel = s.vel;
-            p.orientation = s.orientation;
-            p.boost = s.boost;
-            p.energy = s.energy;
-            p.tick += 1;
-        }
-        modes
-    }
-
-    #[test]
-    fn hunts_an_enemy_out_of_sight_until_it_can_fight() {
-        // A rock ball between the bot and an enemy hovering behind it.
-        let mut t = room();
-        t.apply(ls_game::ls_math::TerrainEdit::AddSphere {
-            center: Vec3::ZERO,
-            radius: 12.0,
-        });
-        let mut b = brain(&t, vec![]);
-        let mut p = perception(Vec3::new(0.0, 0.0, -30.0));
-        let enemy = Contact {
-            id: 5,
-            team: 1,
-            pos: Vec3::new(0.0, 0.0, 30.0),
-            vel: Vec3::ZERO,
-        };
-        p.contacts = vec![enemy];
-        let modes = fly(&mut b, &t, &mut p, 60 * 30, |b, _| b.mode() == Mode::Combat);
-        assert!(modes.contains(&Mode::Hunt), "{modes:?}");
-        assert_eq!(
-            b.mode(),
-            Mode::Combat,
-            "never got the enemy in sight: {:?}",
-            p.pos
-        );
-        assert_eq!(b.target(), Some(5));
-        assert!(b.navigator().is_ready());
-    }
-
-    #[test]
-    fn hunts_near_enemy_spawns_when_no_enemy_is_alive() {
-        let t = room();
-        let mut b = brain(&t, vec![]);
-        let theirs = Vec3::new(30.0, 0.0, 30.0);
-        b.set_spawn_points(vec![(0, Vec3::new(-30.0, 0.0, -30.0)), (1, theirs)]);
-        let mut p = perception(Vec3::new(-30.0, 0.0, -30.0));
-        let mut closest = f32::MAX;
-        fly(&mut b, &t, &mut p, 60 * 15, |_, p| {
-            closest = closest.min(p.pos.distance(theirs));
-            closest < 5.0
-        });
-        assert!(closest < 5.0, "never reached the enemy spawn: {closest}");
-        // After a break the bot goes back to painting and wandering.
-        b.take_hunt_break(p.tick);
-        let mut c = BrainCounters::default();
-        b.think(&p, &t, &mut c);
-        assert!(
-            matches!(b.mode(), Mode::Wander | Mode::Paint),
-            "{:?}",
-            b.mode()
-        );
-    }
-
-    #[test]
-    fn craters_reach_the_navigation_grid() {
-        let t = room();
-        let mut b = brain(&t, vec![]);
-        let p = perception(Vec3::ZERO);
-        let mut c = BrainCounters::default();
-        while !b.navigator().is_ready() {
-            b.think(&p, &t, &mut c);
-        }
-        let mut t2 = room();
-        // Rock appears where the grid thought space was open.
-        let edit = ls_game::ls_math::TerrainEdit::AddSphere {
-            center: Vec3::new(10.0, 0.0, 0.0),
-            radius: 4.0,
-        };
-        t2.apply(edit);
-        let v = b.navigator().grid().version();
-        b.on_terrain_edit(&edit);
-        b.think(&p, &t2, &mut c);
-        assert_ne!(b.navigator().grid().version(), v);
-    }
-}
+mod tests;

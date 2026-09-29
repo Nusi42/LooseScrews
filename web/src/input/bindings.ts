@@ -27,6 +27,8 @@ export type Action =
   | "weapon10"
   | "cycleSecondary"
   | "gadget"
+  | "paintColor"
+  | "shipSelect"
   // Interface keys (work with or without pointer lock).
   | "scoreboard"
   | "toggleDebug";
@@ -65,6 +67,10 @@ export const KEY_BINDINGS: Readonly<Record<string, Action>> = {
   Digit0: "weapon10",
   KeyX: "cycleSecondary",
   KeyG: "gadget",
+  // V cycles the Paint Thrower colour (red bouncy, blue slippery, yellow
+  // sticky); B opens the ship bay (ship type for the next respawn, 1-4).
+  KeyV: "paintColor",
+  KeyB: "shipSelect",
   // Hold for the scoreboard; F3 toggles the debug overlay.
   Tab: "scoreboard",
   F3: "toggleDebug",

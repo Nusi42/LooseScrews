@@ -3,7 +3,7 @@
 //!
 //! Numbers: `data/weapons/stalker_mine.ron` (`params`: `arm_secs`, `detect_radius`,
 //! `creep_speed`, `trigger_radius`, `launch_drag`, `scorch_spacing`, `scorch_radius`,
-//! `scorch_secs`).
+//! `scorch_hot_secs`).
 //!
 //! Status: implemented.
 //! - Launched forward at the data's `speed`, it slows by `launch_drag` per second until it
@@ -17,14 +17,13 @@
 //!   an enemy: direct damage to a touched ship plus the data's splash (`hits_owner`) and, near
 //!   rock, the data's crater.
 //! - Lasting effect: every `scorch_spacing` u it creeps within `scorch_radius` of rock, it
-//!   scorches the surface there (`TerrainEdit::Surface` with the `HOT` state for
-//!   `scorch_secs`: there is no permanent scorch surface state yet, so the trail is a long
-//!   lasting hot mark).
+//!   scorches the surface there for good (`Ctx::scorch`: the permanent `SCORCH` state, hot
+//!   for `scorch_hot_secs`; an already scorched spot adds no edit).
 //! - When it loses its target it stops where it is and waits; without one it coasts to a stop
 //!   (`launch_drag`; a Magnet Sneeze pull carries it along) or stays stuck. It fizzles at the
 //!   end of its lifetime.
 
-use ls_math::terrain::{RayHit, SurfaceStates, TerrainEdit};
+use ls_math::terrain::RayHit;
 use ls_math::{Tick, Vec3, DT};
 
 use crate::behavior::{Command, Ctx, DamageSource};
@@ -140,18 +139,13 @@ impl WeaponBehavior for StalkerMine {
         // Scorched trail.
         let spacing = def.param("scorch_spacing", 1.5);
         let radius = def.param("scorch_radius", 1.5);
-        let ticks = Tick::ticks_for_secs(def.param("scorch_secs", 60.0));
+        let hot_secs = def.param("scorch_hot_secs", 10.0);
         p.vars[VAR_CREPT] += speed * DT;
         if spacing > 0.0 && p.vars[VAR_CREPT] >= spacing {
             p.vars[VAR_CREPT] -= spacing;
-            if radius > 0.0 && ticks > 0 && ctx.view.terrain.sdf(pos) < radius {
-                let until = (ctx.now() + ticks).min(u32::MAX as u64) as u32;
-                ctx.edit(TerrainEdit::Surface {
-                    center: pos,
-                    radius,
-                    states: SurfaceStates::HOT.0,
-                    until,
-                });
+            if radius > 0.0 && ctx.view.terrain.sdf(pos) < radius {
+                // Permanent scorch, smouldering hot for a while.
+                ctx.scorch(pos, radius, hot_secs);
             }
         }
     }
@@ -295,7 +289,9 @@ mod tests {
                     states,
                     until,
                     ..
-                } if states == SurfaceStates::HOT.0 => Some((center, until)),
+                } if states == (SurfaceStates::SCORCH | SurfaceStates::HOT).0 => {
+                    Some((center, until))
+                }
                 _ => None,
             })
             .collect();
@@ -307,8 +303,9 @@ mod tests {
         }
         for (c, until) in &marks {
             assert!(c.x > pos.x && c.x < pos.x + 9.0, "along the path: {c:?}");
+            // Scorched for good, smouldering hot for 10 s.
             let left = *until as u64 - now;
-            assert!(left > 55 * 60 && left <= 60 * 60, "lasts 60 s: {left}");
+            assert!(left > 5 * 60 && left <= 10 * 60, "hot for 10 s: {left}");
         }
     }
 }

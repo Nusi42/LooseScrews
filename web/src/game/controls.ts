@@ -16,6 +16,8 @@ export const BUTTONS = {
   overdrive: 1 << 4,
   horizonAssist: 1 << 5,
   gadget: 1 << 6,
+  /** V: the selected primary's mode (Paint Thrower colour); the simulation acts on the press edge. */
+  weaponMode: 1 << 7,
 } as const;
 
 export interface ControlSettings {
@@ -56,6 +58,7 @@ export class ControlState {
     if (input.overdrive) buttons |= BUTTONS.overdrive;
     if (this.horizonAssist) buttons |= BUTTONS.horizonAssist;
     if (input.gadget) buttons |= BUTTONS.gadget;
+    if (input.cyclePaintColor) buttons |= BUTTONS.weaponMode;
     const o = this.out;
     o[0] = clampUnit(input.thrustForward);
     o[1] = clampUnit(input.thrustRight);

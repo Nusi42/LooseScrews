@@ -46,6 +46,9 @@ use ls_worldgen::{ChunkCoord, Generator, Mesh, ShareCode};
 
 use crate::controls::{Controls, FixedStep, LookAccumulator};
 use crate::inventory::{resolve_select, Inventory, LoadoutView};
+use crate::mechanics::{
+    allowed_or_fallback, push_cue, ship_choices, ChargeView, CueView, GadgetView, ShipChoice,
+};
 use crate::scene::{EntityDraw, PlayerInfo};
 use crate::shots::{FireRules, Resources, ShotPredictor, ShotStats};
 use crate::stream::ChunkStreamer;
@@ -56,6 +59,13 @@ const HZ: f32 = ls_math::TICK_HZ as f32;
 const TELEPORT: f32 = 8.0;
 /// Kill-feed lines kept until the host takes them.
 const MAX_FEED: usize = 32;
+/// Paint colour before the first V press (the sim's default,
+/// `paint_thrower::selected_color`).
+pub const DEFAULT_PAINT_COLOR: u8 = ls_math::terrain::PAINT_RED;
+/// Buttons whose press *edge* the simulation acts on (gadget G, weapon mode
+/// V). A press on a frame that runs no tick is kept for the next tick, so a
+/// tap shorter than a frame is not lost.
+const EDGE_BUTTONS: u16 = ls_sim::Buttons::GADGET.0 | ls_sim::Buttons::WEAPON_MODE.0;
 /// Default number of idle target dummies in practice.
 pub const DEFAULT_DUMMIES: u8 = 3;
 /// Own projectiles are extrapolated from their snapshot to the local
@@ -266,6 +276,7 @@ impl Online {
             return;
         };
         let mut inv = Inventory::from_server(msg, weapons);
+        self.shots.carry(inv.states().iter().map(|w| w.weapon));
         match self.select_tick {
             Some(t) if (msg.tick as u64) < t => {
                 for w in [self.inventory.primary, self.inventory.secondary]
@@ -311,7 +322,12 @@ impl Online {
             .filter(|p| p.owner == me)
             .copied()
             .collect();
-        self.shots.reconcile(snap.tick as u64, &own);
+        self.shots.set_guiding(
+            own.iter()
+                .any(|p| p.state & ls_game::client::GUIDED_STATE_BIT != 0),
+        );
+        self.shots
+            .reconcile_in(snap.tick as u64, &own, self.session.terrain());
         if snap.match_ticks_left == 0 {
             self.shots.clear();
             if self.ended_at.is_none() {
@@ -424,6 +440,21 @@ pub struct GameCore {
     /// Weapon id + 1 picked by the player and not yet sent with a tick
     /// (0 = none): a key press on a frame that runs no tick is not lost.
     pending_select: u8,
+    /// Game cues since the host last took them.
+    cues: Vec<CueView>,
+    /// Ship type chosen for the next respawn (online: sent with
+    /// `SelectShip`), until the ship flies it.
+    next_ship: Option<ShipType>,
+    /// Online: server tick from which the gadget is ready again (estimated
+    /// from the own gadget cues and the gadget's cooldown).
+    gadget_ready_tick: u64,
+    /// Online: the own Paint Thrower colour (`ls_math::terrain::PAINT_*`),
+    /// from the server's `PaintColor` cues, guessed ahead on a V press.
+    paint_color: u8,
+    /// Edge buttons pressed on frames that ran no tick (see [`EDGE_BUTTONS`]).
+    pending_edges: u16,
+    /// Buttons of the last command sent with a tick.
+    last_buttons: u16,
 }
 
 impl GameCore {
@@ -476,14 +507,25 @@ impl GameCore {
             gadgets,
             visuals,
             pending_select: 0,
+            cues: Vec::new(),
+            next_ship: None,
+            gadget_ready_tick: 0,
+            paint_color: DEFAULT_PAINT_COLOR,
+            pending_edges: 0,
+            last_buttons: 0,
         })
     }
 
     /// Offline practice on the level of `code` with `dummies` idle opponents.
     pub fn practice(code: &str, dummies: u8) -> Result<GameCore, String> {
+        Self::practice_as(code, dummies, ShipType::Tinker)
+    }
+
+    /// [`GameCore::practice`] flying `ship` (if the rule set allows it).
+    pub fn practice_as(code: &str, dummies: u8, ship: ShipType) -> Result<GameCore, String> {
         let code = ShareCode::decode(code).map_err(|e| e.to_string())?;
         let gen = Generator::from_code(&code).map_err(|e| e.to_string())?;
-        Self::practice_with_generator(gen, dummies, true).map_err(|e| e.to_string())
+        Self::practice_with_generator_as(gen, dummies, true, ship).map_err(|e| e.to_string())
     }
 
     /// Practice on any generator (tests use small levels). `pregenerate`
@@ -494,6 +536,17 @@ impl GameCore {
         dummies: u8,
         pregenerate: bool,
     ) -> Result<GameCore, GameError> {
+        Self::practice_with_generator_as(gen, dummies, pregenerate, ShipType::Tinker)
+    }
+
+    /// [`GameCore::practice_with_generator`] flying `ship` (the Tinker or
+    /// the first allowed type if the rule set does not allow it).
+    pub fn practice_with_generator_as(
+        gen: Generator,
+        dummies: u8,
+        pregenerate: bool,
+        ship: ShipType,
+    ) -> Result<GameCore, GameError> {
         let code = gen.code();
         let cfg = MatchConfig::paint_the_void(code);
         let mut terrain = GameTerrain::new(gen);
@@ -502,7 +555,8 @@ impl GameCore {
         if pregenerate {
             terrain.generate_all();
         }
-        let me = world.add_player(Some(0), ShipType::Tinker)?;
+        let ship = allowed_or_fallback(world.resolved_rules(), ship);
+        let me = world.add_player(Some(0), ship)?;
         for _ in 0..dummies.min(15) {
             world.add_player(Some(1), ShipType::Tinker)?;
         }
@@ -526,6 +580,12 @@ impl GameCore {
             gadgets: cfg.gadgets,
             visuals,
             pending_select: 0,
+            cues: Vec::new(),
+            next_ship: None,
+            gadget_ready_tick: 0,
+            paint_color: DEFAULT_PAINT_COLOR,
+            pending_edges: 0,
+            last_buttons: 0,
         })
     }
 
@@ -659,7 +719,8 @@ impl GameCore {
         let due = self.step.advance(dt);
         let tuning = self.tuning().clone();
         let max_turn = tuning.max_turn_rate * ls_math::DT;
-        let controls = self.apply_selection(controls);
+        let mut controls = self.apply_selection(controls);
+        let paint_thrower = self.weapons.find("paint_thrower");
         let mut out = Vec::new();
         match &mut self.mode {
             Mode::Online(o) => {
@@ -667,7 +728,21 @@ impl GameCore {
                 // fewer (skipping); the frame's look is spread over the ticks
                 // that actually run, so it is applied exactly once.
                 let n = o.session.plan_ticks(due);
+                latch_edges(&mut self.pending_edges, &mut controls, n);
                 let cmd = self.look.command(controls, n, max_turn);
+                if n > 0 {
+                    // V with the Paint Thrower selected: guess the next colour
+                    // until the server's `PaintColor` cue confirms it.
+                    let mode = ls_sim::Buttons::WEAPON_MODE;
+                    if cmd.buttons.contains(mode)
+                        && !ls_sim::Buttons(self.last_buttons).contains(mode)
+                        && paint_thrower.is_some()
+                        && o.inventory.primary == paint_thrower
+                    {
+                        self.paint_color = next_paint_color(self.paint_color);
+                    }
+                    self.last_buttons = cmd.buttons.0;
+                }
                 let first = o.session.next_input_tick();
                 let synced = o.session.is_synced();
                 let msgs = o.session.run_ticks(n, due, cmd);
@@ -696,7 +771,11 @@ impl GameCore {
                 self.collect_online_events();
             }
             Mode::Practice(p) => {
+                latch_edges(&mut self.pending_edges, &mut controls, due);
                 let cmd = self.look.command(controls, due, max_turn);
+                if due > 0 {
+                    self.last_buttons = cmd.buttons.0;
+                }
                 if due > 0 {
                     self.pending_select = 0;
                 }
@@ -877,8 +956,15 @@ impl GameCore {
                 })
                 .collect(),
         };
+        // Predicted own Paint Thrower blobs carry no state yet: give them the
+        // colour the server's blobs carry in their custom bits.
+        let paint = self.weapons.find("paint_thrower").map(|w| w.0);
+        let me = self.player();
         for p in &mut out {
             p.visual = self.visuals.projectile(WeaponId(p.kind)).0;
+            if Some(p.kind) == paint && p.owner == me && p.state >> 6 == 0 {
+                p.state |= (self.paint_color & 3) << 6;
+            }
         }
         out
     }
@@ -1276,6 +1362,25 @@ impl GameCore {
         };
         for e in events {
             let line = match e {
+                NetEvent::Cue {
+                    tick,
+                    kind,
+                    source,
+                    target,
+                    pos,
+                    value,
+                } => {
+                    let cue = CueView {
+                        kind,
+                        source,
+                        target,
+                        pos,
+                        value,
+                        tick: tick as u64,
+                    };
+                    self.on_cue(cue);
+                    None
+                }
                 NetEvent::Kill { killer, victim, .. } => {
                     if let Mode::Online(o) = &mut self.mode {
                         o.tally.entry(victim).or_default().1 += 1;
@@ -1294,7 +1399,14 @@ impl GameCore {
                     }
                     Some(match_over_text(winner_team, self.team()))
                 }
-                NetEvent::Hit { .. } | NetEvent::Respawn { .. } | NetEvent::Cue { .. } => None,
+                NetEvent::Respawn { ship, .. } => {
+                    // The server clears the Paint Thrower colour on respawn.
+                    if ship == self.player() {
+                        self.paint_color = DEFAULT_PAINT_COLOR;
+                    }
+                    None
+                }
+                NetEvent::Hit { .. } => None,
             };
             if let Some(l) = line {
                 push_feed(&mut self.feed, l);
@@ -1304,6 +1416,14 @@ impl GameCore {
 
     fn practice_event(&mut self, e: Event) {
         let line = match e {
+            Event::Cue(c) => {
+                let tick = match &self.mode {
+                    Mode::Practice(p) => p.world.tick(),
+                    Mode::Online(_) => 0,
+                };
+                self.on_cue(CueView::from_sim(&c, tick));
+                None
+            }
             Event::Killed { victim, killer, .. } => Some(kill_line(
                 killer.map(|k| self.name(k.0 as u8)),
                 self.name(victim.0 as u8),
@@ -1313,6 +1433,218 @@ impl GameCore {
         };
         if let Some(l) = line {
             push_feed(&mut self.feed, l);
+        }
+    }
+
+    // ----- mechanics UI ------------------------------------------------------------
+
+    /// Records a cue for the host; the own gadget cues also restart the
+    /// gadget cooldown estimate (online).
+    fn on_cue(&mut self, cue: CueView) {
+        // Borrowed Time: the rewound ship's weapons go offline for the
+        // weapon's `offline_secs` (the cue's value is the rewind).
+        if cue.kind() == ls_sim::CueKind::Rewound && cue.target == self.player() {
+            let offline = self
+                .weapons
+                .find("borrowed_time")
+                .map_or(u64::from(cue.value), |w| {
+                    let secs = self.weapons.get(w).param("offline_secs", 3.0);
+                    ls_math::Tick::ticks_for_secs(secs)
+                });
+            if let Mode::Online(o) = &mut self.mode {
+                o.shots.set_offline_until(cue.tick + offline);
+            }
+        }
+        // The cooldown starts when a toggle gadget is switched off by its
+        // key or an instant gadget is used (not when a toggle runs out of
+        // energy); see `ls_sim::gadget_cue`.
+        if cue.kind() == ls_sim::CueKind::Gadget
+            && cue.source == self.player()
+            && ls_sim::gadget_cue::starts_cooldown(cue.value)
+        {
+            let g = self
+                .own_gadget()
+                .filter(|&g| (g as usize) < self.gadgets.len());
+            if let Some(g) = g {
+                let def = self.gadgets.get(ls_sim::GadgetId(g));
+                self.gadget_ready_tick =
+                    cue.tick + ls_math::Tick::ticks_for_secs(def.cooldown_secs);
+            }
+        }
+        if cue.kind() == ls_sim::CueKind::PaintColor && cue.source == self.player() {
+            if let Ok(c @ 1..=3) = u8::try_from(cue.value) {
+                self.paint_color = c;
+            }
+        }
+        push_cue(&mut self.cues, cue);
+    }
+
+    /// Game cues since the last call (oldest first).
+    pub fn take_cues(&mut self) -> Vec<CueView> {
+        std::mem::take(&mut self.cues)
+    }
+
+    /// Current simulation tick (online: the estimated server time).
+    pub fn now_tick(&self) -> f64 {
+        match &self.mode {
+            Mode::Online(o) => o.session.clock().server_time().max(0.0),
+            Mode::Practice(p) => p.world.tick() as f64,
+        }
+    }
+
+    /// The own gadget id, if any.
+    fn own_gadget(&self) -> Option<u8> {
+        match &self.mode {
+            Mode::Online(o) => {
+                let s = &o.session;
+                s.players()
+                    .iter()
+                    .find(|p| p.id == s.player())
+                    .map_or(o.inventory.gadget.map(|g| g.0), |p| {
+                        (p.gadget != u8::MAX).then_some(p.gadget)
+                    })
+            }
+            Mode::Practice(p) => p.world.ship(p.me).and_then(|s| s.gadget.map(|g| g.0)),
+        }
+    }
+
+    /// Seconds until the own weapons come back online after a Borrowed Time
+    /// rewind (0 when they are online).
+    pub fn weapons_offline_secs(&self) -> f32 {
+        let left = match &self.mode {
+            Mode::Online(o) => o.shots.offline_until() as f64 - self.now_tick(),
+            Mode::Practice(p) => p.world.ship(p.me).map_or(0.0, |s| {
+                s.weapons_offline_until as f64 - p.world.tick() as f64
+            }),
+        };
+        (left.max(0.0) / ls_math::TICK_HZ as f64) as f32
+    }
+
+    /// The own gadget for the HUD: name, on/off, cooldown left.
+    pub fn gadget(&self) -> GadgetView {
+        let hz = ls_math::TICK_HZ as f32;
+        match &self.mode {
+            Mode::Online(o) => {
+                let active = o
+                    .session
+                    .latest_snapshot()
+                    .and_then(|snap| snap.ships.iter().find(|x| x.id == o.session.player()))
+                    .is_some_and(|x| x.flags & ship_flags::GADGET_ACTIVE != 0);
+                let left = (self.gadget_ready_tick as f64 - self.now_tick()) as f32 / hz;
+                GadgetView::new(&self.gadgets, self.own_gadget(), active, left)
+            }
+            Mode::Practice(p) => {
+                let Some(ship) = p.world.ship(p.me) else {
+                    return GadgetView::new(&self.gadgets, None, false, 0.0);
+                };
+                let left = ship.gadget_ready_tick.saturating_sub(p.world.tick()) as f32 / hz;
+                GadgetView::new(
+                    &self.gadgets,
+                    ship.gadget.map(|g| g.0),
+                    ship.gadget_active,
+                    left,
+                )
+            }
+        }
+    }
+
+    /// The charge in progress of a hold-to-charge weapon, for the charge
+    /// meter (online: mirrored from the local input by the shot predictor).
+    pub fn charge(&self) -> Option<ChargeView> {
+        match &self.mode {
+            Mode::Online(o) => {
+                let c = o.shots.charge()?;
+                let now = o.session.next_input_tick().saturating_sub(1);
+                ChargeView::new(&self.weapons, c.weapon, c.held(now))
+            }
+            Mode::Practice(p) => {
+                let c = p.world.ship(p.me)?.charge?;
+                ChargeView::new(
+                    &self.weapons,
+                    c.weapon,
+                    p.world.tick().saturating_sub(c.start_tick),
+                )
+            }
+        }
+    }
+
+    /// Resolved rules of the match.
+    fn resolved(&self) -> &ResolvedRules {
+        match &self.mode {
+            Mode::Online(o) => &o.resolved,
+            Mode::Practice(p) => p.world.resolved_rules(),
+        }
+    }
+
+    /// The ship type chosen for the next respawn (`None` once the ship flies it).
+    pub fn next_ship(&self) -> Option<ShipType> {
+        self.next_ship.filter(|&t| t != self.ship_type())
+    }
+
+    /// Every ship type with its numbers, whether the rule set allows it and
+    /// the loadout it spawns with (ship selection panel).
+    pub fn ship_choices(&self) -> Vec<ShipChoice> {
+        ship_choices(
+            &self.ships,
+            &self.weapons,
+            &self.gadgets,
+            self.resolved(),
+            self.ship_type(),
+            self.next_ship(),
+        )
+    }
+
+    /// Picks the ship type for the next respawn. Online it returns the
+    /// `SelectShip` packet to send reliably; types the rule set does not
+    /// allow are refused.
+    pub fn select_ship(&mut self, ship: ShipType) -> Result<Option<Vec<u8>>, String> {
+        if !self.resolved().allowed_ship_types.contains(&ship) {
+            return Err(format!(
+                "the rule set does not allow the {}",
+                crate::mechanics::ship_type_title(ship)
+            ));
+        }
+        let packet = match &mut self.mode {
+            Mode::Online(o) => Some(
+                o.session
+                    .select_ship(ship)
+                    .encode()
+                    .map_err(|e| e.to_string())?,
+            ),
+            Mode::Practice(p) => {
+                p.world
+                    .set_ship_type(p.me, ship)
+                    .map_err(|e| e.to_string())?;
+                None
+            }
+        };
+        self.next_ship = Some(ship);
+        Ok(packet)
+    }
+
+    /// The own Paint Thrower colour (`ls_math::terrain::PAINT_*`: 1 red,
+    /// 2 blue, 3 yellow) while it is the selected primary, else 0. Practice
+    /// reads the simulation's weapon state; online it follows the server's
+    /// `PaintColor` cues (guessed ahead on a V press, red after a respawn).
+    pub fn paint_color(&self) -> u8 {
+        let Some(pt) = self.weapons.find("paint_thrower") else {
+            return 0;
+        };
+        match &self.mode {
+            Mode::Online(o) => {
+                if o.inventory.primary == Some(pt) {
+                    self.paint_color
+                } else {
+                    0
+                }
+            }
+            Mode::Practice(p) => p
+                .world
+                .ship(p.me)
+                .filter(|s| s.primary == Some(pt))
+                .map_or(0, |s| {
+                    ls_sim::weapons::specials::paint_thrower::selected_color(s, pt)
+                }),
         }
     }
 
@@ -1480,6 +1812,8 @@ fn blend(prev: &ShipState, cur: &ShipState, alpha: f32) -> (Vec3, Quat) {
 pub const SURFACE_HOT: u8 = 1 << 0;
 pub const SURFACE_CHARGED: u8 = 1 << 1;
 pub const SURFACE_GLOW: u8 = 1 << 2;
+/// Permanent scorch (charred for good: scorch trails and marks).
+pub const SURFACE_SCORCH: u8 = 1 << 3;
 
 /// Per-vertex surface state bits of a chunk mesh (`Mesh::states`, the same
 /// bits as `SURFACE_*`, active at the terrain's display tick), or empty when
@@ -1488,14 +1822,53 @@ pub fn surface_flags(mesh: &Mesh) -> Vec<u8> {
     if mesh.states.len() != mesh.positions.len() {
         return Vec::new();
     }
-    let all = SURFACE_HOT | SURFACE_CHARGED | SURFACE_GLOW;
+    let all = SURFACE_HOT | SURFACE_CHARGED | SURFACE_GLOW | SURFACE_SCORCH;
     mesh.states.iter().map(|s| s & all).collect()
+}
+
+/// Rock material id per vertex (`ls_math::terrain::MATERIAL_*`), or empty
+/// when the mesh carries none.
+pub fn material_ids(mesh: &Mesh) -> Vec<u8> {
+    if mesh.materials.len() != mesh.positions.len() {
+        return Vec::new();
+    }
+    mesh.materials.clone()
+}
+
+/// Paint effect colour per vertex (`ls_math::terrain::PAINT_*`, unknown
+/// ids read as plain), or empty when the mesh carries none.
+pub fn paint_colors(mesh: &Mesh) -> Vec<u8> {
+    if mesh.colors.len() != mesh.positions.len() {
+        return Vec::new();
+    }
+    mesh.colors
+        .iter()
+        .map(|&c| ls_math::terrain::paint_color(c))
+        .collect()
 }
 
 // The wire bits are `ls_math::terrain::SurfaceStates`.
 const _: () = assert!(SURFACE_HOT == ls_math::terrain::SurfaceStates::HOT.bits());
 const _: () = assert!(SURFACE_CHARGED == ls_math::terrain::SurfaceStates::CHARGED.bits());
 const _: () = assert!(SURFACE_GLOW == ls_math::terrain::SurfaceStates::GLOW.bits());
+const _: () = assert!(SURFACE_SCORCH == ls_math::terrain::SurfaceStates::SCORCH.bits());
 
 #[cfg(test)]
 mod tests;
+
+/// Keeps edge buttons pressed on a frame that runs no tick for the next
+/// tick (see [`EDGE_BUTTONS`]).
+fn latch_edges(pending: &mut u16, controls: &mut Controls, ticks: u32) {
+    if ticks == 0 {
+        *pending |= controls.buttons & EDGE_BUTTONS;
+    } else {
+        controls.buttons |= *pending;
+        *pending = 0;
+    }
+}
+
+/// The Paint Thrower colour after `color` (red, blue, yellow; the sim's
+/// `paint_thrower::next_color`).
+fn next_paint_color(color: u8) -> u8 {
+    ls_sim::weapons::specials::paint_thrower::next_color(color)
+}

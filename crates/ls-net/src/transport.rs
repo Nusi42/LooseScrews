@@ -360,6 +360,7 @@ mod tests {
             quant: QuantConfig::default(),
             server_tick: 1,
             edit_log: vec![],
+            edit_count: 0,
         };
         send_message(
             &mut server,

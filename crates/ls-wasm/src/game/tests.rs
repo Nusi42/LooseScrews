@@ -1015,3 +1015,237 @@ fn online_names_entities_and_the_server_inventory() {
         l.core.weapons().get(weapon).id
     );
 }
+
+fn press(buttons: ls_sim::Buttons) -> Controls {
+    Controls {
+        buttons: buttons.0,
+        ..Default::default()
+    }
+}
+
+#[test]
+fn practice_cues_gadget_state_and_charge_meter() {
+    let mut g = small_practice(0);
+    let me = g.player();
+    // The default loadout carries the Shield: G switches it on, a Gadget cue
+    // goes out and the gadget view reports it.
+    assert_eq!(g.gadget().key, "shield");
+    assert!(!g.gadget().active && g.gadget().toggle);
+    g.frame(DT, press(ls_sim::Buttons::GADGET));
+    g.frame(DT, Controls::default());
+    let cues = g.take_cues();
+    let on = cues
+        .iter()
+        .find(|c| c.kind() == ls_sim::CueKind::Gadget)
+        .expect("gadget cue");
+    assert_eq!(on.source, me);
+    assert!(g.gadget().active);
+    assert!(g.take_cues().is_empty(), "taken once");
+
+    // Fusion Charger: holding the trigger fills the charge meter; releasing
+    // fires and empties it.
+    let fusion = g.weapons().find("fusion_charger").unwrap();
+    if let Mode::Practice(p) = &mut g.mode {
+        let id = p.me;
+        p.world.give_weapon(id, "fusion_charger").unwrap();
+    }
+    let hold = Controls {
+        buttons: ls_sim::Buttons::FIRE_PRIMARY.0,
+        weapon_select: fusion.0 + 1,
+        ..Default::default()
+    };
+    for _ in 0..61 {
+        g.frame(DT, hold);
+    }
+    let c = g.charge().expect("charging");
+    assert_eq!(c.weapon, fusion.0);
+    assert_eq!(c.name, "Fusion Charger");
+    assert!((c.fraction - 0.5).abs() < 0.03, "{}", c.fraction);
+    assert!(!c.overcharge);
+    g.frame(DT, Controls::default());
+    assert!(g.charge().is_none());
+    assert!(g.projectiles().iter().any(|p| p.kind == fusion.0));
+}
+
+#[test]
+fn practice_ship_choice_and_paint_colour() {
+    let gen = Generator::with_size(7, Sliders::new(40, 30), [2, 2, 2]);
+    let mut g = GameCore::practice_with_generator_as(gen, 0, false, ShipType::Hauler).unwrap();
+    assert_eq!(g.ship_type(), ShipType::Hauler);
+    let choices = g.ship_choices();
+    assert_eq!(choices.len(), 4);
+    assert!(
+        choices.iter().all(|c| c.allowed),
+        "Paint the Void allows every type"
+    );
+    assert!(choices[ShipType::Hauler.index() as usize].current);
+    assert!(g.next_ship().is_none());
+
+    assert_eq!(
+        g.select_ship(ShipType::Skitter),
+        Ok(None),
+        "practice sends nothing"
+    );
+    assert_eq!(g.next_ship(), Some(ShipType::Skitter));
+    assert!(g.ship_choices()[0].next);
+    if let Mode::Practice(p) = &g.mode {
+        let ship = p.world.ship(p.me).unwrap();
+        assert_eq!(ship.next_ship_type, Some(ShipType::Skitter));
+    }
+
+    assert_eq!(g.paint_color(), 0, "no Paint Thrower selected");
+    let pt = g.weapons().find("paint_thrower").unwrap();
+    // The Paint the Void loadout carries it.
+    let select = Controls {
+        weapon_select: pt.0 + 1,
+        ..Default::default()
+    };
+    g.frame(DT, select);
+    g.frame(DT, Controls::default());
+    assert_eq!(g.paint_color(), DEFAULT_PAINT_COLOR);
+    g.take_cues();
+
+    // V goes to the simulation as `Buttons::WEAPON_MODE` (a press on a frame
+    // that runs no tick is kept for the next tick): the ship's Paint Thrower
+    // state turns blue and a PaintColor cue goes out.
+    g.frame(0.0, press(ls_sim::Buttons::WEAPON_MODE));
+    g.frame(DT, Controls::default());
+    assert_eq!(g.paint_color(), ls_math::terrain::PAINT_BLUE);
+    let cue = g
+        .take_cues()
+        .into_iter()
+        .find(|c| c.kind() == ls_sim::CueKind::PaintColor)
+        .expect("paint colour cue");
+    assert_eq!(cue.value, ls_math::terrain::PAINT_BLUE as u16);
+
+    // The next blob carries blue (its replicated custom bits).
+    for _ in 0..4 {
+        g.frame(DT, press(ls_sim::Buttons::FIRE_PRIMARY));
+    }
+    if let Mode::Practice(p) = &g.mode {
+        let blob = p
+            .world
+            .projectiles()
+            .iter()
+            .find(|x| x.weapon == pt)
+            .expect("paint blob");
+        assert_eq!(
+            ls_sim::weapons::specials::paint_thrower::projectile_color(blob),
+            ls_math::terrain::PAINT_BLUE
+        );
+    }
+    // Held V does not cycle again; a second press goes to yellow.
+    g.frame(DT, press(ls_sim::Buttons::WEAPON_MODE));
+    g.frame(DT, press(ls_sim::Buttons::WEAPON_MODE));
+    assert_eq!(g.paint_color(), ls_math::terrain::PAINT_YELLOW);
+    g.frame(DT, Controls::default());
+    g.frame(DT, press(ls_sim::Buttons::WEAPON_MODE));
+    assert_eq!(g.paint_color(), ls_math::terrain::PAINT_RED);
+}
+
+#[test]
+fn online_ship_selection_reaches_the_room_and_cues_arrive() {
+    let mut l = connect();
+    for _ in 0..8 {
+        l.tick(Controls::default());
+    }
+    // SelectShip: the packet the host sends reliably; the room takes it.
+    let packet = l
+        .core
+        .select_ship(ShipType::Tug)
+        .unwrap()
+        .expect("online returns the SelectShip packet");
+    l.room
+        .handle_packet(l.id, &packet)
+        .expect("room accepts it");
+    let pid = l.room.player_of(l.id).unwrap();
+    assert_eq!(
+        l.room.world().ship(pid).unwrap().next_ship_type,
+        Some(ShipType::Tug)
+    );
+    assert_eq!(l.core.next_ship(), Some(ShipType::Tug));
+    let choices = l.core.ship_choices();
+    assert!(choices[ShipType::Tug.index() as usize].next);
+    assert!(choices[ShipType::Tinker.index() as usize].current);
+    assert!(!choices[1].primaries.is_empty(), "loadout preview");
+
+    // G switches the loadout Shield on: the cue reaches the client, the
+    // gadget view shows it on.
+    let mut cue = None;
+    l.tick(press(ls_sim::Buttons::GADGET));
+    for _ in 0..30 {
+        l.tick(Controls::default());
+        if let Some(c) = l
+            .core
+            .take_cues()
+            .into_iter()
+            .find(|c| c.kind() == ls_sim::CueKind::Gadget)
+        {
+            cue = Some(c);
+            break;
+        }
+    }
+    let cue = cue.expect("gadget cue from the server");
+    assert_eq!(cue.source, l.id);
+    for _ in 0..4 {
+        l.tick(Controls::default());
+    }
+    let gadget = l.core.gadget();
+    assert_eq!(gadget.key, "shield");
+    assert!(gadget.active);
+}
+
+#[test]
+fn online_decoy_cooldown_and_paint_colour_follow_the_server() {
+    let mut l = connect();
+    for _ in 0..8 {
+        l.tick(Controls::default());
+    }
+    let pid = l.room.player_of(l.id).unwrap();
+    l.room.world_mut().give_gadget(pid, "decoy").unwrap();
+    for _ in 0..8 {
+        l.tick(Controls::default());
+    }
+    assert_eq!(l.core.gadget().key, "decoy");
+    assert!(l.core.gadget().cooldown_left <= 0.0, "ready");
+
+    // An instant gadget: the server's USED cue starts the cooldown estimate.
+    l.tick(press(ls_sim::Buttons::GADGET));
+    let mut used = false;
+    for _ in 0..10 {
+        l.tick(Controls::default());
+        used |= l.core.take_cues().iter().any(|c| {
+            c.kind() == ls_sim::CueKind::Gadget && ls_sim::gadget_cue::starts_cooldown(c.value)
+        });
+    }
+    assert!(used, "decoy use cue");
+    let g = l.core.gadget();
+    assert!(g.cooldown_left > 0.5, "cooling down: {}", g.cooldown_left);
+
+    // V with the Paint Thrower selected: the server's colour comes back.
+    let pt = l.core.weapons().find("paint_thrower").unwrap();
+    l.tick(Controls {
+        weapon_select: pt.0 + 1,
+        ..Default::default()
+    });
+    for _ in 0..6 {
+        l.tick(Controls::default());
+    }
+    assert_eq!(l.core.paint_color(), ls_math::terrain::PAINT_RED);
+    l.tick(press(ls_sim::Buttons::WEAPON_MODE));
+    assert_eq!(
+        l.core.paint_color(),
+        ls_math::terrain::PAINT_BLUE,
+        "guessed ahead"
+    );
+    for _ in 0..6 {
+        l.tick(Controls::default());
+    }
+    assert_eq!(l.core.paint_color(), ls_math::terrain::PAINT_BLUE);
+    let ship = l.room.world().ship(pid).unwrap();
+    assert_eq!(
+        ls_sim::weapons::specials::paint_thrower::selected_color(ship, pt),
+        ls_math::terrain::PAINT_BLUE,
+        "the server switched too"
+    );
+}

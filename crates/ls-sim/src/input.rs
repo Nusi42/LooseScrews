@@ -26,6 +26,9 @@ impl Buttons {
     /// G: use the gadget (acts on the press edge: toggles Shield and Cloak,
     /// launches the Decoy).
     pub const GADGET: Buttons = Buttons(1 << 6);
+    /// V: weapon mode of the selected primary (acts on the press edge;
+    /// `WeaponBehavior::on_mode`: the Paint Thrower cycles its colour).
+    pub const WEAPON_MODE: Buttons = Buttons(1 << 7);
 
     #[inline]
     pub fn contains(self, other: Buttons) -> bool {

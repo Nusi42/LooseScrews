@@ -74,8 +74,12 @@ Endpoints on the `--bind` address (TCP) and the `--wt-bind` address (UDP, same p
 
 Counters (`StatsSnapshot`) keep growing across matches: `total_ticks`, `total_edits`, snapshots,
 inputs; `tick` and `edit_count` are the current match's. The `tick stats` log line (every
-`--stats-interval` s) has p50/p99/max tick time, input counters, bandwidth, edits, craters,
-paint cells per team, match time left, `match_over`, `matches` and `encode_errors`; `final stats`
+`--stats-interval` s) has p50/p99/max tick time, the longest time of each tick phase
+(`recv_max_us`: commands and received packets, `step_max_us`: `Room::step`, `send_max_us`:
+dispatch and the rest; a slow tick whose time sits in the receive or send phase is the host
+descheduling the sim thread, not game work), input counters, bandwidth, edits, craters,
+networked debris now and at its peak in the window (`debris`, `debris_peak`; cap 64), paint
+cells per team, match time left, `match_over`, `matches` and `encode_errors`; `final stats`
 is logged at shutdown.
 
 ### CLI
@@ -147,8 +151,10 @@ down 2 s after the last player left (scripted runs).
 - Name tags (`web/src/ui/nameTags.ts`) project a point above each ship; teammates are labelled
   to 90 u, enemies to 45 u.
 - Terrain surface states: `ChunkMesh.surface()` gives per-vertex bits (hot 1, charged 2, glow
-  4; `game::surface_flags` from `ls_worldgen::Mesh::states`), packed above the paint byte into
-  the terrain's team attribute and drawn by the terrain shader. Every frame (`pull_dirty`) the
+  4, permanent scorch 8; `game::surface_flags` from `ls_worldgen::Mesh::states`); with the
+  rock material (`materials()`) and the paint effect colour (`paintColors()`) they are packed
+  above the paint byte into the terrain's team attribute (`web/src/renderer/mesh.ts`:
+  bits 8-15, 16-23, 24-31) and drawn by the terrain shader. Every frame (`pull_dirty`) the
   terrain's display tick moves to the match time (`GameTerrain::advance_to`: the server time
   estimate online, the world tick in practice), so chunks whose states expired are remeshed.
 - Online the server sends the own inventory (`Message::Inventory`: carried weapons, ammo,
@@ -156,9 +162,19 @@ down 2 s after the last player left (scripted runs).
   for the HUD and weapon selection, showing a local selection until the server has processed
   it (`Online::select_tick`).
 - Keys: 1-9 and 0 select the n-th carried primary in design-doc order (registry order), the
-  mouse wheel cycles primaries, X cycles secondaries, G uses the gadget (`Buttons::GADGET`), F
-  stays overdrive. The browser sends these as intents (controls indexes 8-10); `GameCore`
-  resolves them against the carried weapons and holds a selection until a tick sends it.
+  mouse wheel cycles primaries, X cycles secondaries, G uses the gadget (`Buttons::GADGET`), V
+  is the selected primary's mode (`Buttons::WEAPON_MODE`, bit 7: the Paint Thrower's colour),
+  B opens the ship bay (1-4 pick a ship there), F stays overdrive. The browser sends weapon
+  keys as intents (controls indexes 8-10); `GameCore` resolves them against the carried
+  weapons and holds a selection until a tick sends it. The simulation acts on the press edge
+  of G and V; `GameCore` keeps such a press from a frame that ran no tick for the next tick
+  (`EDGE_BUTTONS`), and the browser counts a tap shorter than a frame as held for that frame.
+- Mechanics state for the HUD comes from ls-wasm, not from local guesses where the
+  simulation owns it: the Paint Thrower colour (practice: the ship's weapon state; online:
+  the server's `PaintColor` cue, guessed ahead on a V press, red after a respawn; 0 unless the
+  Paint Thrower is the selected primary), the gadget cooldown (practice: the ship; online:
+  from `Gadget` cues, see `ls_sim::gadget_cue`), weapons offline after a Borrowed Time rewind
+  (`weaponsOfflineSecs`; online the predictor starts it as the rewind fires).
 
 ## ls-bots
 
@@ -173,12 +189,29 @@ Every socket write has a 5 s limit and a session in which nothing arrives for 5 
 `ls_game::match_setup` (about 190 ms per join on cave worlds: the level is generated a second
 time), so bots know where the other team starts.
 
-Behaviour (`src/brain.rs`), priorities every tick: **scavenge** when hull is low; **combat**
-when an enemy is in range with line of sight (orbit, lead aim, fire); **hunt** when an enemy is
-alive but out of sight: follow a navigation route to it (to the enemy spawn area when none is
-alive), painting on the way, with a break of `hunt_break_secs` (8 s) after `hunt_secs` (90 s)
-without a fight or at the end of a route that cannot reach it; otherwise **paint and
-wander**. `BehaviorCounters::hunt_ticks` counts ticks in Hunt mode.
+Behaviour (`src/brain.rs`, weapon and threat handling in `src/brain/combat.rs`), priorities
+every tick: **guide** an Eyeball the bot launched (its look input steers the missile at the
+nearest enemy); **flee** Tectonic Charge zones (a charge in flight or stuck, the launch and
+crack cues) along a route out of the collapse zone; **scavenge** when hull is low;
+**combat** when an enemy is in range with line of sight (orbit at the chosen primary's
+distance, lead aim for its projectile speed, fire); **collect** wanted weapon, ammo and
+gadget pickups within 60 u (within 30 u during a fight); **hunt** when an enemy is alive but out of
+sight: follow a navigation route to it (to the enemy spawn area when none is alive), painting
+on the way, with a break of `hunt_break_secs` (8 s) after `hunt_secs` (90 s) without a fight
+or at the end of a route that cannot reach it; otherwise **paint and wander** (cycling the
+paint colour now and then). `BrainCounters::hunt_ticks` counts ticks in Hunt mode.
+
+Arsenal use (`src/arsenal.rs`): every weapon of the match's table is a `Gun` (ballistics,
+cost, slot, charge) with a `Role` from its data id (`Role::Other` for unknown ids: fired like
+a laser or a rocket). Primaries are picked by distance band (lasers mid range, kinetic long
+range, Scrap Shotgun and Leech Arc close), weighted towards weapons not fired yet; charge
+weapons are held (the Fusion Charger released before its overcharge). Secondaries by
+situation: mines when chased, homing ordnance at fleeing targets, the Tectonic Charge on
+clusters, Borrowed Time when hurt, Swap Harpoon out of a Tectonic zone, otherwise a random
+fitting one. Gadgets: Shield while splash threatens, Cloak while approaching, Decoy when
+chased (`GadgetKind::from_id`; unknown gadgets are never used). Each bot picks a random
+allowed ship type (`bot::preferred_ship`). A prediction snap waits 1 s for a Swap Harpoon or
+Borrowed Time cue before it counts as a desync. The summary lists shots and hits per weapon.
 
 Global navigation (`src/nav.rs`, M1 issue A):
 

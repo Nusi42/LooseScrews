@@ -39,8 +39,11 @@ export function takeMesh(m: ChunkMeshHandle): { key: string; mesh: MeshData } {
         normals: m.normals(),
         indices: m.indices(),
         team: m.teams(),
-        // Surface states (hot, charged, glow) when the terrain layer provides them.
+        // Surface states (hot, charged, glow, scorch) when the terrain layer provides them.
         surface: m.surface?.() ?? new Uint8Array(0),
+        // Rock materials and paint effect colours (tolerated when absent).
+        materials: m.materials?.() ?? new Uint8Array(0),
+        paintColors: m.paintColors?.() ?? new Uint8Array(0),
       },
     };
   } finally {

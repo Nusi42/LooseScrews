@@ -54,6 +54,13 @@ export interface ProjectileState {
 export const PROJ_STUCK = 1 << 0;
 export const PROJ_ARMED = 1 << 1;
 export const PROJ_RETURNING = 1 << 4;
+/** Module-defined bits (ls-sim `proj_flags::CUSTOM_A/B`); the Paint Thrower keeps its colour id there. */
+export const PROJ_CUSTOM_SHIFT = 6;
+
+/** Paint colour id (1 red, 2 blue, 3 yellow; 0 none) a Paint Thrower blob carries in its custom bits. */
+export function projectilePaintColor(state: number): number {
+  return (state >> PROJ_CUSTOM_SHIFT) & 3;
+}
 
 /** A replicated entity (pickup, scrap pile, wreck, debris, decoy, ghost, dust cloud, marker). */
 export interface EntityState {

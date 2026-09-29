@@ -210,7 +210,7 @@ mod tests {
         assert!(!w.ship(a).unwrap().gadget_active, "dropped at zero energy");
         assert!(ev.iter().any(|e| matches!(
             e,
-            crate::Event::Cue(c) if c.kind == crate::CueKind::Gadget && c.value == 255
+            crate::Event::Cue(c) if c.kind == crate::CueKind::Gadget && c.value == crate::gadget_cue::EMPTY
         )));
     }
 

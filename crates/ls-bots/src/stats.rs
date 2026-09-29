@@ -1,8 +1,24 @@
 //! Per-bot counters and the summary printed at exit.
 
+use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
 use crate::brain::BrainCounters;
+
+/// Use of one weapon by one bot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct WeaponUse {
+    /// Shots seen: new own projectiles of the weapon in a snapshot (one per
+    /// weapon per snapshot, so a shotgun blast or a volley counts once and
+    /// weapons firing faster than the 30 Hz snapshots are under-counted),
+    /// Leech Arc arcs (each beam cue covers `value` ticks of arcs) and
+    /// Railspike muzzle flashes. Hits count every damaging hit, so hits can
+    /// exceed shots for pellets, fans and splash.
+    pub fired: u64,
+    /// Hits on other ships (`Hit` events with this bot as attacker).
+    pub hits: u64,
+    pub kills: u32,
+}
 
 /// Everything one bot counted over its whole run (all connections).
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -56,6 +72,10 @@ pub struct BotStats {
     pub errors: Vec<String>,
 
     pub behavior: BrainCounters,
+    /// Per weapon (data id): shots and hits.
+    pub weapons: BTreeMap<String, WeaponUse>,
+    /// Lives per ship type (name).
+    pub ship_lives: BTreeMap<String, u32>,
 }
 
 impl BotStats {
@@ -71,6 +91,19 @@ impl BotStats {
         if self.errors.len() < 8 {
             self.errors.push(msg.into());
         }
+    }
+
+    /// The counters of weapon `id` (data id).
+    pub fn weapon_mut(&mut self, id: &str) -> &mut WeaponUse {
+        self.weapons.entry(id.to_string()).or_default()
+    }
+
+    /// Weapons this bot fired at least once.
+    pub fn weapons_fired(&self) -> impl Iterator<Item = &str> {
+        self.weapons
+            .iter()
+            .filter(|(_, u)| u.fired > 0)
+            .map(|(k, _)| k.as_str())
     }
 
     /// True if this bot saw a protocol error or a desync.
@@ -130,8 +163,7 @@ pub fn summary(stats: &[BotStats], elapsed_secs: f64, policy: DisconnectPolicy) 
     );
     let mut total = BotStats::new("total");
     for s in stats {
-        let shots =
-            s.behavior.laser_triggers + s.behavior.rivet_triggers + s.behavior.rocket_triggers;
+        let shots: u64 = s.weapons.values().map(|u| u.fired).sum();
         let _ = writeln!(
             out,
             "{:<10} {:>5} {:>5} {:>8} {:>7} {:>6} {:>6} {:>7.3} {:>6} {:>5} {:>5} {:>6} {:>6} {:>5} {:>5}",
@@ -171,6 +203,15 @@ pub fn summary(stats: &[BotStats], elapsed_secs: f64, policy: DisconnectPolicy) 
         total.protocol_errors += s.protocol_errors;
         total.desyncs += s.desyncs;
         total.behavior.add(&s.behavior);
+        for (k, u) in &s.weapons {
+            let t = total.weapon_mut(k);
+            t.fired += u.fired;
+            t.hits += u.hits;
+            t.kills += u.kills;
+        }
+        for (k, n) in &s.ship_lives {
+            *total.ship_lives.entry(k.clone()).or_default() += n;
+        }
     }
     let b = &total.behavior;
     let _ = writeln!(
@@ -205,6 +246,36 @@ pub fn summary(stats: &[BotStats], elapsed_secs: f64, policy: DisconnectPolicy) 
         b.paint_triggers,
         b.scavenge_holds
     );
+    let _ = writeln!(
+        out,
+        "        arsenal: mode ticks flee {} collect {} guide {}; secondary presses {}, gadget presses {}, paint colour presses {}",
+        b.flee_ticks,
+        b.collect_ticks,
+        b.guide_ticks,
+        b.secondary_triggers,
+        b.gadget_presses,
+        b.colour_presses
+    );
+    let fired = total.weapons_fired().count();
+    let _ = writeln!(
+        out,
+        "        weapons fired: {fired} distinct (shots/hits/kills per weapon below; a shot is one volley per snapshot, a hit every damaging hit)"
+    );
+    for (k, u) in &total.weapons {
+        let _ = writeln!(
+            out,
+            "          {k:<16} {:>6} {:>6} {:>4}",
+            u.fired, u.hits, u.kills
+        );
+    }
+    if !total.ship_lives.is_empty() {
+        let lives: Vec<String> = total
+            .ship_lives
+            .iter()
+            .map(|(k, n)| format!("{k} {n}"))
+            .collect();
+        let _ = writeln!(out, "        lives per ship type: {}", lives.join(", "));
+    }
     let _ = writeln!(
         out,
         "        protocol errors {}, desyncs {}",
@@ -260,5 +331,14 @@ mod tests {
         assert!(text.contains("result: FAILED"), "{text}");
         assert!(text.contains("inputs sent"), "{text}");
         assert!(text.contains("match restarts 4"), "{text}");
+        let mut w = BotStats::new("w");
+        w.joins = 1;
+        w.weapon_mut("railspike").fired = 3;
+        w.weapon_mut("railspike").hits = 1;
+        w.weapon_mut("seeker").hits = 0;
+        assert_eq!(w.weapons_fired().collect::<Vec<_>>(), ["railspike"]);
+        let text = summary(&[w], 1.0, fail);
+        assert!(text.contains("weapons fired: 1 distinct"), "{text}");
+        assert!(text.contains("railspike"), "{text}");
     }
 }

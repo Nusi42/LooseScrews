@@ -9,7 +9,8 @@ wire and client prediction uses the server's own physics.
 Details live in the other pages: [contracts.md](contracts.md) (types shared across crates),
 [game-glue.md](game-glue.md) (`ls-game`: client session, room, wire conventions),
 [server.md](server.md) (hosting, transports, bots, e2e), [netcode.md](netcode.md) and
-[determinism.md](determinism.md).
+[determinism.md](determinism.md); the M2 weapons, gadgets, ship types and rule sets in
+[arsenal-framework.md](arsenal-framework.md).
 
 ## Crates
 
@@ -18,11 +19,11 @@ Details live in the other pages: [contracts.md](contracts.md) (types shared acro
 | `ls-math` | lib | `Vec3`, `Quat`, `Mat3`, `Aabb`, `Tick` (60 Hz, `DT`), `det` (libm transcendentals), `SplitMix64` / `Pcg32`, and the terrain contracts (`TerrainEdit`, `SurfaceStates`, `TerrainQuery`, `RayHit`, test terrains) | yes |
 | `ls-worldgen` | lib | `Sliders`, `ShareCode`, the SDF `Generator`, `ChunkStore` (32³ cells, lazy generation, edit log, surface layers: paint and timed surface states), rock material field (`material`: weak/rock/hard, crater strength), `surface_nets` and `dual_contouring` meshers, golden hashes | yes |
 | `ls-sim` | lib | `World::step`: flight model, ship types (`ShipTable`), resources, data-driven weapons (`WeaponTable`) with one behaviour module per weapon, gadgets, entities (debris, decoys, ghosts, dust), rule sets v2 and codes (`RuleSet`), projectiles, splash, craters and paint, pickups, respawns, Paint the Void; `state_hash`, `data_hash`. Sees terrain only through `TerrainQuery` + `SimTerrain` ([arsenal-framework.md](arsenal-framework.md)) | yes |
-| `ls-net` | lib | Wire protocol: bit packing, quantization (18 B ship state), `Message`s and handshake (data hash, ship choice), full and delta snapshots (ships, projectiles, generic entities, players), per-client `Relevance`, `SnapshotHistory`, the poll-based `Transport` trait and `MemoryTransport` | pure encoding |
+| `ls-net` | lib | Wire protocol (version 4): bit packing, quantization (18 B ship state), `Message`s and handshake (data hash, ship choice), full and delta snapshots (ships, projectiles, generic entities, players; predicted deltas and projectile settling), events and cues, `Inventory` and `SelectShip`, per-client `Relevance`, `SnapshotHistory`, the poll-based `Transport` trait and `MemoryTransport` | pure encoding |
 | `ls-game` | lib | Glue with no I/O: `GameTerrain`, deterministic match setup (spawn and pickup points), sim <-> net conversion, `ClientSession` (prediction, reconciliation, interpolation, clock), and (feature `server`) the authoritative `Room` with lag compensation | uses the above |
 | `ls-server` | bin + lib | Hosts one `Room`: 60 Hz sim thread, tokio I/O, HTTP static files, WebSocket `/ws`, WebTransport over UDP, `/cert-hash`, match restart, stats logging | no |
-| `ls-wasm` | cdylib | wasm-bindgen API for the browser: share-code checks, `Game` (online `ClientSession` or offline practice `World`), chunk streaming and meshing, shot prediction, HUD and overlay data as flat arrays | no |
-| `ls-bots` | bin + lib | Headless clients: one thread per bot, `ClientSession` plus steering/aim/brain, WebSocket or WebTransport, desync checks, exit codes | no |
+| `ls-wasm` | cdylib | wasm-bindgen API for the browser: share-code checks, `Game` (online `ClientSession` or offline practice `World`), chunk streaming and meshing, shot prediction per weapon (`shots.rs`: patterns, fans, helices, nothing for instant weapons), mechanics views (`mechanics.rs`: cues, charge meter, gadget state, ship choice), inventory, HUD and overlay data as flat arrays | no |
+| `ls-bots` | bin + lib | Headless clients: one thread per bot, `ClientSession` plus global navigation (`nav.rs`), steering, aim and a brain that uses every weapon (`arsenal.rs`: roles and range bands), gadget and ship type; WebSocket or WebTransport, per-weapon stats, desync checks, exit codes | no |
 
 Only the three deterministic crates follow the [determinism rules](determinism.md).
 `ls-worldgen` and `ls-sim` never depend on each other: both implement or consume the
@@ -34,8 +35,8 @@ Non-Rust parts:
 | Path | Contents |
 | --- | --- |
 | `data/weapons/*.ron`, `data/ships/*.ron`, `data/gadgets/*.ron`, `data/rulesets/*.ron` | Gameplay numbers. Embedded into `ls-sim` with `include_str!` (no file system in WASM) and hashed for the handshake; the server can also load a rule set file with `--ruleset` |
-| `web/` | TypeScript (strict) + Vite client: `renderer/` (WebGPU), `input/`, `net/` (WebSocket and WebTransport transports), `game/` (session, chunk loader, camera, views), `ui/` (start screen, HUD, scoreboard, overlays), `wasm/` (loader and typed API over the wasm-bindgen package in `web/src/wasm/pkg`, generated and gitignored) |
-| `tools/` | `ci.ps1` / `ci.sh` (full check), `determinism-check.mjs` (WASM vs native golden hashes), `e2e.mjs` + `e2e.ps1` / `e2e.sh` (server + bots soak run) |
+| `web/` | TypeScript (strict) + Vite client: `renderer/` (WebGPU: terrain with paint patterns, scorch and surface states; instanced ships, projectiles and entities; translucent effects), `input/`, `net/` (WebSocket and WebTransport transports), `game/` (session, chunk loader, camera incl. the Eyeball view, views, `mechanics.ts`: cue effects, banners, charge and gadget lines), `ui/` (start screen with ship choice, HUD, ship bay, scoreboard, effects, overlays), `rules/` (rule set editor, `?editor=rules`, with a catalog generated from `data/`), `wasm/` (loader and typed API over the wasm-bindgen package in `web/src/wasm/pkg`, generated and gitignored) |
+| `tools/` | `ci.ps1` / `ci.sh` (full check), `determinism-check.mjs` (WASM vs native golden hashes), `e2e.mjs` + `e2e.ps1` / `e2e.sh` (server + bots soak run; `e2e-rulesets/` for stress rule sets), `browser-smoke/` + `browser-smoke.ps1` / `.sh` (headless Chrome/Edge with WebGPU against real servers) |
 
 ## Crates and runtime components
 
@@ -96,35 +97,60 @@ flowchart LR
    pickup points from the pristine level (`match_setup`, seeded RNG streams; every point must
    reach the network in a straight line with 1.5 u of clearance) and builds the `ls_sim::World` at tick 0. `Room::new`
    pregenerates every chunk (paint coverage needs all surface cells).
-3. **Handshake.** The browser (or a bot) connects, sends `Hello`, and receives a `Welcome` with
-   its wire id and team, the share code, the rule set RON text, the quantization ranges, the
-   current server tick and the whole terrain edit log.
+3. **Handshake.** The browser (or a bot) connects and sends `Hello` (name, protocol version,
+   the hash of its built-in `data/` files, the ship type for the first life). A different data
+   hash is rejected with `DataMismatch`. The `Welcome` carries its wire id and team, ship type,
+   the share code, the effective rule set as RON text (after the server's balance list and
+   bans), the quantization ranges, the current server tick and the terrain edit log (expired
+   surface-state edits left out).
 4. **Client world.** `ClientSession::from_welcome` (inside `ls-wasm`'s `Game.fromWelcome`)
    regenerates the same level from the share code, replays the edit log, resolves the rule set
    and computes the same spawn and pickup points. Nothing about the level is downloaded;
    determinism guarantees it matches the server bit for bit.
 5. **Each tick (server).** The sim thread applies each client's input for the tick (repeating
-   the last one if it is missing), runs lag compensation, calls `World::step` (movement,
-   firing, projectiles, craters and paint as `TerrainEdit`s applied to `GameTerrain`), records
-   ship history, and every 2nd tick queues a snapshot per client, delta-encoded against that
-   client's last acknowledged snapshot, carrying the terrain edits it has not acknowledged.
+   the last one if it is missing), runs lag compensation, calls `World::step` (movement with
+   paint effects, gadgets, the hooks of each weapon's module, projectiles, entities and
+   debris, pickups; craters, paint and surface states as `TerrainEdit`s applied to
+   `GameTerrain`), records ship history, and every 2nd tick queues a snapshot per client:
+   filtered by relevance (cloaked enemies, far debris), delta-encoded against that client's
+   last acknowledged snapshot, carrying the terrain edits it has not acknowledged. Events and
+   cues go out reliably with it, and a changed inventory as `Message::Inventory`.
 6. **Each animation frame (browser).** `web/src/main.ts` samples input, `GameSession.frame`
    drains received packets into `Game.handlePacket` (snapshots: apply edits, reconcile the
-   predicted ship, buffer remote ships), then `Game.frame` runs the due 60 Hz ticks (predicts
-   the local ship with `ls_sim::simulate_movement`, predicts own shots) and returns the
-   `Input` messages to send.
+   predicted ship, buffer remote ships and entities; events: cues for the mechanics UI), then
+   `Game.frame` runs the due 60 Hz ticks (predicts the local ship with
+   `ls_sim::simulate_movement`, predicts own shots per weapon) and returns the `Input`
+   messages to send. `web/src/game/mechanics.ts` turns the frame's cues into banners, flashes
+   and HUD lines.
 7. **Meshing.** Terrain edits mark chunks dirty. `Game.meshNext(camera)` picks the next chunk
    (dirty ones first, then missing ones nearest the camera) and runs surface nets;
    `web/src/game/chunks.ts` spends a per-frame budget (4 ms / 8 chunks in play) and hands the
-   `positions`/`normals`/`indices`/`team` arrays to the renderer.
+   `positions`/`normals`/`indices`/`team` arrays (plus per-vertex surface states, rock
+   materials and paint colours) to the renderer.
 8. **Drawing.** The renderer uploads chunk meshes (frustum culled, lit, team paint colours per
    vertex), and instanced ships and projectiles: the local ship from the prediction (plus the
    decaying correction offset), remote ships interpolated 100 ms in the past, projectiles
-   extrapolated from the newest snapshot, own shots from the shot predictor. The HUD and
-   overlays read flat arrays from `ls-wasm`.
+   extrapolated from the newest snapshot, own shots from the shot predictor, and generic
+   entities (pickups, scrap, wrecks, debris, decoys, ghosts, dust) by their data-driven
+   `Visual`. The HUD and overlays read flat arrays from `ls-wasm`.
 
 Offline practice (`Game.practice(code, dummies)`) skips steps 1-3 and 5: the browser runs a
 local `ls_sim::World` with idle dummies on the same level.
+
+## A weapon across the crates
+
+Every M2 weapon follows the same path, which is why a new one needs no changes outside its
+own files (see [dev-guide.md, Adding a weapon](../dev-guide.md#8-adding-a-weapon)):
+
+| Stage | Where | What happens |
+| --- | --- | --- |
+| Numbers | `data/weapons/<id>.ron` | `WeaponDef`: speed, damage, cost, splash, terrain effect, shield interaction, `visual`, free `params` |
+| Behaviour | `ls-sim`: `weapons/<family>/<id>.rs`, registered in `weapons/registry.rs` | `WeaponBehavior` hooks queue `Command`s through `Ctx`; `World::step` applies them (damage pipeline with gadgets, knockback, edits, entities, cues) |
+| Rules | `ls-sim`: `RuleSet::resolve_with` | availability, pickups, tuning and shield overrides per weapon; banned weapons never fire, spawn or get granted |
+| Wire | `ls-net`, glue in `ls_game::convert` | projectiles (weapon id as `kind`, replicated state bits), generic entities with `VisualId`s, `NetEvent::Cue`, terrain edits; the data hash in `Hello` keeps builds apart |
+| Client | `ls-wasm` `shots.rs`, `mechanics.rs`; `web/src/game/scene.ts`, `mechanics.ts` | own shots predicted per `ShotModel`, projectiles and pickups drawn from the `Visual`, cues turned into effects; names and slots from the data |
+| Bots | `ls-bots` `arsenal.rs`, `brain.rs` | a `Role` per weapon id and a range band for primaries |
+| Editor | `web/src/rules/catalog.ts` | generated from the data (`LS_BLESS_RULES_CATALOG=1 cargo test -p ls-sim --lib rulecode`) |
 
 ## Threads and ownership
 

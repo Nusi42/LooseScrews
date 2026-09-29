@@ -4,14 +4,18 @@
 //! (M2 plan): no projectile.
 //!
 //! Numbers: `data/weapons/leech_arc.ron` (`damage`, `knockback` per arc; `params`: `range`,
-//! `lock_half_angle_deg`, `drain_per_arc`, `beam_every`, `ground_reach`, `charged_radius`,
-//! `charged_secs`,
+//! `lock_half_angle_deg`, `lock_keep_half_angle_deg`, `drain_per_arc`, `beam_every`,
+//! `ground_reach`, `charged_radius`, `charged_secs`,
 //! and `charged_drain_per_sec`, which the framework's charged-rock step reads).
 //!
 //! Behaviour (`fire`, every paid shot):
 //! - Lock: the nearest living enemy within `range` of the shooter inside a cone of
 //!   `lock_half_angle_deg` around the aim with a clear line of sight (`ctx.target_in_cone`).
-//!   The lock is re-acquired every arc (no per-weapon state holds the previous target).
+//!   The lock persists: it is the weapon's state (`ShipState::weapon_state`, the locked
+//!   player id + 1, set with `ctx.set_weapon_state`), and later arcs stay on that ship while
+//!   it lives, stays within `range` with line of sight and inside the wider
+//!   `lock_keep_half_angle_deg` cone, even if another enemy comes closer. Otherwise the arc
+//!   locks anew (or clears the lock when nothing is in reach).
 //! - Hit: drains `drain_per_arc` energy from the target into the shooter (`ctx.drain_energy`,
 //!   capped by what the target has and the shooter's tank; fixed per arc, so a rule set's fire
 //!   rate multiplier scales drain and damage alike), deals the shot's damage with knockback
@@ -31,6 +35,7 @@ use ls_math::Vec3;
 
 use super::scrap_laser::heat_surface;
 use crate::behavior::{Ctx, Cue, CueKind, DamageSource};
+use crate::ship::{PlayerId, ShipState};
 use crate::weapons::{Shot, WeaponBehavior};
 
 /// Behaviour of the Leech Arc.
@@ -47,6 +52,40 @@ fn ground(ctx: &mut Ctx, shot: &Shot, from: Vec3, dir: Vec3, reach: f32) -> Opti
     Some(hit.point)
 }
 
+/// The ship `shot`'s previous lock still holds on, if it does (see the module docs).
+fn kept_lock<'a>(ctx: &Ctx<'a>, shot: &Shot, range: f32) -> Option<&'a ShipState> {
+    let s = shot.shooter;
+    let id = s.weapon_state_of(shot.weapon).checked_sub(1)?;
+    let t = ctx.ship(PlayerId(u16::try_from(id).ok()?))?;
+    let to = t.pos - s.pos;
+    let d = to.length();
+    let keep = shot.def.param("lock_keep_half_angle_deg", 60.0);
+    let cos = ls_math::det::cos(keep.to_radians());
+    let fwd = s.orientation.forward();
+    let holds = t.alive
+        && t.team != s.team
+        && d <= range
+        && d > 1e-4
+        && to.dot(fwd) >= cos * d
+        && ctx.raycast(s.pos, to, d).is_none();
+    holds.then_some(t)
+}
+
+/// Lock of this arc: the kept lock or the nearest target in the cone; the
+/// weapon state follows it.
+fn lock<'a>(ctx: &mut Ctx<'a>, shot: &Shot, range: f32) -> Option<&'a ShipState> {
+    let s = shot.shooter;
+    let target = kept_lock(ctx, shot, range).or_else(|| {
+        let half = shot.def.param("lock_half_angle_deg", 30.0);
+        ctx.target_in_cone(s.pos, s.orientation.forward(), range, half, s.team)
+    });
+    let state = target.map_or(0, |t| u32::from(t.player.0) + 1);
+    if state != s.weapon_state_of(shot.weapon) {
+        ctx.set_weapon_state(s.player, shot.weapon, state);
+    }
+    target
+}
+
 impl WeaponBehavior for LeechArc {
     fn id(&self) -> &'static str {
         "leech_arc"
@@ -61,10 +100,7 @@ impl WeaponBehavior for LeechArc {
         let def = shot.def;
         let fwd = s.orientation.forward();
         let range = def.param("range", 12.0);
-        let half = def.param("lock_half_angle_deg", 30.0);
-        let target = ctx
-            .target_in_cone(s.pos, fwd, range, half, s.team)
-            .map(|t| (t.player, t.pos));
+        let target = lock(ctx, shot, range).map(|t| (t.player, t.pos));
         let (end, target) = match target {
             Some((player, pos)) => {
                 let drain = def.param("drain_per_arc", 2.0);
@@ -154,6 +190,45 @@ mod tests {
         let (_, ea_miss, eb_miss, _, _) = arc(20.0);
         assert!((ea - ea_miss - 10.0).abs() < 0.05, "{ea} vs {ea_miss}");
         assert!((eb_miss - eb - 10.0).abs() < 0.05, "{eb} vs {eb_miss}");
+    }
+
+    /// The lock persists: a nearer enemy stepping in does not steal the arc,
+    /// but a locked ship that leaves the keep cone, the range or the line of
+    /// sight (here: dies) frees it for the nearest target again.
+    #[test]
+    fn lock_persists_until_the_target_escapes() {
+        let (mut w, mut t, a, b) = duel("leech_arc", ShipType::Tinker);
+        let c = w.add_player(Some(1), ShipType::Tinker).unwrap();
+        let wid = w.weapons().find("leech_arc").unwrap();
+        place(&mut w, a, Vec3::new(0.0, 0.0, 5.0), Vec3::NEG_Z);
+        place(&mut w, b, Vec3::new(0.0, 0.0, -3.0), Vec3::Z);
+        place(&mut w, c, Vec3::new(8.0, 0.0, 20.0), Vec3::Z);
+        w.ship_mut(a).unwrap().energy = 100.0;
+        let ev = run(&mut w, &mut t, &hold(a), 6);
+        assert!(beams(&ev).iter().all(|(t, _)| *t == Some(b)));
+        assert_eq!(w.ship(a).unwrap().weapon_state_of(wid), u32::from(b.0) + 1);
+        // c moves in closer than b (and nearer the aim): the arc stays on b.
+        place(&mut w, c, Vec3::new(0.5, 0.0, 1.0), Vec3::Z);
+        let ev = run(&mut w, &mut t, &hold(a), 30);
+        assert!(damage_to(&ev, b) > 0.0);
+        assert_eq!(damage_to(&ev, c), 0.0, "the lock holds");
+        assert!(beams(&ev).iter().all(|(t, _)| *t == Some(b)));
+        // b drifts to the side, 50 degrees off the aim: still inside the
+        // 60 degree keep cone, though outside the 30 degree lock cone.
+        place(&mut w, b, Vec3::new(6.0, 0.0, 0.0), Vec3::Z);
+        let ev = run(&mut w, &mut t, &hold(a), 12);
+        assert!(damage_to(&ev, b) > 0.0);
+        assert_eq!(damage_to(&ev, c), 0.0);
+        // b leaves the range: the lock moves to the nearest target, c.
+        place(&mut w, b, Vec3::new(0.0, 0.0, -20.0), Vec3::Z);
+        let ev = run(&mut w, &mut t, &hold(a), 12);
+        assert!(damage_to(&ev, c) > 0.0);
+        assert_eq!(damage_to(&ev, b), 0.0);
+        assert_eq!(w.ship(a).unwrap().weapon_state_of(wid), u32::from(c.0) + 1);
+        // Nothing in reach: the lock clears.
+        place(&mut w, c, Vec3::new(0.0, 0.0, -25.0), Vec3::Z);
+        run(&mut w, &mut t, &hold(a), 12);
+        assert_eq!(w.ship(a).unwrap().weapon_state_of(wid), 0);
     }
 
     #[test]

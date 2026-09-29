@@ -6,6 +6,7 @@
 // scheme; the selected ones are highlighted.
 
 import { emptyLoadout, type LoadoutState } from "../game/views.ts";
+import { chargeLabel, gadgetDetail, paintColorLabel, PAINT_COLORS, type ChargeMeter, type GadgetState } from "../game/mechanics.ts";
 
 export interface HudValues {
   hull: number;
@@ -32,6 +33,14 @@ export interface HudValues {
   debug: string;
   /** Carried weapons and gadget (weapon panel). */
   loadout: LoadoutState;
+  /** Own gadget with cooldown (the G line); null uses the loadout's on/off. */
+  gadget: GadgetState | null;
+  /** Charge in progress (Fusion Charger, Polite Laser) and its weapon name; null hides the meter. */
+  charge: { name: string; meter: ChargeMeter } | null;
+  /** Paint Thrower colour id (1 red, 2 blue, 3 yellow) while it is the selected primary (from ls-wasm); 0 hides the V line. */
+  paintColor: number;
+  /** Seconds the weapons stay offline (Borrowed Time); 0 hides it. */
+  weaponsOffline: number;
 }
 
 export const DEFAULT_HUD: Readonly<HudValues> = {
@@ -52,6 +61,10 @@ export const DEFAULT_HUD: Readonly<HudValues> = {
   status: "",
   debug: "",
   loadout: emptyLoadout(),
+  gadget: null,
+  charge: null,
+  paintColor: 0,
+  weaponsOffline: 0,
 };
 
 /** One line of the weapon panel. */
@@ -65,8 +78,8 @@ export interface LoadoutLine {
   kind: "primary" | "secondary" | "gadget";
 }
 
-/** Weapon panel lines: primaries (key order), secondaries, then the gadget. */
-export function loadoutLines(l: LoadoutState): LoadoutLine[] {
+/** Weapon panel lines: primaries (key order), secondaries, then the gadget (with its cooldown when `gadget` is given). */
+export function loadoutLines(l: LoadoutState, gadget: GadgetState | null = null): LoadoutLine[] {
   const detail = (ammo: string, level: number, maxLevel: number): string =>
     maxLevel > 1 ? `L${level}/${maxLevel} · ${ammo}` : ammo;
   const lines: LoadoutLine[] = l.primaries.map((w) => ({
@@ -79,10 +92,23 @@ export function loadoutLines(l: LoadoutState): LoadoutLine[] {
   for (const w of l.secondaries) {
     lines.push({ key: "X", name: w.name, detail: detail(w.ammo, w.level, w.maxLevel), selected: w.selected, kind: "secondary" });
   }
-  if (l.gadget) {
+  if (gadget && gadget.name) {
+    lines.push({ key: "G", name: gadget.name, detail: gadgetDetail(gadget), selected: gadget.active, kind: "gadget" });
+  } else if (l.gadget) {
     lines.push({ key: "G", name: l.gadget, detail: l.gadgetActive ? "on" : "off", selected: l.gadgetActive, kind: "gadget" });
   }
   return lines;
+}
+
+/** The charge meter: label, fill percentage and state class. */
+export function chargeModel(c: HudValues["charge"]): { label: string; percent: number; state: string } | null {
+  if (!c) return null;
+  const m = c.meter;
+  return {
+    label: chargeLabel(c.name, m),
+    percent: Math.round(m.fraction * 1000) / 10,
+    state: m.overcharge ? "overcharge" : m.fraction >= 1 ? "full" : m.ready ? "ready" : "charging",
+  };
 }
 
 /** How long a kill-feed line stays visible (ms). */
@@ -154,6 +180,11 @@ export class Hud {
   private readonly scavenge: HTMLElement;
   private readonly debug: HTMLElement;
   private readonly prompt: HTMLElement;
+  private readonly chargeEl: HTMLElement;
+  private readonly chargeFill: HTMLElement;
+  private readonly chargeLabelEl: HTMLElement;
+  private readonly paintEl: HTMLElement;
+  private readonly offlineEl: HTMLElement;
 
   constructor(parent: HTMLElement, teamCount = 2) {
     this.values.loadout = emptyLoadout();
@@ -190,6 +221,7 @@ export class Hud {
     this.ammo = el("div", "hud-ammo", right);
     this.secondary = el("div", "hud-secondary", right);
     this.loadoutEl = el("div", "hud-loadout", right);
+    this.paintEl = el("div", "hud-paint-color hidden", right);
     const scrapRow = el("div", "hud-scrap", right);
     el("span", "hud-meter-name", scrapRow).textContent = "Scrap";
     this.scrap = el("span", "hud-scrap-value", scrapRow);
@@ -199,6 +231,11 @@ export class Hud {
     this.scavenge = el("span", "hud-flag scavenge", flags);
     this.scavenge.textContent = "Scavenging";
 
+    this.chargeEl = el("div", "hud-charge hidden", this.root);
+    const chargeBar = el("div", "hud-charge-bar", this.chargeEl);
+    this.chargeFill = el("div", "hud-charge-fill", chargeBar);
+    this.chargeLabelEl = el("div", "hud-charge-label", this.chargeEl);
+    this.offlineEl = el("div", "hud-offline hidden", this.root);
     this.status = el("div", "hud-status", this.root);
     this.feedEl = el("div", "hud-feed", this.root);
     this.debug = el("div", "hud-debug", this.root);
@@ -284,7 +321,7 @@ export class Hud {
       this.secondary.textContent = v.secondary;
       this.secondary.classList.toggle("hidden", v.secondary === "");
     });
-    const lines = loadoutLines(v.loadout);
+    const lines = loadoutLines(v.loadout, v.gadget);
     this.write("loadout", JSON.stringify(lines), () => {
       this.loadoutEl.replaceChildren(
         ...lines.map((line) => {
@@ -296,6 +333,26 @@ export class Hud {
         }),
       );
       this.loadoutEl.classList.toggle("hidden", lines.length === 0);
+    });
+    const charge = chargeModel(v.charge);
+    this.write("charge", JSON.stringify(charge), () => {
+      this.chargeEl.classList.toggle("hidden", charge === null);
+      if (!charge) return;
+      this.chargeFill.style.width = `${charge.percent}%`;
+      this.chargeLabelEl.textContent = charge.label;
+      this.chargeEl.dataset["state"] = charge.state;
+    });
+    const paint = v.paintColor > 0 && v.paintColor <= 3 ? v.paintColor : 0;
+    this.write("paintColor", String(paint), () => {
+      this.paintEl.classList.toggle("hidden", paint === 0);
+      const c = PAINT_COLORS[paint] ?? [1, 1, 1];
+      this.paintEl.textContent = `V paint: ${paintColorLabel(paint)}`;
+      this.paintEl.style.setProperty("--paint", `rgb(${c.map((x) => Math.round(x * 255)).join(",")})`);
+    });
+    const offline = v.weaponsOffline > 0 ? `Weapons offline ${v.weaponsOffline.toFixed(1)} s` : "";
+    this.write("offline", offline, () => {
+      this.offlineEl.textContent = offline;
+      this.offlineEl.classList.toggle("hidden", offline === "");
     });
     this.write("status", v.status, () => {
       this.status.textContent = v.status;

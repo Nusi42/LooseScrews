@@ -40,7 +40,7 @@ pub mod weapon;
 pub mod weapons;
 pub mod world;
 
-pub use behavior::{Command, Ctx, Cue, CueKind, DamageSource};
+pub use behavior::{gadget_cue, Command, Ctx, Cue, CueKind, DamageSource};
 pub use data::{data_hash, with_behavior_version, GameData, SIM_BEHAVIOR_VERSION};
 pub use entity::{Entity, EntityKind, EntitySpawn, EntityView, ReplicatedKind, Source};
 pub use error::SimError;

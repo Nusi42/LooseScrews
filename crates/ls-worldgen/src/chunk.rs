@@ -39,21 +39,21 @@
 //!
 //! # Surface layers
 //!
-//! Surface cells (cells the surface passes through) carry a paint team and
-//! three timed surface states ([`SurfaceStates`]: hot, charged, glow). Each
-//! state is stored as its absolute expiry tick, set by
-//! [`TerrainEdit::Surface`], and is active while the tick is below it. The
-//! stored ticks depend only on the edit log (never on the time a peer looked
-//! at them), so state hashes agree between peers; queries take the tick
+//! Surface cells (cells the surface passes through) carry a paint team with
+//! its effect colour, three timed surface states ([`SurfaceStates`]: hot,
+//! charged, glow) and the permanent scorch mark. Each timed state is stored
+//! as its absolute expiry tick, set by [`TerrainEdit::Surface`], and is
+//! active while the tick is below it. The stored ticks depend only on the
+//! edit log (never on the time a peer looked at them); queries take the tick
 //! explicitly. Meshes show the states active at the store's display tick
 //! ([`ChunkStore::advance_to`], which also reports the chunks whose states
-//! expired). Craters drop both layers from cells that stop being surface.
+//! expired). Craters drop all layers from cells that stop being surface.
 
 use std::collections::BTreeMap;
 
 use std::collections::BTreeSet;
 
-use ls_math::terrain::{SurfaceStates, TerrainEdit, TerrainQuery};
+use ls_math::terrain::{paint_color, SurfaceStates, TerrainEdit, TerrainQuery};
 use ls_math::{det, Aabb, Vec3};
 use serde::{Deserialize, Serialize};
 
@@ -139,11 +139,14 @@ enum Samples {
 #[derive(Debug, Clone, PartialEq)]
 struct Chunk {
     samples: Samples,
-    /// Painted cells: local cell index -> team. Only surface cells are kept.
-    paint: BTreeMap<u16, u8>,
-    /// Surface states: local cell index -> expiry tick per state bit (hot,
-    /// charged, glow). Only surface cells with a non-zero tick are kept.
+    /// Painted cells: local cell index -> (team, colour). Only surface cells
+    /// are kept.
+    paint: BTreeMap<u16, (u8, u8)>,
+    /// Surface states: local cell index -> expiry tick per timed state bit
+    /// (hot, charged, glow). Only surface cells with a non-zero tick are kept.
     states: BTreeMap<u16, [u32; SurfaceStates::COUNT]>,
+    /// Scorched cells (permanent [`SurfaceStates::SCORCH`]).
+    scorch: BTreeSet<u16>,
     /// Number of surface cells among the chunk's own cells.
     surface_cells: u32,
 }
@@ -174,7 +177,8 @@ impl Chunk {
         false
     }
 
-    /// Drops paint and surface states from cells that are no longer surface.
+    /// Drops paint, surface states and scorch from cells that are no longer
+    /// surface.
     fn drop_stale_layers(&mut self) {
         let n = CHUNK_CELLS as usize;
         let split = |idx: u16| {
@@ -185,6 +189,7 @@ impl Chunk {
             .paint
             .keys()
             .chain(self.states.keys())
+            .chain(self.scorch.iter())
             .copied()
             .filter(|&idx| {
                 let (i, j, k) = split(idx);
@@ -194,6 +199,21 @@ impl Chunk {
         for idx in stale {
             self.paint.remove(&idx);
             self.states.remove(&idx);
+            self.scorch.remove(&idx);
+        }
+    }
+
+    /// Surface state bits of a local cell active at tick `now` (timed states
+    /// plus scorch).
+    fn states_at(&self, idx: u16, now: u32) -> SurfaceStates {
+        let timed = self
+            .states
+            .get(&idx)
+            .map_or(SurfaceStates::NONE, |u| active_states(u, now));
+        if self.scorch.contains(&idx) {
+            timed | SurfaceStates::SCORCH
+        } else {
+            timed
         }
     }
 
@@ -300,7 +320,7 @@ fn bin_of(v: f32, origin: i32) -> usize {
     (det::floor((v - origin as f32) / EDIT_BIN_SIZE) as i32).clamp(0, EDIT_BINS as i32 - 1) as usize
 }
 
-/// Surface states active at tick `now`, from per-state expiry ticks.
+/// Timed surface states active at tick `now`, from per-state expiry ticks.
 #[inline]
 fn active_states(until: &[u32; SurfaceStates::COUNT], now: u32) -> SurfaceStates {
     let mut bits = 0u8;
@@ -485,6 +505,7 @@ impl ChunkStore {
             samples,
             paint: BTreeMap::new(),
             states: BTreeMap::new(),
+            scorch: BTreeSet::new(),
             surface_cells: 0,
         };
         let m = CHUNK_CELLS as usize - 1;
@@ -505,7 +526,7 @@ impl ChunkStore {
     }
 
     /// The padded sample grid (paint, and the surface states active at the
-    /// display tick) of a chunk, ready for a mesher.
+    /// display tick plus scorch) of a chunk, ready for a mesher.
     pub fn sample_grid(&mut self, c: ChunkCoord) -> SampleGrid {
         self.ensure_generated(c);
         let o = c.origin();
@@ -536,11 +557,13 @@ impl ChunkStore {
                     let Some((ch, idx)) = self.cell_ref([o[0] + i, o[1] + j, o[2] + k]) else {
                         continue;
                     };
-                    if let Some(&t) = ch.paint.get(&idx) {
+                    if let Some(&(t, color)) = ch.paint.get(&idx) {
                         grid.set_team(i, j, k, t);
+                        grid.set_color(i, j, k, color);
                     }
-                    if let Some(until) = ch.states.get(&idx) {
-                        grid.set_states(i, j, k, active_states(until, self.now).bits());
+                    let states = ch.states_at(idx, self.now);
+                    if !states.is_empty() {
+                        grid.set_states(i, j, k, states.bits());
                     }
                 }
             }
@@ -649,23 +672,128 @@ impl ChunkStore {
 
     /// Paint team of the global cell `g` (cell `g` spans `g .. g + 1`).
     pub fn team_at_cell(&self, g: [i32; 3]) -> u8 {
-        self.cell_ref(g)
-            .and_then(|(ch, idx)| ch.paint.get(&idx).copied())
-            .unwrap_or(NO_TEAM)
+        self.paint_at_cell(g).map_or(NO_TEAM, |(t, _)| t)
     }
 
-    /// Stored expiry tick of each surface state (hot, charged, glow) of the
-    /// global cell `g`; 0 = never set or cleared. Depends only on the edit
-    /// log, so it is what state hashes read.
+    /// Paint team and colour id (`ls_math::terrain::PAINT_*`) of the global
+    /// cell `g`, `None` if unpainted.
+    pub fn paint_at_cell(&self, g: [i32; 3]) -> Option<(u8, u8)> {
+        self.cell_ref(g)
+            .and_then(|(ch, idx)| ch.paint.get(&idx).copied())
+    }
+
+    /// Bit set (`1 << colour id`) of the paint colours on the surface cells
+    /// (1 u cubes) that overlap the sphere of `radius` around `center`: a
+    /// ship touching a wall finds the paint of the cell under it even though
+    /// the cell centre is up to a cell diagonal away. Reads generated chunks
+    /// only.
+    pub fn paint_colors_near(&self, center: Vec3, radius: f32) -> u8 {
+        let mut bits = 0u8;
+        self.for_cells_overlapping(center, radius, |g| {
+            if let Some((_, color)) = self.paint_at_cell(g) {
+                bits |= 1 << paint_color(color);
+            }
+        });
+        bits
+    }
+
+    /// Calls `f` for every global cell (1 u cube) that overlaps the sphere,
+    /// in z, y, x order. Nothing for non-finite or huge spheres.
+    fn for_cells_overlapping(&self, center: Vec3, radius: f32, mut f: impl FnMut([i32; 3])) {
+        if !center.is_finite() || !(0.0..=64.0).contains(&radius) {
+            return;
+        }
+        let cell = |v: f32| det::floor(v) as i32;
+        let (lo, hi) = (center - Vec3::splat(radius), center + Vec3::splat(radius));
+        // Squared distance from `c` to the unit interval starting at `g`.
+        let axis = |c: f32, g: i32| {
+            let d = (g as f32 - c).max(c - (g as f32 + 1.0)).max(0.0);
+            d * d
+        };
+        let r2 = radius * radius;
+        for z in cell(lo.z)..=cell(hi.z) {
+            let dz = axis(center.z, z);
+            for y in cell(lo.y)..=cell(hi.y) {
+                let dy = axis(center.y, y);
+                for x in cell(lo.x)..=cell(hi.x) {
+                    if dz + dy + axis(center.x, x) <= r2 {
+                        f([x, y, z]);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Surface states active at tick `now` on the surface cells that overlap
+    /// the sphere (see [`ChunkStore::paint_colors_near`] for the overlap
+    /// rule): a ship scraping a charged wall.
+    pub fn surface_states_overlapping(&self, center: Vec3, radius: f32, now: u32) -> SurfaceStates {
+        let mut bits = 0u8;
+        self.for_cells_overlapping(center, radius, |g| {
+            bits |= self.surface_states_at_cell(g, now).bits();
+        });
+        SurfaceStates(bits)
+    }
+
+    /// Visits every surface cell that holds a layer (paint, a timed state
+    /// tick or scorch), in a fixed order (chunk slot, then cell index): the
+    /// global cell, its paint `(team, colour)`, the stored expiry ticks of
+    /// the timed states and whether it is scorched. Desync hashes read the
+    /// layers through it; it never generates chunks (ungenerated chunks hold
+    /// no layers).
+    pub fn for_each_layer_cell(
+        &self,
+        mut f: impl FnMut([i32; 3], Option<(u8, u8)>, [u32; SurfaceStates::COUNT], bool),
+    ) {
+        let n = CHUNK_CELLS;
+        for c in self.chunk_coords() {
+            let Some(ch) = self.chunk_slot(c).and_then(|s| self.chunks[s].as_ref()) else {
+                continue;
+            };
+            if ch.paint.is_empty() && ch.states.is_empty() && ch.scorch.is_empty() {
+                continue;
+            }
+            let cells: BTreeSet<u16> = ch
+                .paint
+                .keys()
+                .chain(ch.states.keys())
+                .chain(ch.scorch.iter())
+                .copied()
+                .collect();
+            let o = c.origin();
+            for idx in cells {
+                let i = idx as i32;
+                let g = [o[0] + i % n, o[1] + (i / n) % n, o[2] + i / (n * n)];
+                f(
+                    g,
+                    ch.paint.get(&idx).copied(),
+                    ch.states.get(&idx).copied().unwrap_or_default(),
+                    ch.scorch.contains(&idx),
+                );
+            }
+        }
+    }
+
+    /// Stored expiry tick of each timed surface state (hot, charged, glow)
+    /// of the global cell `g`; 0 = never set or cleared. Depends only on the
+    /// edit log.
     pub fn surface_state_ticks_at_cell(&self, g: [i32; 3]) -> [u32; SurfaceStates::COUNT] {
         self.cell_ref(g)
             .and_then(|(ch, idx)| ch.states.get(&idx).copied())
             .unwrap_or([0; SurfaceStates::COUNT])
     }
 
-    /// Surface states of the global cell `g` active at tick `now`.
+    /// Surface states of the global cell `g` active at tick `now` (timed
+    /// states still running, plus scorch).
     pub fn surface_states_at_cell(&self, g: [i32; 3], now: u32) -> SurfaceStates {
-        active_states(&self.surface_state_ticks_at_cell(g), now)
+        self.cell_ref(g)
+            .map_or(SurfaceStates::NONE, |(ch, idx)| ch.states_at(idx, now))
+    }
+
+    /// Whether the global cell `g` is scorched.
+    pub fn scorched_at_cell(&self, g: [i32; 3]) -> bool {
+        self.cell_ref(g)
+            .is_some_and(|(ch, idx)| ch.scorch.contains(&idx))
     }
 
     /// Surface states of the cell containing `p`, active at tick `now`.
@@ -735,7 +863,7 @@ impl ChunkStore {
         let mut cov = PaintCoverage::default();
         for ch in self.chunks.iter().flatten() {
             cov.surface_cells += ch.surface_cells as u64;
-            for &t in ch.paint.values() {
+            for &(t, _) in ch.paint.values() {
                 *cov.team_cells.entry(t).or_insert(0) += 1;
             }
         }
@@ -757,7 +885,8 @@ impl ChunkStore {
                 center,
                 radius,
                 team,
-            } => self.apply_paint(center, radius, team),
+                color,
+            } => self.apply_paint(center, radius, team, paint_color(color)),
             TerrainEdit::Surface {
                 center,
                 radius,
@@ -865,24 +994,27 @@ impl ChunkStore {
         chunk.drop_stale_layers();
     }
 
-    fn apply_paint(&mut self, center: Vec3, radius: f32, team: u8) -> Vec<ChunkCoord> {
+    /// Claims the surface cells in the sphere for `team` with colour `color`
+    /// ([`NO_TEAM`] erases). Returns the chunks whose paint changed.
+    fn apply_paint(&mut self, center: Vec3, radius: f32, team: u8, color: u8) -> Vec<ChunkCoord> {
         self.edit_surface_cells(center, radius, |chunk, idx| {
-            let prev = chunk.paint.get(&idx).copied().unwrap_or(NO_TEAM);
-            if prev == team {
+            let prev = chunk.paint.get(&idx).copied();
+            if team == NO_TEAM {
+                return chunk.paint.remove(&idx).is_some();
+            }
+            if prev == Some((team, color)) {
                 return false;
             }
-            if team == NO_TEAM {
-                chunk.paint.remove(&idx);
-            } else {
-                chunk.paint.insert(idx, team);
-            }
+            chunk.paint.insert(idx, (team, color));
             true
         })
     }
 
-    /// Sets the expiry tick `until` of the state bits in `states` on the
-    /// surface cells in the sphere (unknown bits are ignored; `until = 0`
-    /// clears). Returns the chunks whose stored states changed.
+    /// Sets the expiry tick `until` of the timed state bits in `states` on
+    /// the surface cells in the sphere, and scorches them for the
+    /// [`SurfaceStates::SCORCH`] bit (unknown bits are ignored; `until = 0`
+    /// clears, scorch included). Returns the chunks whose stored states
+    /// changed.
     fn apply_surface(
         &mut self,
         center: Vec3,
@@ -890,13 +1022,24 @@ impl ChunkStore {
         states: u8,
         until: u32,
     ) -> Vec<ChunkCoord> {
-        let bits = states & SurfaceStates::ALL.bits();
-        if bits == 0 {
+        let bits = states & SurfaceStates::TIMED.bits();
+        let scorch = states & SurfaceStates::SCORCH.bits() != 0;
+        if bits == 0 && !scorch {
             return Vec::new();
         }
         let dirty = self.edit_surface_cells(center, radius, |chunk, idx| {
-            let entry = chunk.states.entry(idx).or_insert([0; SurfaceStates::COUNT]);
             let mut changed = false;
+            if scorch {
+                changed = if until == 0 {
+                    chunk.scorch.remove(&idx)
+                } else {
+                    chunk.scorch.insert(idx)
+                };
+            }
+            if bits == 0 {
+                return changed;
+            }
+            let entry = chunk.states.entry(idx).or_insert([0; SurfaceStates::COUNT]);
             for (b, u) in entry.iter_mut().enumerate() {
                 if bits >> b & 1 == 1 && *u != until {
                     *u = until;
@@ -908,7 +1051,7 @@ impl ChunkStore {
             }
             changed
         });
-        if until > 0 && !dirty.is_empty() {
+        if bits != 0 && until > 0 && !dirty.is_empty() {
             self.expiry
                 .entry(until)
                 .or_default()
@@ -1198,6 +1341,10 @@ impl TerrainQuery for ChunkStore {
     fn bounds(&self) -> Aabb {
         self.gen.bounds()
     }
+
+    fn paint_colors_near(&self, center: Vec3, radius: f32) -> u8 {
+        ChunkStore::paint_colors_near(self, center, radius)
+    }
 }
 
 impl TerrainQuery for Generator {
@@ -1300,6 +1447,7 @@ mod tests {
                 center: hit,
                 radius: 5.0,
                 team: 1,
+                color: ls_math::terrain::PAINT_YELLOW,
             },
             TerrainEdit::Surface {
                 center: hit,
@@ -1307,6 +1455,7 @@ mod tests {
                 states: SurfaceStates::HOT.bits() | SurfaceStates::GLOW.bits(),
                 until: 700,
             },
+            TerrainEdit::scorch(hit, 3.0, 0, 0),
             TerrainEdit::SubtractSphere {
                 center: hit + Vec3::new(-1.0, 0.0, 1.0),
                 radius: 2.0,
@@ -1352,6 +1501,7 @@ mod tests {
             );
             assert_eq!(ca.paint, cb.paint, "paint {c:?}");
             assert_eq!(ca.states, cb.states, "states {c:?}");
+            assert_eq!(ca.scorch, cb.scorch, "scorch {c:?}");
             assert_eq!(ca.surface_cells, cb.surface_cells, "surface cells {c:?}");
             let m = CHUNK_CELLS as usize - 1;
             assert_eq!(ca.surface_cells, ca.count_surface([0; 3], [m; 3]));
@@ -1464,6 +1614,7 @@ mod tests {
             center: hit,
             radius: 4.0,
             team: 0,
+            color: 0,
         });
         assert!(!dirty.is_empty() && dirty.len() <= 8);
         let near_hit = (-1..=1).any(|dz| {
@@ -1482,22 +1633,47 @@ mod tests {
             center: hit,
             radius: 2.0,
             team: 1,
+            color: 0,
         });
         let cov2 = s.paint_coverage();
         assert!(cov2.team_cells[&1] > 0);
         assert_eq!(cov2.team_cells[&0] + cov2.team_cells[&1], red);
-        // Painting again with the same team changes nothing.
+        // Painting again with the same team and colour changes nothing.
+        let blue = |team| TerrainEdit::Paint {
+            center: hit,
+            radius: 2.0,
+            team,
+            color: ls_math::terrain::PAINT_BLUE,
+        };
         assert!(s
             .apply(TerrainEdit::Paint {
                 center: hit,
                 radius: 2.0,
-                team: 1
+                team: 1,
+                color: 0,
             })
             .is_empty());
-        // The mesh carries the paint.
         let c = s.chunk_at(hit).unwrap();
+        let plain_mesh = s.mesh_surface_nets(c);
+        // A new colour repaints (same team, same coverage) and shows in the mesh.
+        assert!(!s.apply(blue(1)).is_empty());
+        assert_eq!(s.paint_coverage(), cov2);
+        assert!(s.apply(blue(1)).is_empty());
         let m = s.mesh_surface_nets(c);
         assert!(m.teams.contains(&1) && m.teams.contains(&0));
+        assert_eq!(m.colors.len(), m.vertex_count());
+        assert!(m.colors.contains(&ls_math::terrain::PAINT_BLUE) && m.colors.contains(&0));
+        assert_ne!(m.hash(), plain_mesh.hash());
+        assert_eq!(
+            s.paint_colors_near(hit, 1.0),
+            1 << ls_math::terrain::PAINT_BLUE
+        );
+        assert_eq!(
+            s.paint_colors_near(hit, 3.5) & 1,
+            1,
+            "plain paint around it"
+        );
+        assert_eq!(s.paint_colors_near(hit + Vec3::splat(20.0), 1.0), 0);
         // A crater through the painted area removes paint from vanished surfaces.
         s.apply(TerrainEdit::SubtractSphere {
             center: hit,
@@ -1513,8 +1689,10 @@ mod tests {
             center: hit,
             radius: 10.0,
             team: NO_TEAM,
+            color: 0,
         });
         assert!(s.paint_coverage().team_cells.is_empty());
+        assert_eq!(s.paint_colors_near(hit, 3.0), 0);
     }
 
     #[test]
@@ -1856,7 +2034,7 @@ mod tests {
             .apply(TerrainEdit::Surface {
                 center: hit,
                 radius: 3.0,
-                states: 0xf8,
+                states: 0xf0,
                 until: 5000
             })
             .is_empty());
@@ -1878,6 +2056,65 @@ mod tests {
         assert!(s.chunks.iter().flatten().all(|ch| ch.states.is_empty()));
         // Paint is a separate layer.
         assert!(s.paint_coverage().team_cells.is_empty());
+    }
+
+    #[test]
+    fn scorch_is_permanent_until_cleared_or_cratered() {
+        let mut s = ChunkStore::new(Generator::with_size(7, Sliders::new(50, 30), [2, 2, 2]));
+        let (hit, n) = surface_point(&s);
+        let c = s.chunk_at(hit).unwrap();
+        let plain = s.mesh_surface_nets(c);
+        // Scorched and hot for 10 s from tick 100.
+        let dirty = s.apply(TerrainEdit::scorch(hit, 2.0, 100, 600));
+        assert!(dirty.contains(&c));
+        let both = SurfaceStates::SCORCH | SurfaceStates::HOT;
+        assert_eq!(s.surface_states_near(hit, 0.8, 650), both);
+        assert_eq!(
+            s.surface_states_overlapping(hit, 0.5, 650),
+            both,
+            "overlap query"
+        );
+        // Heat expires, the scorch mark stays forever.
+        assert_eq!(s.surface_states_near(hit, 0.8, 700), SurfaceStates::SCORCH);
+        assert_eq!(
+            s.surface_states_near(hit, 0.8, u32::MAX),
+            SurfaceStates::SCORCH
+        );
+        s.advance_to(10_000);
+        let m = s.mesh_surface_nets(c);
+        assert!(m.states.contains(&SurfaceStates::SCORCH.bits()));
+        assert!(!m.states.iter().any(|b| b & SurfaceStates::HOT.bits() != 0));
+        assert_ne!(m.hash(), plain.hash());
+        // Scorching again changes nothing; the layer visitor sees the cells.
+        assert!(s.apply(TerrainEdit::scorch(hit, 2.0, 0, 0)).is_empty());
+        let mut scorched = 0;
+        s.for_each_layer_cell(|g, paint, ticks, sc| {
+            assert!(paint.is_none());
+            assert_eq!(sc, s.scorched_at_cell(g));
+            scorched += sc as usize;
+            assert!(ticks == [700, 0, 0] || ticks == [0; 3]);
+        });
+        assert!(scorched > 3, "{scorched}");
+        // A crater removes the scorched surface under it.
+        s.apply(TerrainEdit::SubtractSphere {
+            center: hit - n * 0.5,
+            radius: 3.0,
+        });
+        for ch in s.chunks.iter().flatten() {
+            for &idx in &ch.scorch {
+                let m = CHUNK_CELLS as usize;
+                let i = idx as usize;
+                assert!(ch.is_surface_cell(i % m, (i / m) % m, i / (m * m)));
+            }
+        }
+        // `until = 0` with the scorch bit clears it.
+        s.apply(TerrainEdit::Surface {
+            center: hit,
+            radius: 10.0,
+            states: SurfaceStates::SCORCH.bits(),
+            until: 0,
+        });
+        assert!(s.chunks.iter().flatten().all(|ch| ch.scorch.is_empty()));
     }
 
     #[test]

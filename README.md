@@ -5,9 +5,10 @@ ships fly through levels built from a short share code; every crater and paint s
 part of the game. Rust core (simulation, world generation, server), compiled to WASM for
 the TypeScript + WebGPU browser client.
 
-Status: Milestone 1 (vertical slice) — playable end to end: Paint the Void for up to 8
-players over WebTransport or WebSocket, with headless bots. See
-[docs/implementation-plan.md](docs/implementation-plan.md) for what remains.
+Status: Milestone 2 (arsenal and physics) complete — Paint the Void for up to 8 players over
+WebTransport or WebSocket with all 27 weapons, 3 gadgets, 4 ship types, destructible and paintable
+terrain, configurable rule sets and headless bots. See [docs/milestone-2-plan.md](docs/milestone-2-plan.md)
+for status and [docs/implementation-plan.md](docs/implementation-plan.md) for later milestones.
 
 ## Quick start
 
@@ -21,8 +22,10 @@ cargo run -p ls-bots --release -- --server ws://127.0.0.1:7777/ws --count 3   # 
 ```
 
 For client development with hot reload use `cd web && npm run dev` (http://localhost:5173).
-Full check (fmt, clippy, tests native + wasm32, WASM build, web build, determinism check):
-`pwsh tools/ci.ps1` on Windows or `tools/ci.sh` elsewhere. End-to-end with bots: `tools/e2e.ps1` / `tools/e2e.sh`.
+Full check (fmt, clippy, tests native + wasm32, WASM build, web build, determinism check,
+generated-docs staleness check, headless browser smoke test): `pwsh tools/ci.ps1` on Windows or
+`tools/ci.sh` elsewhere. End-to-end with bots: `tools/e2e.ps1` / `tools/e2e.sh`.
+Browser smoke test alone: `tools/browser-smoke.ps1` / `tools/browser-smoke.sh`.
 
 ## Layout
 

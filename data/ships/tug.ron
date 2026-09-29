@@ -42,4 +42,9 @@ ShipTuning(
     // Support: passing scrap to teammates (Tug only).
     can_pass_scrap: true,
     scrap_pass_rate: 20.0,
+    // Paint Thrower colours (M2 plan): restitution against red (bouncy) paint, and the share
+    // of the speed caps kept while touching yellow (sticky) paint. Blue (slippery) paint
+    // needs no number: no damping while touching it, and wall hits keep the speed.
+    paint_bounce_restitution: 0.9,
+    paint_sticky_speed: 0.4,
 )

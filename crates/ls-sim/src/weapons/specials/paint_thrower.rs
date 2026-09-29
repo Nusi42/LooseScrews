@@ -1,22 +1,71 @@
-//! Paint Thrower: special. Deals no damage; paints terrain in the shooter's team color (the
-//! core tool of Paint the Void). Surface effects of paint colors come in a later milestone.
+//! Paint Thrower: special. Design doc: "Reshapes the arena: red is bouncy, blue is slippery,
+//! yellow is sticky and slows ships. Malus: deals no damage. Lasting effect: paint stays until
+//! painted over."
 //!
-//! Numbers: `data/weapons/paint_thrower.ron`.
+//! Numbers: `data/weapons/paint_thrower.ron` (the colour effects' numbers are ship tuning,
+//! `data/ships/*.ron`: `paint_bounce_restitution`, `paint_sticky_speed`).
 //!
-//! Status: implemented. The generic hooks are the M1 behaviour: no damage, no crater, no
-//! knockback, paints `terrain.paint_radius` in the team colour; paint stays until painted
-//! over (it is an ordinary logged terrain edit). The scenario tests below check this in the
-//! M2 framework.
-//! Paint colours with surface effects (red bouncy, blue slippery, yellow sticky) are a later
-//! milestone.
+//! Behaviour (M2 plan decision "Paint Thrower colours"):
+//! - Colour: the V key (`Buttons::WEAPON_MODE`, [`WeaponBehavior::on_mode`] while the Paint
+//!   Thrower is the selected primary) cycles red, blue, yellow. The colour is the weapon's
+//!   state (`ShipState::weapon_state`, `ls_math::terrain::PAINT_*`; unset = red); every switch
+//!   sends a `CueKind::PaintColor` cue (source the ship, value the colour) for the HUD.
+//! - Shots: the generic pattern, no damage, crater or knockback; each blob carries the colour
+//!   in its replicated `CUSTOM_A`/`CUSTOM_B` bits ([`projectile_color`], so clients tint it).
+//! - Paint: a blob that hits rock claims the surface within `terrain.paint_radius` for the
+//!   shooter's team with its colour (`TerrainEdit::Paint { team, color }`); Paint the Void
+//!   scoring counts the team only. Painting over replaces team and colour.
+//! - Effects (ship physics, `ls_sim::ship`): red paint bounces ships off at 0.9 restitution,
+//!   blue paint has no wall friction (no damping while touching it, wall hits keep the speed),
+//!   yellow paint holds ships touching it to 40% of their speed caps. They apply to every ship,
+//!   the painter's team included.
 //!
 //! This file also holds `testkit`, the shared test helpers of the specials modules.
 
-use crate::weapons::WeaponBehavior;
+use ls_math::terrain::{RayHit, PAINT_BLUE, PAINT_RED, PAINT_YELLOW};
+
+use crate::behavior::{Ctx, Cue, CueKind};
+use crate::ship::ShipState;
+use crate::weapons::{pattern_dir, projectile_for, HitResponse, Shot, WeaponBehavior};
+use crate::world::{proj_flags, Projectile};
+use crate::WeaponId;
 
 /// Behaviour of the Paint Thrower.
 #[derive(Debug)]
 pub struct PaintThrower;
+
+/// The colour `ship` paints with (its Paint Thrower state; red when unset).
+pub fn selected_color(ship: &ShipState, weapon: WeaponId) -> u8 {
+    match u8::try_from(ship.weapon_state_of(weapon)) {
+        Ok(c @ (PAINT_RED | PAINT_BLUE | PAINT_YELLOW)) => c,
+        _ => PAINT_RED,
+    }
+}
+
+/// The colour after `color` in the V cycle (red, blue, yellow).
+pub fn next_color(color: u8) -> u8 {
+    match color {
+        PAINT_RED => PAINT_BLUE,
+        PAINT_BLUE => PAINT_YELLOW,
+        _ => PAINT_RED,
+    }
+}
+
+/// Paint colour a blob carries (its replicated `CUSTOM_A` / `CUSTOM_B` bits).
+pub fn projectile_color(p: &Projectile) -> u8 {
+    (p.flags & proj_flags::CUSTOM_A != 0) as u8 | ((p.flags & proj_flags::CUSTOM_B != 0) as u8) << 1
+}
+
+fn color_flags(color: u8) -> u16 {
+    let mut f = 0;
+    if color & 1 != 0 {
+        f |= proj_flags::CUSTOM_A;
+    }
+    if color & 2 != 0 {
+        f |= proj_flags::CUSTOM_B;
+    }
+    f
+}
 
 impl WeaponBehavior for PaintThrower {
     fn id(&self) -> &'static str {
@@ -25,6 +74,36 @@ impl WeaponBehavior for PaintThrower {
 
     fn implemented(&self) -> bool {
         true
+    }
+
+    fn fire(&self, ctx: &mut Ctx, shot: &Shot) {
+        let flags = color_flags(selected_color(shot.shooter, shot.weapon));
+        let n = shot.def.projectiles.max(1) as usize;
+        for i in 0..n {
+            let dir = pattern_dir(shot.shooter.orientation, i, n, shot.def.spread_deg);
+            let mut p = projectile_for(ctx, shot, dir);
+            p.flags |= flags;
+            ctx.spawn_projectile(p);
+        }
+    }
+
+    fn on_terrain_hit(&self, ctx: &mut Ctx, p: &mut Projectile, hit: &RayHit) -> HitResponse {
+        ctx.detonate(p, hit.point, None, false);
+        let radius = ctx.def(p.weapon).terrain.paint_radius;
+        ctx.paint_color(hit.point, radius, p.team, projectile_color(p));
+        HitResponse::Stop
+    }
+
+    fn on_mode(&self, ctx: &mut Ctx, ship: &ShipState, weapon: WeaponId) {
+        let color = next_color(selected_color(ship, weapon));
+        ctx.set_weapon_state(ship.player, weapon, color as u32);
+        ctx.cue(Cue {
+            kind: CueKind::PaintColor,
+            source: Some(ship.player),
+            target: None,
+            pos: ship.pos,
+            value: color as u16,
+        });
     }
 }
 
@@ -262,6 +341,71 @@ mod tests {
         run(&mut w, &mut t, &[], 600);
         let later = t.paint_coverage().unwrap();
         assert!(later.team_cells[0] >= cov.team_cells[0]);
+    }
+
+    /// M2 plan: V cycles the colour red, blue, yellow; blobs carry it and
+    /// paint with it; each switch cues the HUD; scoring counts the team.
+    #[test]
+    fn v_cycles_the_paint_colour() {
+        use ls_math::terrain::{PAINT_BLUE, PAINT_RED, PAINT_YELLOW};
+        let (mut w, a, b) = world2();
+        let mut t = PaintedTerrain::new(BoxRoomTerrain::centered(Vec3::new(60.0, 30.0, 60.0)), 1.0);
+        let wid = equip(&mut w, a, "paint_thrower");
+        place(&mut w, a, Vec3::new(-25.0, 0.0, 0.0), Vec3::NEG_X);
+        place(&mut w, b, Vec3::new(0.0, 0.0, 20.0), Vec3::Z);
+        let wall = Vec3::new(-30.0, 0.0, 0.0);
+        let paint_colors = |ev: &[Event]| -> Vec<u8> {
+            edits(ev)
+                .iter()
+                .map(|e| match e {
+                    TerrainEdit::Paint { color, team, .. } => {
+                        assert_eq!(*team, 0);
+                        *color
+                    }
+                    other => panic!("only paint, got {other:?}"),
+                })
+                .collect()
+        };
+        // Red by default.
+        assert_eq!(super::selected_color(w.ship(a).unwrap(), wid), PAINT_RED);
+        let ev = run(&mut w, &mut t, &press(a, Buttons::FIRE_PRIMARY), 30);
+        let c = paint_colors(&ev);
+        assert!(!c.is_empty() && c.iter().all(|&c| c == PAINT_RED), "{c:?}");
+        assert_eq!(t.paint_color_at(wall + Vec3::X * 0.5), Some(PAINT_RED));
+        // V (press edges only) cycles blue, yellow, red.
+        let mut seen = Vec::new();
+        for _ in 0..3 {
+            let ev = run(&mut w, &mut t, &press(a, Buttons::WEAPON_MODE), 3);
+            let cue = cues(&ev, CueKind::PaintColor);
+            assert_eq!(cue.len(), 1, "one switch per press");
+            assert_eq!(cue[0].source, Some(a));
+            seen.push(cue[0].value as u8);
+            assert_eq!(
+                super::selected_color(w.ship(a).unwrap(), wid),
+                cue[0].value as u8
+            );
+            run(&mut w, &mut t, &[], 1);
+        }
+        assert_eq!(seen, [PAINT_BLUE, PAINT_YELLOW, PAINT_RED]);
+        // Blue: the blobs carry it (replicated bits) and paint over the red.
+        run(&mut w, &mut t, &press(a, Buttons::WEAPON_MODE), 1);
+        run(&mut w, &mut t, &[], 1);
+        let fire = press(a, Buttons::FIRE_PRIMARY);
+        run(&mut w, &mut t, &fire, 1);
+        let blob = w.projectiles().last().expect("a blob in flight");
+        assert_eq!(super::projectile_color(blob), PAINT_BLUE);
+        assert_eq!(blob.net_state() >> 6, PAINT_BLUE);
+        let ev = run(&mut w, &mut t, &fire, 30);
+        assert!(paint_colors(&ev).iter().all(|&c| c == PAINT_BLUE));
+        assert_eq!(t.paint_color_at(wall + Vec3::X * 0.5), Some(PAINT_BLUE));
+        // V with another primary selected does nothing to the colour.
+        equip(&mut w, a, "scrap_laser");
+        let ev = run(&mut w, &mut t, &press(a, Buttons::WEAPON_MODE), 3);
+        assert!(cues(&ev, CueKind::PaintColor).is_empty());
+        assert_eq!(super::selected_color(w.ship(a).unwrap(), wid), PAINT_BLUE);
+        // Scoring counts cells per team, whatever the colour.
+        let cov = t.paint_coverage().unwrap();
+        assert!(cov.team_cells[0] > 0 && cov.team_cells[1] == 0);
     }
 
     #[test]

@@ -78,7 +78,7 @@ test("a match restart is reported as such, not as an error", () => {
   const r = s.frame(1 / 60, {
     thrustForward: 0, thrustRight: 0, thrustUp: 0, roll: 0, lookX: 0, lookY: 0, boost: false,
     firePrimary: false, fireSecondary: false, scavenge: false, overdrive: false,
-    toggleHorizonAssist: false, weaponKey: 0, cyclePrimary: 0, cycleSecondary: false, gadget: false, pointerLocked: true, scoreboard: false, toggleDebug: false,
+    toggleHorizonAssist: false, weaponKey: 0, cyclePrimary: 0, cycleSecondary: false, gadget: false, cyclePaintColor: false, toggleShipSelect: false, pointerLocked: true, scoreboard: false, toggleDebug: false,
   });
   assert.equal(r.matchRestart, true);
   assert.match(r.disconnected ?? "", /new match/);

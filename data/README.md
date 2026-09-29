@@ -2,7 +2,9 @@
 
 All gameplay numbers live here as [RON](https://github.com/ron-rs/ron) files, not in code.
 The schemas are owned by `crates/ls-sim` (the Rust types it deserializes into are the
-reference); change the types and the files together.
+reference); change the types and the files together. The player-facing number tables in
+`userDocs/reference/` are generated from these files: run `node tools/gen-weapon-docs.mjs`
+after a change (CI fails when they are stale).
 
 | Path | Contents |
 | --- | --- |

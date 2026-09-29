@@ -8,7 +8,7 @@
 //! ack_input           zigzag varint of (ack_input - tick) as i32
 //! match_ticks_left    varint
 //! ship_motion         [delta: 1 bit "changed"] 3 varints (per-axis motion
-//!                     scale, see below)
+//!                     scale, see below), then 3 varints projectile motion
 //! edits               varint edit_base, varint count, then each edit
 //! scores              [delta: 1 bit "changed"] varint count + varint each
 //! ships               u32 presence mask (bit i = ship id i), [delta: 3 x 4
@@ -16,8 +16,13 @@
 //!                     velocity, orientation], then per ship in id order:
 //!                     full core state, or (delta, ship in baseline) a
 //!                     change bit + predicted residuals (below)
-//! projectiles         id list (below) of projectiles: full state (kind,
-//!                     owner, state byte, position, velocity) or diffs
+//! projectiles         [delta: 4 x 4 bits typical residual widths - 1 for
+//!                     position and velocity of changed projectiles,
+//!                     velocity and position of new ones] id list (below)
+//!                     of projectiles:
+//!                     full state (kind, owner, state byte, position,
+//!                     velocity), predicted diffs, or (new in a delta) the
+//!                     state predicted from the owner (below)
 //! entities            [delta: 4 bits typical drift width - 1] id list of
 //!                     entities: full state (kind, visual, owner, team,
 //!                     position, velocity and rotation with presence bits,
@@ -76,8 +81,37 @@
 //! each typical width to make the snapshot's width codes shortest. A thrusting,
 //! turning ship costs about 70 bits instead of about 130 with plain diffs.
 //!
-//! Other projectile and entity vector components are sent as a 2-bit size class:
-//! unchanged, 4-bit or 8-bit zigzag difference, or the raw 16-bit value.
+//! # Projectile deltas
+//!
+//! Projectiles fly straight most of the time, so a delta predicts each one
+//! from its baseline state with the snapshot's `projectile_motion` (like
+//! ship positions): "unchanged" in the id list means *exactly where the
+//! ballistic prediction puts it, nothing else changed* (1 bit). Otherwise:
+//!
+//! ```text
+//! meta         1 bit "changed" [+ kind, owner, state bytes]
+//! position     residual group against the prediction
+//! velocity     residual group against the baseline velocity
+//! ```
+//!
+//! The server settles every projectile within [`SETTLE_TOLERANCE`] steps of
+//! its prediction onto it before encoding ([`settle_projectiles`]), so a
+//! straight shot costs one bit per snapshot. A projectile new against the
+//! baseline (in a delta's id list: its id gap as `0` + 4 bits below 16,
+//! else `1` + varint) is predicted from its owner:
+//!
+//! ```text
+//! owner        0 + 5 bits (below 32), else 1 + u8
+//! velocity     1 bit: residual group against the velocity of the owner's
+//!              newest projectile already in the list (same kind and
+//!              state); 0: kind, state, raw velocity
+//! position     with the owner's ship in the snapshot: 5-bit flight time in
+//!              quarter ticks and a residual group against
+//!              ship.pos + (velocity - ship.vel) x flight time; else raw
+//! ```
+//!
+//! Entity vector components are sent as a 2-bit size class: unchanged,
+//! 4-bit or 8-bit zigzag difference, or the raw 16-bit value.
 
 use std::collections::VecDeque;
 
@@ -416,15 +450,289 @@ fn signed(v: u16) -> i64 {
 /// baseline velocity for `age` ticks, in packed integers only (both ends
 /// compute it bit for bit). Clamped to the packed range like the quantizer.
 fn predict_pos(base: &PackedShip, motion: &[u32; 3], age: u32) -> PackedVec3 {
-    let mut out = base.pos;
+    predict_pos_from(base.pos, base.vel, motion, age)
+}
+
+/// [`predict_pos`] for any packed position and velocity (projectiles).
+fn predict_pos_from(pos: PackedVec3, vel: PackedVec3, motion: &[u32; 3], age: u32) -> PackedVec3 {
+    let mut out = pos;
     for i in 0..3 {
         let disp = div_round(
-            signed(base.vel[i]) * motion[i] as i64 * age as i64,
+            signed(vel[i]) * motion[i] as i64 * age as i64,
             1 << MOTION_SCALE_SHIFT,
         );
-        out[i] = (base.pos[i] as i64 + disp).clamp(0, u16::MAX as i64) as u16;
+        out[i] = (pos[i] as i64 + disp).clamp(0, u16::MAX as i64) as u16;
     }
     out
+}
+
+/// A projectile as its baseline state predicts it `age` ticks later: moved
+/// ballistically, everything else unchanged (what an "unchanged" bit in a
+/// projectile delta means).
+fn predict_projectile(b: &PackedProjectile, motion: &[u32; 3], age: u32) -> PackedProjectile {
+    PackedProjectile {
+        pos: predict_pos_from(b.pos, b.vel, motion, age),
+        ..*b
+    }
+}
+
+/// Residuals (position against the ballistic prediction, velocity against
+/// the baseline velocity) of a projectile that differs from its prediction.
+#[derive(Debug, Clone, Copy)]
+struct ProjectileDelta {
+    pos: [i16; 3],
+    vel: [i16; 3],
+}
+
+impl ProjectileDelta {
+    fn new(p: &PackedProjectile, pred: &PackedProjectile) -> ProjectileDelta {
+        ProjectileDelta {
+            pos: residual(p.pos, pred.pos),
+            vel: residual(p.vel, pred.vel),
+        }
+    }
+}
+
+/// The newest projectile (highest id) of `owner` among `known`.
+fn sibling(known: &[PackedProjectile], owner: u8) -> Option<&PackedProjectile> {
+    known
+        .iter()
+        .filter(|k| k.owner == owner)
+        .max_by_key(|k| k.id)
+}
+
+/// Flight time steps per tick of a new projectile's position prediction.
+const NEW_FLIGHT_STEPS: i64 = 4;
+/// Bits of the flight time (in `1 / NEW_FLIGHT_STEPS` ticks; up to 7.75
+/// ticks, enough for baselines up to 6 ticks old plus the muzzle offset).
+const NEW_FLIGHT_BITS: u32 = 5;
+/// Largest flight time a new projectile's position prediction can use.
+const NEW_FLIGHT_MAX: u32 = (1 << NEW_FLIGHT_BITS) - 1;
+
+/// Where a new projectile with packed velocity `vel` would be after
+/// flying `steps` quarter ticks from its owner's ship, which moved with
+/// its current velocity meanwhile: `ship.pos + (vel - ship.vel) x t`, in
+/// packed integers only. The flight time also absorbs the muzzle offset
+/// (the shot starts just outside the hull, along its velocity).
+fn predict_new_pos(
+    ship: &PackedShip,
+    vel: PackedVec3,
+    motion: (&[u32; 3], &[u32; 3]),
+    steps: u32,
+) -> PackedVec3 {
+    let (ship_motion, proj_motion) = motion;
+    let mut out = ship.pos;
+    for i in 0..3 {
+        let num = (signed(vel[i]) * proj_motion[i] as i64
+            - signed(ship.vel[i]) * ship_motion[i] as i64)
+            * steps as i64;
+        let disp = div_round(num, NEW_FLIGHT_STEPS << MOTION_SCALE_SHIFT);
+        out[i] = (ship.pos[i] as i64 + disp).clamp(0, u16::MAX as i64) as u16;
+    }
+    out
+}
+
+/// Residuals of a projectile that is new against the baseline, given the
+/// items known so far and this snapshot's ships.
+#[derive(Debug, Clone, Copy)]
+struct NewProjectile {
+    /// Velocity against the sibling's (the owner's newest projectile known
+    /// so far, same kind and state), if there is one.
+    sibling_vel: Option<[i16; 3]>,
+    /// Flight time and position residual against [`predict_new_pos`], if
+    /// the owner's ship is in the snapshot.
+    flight: Option<(u32, [i16; 3])>,
+}
+
+impl NewProjectile {
+    fn new(
+        p: &PackedProjectile,
+        known: &[PackedProjectile],
+        ships: &[PackedShip],
+        motion: (&[u32; 3], &[u32; 3]),
+    ) -> NewProjectile {
+        let sibling_vel = sibling(known, p.owner)
+            .filter(|s| s.kind == p.kind && s.state == p.state)
+            .map(|s| residual(p.vel, s.vel));
+        let flight = ships
+            .binary_search_by_key(&p.owner, |s| s.id)
+            .ok()
+            .map(|i| {
+                (0..=NEW_FLIGHT_MAX)
+                    .map(|q| {
+                        (
+                            q,
+                            residual(p.pos, predict_new_pos(&ships[i], p.vel, motion, q)),
+                        )
+                    })
+                    .min_by_key(|&(q, r)| (resid_width(r), q))
+                    .expect("non-empty range")
+            });
+        NewProjectile {
+            sibling_vel,
+            flight,
+        }
+    }
+}
+
+/// Typical widths (velocity, position) of the new projectiles' residual
+/// groups, from a dry run over the new items in list order.
+fn new_projectile_widths(
+    snap: &PackedSnapshot,
+    base: &PackedSnapshot,
+    motion: (&[u32; 3], &[u32; 3]),
+) -> [u32; 2] {
+    let mut known: Vec<PackedProjectile> = snap
+        .projectiles
+        .iter()
+        .filter(|p| base.projectile(p.id).is_some())
+        .copied()
+        .collect();
+    let mut counts = [[0u32; 17]; 2];
+    for p in snap
+        .projectiles
+        .iter()
+        .filter(|p| base.projectile(p.id).is_none())
+    {
+        let n = NewProjectile::new(p, &known, &snap.ships, motion);
+        if let Some(r) = n.sibling_vel {
+            counts[0][resid_width(r) as usize] += 1;
+        }
+        if let Some((_, r)) = n.flight {
+            counts[1][resid_width(r) as usize] += 1;
+        }
+        known.push(*p);
+    }
+    [best_width_base(&counts[0]), best_width_base(&counts[1])]
+}
+
+/// A projectile that is new against the baseline (see the module docs):
+/// owner (`0` + 5 bits below 32, else `1` + 8 bits), then either 1 bit + a
+/// velocity residual group against its sibling, or 0 + kind, state and the
+/// raw velocity; then, with the owner's ship in this snapshot, a 5-bit
+/// flight time in quarter ticks and a position residual group against
+/// [`predict_new_pos`] (the raw position without one). Residual groups are
+/// coded against the typical widths `wb` (velocity, position).
+fn write_projectile_new(w: &mut BitWriter, p: &PackedProjectile, n: &NewProjectile, wb: [u32; 2]) {
+    if p.owner < 32 {
+        w.write_bool(false);
+        w.write_bits(p.owner as u64, 5);
+    } else {
+        w.write_bool(true);
+        w.write_u8(p.owner);
+    }
+    match n.sibling_vel {
+        Some(r) => {
+            w.write_bool(true);
+            write_resid3(w, r, wb[0]);
+        }
+        None => {
+            w.write_bool(false);
+            w.write_u8(p.kind);
+            w.write_u8(p.state);
+            write_vec16(w, p.vel);
+        }
+    }
+    match n.flight {
+        Some((steps, r)) => {
+            w.write_bits(steps as u64, NEW_FLIGHT_BITS);
+            write_resid3(w, r, wb[1]);
+        }
+        None => write_vec16(w, p.pos),
+    }
+}
+
+fn read_projectile_new(
+    r: &mut BitReader,
+    id: u16,
+    known: &[PackedProjectile],
+    ships: &[PackedShip],
+    motion: (&[u32; 3], &[u32; 3]),
+    wb: [u32; 2],
+) -> Result<PackedProjectile, DecodeError> {
+    let owner = if r.read_bool()? {
+        r.read_u8()?
+    } else {
+        r.read_bits(5)? as u8
+    };
+    let (kind, state, vel) = if r.read_bool()? {
+        let s = sibling(known, owner).ok_or(DecodeError::Invalid("projectile sibling missing"))?;
+        (
+            s.kind,
+            s.state,
+            apply_residual(s.vel, read_resid3(r, wb[0])?),
+        )
+    } else {
+        (r.read_u8()?, r.read_u8()?, read_vec16(r)?)
+    };
+    let pos = match ships.binary_search_by_key(&owner, |s| s.id) {
+        Ok(i) => {
+            let steps = r.read_bits(NEW_FLIGHT_BITS)? as u32;
+            let pred = predict_new_pos(&ships[i], vel, motion, steps);
+            apply_residual(pred, read_resid3(r, wb[1])?)
+        }
+        Err(_) => read_vec16(r)?,
+    };
+    Ok(PackedProjectile {
+        id,
+        kind,
+        owner,
+        state,
+        pos,
+        vel,
+    })
+}
+
+/// Tolerance (packed position steps per axis, about 0.016 u horizontally
+/// and 0.008 u vertically at the default quantization) the server settles
+/// projectiles with ([`settle_projectiles`]).
+pub const SETTLE_TOLERANCE: u16 = 4;
+
+/// Moves every projectile of `snap` that lies within `tolerance` packed
+/// position steps (per axis) of the ballistic prediction from `baseline`
+/// onto that prediction, when nothing else about it changed. Encoded
+/// against `baseline`, such a projectile then costs one bit instead of its
+/// rounding residuals. The server calls it on each client's snapshot
+/// before encoding and keeps the settled snapshot as that client's
+/// history, so both ends stay identical; a settled position is never more
+/// than `tolerance` steps per axis (one step is about 0.004 u horizontally
+/// and 0.002 u vertically at the default quantization, so 4 steps are about
+/// 0.016 u and 0.008 u) from the true one, because every snapshot is compared with the truth
+/// again. Without it, the rounding of each packed position costs a
+/// straight projectile about 10 bits per snapshot.
+pub fn settle_projectiles(snap: &mut PackedSnapshot, baseline: &PackedSnapshot, tolerance: u16) {
+    let age = snap.tick.wrapping_sub(baseline.tick);
+    if !(1..=MAX_BASELINE_AGE).contains(&age) {
+        return;
+    }
+    let motion = snap.projectile_motion;
+    for p in &mut snap.projectiles {
+        let Some(b) = baseline.projectile(p.id) else {
+            continue;
+        };
+        let pred = predict_projectile(b, &motion, age);
+        let same = p.kind == pred.kind
+            && p.owner == pred.owner
+            && p.state == pred.state
+            && p.vel == pred.vel;
+        let close = residual(p.pos, pred.pos)
+            .iter()
+            .all(|c| c.unsigned_abs() <= tolerance);
+        if same && close {
+            p.pos = pred.pos;
+        }
+    }
+}
+
+/// Per-snapshot typical widths of the projectile residual groups
+/// (position, velocity), like [`WidthBase`] for ships.
+fn projectile_widths(deltas: &[ProjectileDelta]) -> [u32; 2] {
+    let mut counts = [[0u32; 17]; 2];
+    for d in deltas {
+        counts[0][resid_width(d.pos) as usize] += 1;
+        counts[1][resid_width(d.vel) as usize] += 1;
+    }
+    [best_width_base(&counts[0]), best_width_base(&counts[1])]
 }
 
 /// Velocity predicted from the displacement over `age` ticks, assuming
@@ -819,35 +1127,47 @@ fn read_projectile_full(r: &mut BitReader, id: u16) -> Result<PackedProjectile, 
     })
 }
 
-/// Diffs of a changed projectile against its baseline state.
-fn write_projectile_delta(w: &mut BitWriter, p: &PackedProjectile, b: &PackedProjectile) {
-    let meta = p.kind != b.kind || p.owner != b.owner || p.state != b.state;
+/// Diffs of a projectile that differs from its prediction `pred` (see the
+/// module docs): meta bit [+ kind, owner, state], position residual group
+/// against the prediction, velocity residual group against the baseline
+/// velocity, coded against the section's typical widths `wb`.
+fn write_projectile_delta(
+    w: &mut BitWriter,
+    p: &PackedProjectile,
+    pred: &PackedProjectile,
+    wb: [u32; 2],
+) {
+    let meta = p.kind != pred.kind || p.owner != pred.owner || p.state != pred.state;
     w.write_bool(meta);
     if meta {
         w.write_u8(p.kind);
         w.write_u8(p.owner);
         w.write_u8(p.state);
     }
-    write_vec_diff(w, p.pos, b.pos);
-    write_vec_diff(w, p.vel, b.vel);
+    let d = ProjectileDelta::new(p, pred);
+    write_resid3(w, d.pos, wb[0]);
+    write_resid3(w, d.vel, wb[1]);
 }
 
 fn read_projectile_delta(
     r: &mut BitReader,
-    b: &PackedProjectile,
+    pred: &PackedProjectile,
+    wb: [u32; 2],
 ) -> Result<PackedProjectile, DecodeError> {
     let (kind, owner, state) = if r.read_bool()? {
         (r.read_u8()?, r.read_u8()?, r.read_u8()?)
     } else {
-        (b.kind, b.owner, b.state)
+        (pred.kind, pred.owner, pred.state)
     };
+    let pos = apply_residual(pred.pos, read_resid3(r, wb[0])?);
+    let vel = apply_residual(pred.vel, read_resid3(r, wb[1])?);
     Ok(PackedProjectile {
-        id: b.id,
+        id: pred.id,
         kind,
         owner,
         state,
-        pos: read_vec_diff(r, b.pos)?,
-        vel: read_vec_diff(r, b.vel)?,
+        pos,
+        vel,
     })
 }
 
@@ -1116,25 +1436,49 @@ fn read_full_list<T: ListItem>(
     Ok(())
 }
 
+/// How an id list codes its items (see [`write_list`] and [`read_list`]).
+struct ListCodec<Full, Pred, Delta, New> {
+    /// Full state (full snapshots).
+    full: Full,
+    /// Maps a baseline item to what "unchanged" means: the identity for
+    /// entities, the ballistic move for projectiles.
+    predict: Pred,
+    /// Diffs of an item against its prediction.
+    delta: Delta,
+    /// An item new against the baseline, given the items known so far
+    /// (those carried over from the baseline, then earlier new ones).
+    new: New,
+}
+
 /// Writes `cur` (sorted, unique ids) as an id list, against `base` if given.
 fn write_list<T: ListItem>(
     w: &mut BitWriter,
     cur: &[T],
     base: Option<&[T]>,
-    full: fn(&mut BitWriter, &T),
-    delta: impl Fn(&mut BitWriter, &T, &T),
+    c: ListCodec<
+        fn(&mut BitWriter, &T),
+        impl Fn(&T) -> T,
+        impl Fn(&mut BitWriter, &T, &T),
+        impl Fn(&mut BitWriter, &T, &[T]),
+    >,
 ) {
     let Some(base) = base else {
-        write_full_list(w, cur.iter(), full);
+        write_full_list(w, cur.iter(), c.full);
         return;
     };
+    let mut known: Vec<T> = Vec::with_capacity(cur.len());
     for b in base {
-        match cur.binary_search_by_key(&b.id(), |c| c.id()) {
-            Ok(i) if cur[i] == *b => w.write_bool(true),
+        match cur.binary_search_by_key(&b.id(), |x| x.id()) {
             Ok(i) => {
-                w.write_bool(false);
-                w.write_bool(true);
-                delta(w, &cur[i], b);
+                let pred = (c.predict)(b);
+                if cur[i] == pred {
+                    w.write_bool(true);
+                } else {
+                    w.write_bool(false);
+                    w.write_bool(true);
+                    (c.delta)(w, &cur[i], &pred);
+                }
+                known.push(cur[i]);
             }
             Err(_) => {
                 w.write_bool(false);
@@ -1144,23 +1488,59 @@ fn write_list<T: ListItem>(
     }
     let new: Vec<&T> = cur
         .iter()
-        .filter(|c| base.binary_search_by_key(&c.id(), |b| b.id()).is_err())
+        .filter(|x| base.binary_search_by_key(&x.id(), |b| b.id()).is_err())
         .collect();
-    write_full_list(w, new.into_iter(), full);
+    w.write_varint(new.len() as u64);
+    let mut next = 0u32;
+    for item in new {
+        let id = item.id() as u32;
+        write_gap(w, id - next);
+        next = id + 1;
+        (c.new)(w, item, &known);
+        known.push(*item);
+    }
 }
 
-/// Reads an id list written by [`write_list`]; the result is sorted by id.
+/// Id gap of a new item in a delta's id list: `0` + 4 bits for gaps below
+/// 16 (new ids are mostly consecutive), else `1` + varint.
+fn write_gap(w: &mut BitWriter, gap: u32) {
+    if gap < 16 {
+        w.write_bool(false);
+        w.write_bits(gap as u64, 4);
+    } else {
+        w.write_bool(true);
+        w.write_varint(gap as u64);
+    }
+}
+
+fn read_gap(r: &mut BitReader) -> Result<u32, DecodeError> {
+    if r.read_bool()? {
+        r.read_varint_u32()
+    } else {
+        Ok(r.read_bits(4)? as u32)
+    }
+}
+
+/// Reads an id list written by [`write_list`] (with the matching codec);
+/// the result is sorted by id. `min_bits` / `new_min_bits`: smallest size
+/// of a full / new item including its id gap.
+#[allow(clippy::type_complexity)]
 fn read_list<T: ListItem>(
     r: &mut BitReader,
     base: Option<&[T]>,
     max: usize,
     min_bits: usize,
-    full: fn(&mut BitReader, u16) -> Result<T, DecodeError>,
-    delta: impl Fn(&mut BitReader, &T) -> Result<T, DecodeError>,
+    new_min_bits: usize,
+    c: ListCodec<
+        fn(&mut BitReader, u16) -> Result<T, DecodeError>,
+        impl Fn(&T) -> T,
+        impl Fn(&mut BitReader, &T) -> Result<T, DecodeError>,
+        impl Fn(&mut BitReader, u16, &[T]) -> Result<T, DecodeError>,
+    >,
 ) -> Result<Vec<T>, DecodeError> {
     let mut out: Vec<T> = Vec::new();
     let Some(base) = base else {
-        read_full_list(r, max, min_bits, &mut out, full)?;
+        read_full_list(r, max, min_bits, &mut out, c.full)?;
         if out.windows(2).any(|p| p[0].id() >= p[1].id()) {
             return Err(DecodeError::Invalid("list ids not ascending"));
         }
@@ -1168,14 +1548,24 @@ fn read_list<T: ListItem>(
     };
     for b in base {
         if r.read_bool()? {
-            out.push(*b);
+            out.push((c.predict)(b));
         } else if r.read_bool()? {
-            let d = delta(r, b)?;
+            let d = (c.delta)(r, &(c.predict)(b))?;
             out.push(d);
         }
     }
     let kept = out.len();
-    read_full_list(r, max.saturating_sub(kept), min_bits, &mut out, full)?;
+    let n = r.read_len(max.saturating_sub(kept), new_min_bits)?;
+    let mut next = 0u32;
+    for _ in 0..n {
+        let id = next.saturating_add(read_gap(r)?);
+        if id > u16::MAX as u32 {
+            return Err(DecodeError::Invalid("list id out of range"));
+        }
+        let item = (c.new)(r, id as u16, &out)?;
+        out.push(item);
+        next = id + 1;
+    }
     for item in &out[kept..] {
         if base.binary_search_by_key(&item.id(), |b| b.id()).is_ok() {
             return Err(DecodeError::Invalid(
@@ -1192,6 +1582,12 @@ fn read_list<T: ListItem>(
 
 /// Smallest size of a full projectile in an id list (8-bit id gap).
 const PROJECTILE_LIST_MIN_BITS: usize = PROJECTILE_BITS - 8;
+/// Smallest size of a new projectile in a delta's id list (5-bit id gap,
+/// 6-bit owner, sibling bit, empty velocity residual group, raw position
+/// or flight time and empty residual group).
+const PROJECTILE_NEW_MIN_BITS: usize = 5 + 6 + 1 + 1 + 6;
+/// Smallest size of a new entity in a delta's id list (5-bit id gap).
+const ENTITY_NEW_MIN_BITS: usize = ENTITY_MIN_BITS - 16 + 5;
 /// Smallest size of a full entity in an id list (8-bit id gap).
 const ENTITY_LIST_MIN_BITS: usize = ENTITY_MIN_BITS - 8;
 
@@ -1249,13 +1645,15 @@ pub fn write_snapshot(
     }
     w.write_varint(zigzag32(snap.ack_input.wrapping_sub(snap.tick) as i32) as u64);
     w.write_varint(snap.match_ticks_left as u64);
-    let motion_changed = baseline.is_none_or(|b| b.ship_motion != snap.ship_motion);
+    let motion_changed = baseline.is_none_or(|b| {
+        b.ship_motion != snap.ship_motion || b.projectile_motion != snap.projectile_motion
+    });
     if baseline.is_some() {
         w.write_bool(motion_changed);
     }
     if motion_changed {
-        for k in snap.ship_motion {
-            w.write_varint(k as u64);
+        for k in snap.ship_motion.iter().chain(&snap.projectile_motion) {
+            w.write_varint(*k as u64);
         }
     }
 
@@ -1305,12 +1703,45 @@ pub fn write_snapshot(
         }
     }
 
+    // Projectiles: residuals of every projectile that left its predicted
+    // path first, so the typical widths can lead the section.
+    let pm = snap.projectile_motion;
+    let motion = (&snap.ship_motion, &pm);
+    let (pwidths, nwidths) = match baseline {
+        Some(b) => {
+            let deltas: Vec<ProjectileDelta> = snap
+                .projectiles
+                .iter()
+                .filter_map(|p| {
+                    let bp = b.projectile(p.id)?;
+                    let pred = predict_projectile(bp, &pm, age);
+                    (*p != pred).then(|| ProjectileDelta::new(p, &pred))
+                })
+                .collect();
+            let wb = projectile_widths(&deltas);
+            let nb = new_projectile_widths(snap, b, motion);
+            for x in wb.into_iter().chain(nb) {
+                w.write_bits((x - 1) as u64, 4);
+            }
+            (wb, nb)
+        }
+        None => ([1; 2], [1; 2]),
+    };
     write_list(
         w,
         &snap.projectiles,
         baseline.map(|b| &b.projectiles[..]),
-        write_projectile_full,
-        write_projectile_delta,
+        ListCodec {
+            full: write_projectile_full,
+            predict: |b: &PackedProjectile| predict_projectile(b, &pm, age),
+            delta: |w: &mut BitWriter, p: &PackedProjectile, pred: &PackedProjectile| {
+                write_projectile_delta(w, p, pred, pwidths)
+            },
+            new: |w: &mut BitWriter, p: &PackedProjectile, known: &[PackedProjectile]| {
+                let n = NewProjectile::new(p, known, &snap.ships, motion);
+                write_projectile_new(w, p, &n, nwidths)
+            },
+        },
     );
     let ew = match baseline {
         Some(b) => {
@@ -1324,8 +1755,14 @@ pub fn write_snapshot(
         w,
         &snap.entities,
         baseline.map(|b| &b.entities[..]),
-        write_entity_full,
-        |w, e, b| write_entity_delta(w, e, b, ew),
+        ListCodec {
+            full: write_entity_full,
+            predict: |b: &PackedEntity| *b,
+            delta: |w: &mut BitWriter, e: &PackedEntity, b: &PackedEntity| {
+                write_entity_delta(w, e, b, ew)
+            },
+            new: |w: &mut BitWriter, e: &PackedEntity, _: &[PackedEntity]| write_entity_full(w, e),
+        },
     );
 
     match baseline {
@@ -1367,13 +1804,20 @@ pub fn read_snapshot(
     };
     let ack_input = tick.wrapping_add(unzigzag32(r.read_varint_u32()?) as u32);
     let match_ticks_left = r.read_varint_u32()?;
-    let ship_motion = match baseline {
-        Some(b) if !r.read_bool()? => b.ship_motion,
-        _ => [
-            r.read_varint_u32()?,
-            r.read_varint_u32()?,
-            r.read_varint_u32()?,
-        ],
+    let (ship_motion, projectile_motion) = match baseline {
+        Some(b) if !r.read_bool()? => (b.ship_motion, b.projectile_motion),
+        _ => (
+            [
+                r.read_varint_u32()?,
+                r.read_varint_u32()?,
+                r.read_varint_u32()?,
+            ],
+            [
+                r.read_varint_u32()?,
+                r.read_varint_u32()?,
+                r.read_varint_u32()?,
+            ],
+        ),
     };
     let age = baseline_tick.map_or(0, |t| tick.wrapping_sub(t));
 
@@ -1416,13 +1860,30 @@ pub fn read_snapshot(
         ships.push(ship);
     }
 
+    let mut widths = [1u32; 4];
+    if baseline.is_some() {
+        for x in &mut widths {
+            *x = r.read_bits(4)? as u32 + 1;
+        }
+    }
+    let (pwidths, nwidths) = ([widths[0], widths[1]], [widths[2], widths[3]]);
     let projectiles = read_list(
         r,
         baseline.map(|b| &b.projectiles[..]),
         MAX_PROJECTILES_PER_SNAPSHOT,
         PROJECTILE_LIST_MIN_BITS,
-        read_projectile_full,
-        read_projectile_delta,
+        PROJECTILE_NEW_MIN_BITS,
+        ListCodec {
+            full: read_projectile_full,
+            predict: |b: &PackedProjectile| predict_projectile(b, &projectile_motion, age),
+            delta: |r: &mut BitReader, pred: &PackedProjectile| {
+                read_projectile_delta(r, pred, pwidths)
+            },
+            new: |r: &mut BitReader, id: u16, known: &[PackedProjectile]| {
+                let motion = (&ship_motion, &projectile_motion);
+                read_projectile_new(r, id, known, &ships, motion, nwidths)
+            },
+        },
     )?;
     let ew = match baseline {
         Some(_) => r.read_bits(4)? as u32 + 1,
@@ -1433,8 +1894,13 @@ pub fn read_snapshot(
         baseline.map(|b| &b.entities[..]),
         MAX_ENTITIES_PER_SNAPSHOT,
         ENTITY_LIST_MIN_BITS,
-        read_entity_full,
-        |r, b| read_entity_delta(r, b, ew),
+        ENTITY_NEW_MIN_BITS,
+        ListCodec {
+            full: read_entity_full,
+            predict: |b: &PackedEntity| *b,
+            delta: |r: &mut BitReader, b: &PackedEntity| read_entity_delta(r, b, ew),
+            new: |r: &mut BitReader, id: u16, _: &[PackedEntity]| read_entity_full(r, id),
+        },
     )?;
 
     let players = match baseline {
@@ -1456,6 +1922,7 @@ pub fn read_snapshot(
             scores,
             match_ticks_left,
             ship_motion,
+            projectile_motion,
         },
         baseline_tick,
     ))
@@ -1470,7 +1937,7 @@ const _: () = assert!(ENTITY_MIN_BITS == 17 * 8 + 2);
 mod tests {
     use super::*;
     use crate::quant::{pack_quat, Quantizer};
-    use crate::wire::{NetEntity, NetShip, Snapshot, SHIP_CORE_BITS};
+    use crate::wire::{NetEntity, NetProjectile, NetShip, Snapshot, SHIP_CORE_BITS};
     use ls_math::{Pcg32, Quat, TerrainEdit, Vec3};
     #[cfg(target_arch = "wasm32")]
     use wasm_bindgen_test::wasm_bindgen_test as test;
@@ -1588,6 +2055,7 @@ mod tests {
                     center: Vec3::new(i as f32, rng.range_f32(-50.0, 50.0), 3.0),
                     radius: 2.0,
                     team: rng.below(2) as u8,
+                    color: rng.below(4) as u8,
                 })
             })
             .collect();
@@ -1609,6 +2077,7 @@ mod tests {
             scores: (0..rng.below(4)).map(|_| rng.below(70_000)).collect(),
             match_ticks_left: rng.below(18_000),
             ship_motion: random_motion(rng),
+            projectile_motion: random_motion(rng),
         }
     }
 
@@ -1736,6 +2205,9 @@ mod tests {
         }
         if rng.chance(0.05) {
             next.ship_motion = random_motion(rng);
+        }
+        if rng.chance(0.05) {
+            next.projectile_motion = random_motion(rng);
         }
         if rng.chance(0.3) {
             next.edits.push(
@@ -2463,13 +2935,29 @@ mod tests {
     #[test]
     fn motion_scale_is_carried_and_inherited() {
         let quant = Quantizer::default();
-        let full = quant.pack_snapshot(&Snapshot {
+        let empty = quant.pack_snapshot(&Snapshot {
             tick: 50,
             ..Default::default()
         });
+        assert_eq!(empty.projectile_motion, [0; 3], "no projectiles, no scale");
+        let full = quant.pack_snapshot(&Snapshot {
+            tick: 50,
+            projectiles: vec![NetProjectile {
+                id: 3,
+                kind: 1,
+                owner: 0,
+                pos: Vec3::splat(10.0),
+                vel: Vec3::X * 30.0,
+                state: 0,
+            }],
+            ..Default::default()
+        });
         assert_eq!(full.ship_motion, quant.ship_motion_scale());
+        assert_eq!(full.projectile_motion, quant.projectile_motion_scale());
+        assert_ne!(full.projectile_motion, full.ship_motion);
         let (back, _) = decode(&encode(&full, None), &NoBaselines);
         assert_eq!(back.ship_motion, full.ship_motion);
+        assert_eq!(back.projectile_motion, full.projectile_motion);
         let mut next = full.clone();
         next.tick = 52;
         let same = encode(&next, Some(&full));
@@ -2477,6 +2965,9 @@ mod tests {
         let changed = encode(&next, Some(&full));
         assert!(changed.len() > same.len());
         assert_eq!(decode(&changed, &full).0.ship_motion, [1, 2, 3]);
+        next.projectile_motion = [4, 5, 6];
+        let changed = encode(&next, Some(&full));
+        assert_eq!(decode(&changed, &full).0.projectile_motion, [4, 5, 6]);
     }
 
     #[test]
@@ -2503,5 +2994,350 @@ mod tests {
         });
         assert_eq!(h.len(), 4);
         assert_eq!(h.get(18).unwrap().scores, vec![1]);
+    }
+
+    /// A weapon of the busy-fight model: `(speed u/s, ticks between shots,
+    /// bolts per shot, fan degrees, lifetime ticks)`, from `data/weapons`.
+    const BUSY_WEAPONS: [(f32, u32, u32, f32, u32); 6] = [
+        (30.0, 15, 1, 0.0, 180), // Scrap Laser
+        (180.0, 6, 1, 0.0, 60),  // Rivet Gun
+        (33.0, 6, 1, 0.0, 90),   // Plasma Repeater
+        (30.0, 18, 3, 8.0, 180), // Scatter Laser
+        (25.0, 45, 1, 0.0, 360), // Seeker (homing, 2.5 rad/s)
+        (5.0, 30, 1, 0.0, 3600), // Prox Mine (sticks after 1 s)
+    ];
+
+    /// A projectile of the busy-fight model.
+    struct BusyShot {
+        p: NetProjectile,
+        weapon: usize,
+        /// Distance left until it hits something (wall or ship).
+        reach: f32,
+        age: u32,
+    }
+
+    /// A busy fight for the bandwidth tests: `ships` [`BusyShip`]s, each
+    /// with one weapon of [`BUSY_WEAPONS`] (by id), holding the trigger in
+    /// bursts (1 to 2 s on, 0.5 to 1.5 s off). Bolts fly straight from the
+    /// nose (no inherited velocity) until they hit something 4 to 60 u away
+    /// or their lifetime ends; Seekers home in on the nearest enemy at 2.5
+    /// rad/s; mines slow to a stop after 1 s and stay stuck (3 per owner).
+    /// Returns the snapshot at every even tick for `seconds`.
+    fn busy_fight(seed: u64, ships: u8, seconds: u32) -> Vec<PackedSnapshot> {
+        const DT: f32 = 1.0 / 60.0;
+        let quant = Quantizer::default();
+        let mut rng = Pcg32::new(seed, 0);
+        let players: Vec<NetPlayer> = (0..ships)
+            .map(|id| NetPlayer {
+                id,
+                team: id % 2,
+                ship_type: id % 4,
+                gadget: 255,
+                name: format!("player{id}"),
+            })
+            .collect();
+        let mut fleet: Vec<BusyShip> = (0..ships).map(|id| BusyShip::new(&mut rng, id)).collect();
+        // (trigger down, ticks left in this phase, next shot tick)
+        let mut triggers: Vec<(bool, u32, u32)> = (0..ships)
+            .map(|_| (rng.chance(0.5), rng.below(90), 0))
+            .collect();
+        let mut shots: Vec<BusyShot> = Vec::new();
+        let mut next_id = 1u16;
+        let mut out = Vec::new();
+        for tick in 1..=seconds * 60 + 60 {
+            for s in &mut fleet {
+                s.tick(&mut rng, 4.0);
+            }
+            // Fire.
+            for (i, s) in fleet.iter().enumerate() {
+                let t = &mut triggers[i];
+                if t.1 == 0 {
+                    t.0 = !t.0;
+                    t.1 = if t.0 {
+                        60 + rng.below(61)
+                    } else {
+                        30 + rng.below(61)
+                    };
+                }
+                t.1 -= 1;
+                let w = i % BUSY_WEAPONS.len();
+                let (speed, interval, bolts, fan, _) = BUSY_WEAPONS[w];
+                if !t.0 || tick < t.2 {
+                    continue;
+                }
+                t.2 = tick + interval;
+                let fwd = s.ship.rot * Vec3::NEG_Z;
+                let right = s.ship.rot * Vec3::X;
+                for b in 0..bolts {
+                    let off = (b as f32 - (bolts - 1) as f32 * 0.5) * fan.to_radians();
+                    let dir = (fwd + right * off).normalize();
+                    shots.push(BusyShot {
+                        p: NetProjectile {
+                            id: next_id,
+                            kind: w as u8 * 3,
+                            owner: s.ship.id,
+                            pos: s.ship.pos + dir * 0.7,
+                            vel: dir * speed,
+                            state: 0,
+                        },
+                        weapon: w,
+                        reach: rng.range_f32(4.0, 60.0),
+                        age: 0,
+                    });
+                    next_id = next_id.wrapping_add(1).max(1);
+                }
+            }
+            // Move, home, stick and end.
+            for sh in &mut shots {
+                sh.age += 1;
+                match sh.weapon {
+                    4 => {
+                        let target = fleet
+                            .iter()
+                            .filter(|s| s.ship.id % 2 != sh.p.owner % 2)
+                            .min_by(|a, b| {
+                                let da = a.ship.pos.distance_squared(sh.p.pos);
+                                let db = b.ship.pos.distance_squared(sh.p.pos);
+                                da.total_cmp(&db)
+                            })
+                            .map(|s| s.ship.pos);
+                        if let Some(t) = target {
+                            let want = (t - sh.p.pos).normalize_or_zero();
+                            let cur = sh.p.vel.normalize_or_zero();
+                            let turn = (want - cur) * (2.5 * DT);
+                            sh.p.vel = (cur + turn).normalize_or_zero() * 25.0;
+                        }
+                    }
+                    5 if sh.age == 60 => {
+                        sh.p.vel = Vec3::ZERO;
+                        sh.p.state = 1; // stuck
+                    }
+                    _ => {}
+                }
+                sh.p.pos += sh.p.vel * DT;
+                sh.reach -= sh.p.vel.length() * DT;
+            }
+            shots.retain(|sh| {
+                sh.age < BUSY_WEAPONS[sh.weapon].4 && (sh.weapon == 5 || sh.reach > 0.0)
+            });
+            // At most 3 mines per owner (the oldest goes).
+            for owner in 0..ships {
+                let mines: Vec<u16> = shots
+                    .iter()
+                    .filter(|sh| sh.weapon == 5 && sh.p.owner == owner)
+                    .map(|sh| sh.p.id)
+                    .collect();
+                if mines.len() > 3 {
+                    let oldest = mines[0];
+                    shots.retain(|sh| sh.p.id != oldest);
+                }
+            }
+            if tick % 2 != 0 || tick <= 60 {
+                continue;
+            }
+            out.push(quant.pack_snapshot(&Snapshot {
+                tick,
+                ack_input: tick + 4,
+                ships: fleet.iter().map(|s| s.ship).collect(),
+                projectiles: shots.iter().map(|sh| sh.p).collect(),
+                players: players.clone(),
+                scores: vec![31_000, 29_500],
+                match_ticks_left: 9_000,
+                ..Default::default()
+            }));
+        }
+        out
+    }
+
+    /// Bits of a projectile section as protocol 3 sent it (unpredicted
+    /// 4/8/16-bit component diffs against the baseline), for comparison.
+    fn protocol3_projectile_bytes(cur: &[PackedProjectile], base: &[PackedProjectile]) -> usize {
+        let mut w = BitWriter::new();
+        for b in base {
+            match cur.binary_search_by_key(&b.id, |c| c.id) {
+                Ok(i) if cur[i] == *b => w.write_bool(true),
+                Ok(i) => {
+                    let p = &cur[i];
+                    w.write_bits(1, 2);
+                    let meta = p.kind != b.kind || p.owner != b.owner || p.state != b.state;
+                    w.write_bool(meta);
+                    if meta {
+                        w.write_bits(0, 24);
+                    }
+                    write_vec_diff(&mut w, p.pos, b.pos);
+                    write_vec_diff(&mut w, p.vel, b.vel);
+                }
+                Err(_) => w.write_bits(0, 2),
+            }
+        }
+        let new: Vec<&PackedProjectile> = cur
+            .iter()
+            .filter(|c| base.binary_search_by_key(&c.id, |b| b.id).is_err())
+            .collect();
+        write_full_list(&mut w, new.into_iter(), write_projectile_full);
+        w.finish().len()
+    }
+
+    /// Protocol 4 acceptance: a busy 32-player fight (every ship dogfighting,
+    /// see [`BusyShip`], and firing in bursts with a mix of fast, slow,
+    /// fanned, homing and stuck projectiles, see [`busy_fight`]: about 100
+    /// projectiles in flight, 4 new ones per snapshot), sent the way the
+    /// server sends it (settled against the baseline, see
+    /// [`settle_projectiles`]), over four seeds. Every delta is one
+    /// datagram; on average the fight stays within 17,280 B/s at 30 Hz for
+    /// baselines up to 6 ticks old (100 ms round trip). The busiest
+    /// snapshots fit at 2 ticks, go up to about 6% over at 4 ticks and up to
+    /// about 19% over at 6 ticks (worst 683 B against 576 B). New
+    /// projectiles dominate the rest: a baseline 6 ticks
+    /// old repeats about 12 of them at about 11 bytes each (velocity and a
+    /// position against the owner's ship), while a projectile in flight
+    /// mostly costs a bit. Protocol 3 needed 610 to 760 B for the
+    /// projectiles alone (now 100 to 190 B), 27 to 33 KB/s in all.
+    #[test]
+    fn busy_fight_with_projectiles_fits_the_budget() {
+        // Several fights, so the bounds are not tuned to one seed.
+        for seed in [41, 7, 1234, 99_991] {
+            busy_fight_budget(seed);
+        }
+    }
+
+    fn busy_fight_budget(seed: u64) {
+        const PER_SNAPSHOT: usize = 17_280 / 30;
+        let snaps = busy_fight(seed, MAX_SHIPS, 4);
+        let (mut flying, mut spawned, mut n) = (0usize, 0usize, 0usize);
+        for (i, s) in snaps.iter().enumerate().skip(1) {
+            flying += s.projectiles.len();
+            spawned += s
+                .projectiles
+                .iter()
+                .filter(|p| snaps[i - 1].projectile(p.id).is_none())
+                .count();
+            n += 1;
+        }
+        let (flying, spawned) = (flying as f64 / n as f64, spawned as f64 / n as f64);
+        assert!(
+            (80.0..=160.0).contains(&flying) && spawned > 3.0,
+            "{flying:.0} projectiles in flight, {spawned:.1} new"
+        );
+        for (age, worst_limit, proj_limit) in [
+            // Busiest snapshots: within budget at 2 ticks, a few percent
+            // over at 4, up to about 25% over at 6 (a known shortfall, see
+            // docs/architecture/netcode.md); the mean fits at every age.
+            (2u32, PER_SNAPSHOT, 120.0),
+            (4, 620, 170.0),
+            (6, 720, 210.0),
+        ] {
+            let step = (age / 2) as usize;
+            let (mut total, mut worst, mut proj, mut old, mut count) = (0, 0, 0, 0, 0);
+            // What the server sent (settled): the client's baselines.
+            let mut sent: Vec<PackedSnapshot> = snaps[..step].to_vec();
+            for i in step..snaps.len() {
+                let base = &sent[i - step];
+                let mut next = snaps[i].clone();
+                settle_projectiles(&mut next, base, SETTLE_TOLERANCE);
+                for (p, truth) in next.projectiles.iter().zip(&snaps[i].projectiles) {
+                    let off = residual(p.pos, truth.pos);
+                    assert!(
+                        off.iter().all(|c| c.unsigned_abs() <= SETTLE_TOLERANCE),
+                        "{off:?}"
+                    );
+                }
+                let delta = encode(&next, Some(base));
+                assert_eq!(decode(&delta, base).0, next);
+                let without = {
+                    let (mut b, mut s) = (base.clone(), next.clone());
+                    b.projectiles.clear();
+                    s.projectiles.clear();
+                    b.projectile_motion = s.projectile_motion;
+                    encode(&s, Some(&b)).len()
+                };
+                total += delta.len();
+                worst = worst.max(delta.len());
+                proj += delta.len() - without;
+                old +=
+                    protocol3_projectile_bytes(&snaps[i].projectiles, &snaps[i - step].projectiles);
+                count += 1;
+                sent.push(next);
+            }
+            let mean = total as f64 / count as f64;
+            let (proj, old) = (proj as f64 / count as f64, old as f64 / count as f64);
+            println!(
+                "seed {seed}: busy fight, 32 ships, {flying:.0} projectiles in flight, {spawned:.1} new per snapshot, baseline {age} ticks old: delta mean {mean:.0} B ({:.0} B/s), worst {worst} B ({} B/s), projectile section mean {proj:.0} B (protocol 3: {old:.0} B)",
+                mean * 30.0,
+                worst * 30,
+            );
+            assert!(worst <= 1200, "one datagram: {worst} B");
+            assert!(mean <= PER_SNAPSHOT as f64, "age {age}: mean {mean:.0} B");
+            assert!(worst <= worst_limit, "age {age}: worst {worst} B");
+            assert!(
+                proj <= proj_limit && proj < old * 0.35,
+                "age {age}: {proj:.0} B vs {old:.0} B"
+            );
+        }
+    }
+
+    /// Straight projectiles are predicted: a bolt that flew exactly along
+    /// its packed velocity costs one bit, a homing one only its residuals.
+    #[test]
+    fn straight_projectiles_are_predicted() {
+        let quant = Quantizer::default();
+        let bolt = |id, pos: Vec3, vel: Vec3| NetProjectile {
+            id,
+            kind: 2,
+            owner: 5,
+            pos,
+            vel,
+            state: 0,
+        };
+        let snap = |tick, projectiles| {
+            quant.pack_snapshot(&Snapshot {
+                tick,
+                ack_input: tick,
+                projectiles,
+                ..Default::default()
+            })
+        };
+        let p0 = Vec3::new(100.0, 50.0, 80.0);
+        let v = Vec3::new(170.0, -40.0, 25.0);
+        let base = snap(100, vec![bolt(7, p0, v)]);
+        // Exactly on the packed prediction: one bit.
+        let pb = base.projectiles[0];
+        let mut exact = base.clone();
+        exact.tick = 104;
+        exact.projectiles[0] = predict_projectile(&pb, &base.projectile_motion, 4);
+        let same = {
+            let mut e = exact.clone();
+            e.projectiles.clear();
+            e.projectile_motion = base.projectile_motion;
+            let mut b = base.clone();
+            b.projectiles.clear();
+            encode(&e, Some(&b)).len()
+        };
+        let bytes = encode(&exact, Some(&base));
+        assert_eq!(decode(&bytes, &base).0, exact);
+        assert!(bytes.len() <= same + 1, "{} vs {same}", bytes.len());
+        // The real flight (float positions) is within a step or two.
+        let flown = snap(104, vec![bolt(7, p0 + v * (4.0 / 60.0), v)]);
+        let d = ProjectileDelta::new(
+            &flown.projectiles[0],
+            &predict_projectile(&pb, &base.projectile_motion, 4),
+        );
+        assert!(resid_width(d.pos) <= 2 && d.vel == [0; 3], "{d:?}");
+        let bytes = encode(&flown, Some(&base));
+        assert_eq!(decode(&bytes, &base).0, flown);
+        assert!(bytes.len() <= same + 2, "{} vs {same}", bytes.len());
+        // A turning (homing) projectile sends its velocity change too, and
+        // still decodes exactly; so does a stuck one (zero velocity).
+        let turned = snap(
+            104,
+            vec![bolt(7, p0 + v * (4.0 / 60.0), v * 0.9 + Vec3::Y * 20.0)],
+        );
+        let bytes = encode(&turned, Some(&base));
+        assert_eq!(decode(&bytes, &base).0, turned);
+        let stuck_base = snap(100, vec![bolt(9, p0, Vec3::ZERO)]);
+        let mut stuck = stuck_base.clone();
+        stuck.tick = 106;
+        let bytes = encode(&stuck, Some(&stuck_base));
+        assert_eq!(decode(&bytes, &stuck_base).0, stuck);
     }
 }

@@ -3,8 +3,8 @@
 //! A chunk owns cells `0..32` on each axis. To emit every face whose edge
 //! starts inside the chunk, the mesher also needs the vertices of the cells
 //! at local index `-1` (owned by the neighbouring chunks), so the grid holds
-//! corners `-1..=32` (34 per axis) and paint teams and surface state bits
-//! for cells `-1..=31` (33 per axis). Neighbouring chunks compute the shared vertices from
+//! corners `-1..=32` (34 per axis) and paint teams, paint colours and surface
+//! state bits for cells `-1..=31` (33 per axis). Neighbouring chunks compute the shared vertices from
 //! bit-identical samples, which is what makes the meshes seam-free.
 
 use ls_math::Vec3;
@@ -23,6 +23,8 @@ pub struct SampleGrid {
     pub origin: [i32; 3],
     values: Vec<f32>,
     teams: Vec<u8>,
+    /// Paint colour id per cell (`ls_math::terrain::PAINT_*`).
+    colors: Vec<u8>,
     /// Active surface state bits per cell (`ls_math::SurfaceStates`).
     states: Vec<u8>,
 }
@@ -39,12 +41,7 @@ impl SampleGrid {
                 }
             }
         }
-        SampleGrid {
-            origin,
-            values,
-            teams: vec![NO_TEAM; GRID_CELLS * GRID_CELLS * GRID_CELLS],
-            states: vec![0; GRID_CELLS * GRID_CELLS * GRID_CELLS],
-        }
+        Self::from_values(origin, values)
     }
 
     /// A grid from raw corner values (`GRID_CORNERS³`, x fastest) with no
@@ -58,6 +55,7 @@ impl SampleGrid {
             origin,
             values,
             teams: vec![NO_TEAM; GRID_CELLS * GRID_CELLS * GRID_CELLS],
+            colors: vec![0; GRID_CELLS * GRID_CELLS * GRID_CELLS],
             states: vec![0; GRID_CELLS * GRID_CELLS * GRID_CELLS],
         }
     }
@@ -100,6 +98,18 @@ impl SampleGrid {
     #[inline]
     pub fn set_team(&mut self, i: i32, j: i32, k: i32, team: u8) {
         self.teams[Self::cell_index(i, j, k)] = team;
+    }
+
+    /// Paint colour id of local cell `(i, j, k)`, each in `-1..=31`.
+    #[inline]
+    pub fn color(&self, i: i32, j: i32, k: i32) -> u8 {
+        self.colors[Self::cell_index(i, j, k)]
+    }
+
+    /// Sets the paint colour id of local cell `(i, j, k)`, each in `-1..=31`.
+    #[inline]
+    pub fn set_color(&mut self, i: i32, j: i32, k: i32, color: u8) {
+        self.colors[Self::cell_index(i, j, k)] = color;
     }
 
     /// Active surface state bits of local cell `(i, j, k)`, each in `-1..=31`.

@@ -83,7 +83,7 @@ fn bots_play_a_full_match_without_desync() {
                 down: Link::new(delay),
                 joined_at: now,
             };
-            let hello = Message::Hello(ls_game::client_hello(c.stats.name.clone(), None, None));
+            let hello = Message::Hello(ls_bots::bot_hello(c.stats.name.clone(), 100 + i as u64));
             c.up.push(now, hello.encode().unwrap());
             clients.push(c);
         }

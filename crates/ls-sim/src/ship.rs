@@ -8,8 +8,18 @@
 //!
 //! [`simulate_movement`] is a pure function of ship, input, tuning and terrain, so
 //! the client can run the exact same code for prediction.
+//!
+//! Paint Thrower colours (M2 plan) change the contact response, read from
+//! the terrain's paint (`TerrainQuery::paint_colors_near`): red paint is
+//! bouncy (walls hit at `paint_bounce_restitution`), blue paint is slippery
+//! (no damping while touching it, and a wall hit keeps the ship's speed,
+//! turned along the wall), yellow paint is sticky (while touching it the
+//! caps and the ship's local velocity are limited to `paint_sticky_speed`
+//! of the cap). Plain paint has no effect.
 
-use ls_math::terrain::TerrainQuery;
+use std::collections::BTreeMap;
+
+use ls_math::terrain::{TerrainQuery, PAINT_BLUE, PAINT_RED, PAINT_YELLOW};
 use ls_math::{det, Quat, Vec3, DT};
 use serde::{Deserialize, Serialize};
 
@@ -97,6 +107,11 @@ pub struct ShipState {
     pub last_fired_tick: Option<u64>,
     /// Ship type to use at the next respawn (ship choice).
     pub next_ship_type: Option<ShipType>,
+    /// Module-owned state per carried weapon (Paint Thrower colour, Leech
+    /// Arc lock), set with `Ctx::set_weapon_state`; 0 when absent. Kept
+    /// across weapon switches, dropped with the weapon and at respawn.
+    #[serde(default)]
+    pub weapon_state: BTreeMap<WeaponId, u32>,
 }
 
 impl ShipState {
@@ -143,6 +158,7 @@ impl ShipState {
             weapons_offline_until: 0,
             last_fired_tick: None,
             next_ship_type: None,
+            weapon_state: BTreeMap::new(),
         }
     }
 
@@ -170,12 +186,18 @@ impl ShipState {
 
     pub fn remove_weapon(&mut self, w: WeaponId) {
         self.weapons.retain(|s| s.weapon != w);
+        self.weapon_state.remove(&w);
         if self.primary == Some(w) {
             self.primary = None;
         }
         if self.secondary == Some(w) {
             self.secondary = None;
         }
+    }
+
+    /// Module-owned state of weapon `w` (0 if none was set).
+    pub fn weapon_state_of(&self, w: WeaponId) -> u32 {
+        self.weapon_state.get(&w).copied().unwrap_or(0)
     }
 
     /// Velocity expressed in ship-local axes.
@@ -211,10 +233,14 @@ fn approach(v: f32, target: f32, step: f32) -> f32 {
 }
 
 /// One local axis of the flight model. Returns the new axis speed and the
-/// amount of speed removed by active (reverse-thrust) braking.
-fn axis_step(v: f32, input: f32, cap: f32, t: &ShipTuning) -> (f32, f32) {
+/// amount of speed removed by active (reverse-thrust) braking. Without
+/// `damping` (slippery paint) an axis without input keeps its speed.
+fn axis_step(v: f32, input: f32, cap: f32, t: &ShipTuning, damping: bool) -> (f32, f32) {
     let target = input * cap;
     if input == 0.0 {
+        if !damping {
+            return (v, 0.0);
+        }
         // Damping; excess speed above the cap bleeds off faster.
         let rate = if v.abs() > cap {
             t.overspeed_decel.max(t.damping_decel)
@@ -271,6 +297,18 @@ fn rotate_ship(ship: &mut ShipState, input: &InputCmd, t: &ShipTuning) {
     ship.orientation = ship.orientation.integrate_local(omega, DT);
 }
 
+/// How a moving sphere responds to one terrain contact.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct ContactResponse {
+    /// Share of the normal speed reflected (0 = slide, 1 = bounce).
+    pub restitution: f32,
+    /// Keep the speed: after the normal part is removed, the velocity along
+    /// the surface is scaled back up towards the speed before the hit
+    /// (slippery; at most doubled, so a head-on hit does not shoot the
+    /// ship sideways).
+    pub keep_speed: bool,
+}
+
 /// Moves a sphere through terrain, sliding along surfaces (and bouncing with
 /// `restitution`). Returns `(contact, max normal speed removed)`. Shared by
 /// ships and debris.
@@ -280,6 +318,22 @@ pub(crate) fn move_sphere<T: TerrainQuery + ?Sized>(
     vel: &mut Vec3,
     radius: f32,
     restitution: f32,
+) -> (bool, f32) {
+    let plain = ContactResponse {
+        restitution,
+        keep_speed: false,
+    };
+    move_sphere_with(terrain, pos, vel, radius, |_| plain)
+}
+
+/// [`move_sphere`] with a per-contact response: `response(p)` for the
+/// surface point `p` the sphere touches.
+pub(crate) fn move_sphere_with<T: TerrainQuery + ?Sized>(
+    terrain: &T,
+    pos: &mut Vec3,
+    vel: &mut Vec3,
+    radius: f32,
+    response: impl Fn(Vec3) -> ContactResponse,
 ) -> (bool, f32) {
     let disp = vel.length() * DT;
     // Substep so a single step never moves more than half the radius.
@@ -296,19 +350,44 @@ pub(crate) fn move_sphere<T: TerrainQuery + ?Sized>(
             }
             contact = true;
             let n = world_normal(terrain, *pos);
+            let r = response(*pos - n * d);
             *pos += n * (radius - d + 1e-4);
             let vn = vel.dot(n);
             if vn < 0.0 {
                 impact = impact.max(-vn);
-                *vel -= n * (vn * (1.0 + restitution));
+                let speed = vel.length();
+                *vel -= n * (vn * (1.0 + r.restitution));
+                let along = vel.length();
+                if r.keep_speed && along > 0.0 {
+                    *vel *= (speed / along).min(2.0);
+                }
             }
         }
     }
     (contact, impact)
 }
 
+/// A ship within this distance of the surface (beyond its radius) touches
+/// the paint there (sticky and slippery paint).
+pub const PAINT_TOUCH_MARGIN: f32 = 0.2;
+/// Radius around a contact point in which paint decides the contact
+/// response (bouncy and slippery paint).
+const PAINT_CONTACT_RADIUS: f32 = 0.5;
+
+/// Paint colour bits (`1 << PAINT_*`) under a ship at `pos`: the painted
+/// surface cells overlapping its sphere grown by [`PAINT_TOUCH_MARGIN`], or
+/// none when it is further from the surface.
+pub fn paint_touching<T: TerrainQuery + ?Sized>(terrain: &T, pos: Vec3, radius: f32) -> u8 {
+    let reach = radius + PAINT_TOUCH_MARGIN;
+    if world_sdf(terrain, pos) >= reach {
+        return 0;
+    }
+    terrain.paint_colors_near(pos, reach)
+}
+
 /// One tick of rotation, thrust, boost, energy regen, terrain collision and
-/// boost refills (hard braking, near-miss scrapes) for a living ship.
+/// boost refills (hard braking, near-miss scrapes) for a living ship, with
+/// the paint effects of the surface it touches (see the module docs).
 pub fn simulate_movement<T: TerrainQuery + ?Sized>(
     ship: &mut ShipState,
     input: &InputCmd,
@@ -320,25 +399,44 @@ pub fn simulate_movement<T: TerrainQuery + ?Sized>(
     ship.horizon_assist = input.buttons.contains(Buttons::HORIZON_ASSIST);
     rotate_ship(ship, &input, t);
 
+    let touching = paint_touching(terrain, ship.pos, t.radius);
+    let sticky = touching & (1 << PAINT_YELLOW) != 0;
+    let slippery = touching & (1 << PAINT_BLUE) != 0;
+
     let thrusting = input.thrust != Vec3::ZERO;
     let boosting = input.buttons.contains(Buttons::BOOST) && ship.boost > 0.0 && thrusting;
     ship.boosting = boosting;
-    let cap = if boosting {
+    let mut cap = if boosting {
         t.boost_speed
     } else {
         t.cruise_speed
     };
+    if sticky {
+        cap *= t.paint_sticky_speed;
+    }
 
     let mut report = MovementReport::default();
     let local = ship.orientation.conjugate().rotate(ship.vel);
     let mut new_local = [0.0f32; 3];
     for (i, out) in new_local.iter_mut().enumerate() {
         let v = local[i];
-        let (nv, braked) = axis_step(v, input.thrust[i], cap, t);
+        let (nv, braked) = axis_step(v, input.thrust[i], cap, t, !slippery);
         if braked > 0.0 && v.abs() > t.hard_brake_min_speed {
             report.hard_braked += braked;
         }
         *out = nv;
+    }
+    if sticky {
+        // Sticky paint holds the ship to a share of its (per-axis) caps at
+        // once. The whole vector is scaled, so a diagonal keeps its direction
+        // and gets the same share of the speed free flight allows that way.
+        let m = new_local.iter().fold(0.0f32, |m, v| m.max(v.abs()));
+        if m > cap {
+            let k = cap / m;
+            for v in &mut new_local {
+                *v *= k;
+            }
+        }
     }
     ship.vel = ship.orientation.rotate(Vec3::from_array(new_local));
 
@@ -349,13 +447,22 @@ pub fn simulate_movement<T: TerrainQuery + ?Sized>(
         ship.energy = (ship.energy + t.energy_regen * DT).min(t.energy_max);
     }
 
-    let (contact, impact) = move_sphere(
-        terrain,
-        &mut ship.pos,
-        &mut ship.vel,
-        t.radius,
-        t.restitution,
-    );
+    let (contact, impact) =
+        move_sphere_with(terrain, &mut ship.pos, &mut ship.vel, t.radius, |p| {
+            let colors = terrain.paint_colors_near(p, PAINT_CONTACT_RADIUS);
+            if colors & (1 << PAINT_RED) != 0 {
+                ContactResponse {
+                    restitution: t.restitution.max(t.paint_bounce_restitution),
+                    keep_speed: false,
+                }
+            } else {
+                let slippery = colors & (1 << PAINT_BLUE) != 0;
+                ContactResponse {
+                    restitution: if slippery { 0.0 } else { t.restitution },
+                    keep_speed: slippery,
+                }
+            }
+        });
     ship.in_contact = contact;
     report.contact = contact;
     report.impact_speed = impact;
@@ -837,5 +944,188 @@ mod tests {
         let (ea2, eb2) = (w.ship(a).unwrap().energy, w.ship(b).unwrap().energy);
         assert!((ea2 - ea - 10.0).abs() < 0.05, "{ea} -> {ea2}");
         assert!((eb2 - eb - 10.0).abs() < 0.05, "{eb} -> {eb2}");
+    }
+
+    /// A 40 x 20 x 40 room (floor at y = -10) with one colour painted on
+    /// the floor around the origin (`None`: unpainted).
+    fn painted_floor(color: Option<u8>) -> crate::PaintedTerrain<BoxRoomTerrain> {
+        let room = BoxRoomTerrain::centered(Vec3::new(40.0, 20.0, 40.0));
+        let mut t = crate::PaintedTerrain::new(room, 1.0);
+        if let Some(color) = color {
+            crate::SimTerrain::apply_edit(
+                &mut t,
+                &ls_math::terrain::TerrainEdit::Paint {
+                    center: Vec3::new(0.0, -10.0, 0.0),
+                    radius: 8.0,
+                    team: 0,
+                    color,
+                },
+            );
+        }
+        t
+    }
+
+    /// Ship `ticks` later (idle input unless `input` is given).
+    fn fly_on<T: TerrainQuery>(
+        t: &T,
+        pos: Vec3,
+        vel: Vec3,
+        input: InputCmd,
+        ticks: u32,
+    ) -> ShipState {
+        let mut s = ship();
+        s.pos = pos;
+        s.vel = vel;
+        for _ in 0..ticks {
+            simulate_movement(&mut s, &input, &ShipTuning::tinker(), t);
+        }
+        s
+    }
+
+    /// M2 plan: red paint is bouncy (ships rebound at 0.9 restitution),
+    /// plain paint and bare rock are not.
+    #[test]
+    fn red_paint_bounces_ships_off() {
+        use ls_math::terrain::{PAINT_PLAIN, PAINT_RED};
+        let t = ShipTuning::tinker();
+        let start = Vec3::new(0.0, -8.0, 0.0);
+        let down = Vec3::new(0.0, -12.0, 0.0);
+        // Up speed right after the hit (the ship reaches the floor within 15 ticks).
+        let rebound = |color| {
+            let floor = painted_floor(color);
+            let mut s = ship();
+            s.pos = start;
+            s.vel = down;
+            for _ in 0..30 {
+                let r = simulate_movement(&mut s, &InputCmd::idle(0), &t, &floor);
+                if r.contact {
+                    return s.vel.y;
+                }
+            }
+            panic!("never hit the floor");
+        };
+        let bare = rebound(None);
+        let red = rebound(Some(PAINT_RED));
+        assert!(bare < 3.0, "restitution 0.2: {bare}");
+        assert_eq!(
+            rebound(Some(PAINT_PLAIN)),
+            bare,
+            "plain paint has no effect"
+        );
+        let impact = -down.y - 8.0 * 0.25; // damping on the way down, about
+        assert!(
+            red > 0.85 * impact && red < impact,
+            "0.9 restitution: {red}"
+        );
+        assert_eq!(t.paint_bounce_restitution, 0.9);
+    }
+
+    /// M2 plan: blue paint is slippery: no wall friction (a ship gliding
+    /// over it keeps its speed without input) and a glancing hit keeps the
+    /// speed, turned along the wall.
+    #[test]
+    fn blue_paint_is_slippery() {
+        use ls_math::terrain::PAINT_BLUE;
+        let t = ShipTuning::tinker();
+        let on_floor = Vec3::new(-3.0, -10.0 + t.radius + 0.05, 0.0);
+        let glide = Vec3::new(8.0, 0.0, 0.0);
+        let bare = fly_on(&painted_floor(None), on_floor, glide, InputCmd::idle(0), 30);
+        let blue = fly_on(
+            &painted_floor(Some(PAINT_BLUE)),
+            on_floor,
+            glide,
+            InputCmd::idle(0),
+            30,
+        );
+        assert!(bare.speed() < 5.0, "damped: {}", bare.speed());
+        assert!((blue.speed() - 8.0).abs() < 1e-3, "kept: {}", blue.speed());
+        // Off the paint (high above it) the damping is back.
+        let high = fly_on(
+            &painted_floor(Some(PAINT_BLUE)),
+            on_floor + Vec3::Y * 5.0,
+            glide,
+            InputCmd::idle(0),
+            30,
+        );
+        assert!((high.speed() - bare.speed()).abs() < 1e-4);
+        // A glancing hit: the plain floor eats the normal speed, blue paint
+        // turns it along the floor.
+        let dive = Vec3::new(8.0, -6.0, 0.0);
+        let start = Vec3::new(-2.0, -9.0, 0.0);
+        let hit = |color| {
+            let floor = painted_floor(color);
+            let mut s = ship();
+            s.pos = start;
+            s.vel = dive;
+            for _ in 0..30 {
+                let before = s.speed();
+                if simulate_movement(&mut s, &InputCmd::idle(0), &t, &floor).contact {
+                    return (before, s.speed(), s.vel.y);
+                }
+            }
+            panic!("never hit the floor");
+        };
+        let (b0, b1, _) = hit(None);
+        let (s0, s1, vy) = hit(Some(PAINT_BLUE));
+        assert!(b1 < b0 * 0.9, "{b0} -> {b1}");
+        assert!(s1 > s0 * 0.99, "{s0} -> {s1}");
+        assert!(vy.abs() < 1e-3, "no bounce: {vy}");
+    }
+
+    /// M2 plan: yellow paint is sticky: ships touching it drop to 40% of
+    /// their speed caps at once, and cannot thrust faster.
+    #[test]
+    fn yellow_paint_is_sticky() {
+        use ls_math::terrain::PAINT_YELLOW;
+        let t = ShipTuning::tinker();
+        let on_floor = Vec3::new(-3.0, -10.0 + t.radius + 0.05, 0.0);
+        let yellow = painted_floor(Some(PAINT_YELLOW));
+        // Arriving at 12 u/s: one tick later at most 40% of the cruise cap.
+        let s = fly_on(
+            &yellow,
+            on_floor,
+            Vec3::new(12.0, 0.0, 0.0),
+            InputCmd::idle(0),
+            1,
+        );
+        let cap = t.cruise_speed * t.paint_sticky_speed;
+        assert!(s.speed() <= cap + 1e-4, "{}", s.speed());
+        // Full boost thrust along the floor: capped at 40% of the boost cap.
+        let thrust = InputCmd::idle(0)
+            .with_thrust(Vec3::NEG_Z)
+            .with_buttons(Buttons::BOOST);
+        let s = fly_on(&yellow, on_floor, Vec3::ZERO, thrust, 60);
+        assert!(s.speed() <= t.boost_speed * t.paint_sticky_speed + 1e-4);
+        assert!(s.speed() > t.boost_speed * t.paint_sticky_speed * 0.95);
+        let free = fly_on(&painted_floor(None), on_floor, Vec3::ZERO, thrust, 60);
+        assert!(free.speed() > t.boost_speed * 0.95, "{}", free.speed());
+        // Diagonal: the direction is kept and no axis exceeds 40% of its cap
+        // (the caps are per axis, so free flight goes sqrt(3) x faster too).
+        let diag = Vec3::new(12.0, 0.0, 4.0);
+        let s = fly_on(&yellow, on_floor, diag, InputCmd::idle(0), 1);
+        assert!(
+            s.vel.x.abs() <= cap + 1e-4 && s.vel.z.abs() <= cap + 1e-4,
+            "{:?}",
+            s.vel
+        );
+        assert!(
+            s.vel.normalize().dot(diag.normalize()) > 0.99,
+            "{:?}",
+            s.vel
+        );
+        let thrust3 = InputCmd::idle(0)
+            .with_thrust(Vec3::new(1.0, 0.0, -1.0))
+            .with_buttons(Buttons::BOOST);
+        let s = fly_on(&yellow, on_floor, Vec3::ZERO, thrust3, 60);
+        let free = fly_on(&painted_floor(None), on_floor, Vec3::ZERO, thrust3, 60);
+        let share = s.speed() / free.speed();
+        assert!(
+            share <= t.paint_sticky_speed + 0.01 && share > 0.35,
+            "{share}"
+        );
+        // Pulling away from the paint frees the ship again.
+        let up = InputCmd::idle(0).with_thrust(Vec3::Y);
+        let s = fly_on(&yellow, on_floor, Vec3::ZERO, up, 60);
+        assert!(s.pos.y > on_floor.y + 3.0, "{:?}", s.pos);
     }
 }

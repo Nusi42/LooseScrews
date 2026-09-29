@@ -258,7 +258,7 @@ pub fn quantize_input(cmd: &InputCmd) -> InputCmd {
     net_to_input(&input_to_net(cmd))
 }
 
-const BUTTON_MAP: [(Buttons, u16); 7] = [
+const BUTTON_MAP: [(Buttons, u16); 8] = [
     (Buttons::BOOST, buttons::BOOST),
     (Buttons::FIRE_PRIMARY, buttons::FIRE_PRIMARY),
     (Buttons::FIRE_SECONDARY, buttons::FIRE_SECONDARY),
@@ -266,6 +266,7 @@ const BUTTON_MAP: [(Buttons, u16); 7] = [
     (Buttons::OVERDRIVE, buttons::OVERDRIVE),
     (Buttons::HORIZON_ASSIST, buttons::HORIZON_ASSIST),
     (Buttons::GADGET, buttons::GADGET),
+    (Buttons::WEAPON_MODE, buttons::WEAPON_MODE),
 ];
 
 /// Wire form of a projectile: id truncated to 16 bits (wraps), `kind` is the

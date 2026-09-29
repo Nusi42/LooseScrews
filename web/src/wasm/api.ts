@@ -20,6 +20,10 @@
 //   matchInfo():   MATCH_INFO_LEN numbers   [over, winner (-1 = draw/none), team0Cells, team1Cells, surfaceCells, secsSinceEnd]
 //   loadout():     names[i], ammo[i], maxLevels[i] and LOADOUT_INFO_STRIDE bytes info[4i..4i+4] =
 //                  [slot (0 primary, 1 secondary), selected, key (1-10, 0 none), level], primaries first
+//   takeCues():    CUE_STRIDE numbers each  [kind (ls_sim::CueKind), source, target (255 = none), px, py, pz, value, tick]
+//   charge():      CHARGE_LEN numbers or empty [weapon, fraction, heldSecs, fullSecs, minSecs, autoRelease, overcharge, 1]
+//   shipChoices(): JSON array of {shipType, name, allowed, current, next, hull, topSpeedPct, damageMult,
+//                  secondarySlots, radius, turnRate, canPassScrap, primaries, secondaries: [[name, count]], gadget}
 
 export const POSE_LEN = 11;
 export const SHIP_STRIDE = 14;
@@ -32,6 +36,8 @@ export const DEBUG_STATS_LEN = 10;
 export const SCORE_STRIDE = 6;
 export const MATCH_INFO_LEN = 6;
 export const LOADOUT_INFO_STRIDE = 4;
+export const CUE_STRIDE = 8;
+export const CHARGE_LEN = 8;
 
 export interface ChunkMeshHandle {
   readonly key: string;
@@ -39,8 +45,12 @@ export interface ChunkMeshHandle {
   normals(): Float32Array;
   indices(): Uint32Array;
   teams(): Uint8Array;
-  /** Surface state bits per vertex (hot 1, charged 2, glow 4), or empty when the terrain has none. */
+  /** Surface state bits per vertex (hot 1, charged 2, glow 4, scorch 8), or empty when the terrain has none. */
   surface?(): Uint8Array;
+  /** Rock material per vertex (0 weak, 1 rock, 2 hard), or empty. */
+  materials?(): Uint8Array;
+  /** Paint effect colour per vertex (0 plain, 1 red, 2 blue, 3 yellow), or empty. */
+  paintColors?(): Uint8Array;
   aabb(): Float32Array;
   free(): void;
 }
@@ -76,6 +86,19 @@ export interface LoadoutHandle {
   free(): void;
 }
 
+export interface GadgetHandle {
+  readonly id: number;
+  readonly key: string;
+  readonly name: string;
+  readonly active: boolean;
+  readonly toggle: boolean;
+  readonly cooldownLeft: number;
+  readonly cooldownSecs: number;
+  readonly energyCost: number;
+  readonly drainPerSec: number;
+  free(): void;
+}
+
 export interface GameHandle {
   readonly isOnline: boolean;
   readonly shareCode: string;
@@ -107,6 +130,23 @@ export interface GameHandle {
   pendingChunks(x: number, y: number, z: number): number;
   setViewRadius(r: number): void;
   resetMeshes(): void;
+  // Mechanics UI (M2 wave C); optional so older fakes keep working.
+  /** Game cues since the last call (CUE_STRIDE numbers each). */
+  takeCues?(): Float64Array;
+  /** Current simulation tick (the cues' clock). */
+  nowTick?(): number;
+  /** Charge in progress (CHARGE_LEN numbers) or empty. */
+  charge?(): Float64Array;
+  /** The own gadget. */
+  gadget?(): GadgetHandle;
+  /** Ship types with loadout preview (JSON). */
+  shipChoices?(): string;
+  /** Picks the ship type for the next respawn; online returns the SelectShip packet to send reliably. */
+  selectShip?(shipType: number): Uint8Array | undefined;
+  /** Own Paint Thrower colour (1 red, 2 blue, 3 yellow) while it is the selected primary, else 0 (V sends `BUTTONS.weaponMode`). */
+  readonly paintColor?: number;
+  /** Seconds until the own weapons are back online after a Borrowed Time rewind (0 = online). */
+  readonly weaponsOfflineSecs?: number;
   free(): void;
 }
 
@@ -121,6 +161,10 @@ export interface WasmApi {
   checkShareCode(text: string): ShareCodeInfoHandle;
   randomShareCode(entropyLo: number, entropyHi: number, enclosure: number, density: number): string;
   helloPacket(name: string, preferredTeam: number): Uint8Array;
+  /** Hello asking for a ship type (ls-sim ShipType index). */
+  helloPacketAs?(name: string, preferredTeam: number, shipType: number): Uint8Array;
+  /** Gadget string ids in id order (players' `gadget`). */
+  gadgetIds?(): string[];
   /** `Disconnect` reason of a server that starts a new match (rejoin, not an error). */
   matchRestartReason(): string;
   weaponIds(): string[];
@@ -134,5 +178,6 @@ export interface WasmApi {
   Game: {
     fromWelcome(packet: Uint8Array): GameHandle;
     practice(code: string, dummies: number): GameHandle;
+    practiceAs?(code: string, dummies: number, shipType: number): GameHandle;
   };
 }

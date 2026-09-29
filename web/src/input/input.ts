@@ -35,8 +35,12 @@ export interface InputState {
   cyclePrimary: number;
   /** True for exactly one sample after X is pressed (next secondary). */
   cycleSecondary: boolean;
-  /** Gadget key (G) held; the simulation acts on the press edge. */
+  /** Gadget key (G) held or tapped since the previous sample; the simulation acts on the press edge. */
   gadget: boolean;
+  /** True for exactly one sample after V is pressed (weapon mode: next Paint Thrower colour). */
+  cyclePaintColor: boolean;
+  /** True for exactly one sample after B is pressed (ship bay). */
+  toggleShipSelect: boolean;
   pointerLocked: boolean;
   /** Scoreboard key (Tab) held. */
   scoreboard: boolean;
@@ -62,6 +66,8 @@ export function emptyInput(): InputState {
     cyclePrimary: 0,
     cycleSecondary: false,
     gadget: false,
+    cyclePaintColor: false,
+    toggleShipSelect: false,
     pointerLocked: false,
     scoreboard: false,
     toggleDebug: false,
@@ -145,7 +151,9 @@ export class InputController {
       weaponKey: WEAPON_ACTIONS.findIndex((a) => this.edges.has(a)) + 1,
       cyclePrimary,
       cycleSecondary: this.edges.has("cycleSecondary"),
-      gadget: this.held.has("gadget"),
+      gadget: this.held.has("gadget") || this.edges.has("gadget"),
+      cyclePaintColor: this.edges.has("paintColor"),
+      toggleShipSelect: this.edges.has("shipSelect"),
       pointerLocked: this.locked,
       scoreboard: this.held.has("scoreboard"),
       toggleDebug: this.edges.has("toggleDebug"),

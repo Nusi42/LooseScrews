@@ -12,7 +12,9 @@
 //! - [`scene`]: generic entities, the data-driven visual table and player
 //!   names;
 //! - [`inventory`]: carried weapons for the weapon HUD and selection by
-//!   number key, wheel and X.
+//!   number key, wheel and X;
+//! - [`mechanics`]: game cues for effects, the charge meter, the gadget
+//!   state and ship type choice with its loadout preview (M2 wave C).
 //!
 //! This file only converts to JavaScript types. Flat arrays keep the
 //! boundary cheap; their layouts are documented on each method and mirrored
@@ -23,6 +25,7 @@ use wasm_bindgen::prelude::*;
 pub mod controls;
 pub mod game;
 pub mod inventory;
+pub mod mechanics;
 pub mod scene;
 pub mod sharecode;
 pub mod shots;
@@ -124,6 +127,26 @@ pub fn hello_packet(name: &str, preferred_team: i32) -> Result<Vec<u8>, JsError>
     ls_net::Message::Hello(ls_game::client_hello(name, team, None))
         .encode()
         .map_err(|e| JsError::new(&e.to_string()))
+}
+
+/// [`hello_packet`] asking for a ship type (`ShipType::index`; the server
+/// falls back to the Tinker or the first allowed type).
+#[wasm_bindgen(js_name = helloPacketAs)]
+pub fn hello_packet_as(name: &str, preferred_team: i32, ship_type: u8) -> Result<Vec<u8>, JsError> {
+    let team = u8::try_from(preferred_team).ok();
+    let ship = ls_sim::ShipType::from_index(ship_type);
+    ls_net::Message::Hello(ls_game::client_hello(name, team, ship))
+        .encode()
+        .map_err(|e| JsError::new(&e.to_string()))
+}
+
+/// Gadget string ids in id order (`gadget` of [`Game::player_info`]).
+#[wasm_bindgen(js_name = gadgetIds)]
+pub fn gadget_ids() -> Vec<String> {
+    ls_sim::GadgetTable::builtin()
+        .iter()
+        .map(|(_, d)| d.id.clone())
+        .collect()
 }
 
 /// The `Disconnect` reason a server sends when it replaces a finished match
@@ -269,6 +292,8 @@ pub struct ChunkMesh {
     indices: Vec<u32>,
     teams: Vec<u8>,
     surface: Vec<u8>,
+    materials: Vec<u8>,
+    colors: Vec<u8>,
     aabb: Vec<f32>,
 }
 
@@ -299,6 +324,17 @@ impl ChunkMesh {
     pub fn surface(&self) -> Vec<u8> {
         self.surface.clone()
     }
+    /// Rock material per vertex (`ls_math::terrain::MATERIAL_*`: 0 weak,
+    /// 1 rock, 2 hard), or empty when the mesh carries none.
+    pub fn materials(&self) -> Vec<u8> {
+        self.materials.clone()
+    }
+    /// Paint effect colour per vertex (`ls_math::terrain::PAINT_*`: 0 plain,
+    /// 1 red, 2 blue, 3 yellow), or empty when the mesh carries none.
+    #[wasm_bindgen(js_name = paintColors)]
+    pub fn paint_colors(&self) -> Vec<u8> {
+        self.colors.clone()
+    }
     /// Chunk box `[minX, minY, minZ, maxX, maxY, maxZ]`.
     pub fn aabb(&self) -> Vec<f32> {
         self.aabb.clone()
@@ -313,6 +349,141 @@ pub const PROJECTILE_STRIDE: usize = 10;
 pub const ENTITY_STRIDE: usize = 20;
 /// Numbers per player in [`Game::player_info`].
 pub const PLAYER_STRIDE: usize = 4;
+
+/// Numbers per cue in [`Game::take_cues`].
+pub const CUE_STRIDE: usize = 8;
+/// Numbers in [`Game::charge`].
+pub const CHARGE_LEN: usize = 8;
+
+/// Per cue `[kind, source, target, px, py, pz, value, tick]` (ship ids 255
+/// = none; `kind` is the `ls_sim::CueKind` byte).
+pub fn cues_array(cues: &[mechanics::CueView]) -> Vec<f64> {
+    let mut v = Vec::with_capacity(cues.len() * CUE_STRIDE);
+    for c in cues {
+        v.extend_from_slice(&[
+            c.kind as f64,
+            c.source as f64,
+            c.target as f64,
+            c.pos.x as f64,
+            c.pos.y as f64,
+            c.pos.z as f64,
+            c.value as f64,
+            c.tick as f64,
+        ]);
+    }
+    v
+}
+
+/// `[weapon, fraction, heldSecs, fullSecs, minSecs, autoRelease,
+/// overcharge, 1]` (the last entry marks a charge in progress).
+pub fn charge_array(c: &mechanics::ChargeView) -> Vec<f64> {
+    vec![
+        c.weapon as f64,
+        c.fraction as f64,
+        c.held_secs as f64,
+        c.full_secs as f64,
+        c.min_secs as f64,
+        c.auto_release as u8 as f64,
+        c.overcharge as u8 as f64,
+        1.0,
+    ]
+}
+
+/// The own gadget for the HUD (see `mechanics::GadgetView`).
+#[wasm_bindgen(getter_with_clone)]
+pub struct GadgetHud {
+    /// Gadget id, 255 for none.
+    pub id: u8,
+    /// String id (`shield`, `cloak`, `decoy`), empty for none.
+    pub key: String,
+    pub name: String,
+    pub active: bool,
+    pub toggle: bool,
+    #[wasm_bindgen(js_name = cooldownLeft)]
+    pub cooldown_left: f32,
+    #[wasm_bindgen(js_name = cooldownSecs)]
+    pub cooldown_secs: f32,
+    #[wasm_bindgen(js_name = energyCost)]
+    pub energy_cost: f32,
+    #[wasm_bindgen(js_name = drainPerSec)]
+    pub drain_per_sec: f32,
+}
+
+pub fn gadget_hud(g: &mechanics::GadgetView) -> GadgetHud {
+    GadgetHud {
+        id: g.id,
+        key: g.key.clone(),
+        name: g.name.clone(),
+        active: g.active,
+        toggle: g.toggle,
+        cooldown_left: g.cooldown_left,
+        cooldown_secs: g.cooldown_secs,
+        energy_cost: g.energy_cost,
+        drain_per_sec: g.drain_per_sec,
+    }
+}
+
+/// JSON string literal for `s`.
+fn json_str(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+/// JSON number (rounded to hundredths; non-finite values become 0).
+fn json_num(v: f32) -> String {
+    if v.is_finite() {
+        format!("{}", (v * 100.0).round() / 100.0)
+    } else {
+        "0".into()
+    }
+}
+
+/// Ship choices as a JSON array of `{shipType, name, allowed, current,
+/// next, hull, topSpeedPct, damageMult, secondarySlots, radius, turnRate,
+/// canPassScrap, primaries: [name], secondaries: [[name, count]], gadget}`.
+pub fn ship_choices_json(choices: &[mechanics::ShipChoice]) -> String {
+    let rows: Vec<String> = choices
+        .iter()
+        .map(|c| {
+            let primaries: Vec<String> = c.primaries.iter().map(|n| json_str(n)).collect();
+            let secondaries: Vec<String> = c
+                .secondaries
+                .iter()
+                .map(|(n, k)| format!("[{},{}]", json_str(n), k))
+                .collect();
+            let fields = [
+                ("shipType", c.ship_type.to_string()),
+                ("name", json_str(&c.name)),
+                ("allowed", c.allowed.to_string()),
+                ("current", c.current.to_string()),
+                ("next", c.next.to_string()),
+                ("hull", json_num(c.hull)),
+                ("topSpeedPct", json_num(c.top_speed_pct)),
+                ("damageMult", json_num(c.damage_mult)),
+                ("secondarySlots", c.secondary_slots.to_string()),
+                ("radius", json_num(c.radius)),
+                ("turnRate", json_num(c.turn_rate)),
+                ("canPassScrap", c.can_pass_scrap.to_string()),
+                ("primaries", format!("[{}]", primaries.join(","))),
+                ("secondaries", format!("[{}]", secondaries.join(","))),
+                ("gadget", json_str(&c.gadget)),
+            ];
+            let body: Vec<String> = fields.iter().map(|(k, v)| format!("\"{k}\":{v}")).collect();
+            format!("{{{}}}", body.join(","))
+        })
+        .collect();
+    format!("[{}]", rows.join(","))
+}
 
 /// Numbers in [`Game::debug_stats`].
 pub const DEBUG_STATS_LEN: usize = 10;
@@ -471,6 +642,76 @@ impl Game {
         GameCore::practice(code, dummies)
             .map(|core| Game { core })
             .map_err(js_err)
+    }
+
+    /// [`Game::practice`] flying a ship type (`ShipType::index`; not
+    /// allowed types fall back to the Tinker or the first allowed one).
+    #[wasm_bindgen(js_name = practiceAs)]
+    pub fn practice_as(code: &str, dummies: u8, ship_type: u8) -> Result<Game, JsError> {
+        let ship = ls_sim::ShipType::from_index(ship_type).unwrap_or(ls_sim::ShipType::Tinker);
+        GameCore::practice_as(code, dummies, ship)
+            .map(|core| Game { core })
+            .map_err(js_err)
+    }
+
+    /// Game cues since the last call, [`CUE_STRIDE`] numbers each (see
+    /// [`cues_array`]).
+    #[wasm_bindgen(js_name = takeCues)]
+    pub fn take_cues(&mut self) -> Vec<f64> {
+        cues_array(&self.core.take_cues())
+    }
+
+    /// Current simulation tick (online: the estimated server time), the
+    /// clock of the cues' `tick`.
+    #[wasm_bindgen(js_name = nowTick)]
+    pub fn now_tick(&self) -> f64 {
+        self.core.now_tick()
+    }
+
+    /// The charge in progress, [`CHARGE_LEN`] numbers (see
+    /// [`charge_array`]), or empty when not charging.
+    pub fn charge(&self) -> Vec<f64> {
+        self.core
+            .charge()
+            .map_or_else(Vec::new, |c| charge_array(&c))
+    }
+
+    /// The own gadget for the HUD.
+    pub fn gadget(&self) -> GadgetHud {
+        gadget_hud(&self.core.gadget())
+    }
+
+    /// Ship types with numbers, rule set permission and loadout preview
+    /// (JSON, see [`ship_choices_json`]).
+    #[wasm_bindgen(js_name = shipChoices)]
+    pub fn ship_choices(&self) -> String {
+        ship_choices_json(&self.core.ship_choices())
+    }
+
+    /// Picks the ship type (`ShipType::index`) for the next respawn. Online
+    /// it returns the `SelectShip` packet to send reliably. Throws for a
+    /// type the rule set does not allow.
+    #[wasm_bindgen(js_name = selectShip)]
+    pub fn select_ship(&mut self, ship_type: u8) -> Result<Option<Vec<u8>>, JsError> {
+        let ship = ls_sim::ShipType::from_index(ship_type)
+            .ok_or_else(|| JsError::new(&format!("unknown ship type {ship_type}")))?;
+        self.core.select_ship(ship).map_err(js_err)
+    }
+
+    /// The own Paint Thrower colour (`ls_math::terrain::PAINT_*`: 1 red,
+    /// 2 blue, 3 yellow) while it is the selected primary, else 0. V
+    /// (`Buttons::WEAPON_MODE`, bit 7 of the controls' buttons) cycles it in
+    /// the simulation.
+    /// Seconds until the own weapons are back online after a Borrowed Time
+    /// rewind (0 = online).
+    #[wasm_bindgen(getter, js_name = weaponsOfflineSecs)]
+    pub fn weapons_offline_secs(&self) -> f32 {
+        self.core.weapons_offline_secs()
+    }
+
+    #[wasm_bindgen(getter, js_name = paintColor)]
+    pub fn paint_color(&self) -> u8 {
+        self.core.paint_color()
     }
 
     #[wasm_bindgen(getter, js_name = isOnline)]
@@ -658,7 +899,11 @@ impl Game {
         let out = self.core.mesh_next(Vec3::new(x, y, z))?;
         let b = out.aabb;
         let surface = game::surface_flags(&out.mesh);
+        let materials = game::material_ids(&out.mesh);
+        let colors = game::paint_colors(&out.mesh);
         Some(ChunkMesh {
+            materials,
+            colors,
             key: stream::chunk_key(out.coord),
             positions: out.mesh.positions.iter().flatten().copied().collect(),
             normals: out.mesh.normals.iter().flatten().copied().collect(),

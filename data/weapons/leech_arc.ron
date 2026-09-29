@@ -24,6 +24,9 @@ WeaponDef(
         // the aim, with line of sight.
         "range": 12.0,
         "lock_half_angle_deg": 30.0,
+        // The lock persists while the target stays in range with line of sight and inside this
+        // wider cone, even if another enemy comes closer.
+        "lock_keep_half_angle_deg": 60.0,
         // Energy moved from the target to the shooter per arc (20/s at 10 arcs/s).
         "drain_per_arc": 2.0,
         // A beam cue every `beam_every`-th arc (value: the ticks it covers), not one per arc.

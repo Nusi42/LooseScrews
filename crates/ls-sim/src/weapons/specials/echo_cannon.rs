@@ -3,7 +3,7 @@
 //! out-and-back path.
 //!
 //! Numbers: `data/weapons/echo_cannon.ron` (`params`: `return_after_secs`, `record_ticks`,
-//! `scorch_reach`, `scorch_radius`, `scorch_secs`, `scorch_every`, `max_scorch_edits`).
+//! `scorch_reach`, `scorch_radius`, `scorch_hot_secs`, `scorch_every`, `max_scorch_edits`).
 //!
 //! Status: implemented.
 //! - Out leg: `update` records a path point every `record_ticks` into `Projectile::path`.
@@ -15,13 +15,13 @@
 //!   (the muzzle) it keeps going, so an owner who stayed put is hit by their own echo
 //!   (self damage, which the Shield cuts by 75 %). The return leg stops at the first ship
 //!   or wall it hits.
-//! - Scorch trail: every `scorch_every`-th recorded path point within `scorch_reach` of rock heats the rock
-//!   (`SurfaceStates::HOT` for `scorch_secs`; the return leg flies the same path, so it is
-//!   the out-and-back trail), at most `max_scorch_edits` per shot (counted in `vars[0]`),
-//!   plus every wall impact (at most two: out and back). Permanent scorch decals are
-//!   client-side (design doc: decals are not networked).
+//! - Scorch trail: every `scorch_every`-th recorded path point within `scorch_reach` of rock
+//!   scorches the rock for good (`Ctx::scorch`: the permanent `SCORCH` state, hot for
+//!   `scorch_hot_secs`; the return leg flies the same path, so it is the out-and-back trail),
+//!   at most `max_scorch_edits` per shot (counted in `vars[0]`), plus every wall impact (at
+//!   most two: out and back; an already scorched spot adds no edit).
 
-use ls_math::terrain::{RayHit, SurfaceStates, TerrainEdit};
+use ls_math::terrain::RayHit;
 use ls_math::{Tick, Vec3, DT};
 
 use crate::behavior::Ctx;
@@ -37,7 +37,7 @@ fn return_ticks(def: &WeaponDef) -> u64 {
     Tick::ticks_for_secs(def.param("return_after_secs", 2.0)).max(1)
 }
 
-/// Heats the rock near `point` if it is close enough (one scorch-trail mark).
+/// Scorches the rock near `point` if it is close enough (one scorch-trail mark).
 fn scorch(ctx: &mut Ctx, p: &mut Projectile, point: Vec3, force: bool) {
     let def = ctx.def(p.weapon);
     let max = def.param("max_scorch_edits", 12.0);
@@ -49,14 +49,9 @@ fn scorch(ctx: &mut Ctx, p: &mut Projectile, point: Vec3, force: bool) {
         return;
     }
     let radius = def.param("scorch_radius", 1.0);
-    let ticks = Tick::ticks_for_secs(def.param("scorch_secs", 10.0));
-    let until = ctx.now().saturating_add(ticks).min(u32::MAX as u64) as u32;
-    ctx.edit(TerrainEdit::Surface {
-        center: point,
-        radius,
-        states: SurfaceStates::HOT.bits(),
-        until,
-    });
+    let hot_secs = def.param("scorch_hot_secs", 10.0);
+    // Permanent scorch (hot for a while); an already scorched spot adds no edit.
+    ctx.scorch(point, radius, hot_secs);
     p.vars[0] += 1.0;
 }
 
@@ -158,7 +153,7 @@ mod tests {
             .into_iter()
             .filter_map(|e| match e {
                 TerrainEdit::Surface { center, states, .. }
-                    if states == SurfaceStates::HOT.bits() =>
+                    if SurfaceStates(states).contains(SurfaceStates::SCORCH) =>
                 {
                     Some(center)
                 }

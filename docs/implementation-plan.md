@@ -1,6 +1,6 @@
 # Loose Screws — Implementation Plan
 
-Status: Milestone 1 (vertical slice) in progress — waves 1 to 3 done and committed (playable end to end with bots); wave 4 (WebTransport, performance) and wave 5 (documentation) in progress, see [section 5.1](#51-milestone-1-status) · Source design: [design/game-design-doc.md](design/game-design-doc.md) · Developer docs: [README.md](README.md)
+Status: Milestone 1 (vertical slice) done — waves 1 to 5 committed (last: `b39e445`), see [section 5.1](#51-milestone-1-status); the current milestone is [M2, arsenal and physics](milestone-2-plan.md), which also closed most of the M1 gaps listed there · Source design: [design/game-design-doc.md](design/game-design-doc.md) · Developer docs: [README.md](README.md)
 
 Milestone 1 proves the three riskiest parts of the design before anything else is built:
 
@@ -172,10 +172,12 @@ Acceptance criteria (section 4):
 | 4.6 ls-wasm + web | Player opens `http://localhost:7777`, flies, shoots, craters, paints, sees scores with 7 bots | Implemented; the client core is tested headless against a live server and the WebTransport connection was checked in headless Chrome, but no person has played it in a browser yet |
 | 4.7 ls-bots | CLI and behaviours | Met |
 
-Remaining gaps before M1 can be called done:
+Gaps left at the end of M1 (kept as written then; M2 closed several, see the notes in
+brackets and [milestone-2-plan.md](milestone-2-plan.md)):
 
 - **Browser acceptance is manual.** No automated browser run covers 4.6 (WebGPU rendering,
   pointer lock, WebTransport in a real browser); a headless-browser smoke test would close it.
+  [M2: closed by the browser smoke test, `tools/browser-smoke`, part of `tools/ci.*`.]
 - **Dual contouring is not used in play** (see wave 4 above): either make it fast enough for
   the remesh budget or keep surface nets for M1 and move sharp edges to a later milestone.
 - **Soak test.** Passed manually: 3 bots for 60 minutes (12 matches, 0 protocol errors, 0 desyncs, 0 disconnects, max reconciliation error 0.134 u, server p99 about 0.06 ms). It is not part of `tools/ci.*`.
@@ -183,12 +185,14 @@ Remaining gaps before M1 can be called done:
 - **Handshake does not check game data.** Weapons and ship tuning are compiled into every
   binary and are not compared in `Hello`/`Welcome`; a client built from different `data/` would
   desync silently. A data hash in the handshake (or bumping `PROTOCOL_VERSION` on data
-  changes) would catch it.
+  changes) would catch it. [M2: closed; `Hello` carries `ls_sim::data_hash`, mismatches are
+  rejected with `DataMismatch`.]
 - **Lag compensation estimates the shooter's view tick** from the acked snapshot (error below
   one tick on average); an exact value needs the client's render tick in `InputMsg`, a protocol
   change (see [architecture/game-glue.md](architecture/game-glue.md#lag-compensation)).
 - **Pickups, scrap piles and wrecks are not drawn** in the browser (they work in the simulation;
-  see `userDocs/player-manual.md`). Remote pilots show as "Player N", not by name.
+  see `userDocs/player-manual.md`). Remote pilots show as "Player N", not by name. [M2: closed;
+  generic entities are drawn from their data-driven visuals and name tags show player names.]
 
 ## 6. Testing strategy
 
@@ -200,6 +204,7 @@ Commands and details: [dev-guide.md](dev-guide.md#4-tests) and [architecture/det
 - `npm run typecheck`, `npm test` and `npm run build` in `web/`.
 - Replay tests: recorded input streams must produce identical state hashes.
 - End-to-end: `tools/e2e.ps1` / `tools/e2e.sh` (server + 7 bots for 90 s with log checks; a full match with `--count 8 --duration 330`). Soak test: server + 7 bots for 10 minutes (`ls-bots --duration 600`), checking tick time and desync counters. Both are manual, not part of CI.
+- Since M2: the browser smoke test (`tools/browser-smoke.*`, headless Chrome or Edge with WebGPU against real servers) and the staleness check of the generated player reference (`node tools/gen-weapon-docs.mjs --check`).
 - `tools/ci.ps1` and `tools/ci.sh` run everything above except the end-to-end and soak runs, in order.
 
 ## 7. Risks

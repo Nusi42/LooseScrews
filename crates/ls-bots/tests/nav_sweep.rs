@@ -85,7 +85,7 @@ fn play(code: ShareCode, secs: u64) -> (Vec<BotStats>, u32) {
                 up: Link::new(delay),
                 down: Link::new(delay),
             };
-            let hello = Message::Hello(ls_game::client_hello(c.stats.name.clone(), None, None));
+            let hello = Message::Hello(ls_bots::bot_hello(c.stats.name.clone(), 300 + i as u64));
             let mut c = c;
             c.up.push(now, hello.encode().unwrap());
             clients.push(c);

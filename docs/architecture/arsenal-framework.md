@@ -4,7 +4,9 @@ The framework that lets every weapon, gadget and ship type of the design doc liv
 file, so they can be filled in parallel without touching shared code. It is part of
 `ls-sim` (deterministic: follow [determinism.md](determinism.md)), plus the generic replication
 in `ls-net` and its glue in `ls-game`. The M2 scope and design decisions are in
-[milestone-2-plan.md](../milestone-2-plan.md).
+[milestone-2-plan.md](../milestone-2-plan.md); step-by-step checklists for adding a weapon,
+gadget or rule set (with a worked example and the tests that need updating) are in
+[dev-guide.md](../dev-guide.md#8-adding-a-weapon).
 
 | Piece | Where |
 | --- | --- |
@@ -62,9 +64,13 @@ Rules for modules:
   the match seed, the tick and your key, usually the projectile id); never share a stream.
 - Keep per-projectile state in the generic fields (`charge`, `generation`, `bounces`,
   `flags`, `arm_tick`, `fuse_tick`, `target`, `vars[4]`, `path`), per-entity state in
-  `Entity::vars`/`state` (entity hooks get `&mut Entity`), and per-weapon phase in
+  `Entity::vars`/`state` (entity hooks get `&mut Entity`), per-weapon phase in
   `Shot::shots` (paid shots of that weapon before this one, `WeaponState::shots`: alternating
-  or rotating fans). Everything is hashed by `World::state_hash`.
+  or rotating fans), and other per-weapon state of a ship (a colour, a lock) in
+  `ShipState::weapon_state` (a `u32` per carried weapon, 0 when unset: read it with
+  `ship.weapon_state_of(weapon)`, write it with `ctx.set_weapon_state(ship, weapon, value)`,
+  `Command::SetWeaponState`; it survives weapon switches and is dropped with the weapon and at
+  respawn). Everything is hashed by `World::state_hash`.
 - Each hook call may queue at most `behavior::MAX_COMMANDS_PER_HOOK` (256) commands; mind the
   terrain edit rate (every edit is networked and remeshed).
 
@@ -82,6 +88,7 @@ Rules for modules:
 | `on_fuse(ctx, p)` | `now >= p.fuse_tick` | detonate in place; the projectile ends unless the hook sets a later fuse |
 | `on_expire(ctx, p)` | lifetime over | nothing (split into sub-projectiles here) |
 | `entity_tick(ctx, e)` / `entity_expired(ctx, e)` | every tick (from the spawn tick on) / at expiry for entities with `Source::Weapon(w)`; `e` is `&mut Entity`: changes (pose, `vars`, `state`, `expires_tick`, `hp <= 0` removes it) are written back before the hook's commands run, and a later `expires_tick` set in `entity_expired` keeps the entity | nothing |
+| `on_mode(ctx, ship, w)` | the weapon mode key (V, `Buttons::WEAPON_MODE`, wire bit 7) goes down while `w` is the ship's selected primary | nothing (Paint Thrower: next colour) |
 
 `HitResponse` after a hit: `Stop` (ends), `Continue` (flies through the ship or entity; it is
 not hit again until it has left that sphere, `Projectile::passed`; on terrain it counts as
@@ -98,13 +105,14 @@ Guided projectiles: set `proj_flags::CONTROLS_OWNER` (usually in `fire`); while 
 projectile lives, the owner's ship gets no thrust or look (it drifts: the Eyeball malus), the
 world does not fire the owner's secondary (one guided missile at a time), and `update` reads
 the owner's look input with `ctx.input(p.owner)`. The client predicts the
-freeze from the replicated state bit (`ls_game::client::GUIDED_STATE_BIT`); the eyeball camera
-is wave C.
+freeze from the replicated state bit (`ls_game::client::GUIDED_STATE_BIT`), and the browser
+shows the missile's camera while it is guided (`web/src/game/camera.ts`).
 
 Instant weapons (Leech Arc): `fire` spawns no projectile and queues its effect directly
 (`ctx.target_in_cone`, `ctx.drain_energy`, `ctx.damage_proportional`), plus a `CueKind::Beam`
 cue every `beam_every`-th arc whose `value` is the ticks it covers (a cue per arc would cost
-10 events per second per user). They emit no `Event::Fired`; the beam cue is their shot.
+10 events per second per user). They emit no `Event::Fired`; the beam cue is their shot. The
+Leech Arc keeps its lock in `ShipState::weapon_state` (see [the arsenal](#the-arsenal-as-built)).
 
 ### Context helpers (`Ctx`)
 
@@ -123,7 +131,9 @@ so sustained fire does not fill the debris cap).
 
 Writing (each queues a `Command`): `damage` / `damage_proportional` (knockback proportional to
 damage), `splash`, `shockwave` (knockback only), `edit` / `crater` (scaled by rock strength) /
-`crater_exact` (not scaled) / `grow` / `paint` / `channel`, `spawn_projectile` (see
+`crater_exact` (not scaled) / `grow` / `paint` (plain) / `paint_color` (with an effect colour)
+/ `scorch` (permanent scorch mark, optionally hot for a while; skips scorched spots) /
+`channel`, `set_weapon_state`, `spawn_projectile` (see
 `weapons::projectile_for` and `sub_projectile`), `spawn_entity` / `spawn_debris`,
 `impulse_ship`, `impulse_entity`, `impulse_projectile` (another projectile; a stuck one is
 pulled loose: Magnet Sneeze pulling mines in), `move_pickup` (moves a scrap pile, or a pickup's
@@ -148,8 +158,18 @@ set tuning and charge multipliers), splash knockback scales with the falloff, an
   `charged_drain_per_sec` (default 5 energy/s, `world::CHARGED_DRAIN_PER_SEC`).
   `GameTerrain::surface_states_near` counts every 1 u surface cell that overlaps the query
   sphere (not only cells whose centre is inside), so a ship scraping a wall finds the state of
-  the cell under it. There is no permanent scorch state: scorch trails (Stalker Mine, Echo
-  Cannon, Scatter Laser) are `HOT` edits with a long `until`.
+  the cell under it.
+- **Scorch**: `ctx.scorch(center, radius, hot_secs)` marks the surface for good
+  (`SurfaceStates::SCORCH`, a permanent bit, see
+  [contracts.md](contracts.md#terrainedit)) and heats it for `hot_secs` (0: no heat); already
+  scorched spots are skipped, so a trail does not flood the edit log. Use it for scorch marks
+  and trails instead of `HOT` edits with a long `until`: those stay in every late joiner's
+  Welcome until they expire, and still expire. The Stalker Mine trail, the Echo Cannon trail
+  and impacts and the Scatter Laser marks use it (`scorch_hot_secs` / `hot_secs` in their
+  data); the Scrap Laser's 10 s hot metal stays a `HOT` edit (a heat glow, not a scorch).
+- **Paint colours**: `ctx.paint_color(center, radius, team, color)` claims cells for a team
+  with an effect colour (`ls_math::terrain::PAINT_*`); ships react to the colour under them in
+  the flight model (see [Ship types](#ship-types)).
 - **Materials**: `ctx.material_at(p)` (`SimTerrain::material_at`) for weak-wall effects
   (Magnet Sneeze ripping chunks off weak rock).
 - **Strength**: `ctx.crater` (and `detonate`, `channel`) scales a crater by the rock material
@@ -163,10 +183,11 @@ set tuning and charge multipliers), splash knockback scales with the falloff, an
 `World::step`:
 
 1. Respawns (with the ship type picked for the next life).
-2. Per ship in id order: weapon selection; movement (`simulate_movement`, frozen for ships
-   guiding a projectile); charged-rock drain; scavenging (scrap piles, then debris) and Tug
-   scrap passing; gadget
-   (G press edge: toggle on/off or instant use; drain; `tick` hook); then firing, primary then
+2. Per ship in id order: weapon selection; movement (`simulate_movement` with the paint
+   effects of the surface it touches, frozen for ships guiding a projectile); charged-rock
+   drain; scavenging (scrap piles, then debris) and Tug scrap passing; gadget
+   (G press edge: toggle on/off or instant use; drain; `tick` hook); weapon mode (V press
+   edge: the selected primary's `on_mode`); then firing, primary then
    secondary (charge hooks, `fire`). Commands of each hook are applied immediately.
 3. Projectiles in list order: `on_fuse`, `on_expire` or `update`, then the swept move with hit
    hooks. Projectiles spawned during this stage start moving next tick. While stepping, the
@@ -202,6 +223,16 @@ relevance), `entity_tick` / `entity_expired`.
 laser, damage multiplier, hull, secondary slots, hitbox radius and turn rate follow the design
 doc (`tuning::tests::ship_types_match_design_doc`). The Tug has `can_pass_scrap`: holding
 scavenge next to a teammate passes `scrap_pass_rate` scrap per second (hull first).
+
+Paint Thrower colours (M2 plan) act in the flight model (`ls_sim::ship`), for every ship on
+every peer (client prediction included, it runs the same code): the terrain reports the paint
+colours under the ship (`TerrainQuery::paint_colors_near`). Red paint: a wall hit rebounds
+at `paint_bounce_restitution` (0.9) instead of `restitution`. Blue paint: no damping while
+touching it (within `PAINT_TOUCH_MARGIN` 0.2 u of the surface), and a wall hit keeps the speed
+(turned along the wall, at most doubling what is left after the hit). Yellow paint: while
+touching it the per-axis caps and the ship's local velocity are held to
+`paint_sticky_speed` (0.4) of the cruise or boost cap. Plain paint has no effect. The numbers
+are `ShipTuning` fields in `data/ships/*.ron`.
 
 Ship choice: `Hello::ship_type` picks the first ship (the room falls back to the Tinker or the
 first allowed type); `Message::SelectShip` / `ClientSession::select_ship` / `World::set_ship_type`
@@ -240,15 +271,19 @@ the weapon's visual, entities their own. Renderers map `Shape` to a mesh and tin
 `Shape::ALL` lists every shape in index order (declared together with the enum, so it cannot
 miss one).
 
-## Replication (`ls-net` protocol 3)
+## Replication (`ls-net` protocol 4)
 
 | Wire item | Contents |
 | --- | --- |
 | `Snapshot::entities` | `NetEntity`: u16 id, kind, u16 visual, owner, team, position (8x coarser than ships, about 0.03 u), velocity (ship range; zero for debris) and rotation (each with a presence bit when zero/identity), 4 state bytes; an id list (1 bit for an unchanged entity, see [netcode.md](netcode.md#snapshots-and-deltas)) |
 | `Snapshot::players` | `NetPlayer`: ship id, team, ship type, gadget id (255 none), name; 1 bit when unchanged against the baseline, else only the changed players |
 | `Message::Inventory` | the own ship's weapons (id, ammo, level), selected primary and secondary, gadget; reliable, sent when it changes |
-| `NetProjectile::state` | replicated projectile flags (`proj_flags` low byte: stuck, armed, hits owner, guided, returning) |
-| `NetEvent::Cue` | `CueKind` byte, source and target ship ids, position, value (Polite warning, blinding, charge start, Tectonic launch and armed, shockwave, Leech beam, swap, rewind, Railspike muzzle flash, gadget on/off, decoy return, Fusion overcharge); sent to every client |
+| `NetProjectile::state` | replicated projectile flags (`proj_flags` low byte: stuck, armed, hits owner, guided, returning; `CUSTOM_A`/`CUSTOM_B` are module bits: a Paint Thrower blob's colour id, `paint_thrower::projectile_color`) |
+| Projectile deltas | predicted from the baseline (straight shots cost a bit per snapshot, the server settles them) and new projectiles from their owner; see [netcode.md](netcode.md#snapshots-and-deltas) |
+| `NetEvent::Cue` | `CueKind` byte, source and target ship ids, position, value (Polite warning, blinding, charge start, Tectonic launch and armed, shockwave, Leech beam, swap, rewind, Railspike muzzle flash, gadget on / off / used (`ls_sim::gadget_cue`: the gadget id when switched on, 255 off by its key, 254 off because the energy ran out, `0x100 | id` an instant gadget used; 255 and `0x100 | id` start the cooldown), decoy return, Fusion overcharge, Paint Thrower colour switch `PaintColor` 13 with the colour id); sent to every client |
+| `Welcome::edit_count` | edits so far; `Welcome::edit_log` may leave out expired surface-state edits ([netcode.md](netcode.md#terrain-edit-replication)) |
+| Terrain edits | `Paint` carries a 2-bit effect colour; `Surface` states may carry the permanent scorch bit 8 |
+| Input buttons | bit 7 `WEAPON_MODE` (V) |
 | Ship flags | bit 6 `GADGET_ACTIVE` (alias `SHIELDED`), weapon id in bits 10-14 (0-31) |
 | `Hello` | adds `data_hash` and `ship_type`; `Welcome` adds `ship_type` and `data_hash` |
 | `Message::SelectShip` | ship type for the next respawn (reliable) |
@@ -316,12 +351,12 @@ the Scrap Laser at level 6 (14 per 0.25 s, 1.75 s) is above that band by the pla
 | Weapon | Bonus / mechanics | Malus | Lasting effect |
 | --- | --- | --- | --- |
 | Scrap Laser | 30 u/s bolts, 6 damage at level 1 to 14 at level 6 (upgrade pickups) | weak at level 1 | hit rock stays `HOT` 10 s (no re-edit while hot) |
-| Scatter Laser | 3 bolts 8 degrees apart; fans alternate horizontal / vertical per shot (`Shot::shots`) | damage and knockback fall to 40% at the end of the bolt's life | fan of scorch (`HOT`) marks |
+| Scatter Laser | 3 bolts 8 degrees apart; fans alternate horizontal / vertical per shot (`Shot::shots`) | damage and knockback fall to 40% at the end of the bolt's life | fan of permanent scorch marks (hot for 10 s) |
 | Plasma Repeater | 33 u/s, 10 bolts/s, 3 damage, 1.5 s reach | 30 energy/s against 10/s regeneration | every 2nd bolt melts a 0.4 u pit; hits stay hot |
 | Fusion Charger | hold up to 2 s: up to 4x damage and knockback (framework charge) | past 2 s it burns 10 hull/s (never below 1; `Overcharge` cue) | melts a channel 1-5 u deep with charge, through thin walls; shoves debris aside |
 | Corkscrew | 5 bolts in a line that spins around the aim axis (1 turn/s), widening up to `max_radius` 4 u; knockback along the shot axis | only the centre bolt connects at range | the 4 spinning bolts etch 2-crater grooves (already carved spots skipped): spirals |
 | Ricochet Arc | bounces off walls up to 3 times; can hit its owner after the first bounce | self-hits | 0.3 u chip at every bounce |
-| Leech Arc | instant 12 u arc to the nearest visible enemy in a 30 degree half-cone: 2 damage and 2 energy drained per arc, 10 arcs/s; re-acquired every arc | nothing beyond 12 u (still pays) | touched rock `CHARGED` 15 s; the framework drains 5 energy/s from ships scraping it |
+| Leech Arc | instant 12 u arc to the nearest visible enemy in a 30 degree half-cone: 2 damage and 2 energy drained per arc, 10 arcs/s; the lock persists (`ShipState::weapon_state`: locked id + 1) while the target lives, stays within 12 u in line of sight and inside a 60 degree half-cone (`lock_keep_half_angle_deg`), even if another enemy comes closer | nothing beyond 12 u (still pays) | touched rock `CHARGED` 15 s; the framework drains 5 energy/s from ships scraping it |
 | Rivet Gun | 180 u/s, 10 rivets/s, 3 damage, half a scrap each | burns 5 scrap/s | rivets embed (impact, no crater); weak rock: 20% chance of a chip crater and a debris chunk (not while 2 pieces float near) |
 | Railspike | 270 u/s, 35 damage, pierces every ship and debris piece and walls up to 2 u (straight hole) | 1.5 s between shots; `MuzzleFlash` cue, firing uncloaks for 0.5 s | straight holes through thin rock; 0.3 u dent in thick rock |
 | Scrap Shotgun | 8 pellets at 200 u/s in a random 6 degree cone | 30 u range, damage falls to 30% by 24 u | pockmarks; the last 2 pellets spray debris (not while 2 pieces float near) |
@@ -333,11 +368,11 @@ the Scrap Laser at level 6 (14 per 0.25 s, 1.75 s) is above that band by the pla
 | Heavy Rocket | 70 direct, 8 u splash | 20 u/s; its splash hurts the shooter | 6 u crater that opens passages |
 | Flash Pod | bursts on impact or after 3 s: blinds every pilot within 15 u in line of sight for 2 s (`blind`, `Blinded` cue) | blinds you and teammates too | nearby surfaces `GLOW` 30 s |
 | Prox Mine | dropped behind, arms after 1 s, triggers within 2 u, 40 + 5 u splash | hurts owner and teammates at full damage (unless friendly fire is off) | sticks to walls; 3 u crater |
-| Stalker Mine | armed, creeps at 4 u/s toward the nearest visible enemy within 10 u | slow; a pilot who notices it flies away | `HOT` scorch every 1.5 u for 60 s |
+| Stalker Mine | armed, creeps at 4 u/s toward the nearest visible enemy within 10 u | slow; a pilot who notices it flies away | permanent scorch every 1.5 u (hot for 10 s) |
 | Tectonic Charge | the design table: core 4 u kill, damage 25 u, collapse 35 u (`crater_exact`), shockwave 60 u, 1.5 s fuse, 6 sub-charges; cracks scale with Instability | slow, 1 per map, hurts the owner | dust cloud 20 s, debris field, level-wide jostle; rides ships, debris and decoys it sticks to |
 | Echo Cannon | records its path, flies back along it after 2 s (can hit twice) | the return leg hits its owner (the Shield cuts it) | scorch marks along the path (every 2nd point, capped) and at impacts |
 | Swap Harpoon | swaps positions and velocities with the ship it hits (`Swapped` cue; lag compensation keeps the swap) | 4 s cooldown | spike marker in walls; holding Scavenge next to it grabs it |
-| Paint Thrower | paints the team colour (Paint the Void scoring) | no damage | paint stays until painted over; the design doc's colour effects (bouncy, slippery, sticky) are deferred to M3 (M2 plan decision) |
+| Paint Thrower | paints the team colour (Paint the Void scoring) with an effect colour: V cycles red (bouncy, 0.9 restitution), blue (slippery: no wall friction, speed kept), yellow (sticky: 40% speed while touching); the colour is the weapon state (red when unset), blobs carry it in their replicated bits, a `PaintColor` cue tells the HUD | no damage | paint stays until painted over (team and colour) |
 | Borrowed Time | rewinds position, velocity and hull by 3 s (`trail`), ghost entity at the old spot | weapons offline 3 s | craters made meanwhile stay |
 | Magnet Sneeze | cone pull: debris, enemy ships, pickups and scrap piles (they jump up to 10 u towards you) | pulls every other projectile in too, stuck mines included | rips chunks off weak rock |
 | Polite Laser | 1.5 s charge, 75 damage; `PoliteWarning` cue to the target (repeated to a new target in the aim) | the target is warned | clean holes through thin walls |

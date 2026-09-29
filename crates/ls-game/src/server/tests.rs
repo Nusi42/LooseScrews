@@ -680,3 +680,92 @@ fn lag_compensation_undo_follows_swaps_and_rewinds() {
     let rewound = restore_offsets(&comp, &[cue(CueKind::Rewound, c, c)]);
     assert_eq!(rewound, vec![(b, -off)]);
 }
+
+/// A late joiner's Welcome leaves out the surface-state edits that expired
+/// before it joined, keeps the sequence numbers, and builds the same
+/// terrain as the server's (hashes at the join tick and later).
+#[test]
+fn welcome_prunes_expired_surface_edits() {
+    use ls_math::terrain::{SurfaceStates, TerrainEdit, TerrainQuery};
+    let mut r = room();
+    let c = r.terrain().bounds().center();
+    let edits = [
+        TerrainEdit::surface_for_default(c, 3.0, SurfaceStates::HOT, 0),
+        TerrainEdit::SubtractSphere {
+            center: c + Vec3::X * 20.0,
+            radius: 2.0,
+        },
+        TerrainEdit::scorch(c + Vec3::Y * 8.0, 2.0, 0, 5),
+        TerrainEdit::surface_for_default(c + Vec3::Z * 9.0, 3.0, SurfaceStates::GLOW, 0),
+        // Hot for 5 ticks far from everything else: expired before the
+        // join, so the Welcome leaves it out entirely.
+        TerrainEdit::Surface {
+            center: c - Vec3::Z * 30.0,
+            radius: 2.0,
+            states: SurfaceStates::HOT.bits(),
+            until: 5,
+        },
+    ];
+    for e in edits {
+        r.terrain_mut().apply(e);
+    }
+    for _ in 0..20 {
+        r.step();
+    }
+    r.take_outgoing();
+    let now = r.tick();
+    assert!(now > 10 && now < 600, "{now}");
+    let id = r.join(&client_hello("late", None, None)).unwrap();
+    let out = r.take_outgoing();
+    let w = ls_net::check_welcome(Message::decode(&out[0].bytes).unwrap()).unwrap();
+    assert_eq!(out[0].client, id);
+    assert_eq!(w.edit_count, 5, "the true count");
+    // Hot 10 s from tick 0 still runs; the 5-tick heat of the scorch mark
+    // has expired (its scorch stays); the glow runs for 30 s; the short
+    // hot edit is gone.
+    assert_eq!(w.edit_log.len(), 4, "shortened log");
+    assert_eq!(
+        w.edit_log[2],
+        TerrainEdit::Surface {
+            center: c + Vec3::Y * 8.0,
+            radius: 2.0,
+            states: SurfaceStates::SCORCH.bits(),
+            until: 5,
+        }
+    );
+    let s =
+        crate::client::ClientSession::from_welcome_with(&w, ls_sim::GameData::builtin()).unwrap();
+    let mut s = s;
+    assert_eq!(
+        s.edit_count(),
+        5,
+        "sequence numbers line up with the server"
+    );
+    assert_eq!(s.terrain().state_hash(), r.terrain().state_hash());
+    for tick in [now, now + 100, 700, 2000] {
+        assert_eq!(
+            s.terrain().state_hash_at(tick),
+            r.terrain().state_hash_at(tick)
+        );
+    }
+    // Later edits keep both in step (the late joiner applies them on top of
+    // the shortened log).
+    let later = [
+        TerrainEdit::SubtractSphere {
+            center: c - Vec3::Z * 30.0,
+            radius: 1.5,
+        },
+        TerrainEdit::scorch(c + Vec3::X * 5.0, 1.0, now, 60),
+    ];
+    for e in later {
+        r.terrain_mut().apply(e);
+        s.terrain_mut().apply(e);
+    }
+    assert_eq!(s.terrain().state_hash(), r.terrain().state_hash());
+    for tick in [now + 30, now + 100, 2000] {
+        assert_eq!(
+            s.terrain().state_hash_at(tick),
+            r.terrain().state_hash_at(tick)
+        );
+    }
+}

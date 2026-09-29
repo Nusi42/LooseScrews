@@ -1,4 +1,4 @@
-# Full local CI: formatting, lints, tests (native + wasm32), WASM release build, web build,
+# Full local CI: formatting, generated docs, lints, tests (native + wasm32), WASM release build, web build,
 # WASM-vs-native determinism cross-check. The end-to-end soak run is separate: tools/e2e.ps1.
 # Usage: pwsh tools/ci.ps1   (run from anywhere; honours CARGO_TARGET_DIR if set)
 $ErrorActionPreference = 'Stop'
@@ -17,6 +17,9 @@ function Invoke-Checked([string]$Exe, [string[]]$Arguments) {
 try {
     Step 'cargo fmt --check'
     Invoke-Checked cargo @('fmt', '--all', '--', '--check')
+
+    Step 'generated reference docs are current (userDocs/reference from data/)'
+    Invoke-Checked node @((Join-Path $Root 'tools/gen-weapon-docs.mjs'), '--check')
 
     Step 'cargo clippy (workspace, all targets, -D warnings)'
     Invoke-Checked cargo @('clippy', '--workspace', '--all-targets', '--', '-D', 'warnings')
@@ -56,6 +59,20 @@ try {
 
     Step 'determinism cross-check: WASM golden hashes vs native fixture (Node)'
     Invoke-Checked node @((Join-Path $Root 'tools/determinism-check.mjs'))
+
+    Step 'browser smoke test (optional: Chrome or Edge with WebGPU; tools/browser-smoke.ps1)'
+    if ($env:LS_SKIP_BROWSER_SMOKE) {
+        Write-Host 'skipped: LS_SKIP_BROWSER_SMOKE is set'
+    } else {
+        & node @((Join-Path $Root 'tools/browser-smoke/smoke.mjs'), '--find-browser') | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host 'skipped: no Chrome or Edge found (set LS_BROWSER to use another Chromium browser)'
+        } else {
+            Invoke-Checked cargo @('build', '--release', '-p', 'ls-server')
+            # The web client was built above.
+            & (Join-Path $Root 'tools/browser-smoke.ps1') -SkipBuild
+        }
+    }
 
     Write-Host "`nCI passed." -ForegroundColor Green
 } finally {

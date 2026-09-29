@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Full local CI: formatting, lints, tests (native + wasm32), WASM release build, web build,
+# Full local CI: formatting, generated docs, lints, tests (native + wasm32), WASM release build, web build,
 # WASM-vs-native determinism cross-check. The end-to-end soak run is separate: tools/e2e.sh.
 # Usage: tools/ci.sh   (run from anywhere; honours CARGO_TARGET_DIR if set)
 set -euo pipefail
@@ -11,6 +11,9 @@ step() { printf '\n==> %s\n' "$*"; }
 
 step "cargo fmt --check"
 cargo fmt --all -- --check
+
+step "generated reference docs are current (userDocs/reference from data/)"
+node "$ROOT/tools/gen-weapon-docs.mjs" --check
 
 step "cargo clippy (workspace, all targets, -D warnings)"
 cargo clippy --workspace --all-targets -- -D warnings
@@ -44,5 +47,17 @@ npm run build
 
 step "determinism cross-check: WASM golden hashes vs native fixture (Node)"
 node "$ROOT/tools/determinism-check.mjs"
+
+step "browser smoke test (optional: Chrome or Edge with WebGPU; tools/browser-smoke.sh)"
+if [ -n "${LS_SKIP_BROWSER_SMOKE:-}" ]; then
+  echo "skipped: LS_SKIP_BROWSER_SMOKE is set"
+elif ! node "$ROOT/tools/browser-smoke/smoke.mjs" --find-browser >/dev/null; then
+  echo "skipped: no Chrome or Edge found (set LS_BROWSER to use another Chromium browser)"
+else
+  cd "$ROOT"
+  cargo build --release -p ls-server
+  # The web client was built above.
+  "$ROOT/tools/browser-smoke.sh" --skip-build
+fi
 
 printf '\nCI passed.\n'

@@ -146,7 +146,11 @@ impl ClientSession {
             gadgets,
         } = data;
         let code = ShareCode::decode(&welcome.share_code)?;
-        let terrain = GameTerrain::replay(Generator::from_code(&code)?, &welcome.edit_log);
+        let terrain = GameTerrain::replay_welcome(
+            Generator::from_code(&code)?,
+            &welcome.edit_log,
+            welcome.edit_count,
+        );
         let text = std::str::from_utf8(&welcome.ruleset)
             .map_err(|_| GameError::Protocol("rule set is not UTF-8".into()))?;
         let rules = RuleSet::from_ron(&welcome.ruleset_name, text)?;

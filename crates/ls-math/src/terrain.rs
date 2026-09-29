@@ -20,12 +20,23 @@ pub enum TerrainEdit {
     SubtractSphere { center: Vec3, radius: f32 },
     /// Adds a solid sphere of rock.
     AddSphere { center: Vec3, radius: f32 },
-    /// Paints surface cells within the sphere with a team color. Does not change geometry.
-    Paint { center: Vec3, radius: f32, team: u8 },
-    /// Sets timed surface states ([`SurfaceStates`] bits in `states`) on the
-    /// surface cells within the sphere: each named state is active while the
-    /// simulation tick is below `until` (an absolute tick; `until = 0`
-    /// clears it). A cell's other states are kept. Does not change geometry.
+    /// Paints surface cells within the sphere: the cell is claimed by `team`
+    /// and takes the effect colour `color` (`PAINT_*`: plain, red bouncy,
+    /// blue slippery, yellow sticky; other values count as plain). Painting
+    /// over replaces both. Does not change geometry.
+    Paint {
+        center: Vec3,
+        radius: f32,
+        team: u8,
+        color: u8,
+    },
+    /// Sets surface states ([`SurfaceStates`] bits in `states`) on the
+    /// surface cells within the sphere: each named timed state (hot,
+    /// charged, glow) is active while the simulation tick is below `until`
+    /// (an absolute tick; `until = 0` clears it). The permanent
+    /// [`SurfaceStates::SCORCH`] bit marks the cells scorched for good
+    /// (`until = 0` clears it instead). A cell's other states are kept. Does
+    /// not change geometry.
     Surface {
         center: Vec3,
         radius: f32,
@@ -52,7 +63,30 @@ pub const fn material_crater_scale(material: u8) -> f32 {
     }
 }
 
-/// Timed surface states stored per surface cell next to paint (bit set).
+/// Paint effect colour ids ([`TerrainEdit::Paint`] `color`, mesh vertex
+/// `colors`): plain paint (no effect; the generic weapon paint)...
+pub const PAINT_PLAIN: u8 = 0;
+/// ...red: bouncy (ships rebound at high restitution)...
+pub const PAINT_RED: u8 = 1;
+/// ...blue: slippery (no wall friction, speed kept)...
+pub const PAINT_BLUE: u8 = 2;
+/// ...yellow: sticky (ships touching it slow down).
+pub const PAINT_YELLOW: u8 = 3;
+/// Number of paint colour ids (`0..PAINT_COLORS`); the wire carries 2 bits.
+pub const PAINT_COLORS: u8 = 4;
+
+/// The paint colour id `color` as stored: unknown ids are plain.
+#[inline]
+pub const fn paint_color(color: u8) -> u8 {
+    if color < PAINT_COLORS {
+        color
+    } else {
+        PAINT_PLAIN
+    }
+}
+
+/// Surface states stored per surface cell next to paint (bit set): three
+/// timed states and the permanent scorch mark.
 ///
 /// The durations are the design defaults; an edit carries its own absolute
 /// expiry tick, so a weapon may use a different duration.
@@ -70,9 +104,16 @@ impl SurfaceStates {
     pub const CHARGED: SurfaceStates = SurfaceStates(2);
     /// Glowing surface (light). Default 30 s.
     pub const GLOW: SurfaceStates = SurfaceStates(4);
-    /// Every defined state bit.
-    pub const ALL: SurfaceStates = SurfaceStates(7);
-    /// Number of defined states (bits `0..COUNT`).
+    /// Permanent scorch mark (laser, Stalker Mine and Echo Cannon trails):
+    /// stays for the rest of the match, until a crater removes the surface
+    /// or a surface edit with `until = 0` clears it. It never expires, so it
+    /// is not one of the [`SurfaceStates::COUNT`] timed states.
+    pub const SCORCH: SurfaceStates = SurfaceStates(8);
+    /// The timed state bits (hot, charged, glow).
+    pub const TIMED: SurfaceStates = SurfaceStates(7);
+    /// Every defined state bit (timed states and scorch).
+    pub const ALL: SurfaceStates = SurfaceStates(15);
+    /// Number of timed states (bits `0..COUNT`; each stores an expiry tick).
     pub const COUNT: usize = 3;
     /// Default durations in seconds, indexed by bit.
     pub const DEFAULT_SECS: [f32; 3] = [10.0, 15.0, 30.0];
@@ -148,6 +189,52 @@ impl TerrainEdit {
         )
     }
 
+    /// A permanent scorch mark, plus `hot_ticks` of heat from tick `now`
+    /// (`hot_ticks = 0`: scorch only, with `until = u32::MAX`).
+    pub fn scorch(center: Vec3, radius: f32, now: u64, hot_ticks: u32) -> Self {
+        let (states, until) = if hot_ticks > 0 {
+            (
+                SurfaceStates::SCORCH.bits() | SurfaceStates::HOT.bits(),
+                now.saturating_add(hot_ticks as u64).min(u32::MAX as u64) as u32,
+            )
+        } else {
+            (SurfaceStates::SCORCH.bits(), u32::MAX)
+        };
+        TerrainEdit::Surface {
+            center,
+            radius,
+            states,
+            until,
+        }
+    }
+
+    /// What of this edit still matters at tick `now` if its timed states are
+    /// dropped once they expired: for a [`TerrainEdit::Surface`] with
+    /// `until <= now` (clears included) `None` if it only carried timed
+    /// states, else the same edit with just its scorch bit; every other edit
+    /// unchanged. Whether dropping the timed part is safe also depends on
+    /// earlier edits (a clear or a shorter expiry can end an earlier, still
+    /// running state): see `ls_game::GameTerrain::welcome_log`.
+    pub fn without_expired_states(&self, now: u32) -> Option<TerrainEdit> {
+        match *self {
+            TerrainEdit::Surface {
+                center,
+                radius,
+                states,
+                until,
+            } if until <= now => {
+                let scorch = states & SurfaceStates::SCORCH.bits();
+                (scorch != 0).then_some(TerrainEdit::Surface {
+                    center,
+                    radius,
+                    states: scorch,
+                    until,
+                })
+            }
+            e => Some(e),
+        }
+    }
+
     /// A [`TerrainEdit::Surface`] that sets one state for its default
     /// duration starting at tick `now` (saturating at `u32::MAX`).
     pub fn surface_for_default(center: Vec3, radius: f32, state: SurfaceStates, now: u64) -> Self {
@@ -220,6 +307,14 @@ pub trait TerrainQuery {
     /// True if a sphere at `center` with `radius` touches rock.
     fn sphere_overlap(&self, center: Vec3, radius: f32) -> bool {
         self.sdf(center) < radius
+    }
+
+    /// Paint colours on the surface within `radius` of `center`, as a bit
+    /// set (`1 << PAINT_*`): for a cell grid, every painted surface cell
+    /// that overlaps the sphere. Ship physics reads it (bouncy, slippery,
+    /// sticky paint). Default: no paint.
+    fn paint_colors_near(&self, _center: Vec3, _radius: f32) -> u8 {
+        0
     }
 }
 
@@ -421,6 +516,7 @@ mod tests {
             center: Vec3::ZERO,
             radius: 1.0,
             team: 1,
+            color: PAINT_BLUE,
         };
         assert!(!p.changes_geometry());
         let st = TerrainEdit::surface_for_default(Vec3::ONE, 2.0, SurfaceStates::CHARGED, 100);
@@ -556,6 +652,7 @@ mod tests {
             center: Vec3::ZERO,
             radius: 4.0,
             team: 2,
+            color: PAINT_PLAIN,
         });
         assert_eq!(t.sdf(Vec3::new(1.0, 1.0, 1.0)), before);
         t.apply(TerrainEdit::surface_for_default(
@@ -575,7 +672,36 @@ mod tests {
         assert_eq!(s.bits(), 5);
         assert!(s.contains(SurfaceStates::HOT) && !s.contains(SurfaceStates::CHARGED));
         assert!(SurfaceStates::NONE.is_empty());
-        assert_eq!(SurfaceStates::ALL.bits(), 7);
+        assert_eq!(SurfaceStates::ALL.bits(), 15);
+        assert_eq!(SurfaceStates::TIMED.bits(), 7);
+        assert_eq!(SurfaceStates::SCORCH.default_ticks(), None);
+        // Scorch: permanent, optionally hot for a while.
+        let sc = TerrainEdit::scorch(Vec3::ZERO, 1.0, 100, 600);
+        let surface = |states, until| TerrainEdit::Surface {
+            center: Vec3::ZERO,
+            radius: 1.0,
+            states,
+            until,
+        };
+        assert_eq!(sc, surface(9, 700));
+        assert_eq!(
+            TerrainEdit::scorch(Vec3::ZERO, 1.0, 100, 0),
+            surface(8, u32::MAX)
+        );
+        // Expired timed parts drop; scorch stays.
+        assert_eq!(sc.without_expired_states(699), Some(sc));
+        assert_eq!(sc.without_expired_states(700), Some(surface(8, 700)));
+        let hot = TerrainEdit::surface_for_default(Vec3::ZERO, 1.0, SurfaceStates::HOT, 0);
+        assert_eq!(hot.without_expired_states(599), Some(hot));
+        assert_eq!(hot.without_expired_states(600), None);
+        assert_eq!(surface(1, 0).without_expired_states(0), None);
+        let crater = TerrainEdit::SubtractSphere {
+            center: Vec3::ZERO,
+            radius: 1.0,
+        };
+        assert_eq!(crater.without_expired_states(u32::MAX), Some(crater));
+        assert_eq!(paint_color(PAINT_YELLOW), PAINT_YELLOW);
+        assert_eq!(paint_color(9), PAINT_PLAIN);
         for (i, secs) in SurfaceStates::DEFAULT_SECS.iter().enumerate() {
             assert_eq!(
                 crate::Tick::ticks_for_secs(*secs),

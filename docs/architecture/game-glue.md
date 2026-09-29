@@ -31,9 +31,13 @@ declared with `default-features = false`; `ls-server` enables `features = ["serv
 - Wraps `ls_worldgen::ChunkStore`; `TerrainQuery::sdf` is `ChunkStore::eval`, `bounds` the
   generator bounds (outside is solid).
 - `SimTerrain::apply_edit` logs **every** edit it is given, including ones the chunk store
-  rejects, so the log index is the edit's sequence number on every peer (`Welcome::edit_log`,
+  rejects, so the log index is the edit's sequence number on every peer (`Welcome::edit_count`,
   `Snapshot::edit_base`). `apply_sequence(base, edits)` applies only the unseen tail and fails
-  with `GameError::EditGap` if edits were missed.
+  with `GameError::EditGap` if edits were missed. `welcome_log(now)` is the log for a
+  `Welcome`, without the expired surface-state edits that cannot matter any more; a late
+  joiner builds its terrain with `replay_welcome(gen, log, edit_count)` and counts the
+  left-out edits (`edit_count()`, `pruned_count()`), so its own `edit_log()` is not indexed
+  by sequence number (only the server serves logs).
 - `SimTerrain::paint_coverage` maps `ls_worldgen::PaintCoverage` to teams 0/1 and caches it
   until the next edit. It generates every chunk on first use (about 7 s in debug builds at the default sliders, well
   under a second in release), which is why `Room::new` pregenerates and why tests that stay
@@ -45,15 +49,19 @@ declared with `default-features = false`; `ls-server` enables `features = ["serv
   `SimTerrain::material_at`, which `GameTerrain` implements from the material field), so the
   logged and sent edit is already scaled. `SimTerrain::surface_states_near` is implemented too
   (charged rock drains ships that scrape it, a framework step in `World::step`).
-- Surface states: stored as expiry ticks by the edit log. `surface_states_near(center,
-  radius, tick)` / `surface_states_at(p, tick)` answer for any tick. `advance_to(tick)` sets
+- Surface states: stored as expiry ticks by the edit log (scorch: a permanent bit).
+  `surface_states_near(center, radius, tick)` / `surface_states_at(p, tick)` answer for any
+  tick. `TerrainQuery::paint_colors_near` answers the paint colours under a ship (ship
+  physics: bouncy, slippery, sticky paint). `advance_to(tick)` sets
   the display tick used by `mesh_chunk` (mesh `states`) and marks chunks whose states expired
   dirty; whoever owns the terrain calls it once per tick (server: optional, it does not mesh;
   client: with its display tick).
 - Dirty chunks accumulate until `take_dirty_chunks()`; `mesh_chunk(c)` runs surface nets.
-- `state_hash()` = edit log hash + SDF on a 4 u lattice + paint and stored surface state
-  expiry ticks of the cells around every edit. The display tick is not part of it. It needs no
-  full generation and is the desync check between peers.
+- `state_hash()` = edit count and lasting edits (geometry, paint, the scorch part of surface
+  edits) + SDF on a 4 u lattice + every painted or scorched cell (team, colour, scorch). It is
+  independent of time (a late joiner's pruned log agrees with the full one), needs no full
+  generation and is the desync check between peers. `state_hash_at(tick)` adds the timed
+  surface states running at `tick`; the display tick is part of neither.
 
 ## Match setup
 

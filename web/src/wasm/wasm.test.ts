@@ -8,6 +8,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { parseEntities, parsePlayers, parseVisuals, loadoutState } from "../game/views.ts";
 import { SHAPE_STYLES } from "../game/scene.ts";
+import { CUE, parseCharge, parseCues, parseShipChoices } from "../game/mechanics.ts";
 import {
   CONTROLS_LEN,
   DEBUG_STATS_LEN,
@@ -128,6 +129,64 @@ test("WASM share-code check, hello packet and practice game", { skip }, async ()
     assert.ok(shots.length >= PROJECTILE_STRIDE);
     const visual = shots[8]!;
     assert.equal(visuals[visual]?.shape !== undefined, true);
+  } finally {
+    game.free();
+  }
+});
+
+test("WASM mechanics API: ship choice, cues, gadget, charge, paint colour, mesh layers", { skip }, async () => {
+  const wasm = await load();
+  assert.deepEqual(wasm.gadgetIds?.(), ["cloak", "decoy", "shield"]);
+  assert.ok((wasm.helloPacketAs?.("tester", -1, 0).length ?? 0) > 4);
+  const game = wasm.Game.practiceAs!("LS08-0000-0000-000A-K4M6-8001-8F1T", 1, 2);
+  try {
+    const choices = parseShipChoices(game.shipChoices?.());
+    assert.equal(choices.length, 4);
+    assert.equal(choices.find((c) => c.current)?.name, "Hauler", "practiceAs flies the chosen type");
+    assert.ok(choices.every((c) => c.allowed));
+    assert.ok(choices[2]!.secondaries.length >= choices[0]!.secondaries.length, "more slots, more secondaries");
+    assert.equal(game.selectShip?.(0), undefined, "practice sends no packet");
+    assert.equal(parseShipChoices(game.shipChoices?.()).find((c) => c.next)?.name, "Skitter");
+
+    // G switches the loadout Shield on: a gadget cue and the gadget view.
+    const controls = new Float32Array(CONTROLS_LEN);
+    controls[6] = 1 << 6;
+    game.frame(1 / 60, controls);
+    controls[6] = 0;
+    game.frame(1 / 60, controls);
+    const cues = parseCues(game.takeCues?.());
+    assert.ok(cues.some((c) => c.kind === CUE.gadget && c.source === game.player));
+    const gadget = game.gadget!();
+    assert.equal(gadget.key, "shield");
+    assert.equal(gadget.active, true);
+    gadget.free();
+    assert.equal(parseCharge(game.charge?.()), null, "not charging");
+    assert.ok((game.nowTick?.() ?? 0) > 0);
+
+    // The Paint Thrower (second loadout primary) selected: V (weapon mode,
+    // bit 7) cycles its colour in the simulation.
+    assert.equal(game.paintColor, 0, "Scrap Laser selected");
+    controls[8] = 2;
+    game.frame(1 / 60, controls);
+    controls[8] = 0;
+    game.frame(1 / 60, controls);
+    assert.equal(game.paintColor, 1);
+    controls[6] = 1 << 7;
+    game.frame(1 / 60, controls);
+    controls[6] = 0;
+    game.frame(1 / 60, controls);
+    assert.equal(game.paintColor, 2);
+    assert.ok(parseCues(game.takeCues?.()).some((c) => c.kind === CUE.paintColor && c.value === 2));
+
+    const mesh = game.meshNext(128, 64, 128);
+    assert.ok(mesh);
+    const n = mesh.teams().length;
+    const materials = mesh.materials?.() ?? new Uint8Array(0);
+    assert.equal(materials.length, n, "rock materials per vertex");
+    assert.ok([...materials].every((m) => m <= 2));
+    const colors = mesh.paintColors?.() ?? new Uint8Array(0);
+    assert.ok(colors.length === 0 || colors.length === n);
+    mesh.free();
   } finally {
     game.free();
   }

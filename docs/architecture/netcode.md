@@ -8,7 +8,14 @@ end-to-end picture; the exact rules and numbers live next to the code:
 - `crates/ls-net` (wire format, `Message`, snapshots, `Transport`);
 - [game-glue.md](game-glue.md) (`ClientSession`, `Room`, the [wire
   conventions](game-glue.md#wire-conventions) table, lag compensation);
+- [arsenal-framework.md](arsenal-framework.md#replication-ls-net-protocol-4) (what the M2
+  wire items mean: entities, players, cues, inventory, ship choice, data hash);
 - [server.md](server.md) (sockets, WebSocket and WebTransport mapping, backpressure).
+
+The wire format is versioned by `ls_net::PROTOCOL_VERSION` (checked in `Hello`): 1 was M1;
+2 added the M2 entities, players, cues, data hash and ship choice; 3 predictive ship deltas;
+4 paint colours in paint edits, `Welcome::edit_count` (pruned edit logs) and predictive
+projectile deltas. This page describes version 4.
 
 ## Tick model
 
@@ -49,9 +56,15 @@ by a repeat would leave a permanent orientation difference.
 ## Input and redundancy
 
 - `InputCmd` per tick: thrust axes and roll (quantized to 1/127), look deltas (1/8192 rad),
-  button bits (`ls_sim::Buttons`: boost, fire primary/secondary, scavenge, overdrive, horizon
-  assist) and a weapon selection. The client quantizes each command exactly as the server will
-  decode it, so both simulate the same numbers.
+  button bits (`ls_sim::Buttons`, wire `ls_net::buttons`: 0 boost, 1 fire primary, 2 fire
+  secondary, 3 scavenge, 4 overdrive, 5 horizon assist, 6 gadget (G), 7 weapon mode (V)) and a
+  weapon selection (`0` keeps the selection, `n` selects the carried weapon with id `n - 1`
+  into its slot). The client quantizes each command exactly as the server will decode it, so
+  both simulate the same numbers.
+- G and V act on their press **edge** in the simulation. The browser core (`ls-wasm`
+  `EDGE_BUTTONS`) keeps a press from a frame that ran no tick for the next tick, so a tap
+  shorter than a frame still reaches the server. Charge weapons fire on the release of the
+  fire button, so a held button must stay set in every command until release.
 - Every `Input` message carries the newest **three** commands (`MAX_INPUT_CMDS`), newest first,
   plus `ack_snapshot`, the newest snapshot the client stored (the server's delta baseline). It
   goes on the unreliable channel; a lost datagram costs nothing as long as one of the next two
@@ -79,10 +92,19 @@ respawn or a large error snaps. After the match end tick prediction freezes, exa
 server. Tolerances, smoothing and snap rules:
 [game-glue.md, Client core](game-glue.md#client-core).
 
+The predicted movement includes everything `simulate_movement` models: paint colours under
+the ship (red rebounds, blue keeps speed, yellow slows; the client's terrain has the same paint
+from the edit log), charged-rock contact, and the freeze while guiding an Eyeball (below).
+
 Shots: the browser also predicts its own projectiles (`crates/ls-wasm/src/shots.rs`,
 `ShotPredictor`) with the simulation's firing rules, draws them at once, and hands over to the
 server's projectile when a snapshot shows a match (the difference fades as a render offset).
-Unmatched predictions disappear after 4 ticks. Bots do not predict shots.
+Unmatched predictions disappear after 4 ticks. Each weapon has a `ShotModel` mirroring its
+module's `fire`: the generic pattern, the Scatter Laser's alternating fan and the Corkscrew's
+helix (their phase inferred from the server's projectiles), the Scrap Shotgun's centre pellet
+only (its cone is random), and nothing for the Leech Arc (instant), Borrowed Time and the Prox
+Mine (the cost is still predicted). Charge weapons are predicted on release; Borrowed Time
+takes the weapons offline locally as it fires. Bots do not predict shots.
 
 ## Interpolation (other ships and projectiles)
 
@@ -112,11 +134,12 @@ bytes) and the players list (names, teams, ship types, gadgets). Projectiles and
 previous one and its full state; in a delta one bit per item of the baseline's list ("present
 and unchanged", so resting debris, pickups and wrecks cost 1 bit), then for the others 1 bit
 "still present" plus field diffs (entities: a "position only" fast path), then the new items
-as a full id list. Players in a delta: 1 bit "changed", then a 32-bit presence mask and a
+as an id list (new projectiles predicted from their owner, see below). Players in a delta: 1
+bit "changed", then a 32-bit presence mask and a
 change bit per known player; only changed or new players are sent. Entity positions are
 `ENTITY_POS_SHIFT` (3) bits coarser than ship positions (about 0.03 u), so drifting debris
-moves few steps between snapshots. Protocol version 2; what the entity and player fields mean
-is in [arsenal-framework.md](arsenal-framework.md#replication-ls-net-protocol-2). The server
+moves few steps between snapshots. Protocol version 4; what the entity and player fields mean
+is in [arsenal-framework.md](arsenal-framework.md#replication-ls-net-protocol-4). The server
 filters each client's snapshot through `ls_net::Relevance` first (a cloaked enemy is left
 out; moving debris farther than 100 u from the viewer's ship too, `DEBRIS_RELEVANCE_RADIUS`)
 and sends debris without velocity.
@@ -145,9 +168,23 @@ room sends `Message::Inventory` reliably to each client whenever its ship's inve
   tick, 2^-20 fixed point, `Quantizer::ship_motion_scale`) is sent in full snapshots and in
   deltas only when it changes; all prediction math is integer, so native and WASM decode the
   same bits. New ships are sent in full; drifting entities use the same residual groups for
-  position; projectiles keep the 2-bit size-class differences; projectiles and entities use
-  the id lists above. The client keeps the same 128-entry history, so every baseline the
-  server may choose is available.
+  position; projectiles and entities use the id lists above. The client keeps the same
+  128-entry history, so every baseline the server may choose is available.
+- **Projectile deltas (protocol 4).** A projectile in the baseline counts as unchanged (1 bit)
+  when it is exactly where `base.pos + base.vel x projectile_motion x age` puts it with nothing
+  else changed; otherwise a meta bit (kind, owner, state), a position residual group against
+  that prediction and a velocity residual group against the baseline velocity, with their own
+  typical widths. `projectile_motion` (`Quantizer::projectile_motion_scale`) travels next to
+  `ship_motion` (only snapshots that carry projectiles fill it). Before encoding, the server
+  **settles** each client's snapshot (`ls_net::settle_projectiles`): a projectile within
+  `SETTLE_TOLERANCE` (4) position steps (about 0.016 u horizontally, 0.008 u vertically) of its prediction is sent as
+  predicted, and that settled snapshot is what both ends store, so a straight shot costs one
+  bit per snapshot and its position is never more than 4 steps off. A projectile new against
+  the baseline is predicted from its owner: owner (6 bits below 32), velocity as a residual
+  against the owner's newest projectile already in the list (same kind and state; else kind,
+  state and the raw velocity), position as a 5-bit flight time in quarter ticks plus a
+  residual against `ship.pos + (vel - ship.vel) x time` (the muzzle offset folds into the
+  flight time); id gaps below 16 cost 5 bits.
 - **Joins.** Snapshots to a client start with its first `Input` (sent once its session is
   built), so a join costs one full snapshot, plus one per snapshot interval of round trip until
   the client's first `ack_snapshot` arrives; after that every snapshot is a delta. Sending
@@ -160,14 +197,72 @@ room sends `Message::Inventory` reliably to each client whenever its ship's inve
   (ls-game, real ship physics via `simulate_movement`) measure 32 busy ships (thrusting,
   turning up to 4 to 9 rad/s), 64 drifting debris and 48 resting items: whole deltas of about
   460 / 520 / 557 B against baselines 2 / 4 / 6 ticks old (up to 16.7 KB/s), inside the
-  budget; protocol 2 needed about 515 B for the busy ships alone. The margin is thin:
-  baselines older than about 100 ms, more moving debris (a Tectonic Charge jostles every piece)
-  or many projectiles in flight (not in these tests; projectile deltas have no motion
-  prediction yet) go over. In practice a 3-bot local run measures about 4 KiB/s of snapshots
-  for the whole server.
-- Events (hits, kills, respawns, match end, cues such as warnings and blinding) are batched
-  per snapshot into an `Events` message on the reliable channel and sent to every client
-  (no distance filter: level-wide cues such as `TectonicLaunch` and `Shockwave` rely on it).
+  budget; protocol 2 needed about 515 B for the busy ships alone.
+  `busy_fight_with_projectiles_fits_the_budget` (ls-net) adds a busy fight's projectiles: every
+  ship fires in bursts (60 % of the time) with a weapon mix from the data (lasers, rivets,
+  plasma, scatter fans, homing Seekers, stuck mines), about 100 projectiles in flight and 4 new
+  per snapshot, settled as the server does; the test runs four seeds. Whole deltas average
+  392-405 / 476-491 / 544-560 B against baselines 2 / 4 / 6 ticks old (at most 12.2 / 14.7 /
+  16.8 KB/s), inside the budget at every age. The busiest snapshots reach 471-482 / 565-612 /
+  614-683 B: within 17,280 B/s at 2 ticks, up to about 6 % over at 4 ticks (about 66 ms round
+  trip) and up to about 19 % over at 6 ticks (100 ms). **Known shortfall (M2):** the busiest
+  snapshots at 100 ms round trip exceed the per-snapshot budget. The projectile section is
+  90-102 / 140-155 / 186-202 B (protocol 3: 580-632 / 672-737 / 734-796 B). New projectiles
+  dominate it: a baseline 6 ticks old repeats about 12 of them at about 10 B each, most of it
+  the velocity residual against the owner's previous shot (about 43 bits) and the position
+  residual against the owner's ship (about 28 bits). Cutting it needs a velocity predictor from
+  the owner's orientation or coarser new-projectile velocities (open).
+  More moving debris (a Tectonic Charge jostles every piece) on top of a busy fight also goes
+  over. In practice a 3-bot local run measures about 4 KiB/s of snapshots for the whole
+  server.
+
+## Relevance filter
+
+Before a client's snapshot is packed, the room removes what that client may not or need not
+see: `Snapshot::retain_relevant(viewer, &impl ls_net::Relevance)`, with one callback per ship,
+projectile and entity (default: keep). The room's implementation (`SimRelevance` in
+`crates/ls-game/src/server/mod.rs`):
+
+| Item | Rule |
+| --- | --- |
+| Own ship | always kept |
+| Enemy ship with an active gadget | the gadget's `GadgetBehavior::visible_to` decides (`World::ship_visible_to`). The Cloak hides the carrier from enemies unless they are within `reveal_distance` (6 u) or it fired within `reveal_after_fire_secs` (0.5 s); teammates always see it (and draw a shimmer) |
+| Debris | resting pieces always; moving pieces only within `DEBRIS_RELEVANCE_RADIUS` (100 u) of the viewer's ship. Debris goes out without velocity |
+| Projectiles, other entities, players | always kept (a cloaked ship's shots are visible; firing also reveals it) |
+
+The filter runs before delta encoding and projectile settling, and the filtered snapshot is
+what goes into the client's history, so a ship that turns invisible simply leaves the ship
+presence mask of the next delta (so it is no longer drawn) and reappears as a new, fully sent
+ship. Lag compensation works on the server's world, not on what a
+client was sent.
+
+## Events, cues and other messages
+
+Events (hits, kills, respawns, match end, and game cues) are batched per snapshot
+into an `Events` message on the reliable channel and sent to every client (no distance
+filter: level-wide cues such as `TectonicLaunch` and `Shockwave` rely on it). A cue
+(`NetEvent::Cue`, from `ls_sim::Cue`) carries a `CueKind` byte, source and target ship ids, a
+position and a 16-bit value; the kinds are Polite warning, blinding, charge start, Tectonic
+launch and armed, shockwave, Leech beam, swap, rewind, muzzle flash, gadget, decoy return,
+overcharge and paint colour (`crates/ls-sim/src/behavior.rs`; values in
+[arsenal-framework.md](arsenal-framework.md#replication-ls-net-protocol-4)). The browser turns
+them into effects and HUD state (`web/src/game/mechanics.ts`); some also correct client
+guesses: the `PaintColor` cue confirms the colour the client guessed on V, and the `Gadget`
+cue's value (`ls_sim::gadget_cue`: on, off by key, out of energy, instant use) starts the
+client's cooldown estimate only for a key-press off or an instant use. Bots use `Swapped` and
+`Rewound` to tell a teleport from a desync.
+
+| Message | Channel | Direction | Contents |
+| --- | --- | --- | --- |
+| `Hello` | reliable | client to server | magic, protocol version, name, data hash, optional first ship type |
+| `Welcome` / `Reject` | reliable | server to client | see the handshake in [overview.md](overview.md#from-share-code-to-rendered-frame); `Reject` has a frozen layout and a reason (`DataMismatch` names both hashes) |
+| `Input` | unreliable | client to server | newest 3 commands, `ack_snapshot` |
+| `Snapshot` | unreliable (reliable when too big) | server to client | above |
+| `Events` | reliable | server to client | events and cues of one snapshot interval |
+| `Ping` / `Pong` | unreliable | both | clock sync and round trip |
+| `SelectShip` | reliable | client to server | ship type for the next respawn |
+| `Inventory` | reliable | server to client | the own ship's weapons, ammo, levels, selection and gadget, when they change |
+| `Disconnect` | reliable | both | reason |
 
 ## Terrain edit replication
 
@@ -179,24 +274,31 @@ instead every peer keeps the same ordered **edit log**:
 
 1. `GameTerrain` logs every edit it is handed (even ones the chunk store rejects), so an edit's
    log index is its sequence number on every peer.
-2. `Welcome::edit_log` carries the whole log (up to 2^18 edits) to a joining client, which
-   replays it on its freshly generated level.
+2. `Welcome::edit_log` carries the log (up to 2^18 edits) to a joining client, which replays
+   it on its freshly generated level, and `Welcome::edit_count` the number of edits so far.
+   The server leaves out surface-state edits whose timed states expired before the join and
+   can no longer matter (`GameTerrain::welcome_log`: hot, charged and glow edits with
+   `until <= now`, unless an earlier still-running edit sharing a state bit may share a cell;
+   a scorch mark keeps its scorch bit), so long matches full of laser hits do not inflate the
+   Welcome. The late joiner counts the left-out sequence numbers
+   (`GameTerrain::replay_welcome`, `edit_count()`), so later edits line up.
 3. Each snapshot carries up to 64 edits starting at the client's acknowledged edit count
    (`edit_base`); unacknowledged edits are resent until a snapshot containing them is acked.
    The client applies only the unseen tail (`apply_sequence`); a gap is a hard error
    (`GameError::EditGap`, which bots count as a desync). Edits from stale (out-of-order)
    snapshots are still applied.
 4. On the wire an edit is a 2-bit kind, centre and radius as **raw `f32` bits**, for paint an
-   8-bit team, and for surface states 8 state bits plus the 32-bit expiry tick (130, 138 or
-   170 bits). Raw bits, not quantized values, so every peer applies the
+   8-bit team and a 2-bit colour, and for surface states 8 state bits plus the 32-bit expiry
+   tick (130, 140 or 170 bits). Raw bits, not quantized values, so every peer applies the
    exact same CSG and stays bit-identical ([determinism.md](determinism.md)).
 5. Applying an edit marks chunks dirty; the browser remeshes dirty chunks first (surface nets,
    at most 8 chunks for a 3 u crater).
 
-`GameTerrain::state_hash()` (edit log + SDF on a 4 u lattice + paint and stored surface state
-expiry ticks around every edit) is the
-cheap terrain desync check between peers; tests compare it with the server's, and the browser
-exposes it as `Game.terrainHash()` for debugging.
+`GameTerrain::state_hash()` (edit count and lasting edits + SDF on a 4 u lattice + painted
+and scorched cells; independent of time) is the cheap terrain desync check between peers;
+tests compare it with the server's, and the browser exposes it as `Game.terrainHash()` for
+debugging. `state_hash_at(tick)` adds the timed surface states running at `tick` (peers
+agree for every tick from their join on).
 
 ## Lag compensation
 
@@ -215,9 +317,9 @@ duplicated or reordered; at most `max_unreliable_size`, default 1200 B) and `sen
 (exactly once, in order). `Message::channel()` picks the channel: `Input`, `Snapshot`, `Ping`,
 `Pong` are unreliable; `Hello`, `Welcome`, `Reject`, `Events`, `Disconnect` are reliable. An
 unreliable message larger than the limit (for example a big full snapshot) is sent reliably.
-Every connection starts with `Hello` (magic `LSCR`, `PROTOCOL_VERSION`); the server answers
-`Welcome` or `Reject` (whose layout is frozen across versions so old clients can show the
-reason).
+Every connection starts with `Hello` (magic `LSCR`, `PROTOCOL_VERSION`, data hash); the
+server answers `Welcome` or `Reject` (whose layout is frozen across versions so old clients
+can show the reason). `SelectShip`, `Inventory` and `Disconnect` are reliable too.
 
 | | WebSocket | WebTransport |
 | --- | --- | --- |

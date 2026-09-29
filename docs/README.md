@@ -8,9 +8,9 @@ working on the repo are in [`CLAUDE.md`](../CLAUDE.md).
 
 | Document | Read it for |
 | --- | --- |
-| [dev-guide.md](dev-guide.md) | Toolchain, building, running server + client + bots, tests, CI, e2e, profiling, adding a weapon or a rule set |
+| [dev-guide.md](dev-guide.md) | Toolchain, building, running server + client + bots, tests, CI, e2e, profiling; adding a [weapon](dev-guide.md#8-adding-a-weapon) (data, hooks, commands, registry, tests, client, bots), a [rule set](dev-guide.md#9-adding-a-rule-set) ([codes and the editor](dev-guide.md#rule-set-codes-and-the-editor), [balance lists](dev-guide.md#balance-lists)), a [gadget](dev-guide.md#10-adding-a-gadget); [ship types](dev-guide.md#11-ship-types); the [browser smoke test](dev-guide.md#12-browser-smoke-test); the [generated player reference](dev-guide.md#generated-player-reference) |
 | [implementation-plan.md](implementation-plan.md) | Milestone 1 scope, module specs with acceptance criteria, work waves and current status, later milestones |
-| [milestone-2-plan.md](milestone-2-plan.md) | Milestone 2 (arsenal and physics): scope, design decisions, waves, acceptance criteria |
+| [milestone-2-plan.md](milestone-2-plan.md) | Milestone 2 (arsenal and physics): scope, design decisions (numbers the design doc leaves open), waves and their status, acceptance criteria with evidence |
 | [design/game-design-doc.md](design/game-design-doc.md) | The game: rules, ships, weapons, modes (exported from the living design doc; source of truth for game rules) |
 
 ## Architecture
@@ -18,12 +18,12 @@ working on the repo are in [`CLAUDE.md`](../CLAUDE.md).
 | Document | Contents |
 | --- | --- |
 | [architecture/overview.md](architecture/overview.md) | Crates and their responsibilities, runtime components (diagram), data flow from share code to rendered frame, threads |
-| [architecture/netcode.md](architecture/netcode.md) | Tick model, input redundancy, prediction and reconciliation, interpolation, snapshots and deltas, terrain edit replication, lag compensation, WebSocket and WebTransport |
-| [architecture/determinism.md](architecture/determinism.md) | Determinism rules, golden hashes, re-blessing, the WASM cross-check |
-| [architecture/contracts.md](architecture/contracts.md) | Cross-crate contracts: axes, units, time, RNG streams, `TerrainEdit` / `TerrainQuery`, chunk meshes, share codes, quantization |
+| [architecture/netcode.md](architecture/netcode.md) | Tick model, input redundancy, prediction and reconciliation (ship and shots), interpolation, snapshots and deltas (protocol 4: ship, projectile and entity deltas, settling, bandwidth budget), per-client relevance (Cloak, far debris), events and cues, terrain edit replication, lag compensation, WebSocket and WebTransport |
+| [architecture/determinism.md](architecture/determinism.md) | Determinism rules (incl. weapon and gadget modules), golden hashes, the data hash and `SIM_BEHAVIOR_VERSION`, re-blessing, the WASM cross-check |
+| [architecture/contracts.md](architecture/contracts.md) | Cross-crate contracts: axes, units, time, RNG streams, `TerrainEdit` / `TerrainQuery`, surface states and paint colours, rock strength, chunk meshes and layers, share codes, quantization |
 | [architecture/game-glue.md](architecture/game-glue.md) | `ls-game` in detail: `GameTerrain`, match setup, wire conventions, `ClientSession`, `Room`, lag compensation, tests |
-| [architecture/arsenal-framework.md](architecture/arsenal-framework.md) | M2 arsenal framework: weapon and gadget modules and their hooks, hook order per tick, ship types, entities and debris, generic entity replication, data hash, rule set v2 and codes |
-| [architecture/server.md](architecture/server.md) | `ls-server` internals (endpoints, links, WebTransport mapping, sim thread policies, CLI), browser client lifecycle, `ls-bots` |
+| [architecture/arsenal-framework.md](architecture/arsenal-framework.md) | M2 arsenal framework: weapon and gadget modules, their hooks and `Ctx` commands, terrain layers for weapons, hook order per tick, gadgets, ship types and paint effects, entities and debris, replication (protocol 4 wire items), data hash, rule set v2, codes and balance lists, and the arsenal as built (every weapon's bonus, malus and lasting effect) |
+| [architecture/server.md](architecture/server.md) | `ls-server` internals (endpoints, links, WebTransport mapping, sim thread policies, CLI incl. rule sets, bans and balance lists), browser client lifecycle and data-driven drawing, `ls-bots` (navigation, arsenal use), the e2e run |
 
 ## Crate and folder map
 
@@ -31,11 +31,11 @@ working on the repo are in [`CLAUDE.md`](../CLAUDE.md).
 | --- | --- |
 | `crates/ls-math` | [contracts.md](architecture/contracts.md), [determinism.md](architecture/determinism.md) |
 | `crates/ls-worldgen` | [contracts.md](architecture/contracts.md), [determinism.md](architecture/determinism.md), plan section 4.2 |
-| `crates/ls-sim`, `data/` | plan section 4.3, [arsenal-framework.md](architecture/arsenal-framework.md), [`data/README.md`](../data/README.md), [dev-guide.md](dev-guide.md#8-adding-a-weapon) |
-| `crates/ls-net` | [netcode.md](architecture/netcode.md), plan section 4.4 |
+| `crates/ls-sim`, `data/` | plan section 4.3, [arsenal-framework.md](architecture/arsenal-framework.md), [`data/README.md`](../data/README.md), [dev-guide.md](dev-guide.md#8-adding-a-weapon) (weapons, rule sets, gadgets, ship types) |
+| `crates/ls-net` | [netcode.md](architecture/netcode.md), [arsenal-framework.md](architecture/arsenal-framework.md#replication-ls-net-protocol-4), plan section 4.4 |
 | `crates/ls-game` | [game-glue.md](architecture/game-glue.md), [netcode.md](architecture/netcode.md) |
-| `crates/ls-server`, `crates/ls-bots`, `tools/` | [server.md](architecture/server.md), [dev-guide.md](dev-guide.md) |
-| `crates/ls-wasm`, `web/` | [overview.md](architecture/overview.md), [game-glue.md](architecture/game-glue.md#browser-core-extras-ls-wasm), [server.md](architecture/server.md#browser-client-lifecycle-websrcmaints) |
+| `crates/ls-server`, `crates/ls-bots`, `tools/` | [server.md](architecture/server.md), [dev-guide.md](dev-guide.md) (CI, e2e, [browser smoke test](dev-guide.md#12-browser-smoke-test)) |
+| `crates/ls-wasm`, `web/` | [overview.md](architecture/overview.md), [game-glue.md](architecture/game-glue.md#browser-core-extras-ls-wasm), [server.md](architecture/server.md#browser-client-lifecycle-websrcmaints), rule set editor in [dev-guide.md](dev-guide.md#rule-set-codes-and-the-editor) |
 
 Crate-level rustdoc (`//!` at the top of each `lib.rs`) summarises every crate's modules;
 `cargo doc --workspace --no-deps --open` renders it.
@@ -47,3 +47,7 @@ Crate-level rustdoc (`//!` at the top of each `lib.rs`) summarises every crate's
   same change; changing commands or layout means updating [`CLAUDE.md`](../CLAUDE.md) and
   [dev-guide.md](dev-guide.md).
 - `docs/design/` is an export of the living design doc; change the living doc, then re-export.
+- `userDocs/reference/*.md` are generated from `data/` by `node tools/gen-weapon-docs.mjs`
+  ([dev-guide](dev-guide.md#generated-player-reference)); CI fails while they are stale.
+  Player-facing prose (the manual, the hosting guide) is written by hand in `userDocs/`;
+  developer detail stays here.

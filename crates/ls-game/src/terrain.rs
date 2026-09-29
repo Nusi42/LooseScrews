@@ -24,10 +24,13 @@ use crate::GameError;
 ///   and logged verbatim.
 /// - Surface states (hot, charged, glow) are stored as expiry ticks by the
 ///   edit log; [`GameTerrain::advance_to`] moves the display tick of meshes
-///   and marks chunks whose states expired dirty.
+///   and marks chunks whose states expired dirty. Scorch is permanent.
 /// - Every edit handed to it is logged, including ones the chunk store rejects
 ///   as invalid, so the log index is the edit's **sequence number** on the wire
-///   (`Snapshot::edit_base`, `Welcome::edit_log`) on every peer.
+///   (`Snapshot::edit_base`, `Welcome::edit_count`) on every peer. A late
+///   joiner's log lacks the expired surface-state edits the server left out
+///   of its `Welcome` ([`GameTerrain::welcome_log`]); it counts them
+///   ([`GameTerrain::edit_count`]) but cannot serve its log to others.
 /// - Tracks chunks whose meshes changed since the last
 ///   [`GameTerrain::take_dirty_chunks`].
 ///
@@ -39,6 +42,8 @@ pub struct GameTerrain {
     store: RefCell<ChunkStore>,
     bounds: Aabb,
     log: Vec<TerrainEdit>,
+    /// Sequence numbers without an edit in `log` (left out of the Welcome).
+    pruned: u32,
     dirty: BTreeSet<ChunkCoord>,
     coverage: Cell<Option<ls_sim::PaintCoverage>>,
 }
@@ -51,6 +56,7 @@ impl GameTerrain {
             store: RefCell::new(ChunkStore::new(gen)),
             bounds,
             log: Vec::new(),
+            pruned: 0,
             dirty: BTreeSet::new(),
             coverage: Cell::new(None),
         }
@@ -66,13 +72,75 @@ impl GameTerrain {
         Self::from_code(&ShareCode::decode(text)?)
     }
 
-    /// A level with `edits` applied in order (late join from `Welcome::edit_log`).
+    /// A level with `edits` applied in order.
     pub fn replay(gen: Generator, edits: &[TerrainEdit]) -> Self {
         let mut t = Self::new(gen);
         for e in edits {
             t.apply(*e);
         }
         t
+    }
+
+    /// A late joiner's level from `Welcome::edit_log` and
+    /// `Welcome::edit_count` (the log may leave out expired surface-state
+    /// edits, see [`GameTerrain::welcome_log`]; `edit_count` below the log
+    /// length counts the log).
+    pub fn replay_welcome(gen: Generator, edits: &[TerrainEdit], edit_count: u32) -> Self {
+        let mut t = Self::replay(gen, edits);
+        t.pruned = edit_count.saturating_sub(t.log.len() as u32);
+        t
+    }
+
+    /// The edit log for a `Welcome` sent at tick `now`, and the number of
+    /// edits so far (the sequence number of the next edit).
+    ///
+    /// It leaves out what expired before `now` and can no longer matter:
+    /// the timed part (hot, charged, glow) of a surface-state edit whose
+    /// `until <= now` (a surface edit with scorch keeps its scorch bit), as
+    /// long as no earlier edit still active at `now` (`until > now`) shares
+    /// one of its state bits and may share a cell (spheres closer than the
+    /// sum of their radii): such an edit may have cut a running state short,
+    /// and dropping it would bring the state back. Replaying the result
+    /// gives the same geometry, paint and scorch, and the same timed states
+    /// at every tick from `now` on, as the full log; the time-independent
+    /// [`GameTerrain::state_hash`] and [`GameTerrain::state_hash_at`] any
+    /// tick `>= now` agree between the server, earlier clients and the late
+    /// joiner.
+    pub fn welcome_log(&self, now: u64) -> (Vec<TerrainEdit>, u32) {
+        let now = now.min(u32::MAX as u64) as u32;
+        let timed = SurfaceStates::TIMED.bits();
+        // Earlier edits with timed states still running at `now`.
+        let mut active: Vec<(Vec3, f32, u8)> = Vec::new();
+        let mut out = Vec::with_capacity(self.log.len());
+        for e in &self.log {
+            let TerrainEdit::Surface {
+                center,
+                radius,
+                states,
+                until,
+            } = *e
+            else {
+                out.push(*e);
+                continue;
+            };
+            let bits = states & timed;
+            if bits == 0 || until > now {
+                if bits != 0 {
+                    active.push((center, radius, bits));
+                }
+                out.push(*e);
+                continue;
+            }
+            let blocked = active.iter().any(|&(c, r, b)| {
+                b & bits != 0 && c.distance(center) <= r + radius + CELL_OVERLAP_EPS
+            });
+            if blocked {
+                out.push(*e);
+            } else if let Some(kept) = e.without_expired_states(now) {
+                out.push(kept);
+            }
+        }
+        (out, self.edit_count())
     }
 
     pub fn generator(&self) -> Generator {
@@ -83,14 +151,23 @@ impl GameTerrain {
         self.store.borrow().generator().code()
     }
 
-    /// Number of edits applied so far = sequence number of the next edit.
+    /// Number of edits so far = sequence number of the next edit (on a late
+    /// joiner including the ones its Welcome left out).
     pub fn edit_count(&self) -> u32 {
-        self.log.len() as u32
+        self.log.len() as u32 + self.pruned
     }
 
-    /// Every edit applied so far, in order.
+    /// Every edit applied so far, in order (a late joiner's lacks the edits
+    /// its Welcome left out: only a log with [`GameTerrain::pruned_count`]
+    /// 0 is indexed by sequence number).
     pub fn edit_log(&self) -> &[TerrainEdit] {
         &self.log
+    }
+
+    /// Sequence numbers this terrain counts without having their edits
+    /// (left out of its Welcome).
+    pub fn pruned_count(&self) -> u32 {
+        self.pruned
     }
 
     /// Applies and logs an edit verbatim; returns the chunks whose meshes may
@@ -150,32 +227,16 @@ impl GameTerrain {
     /// touching a wall is within a fraction of a unit of the surface but up
     /// to a cell diagonal away from the centre of the cell holding its state.
     pub fn surface_states_near(&self, center: Vec3, radius: f32, tick: u64) -> SurfaceStates {
-        if !center.is_finite() || !(0.0..=64.0).contains(&radius) {
-            return SurfaceStates::NONE;
-        }
         let now = tick.min(u32::MAX as u64) as u32;
-        let store = self.store.borrow();
-        let cell = |v: f32| ls_math::det::floor(v) as i32;
-        let (lo, hi) = (center - Vec3::splat(radius), center + Vec3::splat(radius));
-        // Squared distance from `c` to the unit interval starting at `g`.
-        let axis = |c: f32, g: i32| {
-            let d = (g as f32 - c).max(c - (g as f32 + 1.0)).max(0.0);
-            d * d
-        };
-        let r2 = radius * radius;
-        let mut bits = 0u8;
-        for z in cell(lo.z)..=cell(hi.z) {
-            let dz = axis(center.z, z);
-            for y in cell(lo.y)..=cell(hi.y) {
-                let dy = axis(center.y, y);
-                for x in cell(lo.x)..=cell(hi.x) {
-                    if dz + dy + axis(center.x, x) <= r2 {
-                        bits |= store.surface_states_at_cell([x, y, z], now).bits();
-                    }
-                }
-            }
-        }
-        SurfaceStates(bits)
+        self.store
+            .borrow()
+            .surface_states_overlapping(center, radius, now)
+    }
+
+    /// Paint colours (`1 << PAINT_*`) of the painted surface cells that
+    /// overlap the sphere (ship physics: bouncy, slippery, sticky paint).
+    pub fn paint_colors_near(&self, center: Vec3, radius: f32) -> u8 {
+        self.store.borrow().paint_colors_near(center, radius)
     }
 
     /// Surface states active at `tick` on the cell containing `p`.
@@ -233,21 +294,31 @@ impl GameTerrain {
         self.store.borrow_mut().paint_coverage()
     }
 
-    /// FNV-1a hash of the edit log (raw `f32` bits).
+    /// FNV-1a hash of the edit count and the lasting part of the edit log
+    /// (raw `f32` bits): every geometry and paint edit, and the scorch part
+    /// of surface edits. Timed surface states are left out (the Welcome of a
+    /// late joiner may leave them out; [`GameTerrain::state_hash_at`] checks
+    /// the states themselves), so peers agree at any time.
     pub fn edit_log_hash(&self) -> u64 {
         let mut h = StateHasher::new();
-        h.write_u64(self.log.len() as u64);
+        h.write_u64(self.edit_count() as u64);
         for e in &self.log {
-            let b = TerrainEditBits::from(*e);
+            let mut b = TerrainEditBits::from(*e);
+            if b.kind == 3 {
+                b.team &= SurfaceStates::SCORCH.bits();
+                if b.team == 0 {
+                    continue;
+                }
+                b.until = (b.until != 0) as u32;
+            }
             h.write_u8(b.kind);
             for c in b.center {
                 h.write_u32(c);
             }
             h.write_u32(b.radius);
             h.write_u8(b.team);
-            if b.kind == 3 {
-                h.write_u32(b.until);
-            }
+            h.write_u8(b.color);
+            h.write_u32(b.until);
         }
         h.finish()
     }
@@ -280,46 +351,69 @@ impl GameTerrain {
         h.finish()
     }
 
-    /// FNV-1a hash of the surface layers around every edit in the log (the
-    /// cells in each edit's bounding box): paint team, plus the stored expiry
-    /// ticks of cells with surface states. Cheap: it only reads cells edits
-    /// could have touched, so it needs no chunk generation. The ticks depend
-    /// only on the log, not on the display tick, so peers agree at any time.
+    /// FNV-1a hash of the lasting surface layers: every painted or scorched
+    /// surface cell with its paint team and colour and whether it is
+    /// scorched. Reads the cells that hold layers (no chunk generation).
     pub fn paint_hash(&self) -> u64 {
         let store = self.store.borrow();
         let mut h = StateHasher::new();
-        for e in &self.log {
-            if !(e.center().is_finite() && e.radius().is_finite()) || e.radius() > 64.0 {
-                continue;
+        store.for_each_layer_cell(|g, paint, _, scorch| {
+            if paint.is_none() && !scorch {
+                return;
             }
-            let b = e.bounds();
-            let lo = [b.min.x, b.min.y, b.min.z].map(|v| ls_math::det::floor(v) as i32);
-            let hi = [b.max.x, b.max.y, b.max.z].map(|v| ls_math::det::floor(v) as i32);
-            for z in lo[2]..=hi[2] {
-                for y in lo[1]..=hi[1] {
-                    for x in lo[0]..=hi[0] {
-                        h.write_u8(store.team_at_cell([x, y, z]));
-                        let ticks = store.surface_state_ticks_at_cell([x, y, z]);
-                        if ticks != [0; SurfaceStates::COUNT] {
-                            h.write_u8(0x5e);
-                            for t in ticks {
-                                h.write_u32(t);
-                            }
-                        }
-                    }
-                }
+            for c in g {
+                h.write_u32(c as u32);
             }
-        }
+            let (team, color) = paint.unwrap_or((ls_worldgen::NO_TEAM, 0));
+            h.write_u8(team);
+            h.write_u8(color);
+            h.write_bool(scorch);
+        });
         h.finish()
     }
 
-    /// Hash of the terrain state for desync checks: edit log, SDF on a 4 u
-    /// lattice and the surface layers (paint, surface states) around every edit.
+    /// FNV-1a hash of the timed surface states (hot, charged, glow) running
+    /// at `tick`: every cell with such a state, and the expiry tick of each
+    /// running state (0 for the others).
+    pub fn surface_state_hash_at(&self, tick: u64) -> u64 {
+        let now = tick.min(u32::MAX as u64) as u32;
+        let store = self.store.borrow();
+        let mut h = StateHasher::new();
+        store.for_each_layer_cell(|g, _, ticks, _| {
+            let running = ticks.map(|u| if u > now { u } else { 0 });
+            if running == [0; SurfaceStates::COUNT] {
+                return;
+            }
+            for c in g {
+                h.write_u32(c as u32);
+            }
+            for u in running {
+                h.write_u32(u);
+            }
+        });
+        h.finish()
+    }
+
+    /// Hash of the terrain state for desync checks: edit count and lasting
+    /// edits, SDF on a 4 u lattice and the lasting surface layers (paint,
+    /// scorch). Independent of time, so peers compare it at any moment; it
+    /// leaves out the timed surface states (see
+    /// [`GameTerrain::state_hash_at`]).
     pub fn state_hash(&self) -> u64 {
         let mut h = StateHasher::new();
         h.write_u64(self.edit_log_hash());
         h.write_u64(self.sdf_hash(4.0));
         h.write_u64(self.paint_hash());
+        h.finish()
+    }
+
+    /// [`GameTerrain::state_hash`] plus the timed surface states running at
+    /// `tick` ([`GameTerrain::surface_state_hash_at`]). Peers agree for
+    /// every tick from the one they joined at on.
+    pub fn state_hash_at(&self, tick: u64) -> u64 {
+        let mut h = StateHasher::new();
+        h.write_u64(self.state_hash());
+        h.write_u64(self.surface_state_hash_at(tick));
         h.finish()
     }
 }
@@ -332,7 +426,15 @@ impl TerrainQuery for GameTerrain {
     fn bounds(&self) -> Aabb {
         self.bounds
     }
+
+    fn paint_colors_near(&self, center: Vec3, radius: f32) -> u8 {
+        GameTerrain::paint_colors_near(self, center, radius)
+    }
 }
+
+/// Margin on the sphere-overlap test of [`GameTerrain::welcome_log`]
+/// (conservative: a larger margin only keeps more edits).
+const CELL_OVERLAP_EPS: f32 = 0.01;
 
 impl SimTerrain for GameTerrain {
     /// Applies and logs the edit verbatim (craters come already scaled by
@@ -472,6 +574,7 @@ mod tests {
             center: p,
             radius: 3.0,
             team: 0,
+            color: 0,
         };
         t.apply_edit(&paint);
         assert_eq!(t.edit_log()[1], paint);
@@ -498,7 +601,7 @@ mod tests {
         let mut t = small_terrain(7);
         let p = rock_point(&t);
         let base = t.state_hash();
-        let paint_only = t.paint_hash();
+        let base_at = t.state_hash_at(100);
         t.apply_edit(&TerrainEdit::surface_for_default(
             p,
             2.5,
@@ -508,25 +611,137 @@ mod tests {
         assert_eq!(t.edit_count(), 1);
         let dirty = t.take_dirty_chunks();
         assert!(!dirty.is_empty());
-        assert_ne!(t.paint_hash(), paint_only);
+        // Timed states count in the hash at a tick while they run; the
+        // time-independent hash only sees the edit count.
+        assert_ne!(t.state_hash_at(100), base_at);
         assert_ne!(t.state_hash(), base);
+        assert_eq!(
+            t.surface_state_hash_at(960),
+            small_terrain(7).surface_state_hash_at(960)
+        );
         assert_eq!(t.surface_states_near(p, 1.0, 100), SurfaceStates::CHARGED);
         assert_eq!(t.surface_states_near(p, 1.0, 960), SurfaceStates::NONE);
         // Expiry: nothing before tick 960, then the same chunks again.
         t.advance_to(959);
         assert!(t.take_dirty_chunks().is_empty());
-        let hash = t.state_hash();
+        let hash = t.state_hash_at(500);
         t.advance_to(960);
         assert_eq!(t.take_dirty_chunks(), dirty);
         assert_eq!(t.display_tick(), 960);
         // The display tick is not terrain state.
-        assert_eq!(t.state_hash(), hash);
+        assert_eq!(t.state_hash_at(500), hash);
         // Wire round trip keeps the expiry tick.
         let wire: Vec<TerrainEditBits> = t.edit_log().iter().map(|e| (*e).into()).collect();
         let mut r = small_terrain(7);
         r.apply_wire_sequence(0, &wire).unwrap();
-        assert_eq!(r.state_hash(), t.state_hash());
+        assert_eq!(r.state_hash_at(500), t.state_hash_at(500));
         assert_eq!(r.edit_log_hash(), t.edit_log_hash());
+    }
+
+    /// Late joiners get a Welcome log without the surface-state edits that
+    /// expired and cannot matter any more; they end up with the same
+    /// terrain as clients that saw every edit (hashes, states, sequence
+    /// numbers), also for later edits.
+    #[test]
+    fn welcome_log_prunes_expired_surface_edits_without_changing_the_terrain() {
+        let mut t = small_terrain(7);
+        let p = rock_point(&t);
+        // Scorch on the same rock as the rest (layers share cells).
+        let q = p;
+        let far = p + Vec3::new(0.0, 0.0, 20.0);
+        let surface = |c, states: SurfaceStates, until| TerrainEdit::Surface {
+            center: c,
+            radius: 2.0,
+            states: states.bits(),
+            until,
+        };
+        let hot = SurfaceStates::HOT;
+        let glow = SurfaceStates::GLOW;
+        let edits = [
+            // 0: hot until 100 (expires): pruned.
+            surface(p, hot, 100),
+            // 1: crater: kept.
+            TerrainEdit::SubtractSphere {
+                center: p + Vec3::new(0.0, 0.0, -15.0),
+                radius: 1.5,
+            },
+            // 2: scorch, hot until 200: its scorch stays.
+            TerrainEdit::scorch(q, 2.0, 100, 100),
+            // 3: glow until 5000 (still running) ...
+            surface(far, glow, 5000),
+            // 4: ... cut short to 300 later: kept (dropping it would bring
+            // the glow back).
+            surface(far, glow, 300),
+            // 5: hot until 400 near the glow: pruned (other state).
+            surface(far, hot, 400),
+            // 6: paint: kept.
+            TerrainEdit::Paint {
+                center: p,
+                radius: 3.0,
+                team: 1,
+                color: ls_math::terrain::PAINT_YELLOW,
+            },
+            // 7: charged until 2000 (still running at 1000): kept.
+            surface(p, SurfaceStates::CHARGED, 2000),
+            // 8: a clear of hot (until 0) with nothing running: pruned.
+            surface(q, hot, 0),
+        ];
+        for e in edits {
+            t.apply_edit(&e);
+        }
+        let now = 1000;
+        let (log, count) = t.welcome_log(now);
+        assert_eq!(count, 9);
+        let scorch_only = TerrainEdit::Surface {
+            center: q,
+            radius: 2.0,
+            states: SurfaceStates::SCORCH.bits(),
+            until: 200,
+        };
+        assert_eq!(
+            log,
+            [
+                edits[1],
+                scorch_only,
+                edits[3],
+                edits[4],
+                edits[6],
+                edits[7]
+            ]
+        );
+        let mut late = GameTerrain::replay_welcome(t.generator(), &log, count);
+        assert_eq!(late.edit_count(), 9);
+        assert_eq!(late.pruned_count(), 3);
+        for tick in [now, now + 1, 1999, 2000, 6000] {
+            assert_eq!(
+                late.state_hash_at(tick),
+                t.state_hash_at(tick),
+                "tick {tick}"
+            );
+        }
+        assert_eq!(late.state_hash(), t.state_hash());
+        for c in [p, q, far] {
+            assert_eq!(
+                late.surface_states_near(c, 2.0, now),
+                t.surface_states_near(c, 2.0, now)
+            );
+        }
+        assert!(t
+            .surface_states_near(q, 1.0, now)
+            .contains(SurfaceStates::SCORCH));
+        assert_eq!(late.surface_states_near(far, 1.0, now), SurfaceStates::NONE);
+        // Later edits arrive with their sequence numbers on both.
+        let next = TerrainEdit::surface_for_default(p, 1.0, glow, now);
+        assert_eq!(late.apply_sequence(9, &[next]).unwrap(), 1);
+        t.apply_edit(&next);
+        assert_eq!(late.edit_count(), t.edit_count());
+        assert_eq!(late.state_hash_at(now + 5), t.state_hash_at(now + 5));
+        assert!(late.apply_sequence(12, &[next]).is_err(), "gap");
+        // A second late joiner, pruned against the first one's log view,
+        // agrees too; nothing expired means nothing pruned.
+        let (fresh, n) = t.welcome_log(0);
+        assert_eq!(fresh.len() as u32, n);
+        assert_eq!(fresh, t.edit_log());
     }
 
     /// M2 plan: a charged surface (Leech Arc) drains 5 energy/s from a ship
@@ -618,6 +833,7 @@ mod tests {
             center: p,
             radius: 2.0,
             team: 1,
+            color: 0,
         });
         let after = SimTerrain::paint_coverage(&t).unwrap();
         assert_eq!(after.team_cells[0], 0);

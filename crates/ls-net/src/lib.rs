@@ -39,7 +39,7 @@ pub use quant::{
     pack_quat, unpack_quat, PackedVec3, QuantConfig, Quantizer, ENTITY_POS_MAX, ENTITY_POS_SHIFT,
     MOTION_SCALE_SHIFT, TICKS_PER_SECOND,
 };
-pub use snapshot::{Baselines, NoBaselines, SnapshotHistory};
+pub use snapshot::{settle_projectiles, Baselines, NoBaselines, SnapshotHistory, SETTLE_TOLERANCE};
 pub use transport::{
     recv_message, send_message, LinkConditions, MemoryTransport, NetError, Packet, Transport,
 };

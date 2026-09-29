@@ -12,9 +12,11 @@ import type { Quat } from "../math/quat.ts";
 import type { Vec3 } from "../math/vec3.ts";
 import type { MeshKind } from "../renderer/primitives.ts";
 import { emptyScene, type Instance, type Rgb, type SceneInstances } from "../renderer/renderer.ts";
+import { PAINT_COLORS, type Beam, type Flash } from "./mechanics.ts";
 import {
   PROJ_ARMED,
   PROJ_STUCK,
+  projectilePaintColor,
   TINKER_RADIUS,
   type EntityState,
   type ProjectileState,
@@ -116,20 +118,59 @@ function push(scene: SceneInstances, pass: "opaque" | "translucent", mesh: MeshK
   (scene[pass][mesh] ??= []).push(inst);
 }
 
-/** Ships (living only), scaled by their type's hitbox; an active gadget adds a shimmer shell. */
-export function addShips(scene: SceneInstances, ships: readonly ShipState[]): void {
+/** Opacity of a cloaked ship's shimmer (teammates, and enemies close enough to be sent). */
+export const CLOAK_OPACITY = 0.22;
+/** Shield bubble size relative to the ship's scale. */
+export const SHIELD_SCALE = 1.7;
+
+/** Shimmer opacity of a cloaked ship at `time` (s): a faint flickering outline. */
+export function cloakShimmer(time: number, id: number): number {
+  return CLOAK_OPACITY * (0.7 + 0.3 * Math.sin(time * 9 + phase(id)));
+}
+
+/**
+ * Ships (living only), scaled by their type's hitbox. An active gadget
+ * shows by its kind (`gadgetOf(id)`: "shield", "cloak", "decoy" or ""): a
+ * shield bubble, a cloak shimmer (the ship drawn translucent and
+ * flickering; the server only sends cloaked enemies that are close or just
+ * fired), or a faint shell for unknown gadgets.
+ */
+export function addShips(
+  scene: SceneInstances,
+  ships: readonly ShipState[],
+  gadgetOf: (id: number) => string = () => "",
+  time = 0,
+): void {
   for (const s of ships) {
     if (!s.alive) continue;
     const scale = (s.radius || TINKER_RADIUS) / TINKER_RADIUS;
     const color = teamHull(s.team);
-    push(scene, "opaque", "ship", {
+    const gadget = s.gadgetActive ? gadgetOf(s.id) : "";
+    const hull: Instance = {
       position: s.position,
       rotation: s.orientation,
       scale,
       color,
       emissive: s.boosting ? 0.35 : 0.1,
-    });
-    if (s.gadgetActive) {
+    };
+    if (gadget === "cloak") {
+      // A lighter shade of the team hull colour, so a cloaked teammate and a
+      // cloaked enemy still read apart.
+      const shimmer: Rgb = [0.5 + color[0] * 0.5, 0.5 + color[1] * 0.5, 0.5 + color[2] * 0.5];
+      push(scene, "translucent", "ship", { ...hull, color: shimmer, emissive: 0.9, opacity: cloakShimmer(time, s.id) });
+      continue;
+    }
+    push(scene, "opaque", "ship", hull);
+    if (gadget === "shield") {
+      push(scene, "translucent", "sphere", {
+        position: s.position,
+        rotation: q.fromAxisAngle(UP, time * 0.7),
+        scale: scale * SHIELD_SCALE,
+        color: [0.55, 0.85, 1],
+        emissive: 1,
+        opacity: 0.22 + 0.06 * Math.sin(time * 5 + phase(s.id)),
+      });
+    } else if (s.gadgetActive) {
       push(scene, "translucent", "sphere", {
         position: s.position,
         rotation: q.identity(),
@@ -139,6 +180,48 @@ export function addShips(scene: SceneInstances, ships: readonly ShipState[]): vo
         opacity: 0.18,
       });
     }
+  }
+}
+
+/** Leech Arc beams (stretched glowing bolts) and flashes / shockwave shells. */
+export function addEffects(scene: SceneInstances, beams: readonly Beam[], flashes: readonly Flash[], time = 0): void {
+  for (const b of beams) {
+    const d = { x: b.to.x - b.from.x, y: b.to.y - b.from.y, z: b.to.z - b.from.z };
+    const len = Math.hypot(d.x, d.y, d.z);
+    if (len < 1e-3) continue;
+    // A slightly wobbling arc: two thin strands.
+    for (let k = 0; k < 2; k++) {
+      const width = 0.12 + 0.05 * Math.sin(time * 40 + k * 2);
+      const wobble = 0.15 * Math.sin(time * 55 + k * 3.1);
+      push(scene, "translucent", "bolt", {
+        position: { x: (b.from.x + b.to.x) / 2, y: (b.from.y + b.to.y) / 2 + wobble, z: (b.from.z + b.to.z) / 2 },
+        rotation: alongVelocity(d),
+        scale: width,
+        stretch: len / width,
+        color: b.color,
+        emissive: 1,
+        opacity: 0.8 * Math.max(0.2, b.strength),
+      });
+    }
+    push(scene, "translucent", "sphere", {
+      position: b.to,
+      rotation: q.identity(),
+      scale: 0.6,
+      color: b.color,
+      emissive: 1,
+      opacity: 0.5 * b.strength,
+    });
+  }
+  for (const f of flashes) {
+    if (f.strength <= 0 || f.radius <= 0) continue;
+    push(scene, "translucent", "sphere", {
+      position: f.position,
+      rotation: q.identity(),
+      scale: f.radius * 2,
+      color: f.color,
+      emissive: 1,
+      opacity: (f.ring ? 0.25 : 0.6) * f.strength,
+    });
   }
 }
 
@@ -159,8 +242,12 @@ export function addProjectiles(
     const style = styleFor(visual);
     let color = visual?.color ?? WHITE;
     if (style.teamTint) {
+      // Paint blobs show their effect colour (red, blue, yellow); without
+      // one, the shooter's team colour.
+      const paint = PAINT_COLORS[projectilePaintColor(p.state)];
       const team = teamOf(p.owner);
-      if (team !== undefined) color = teamHull(team);
+      if (projectilePaintColor(p.state) !== 0 && paint) color = paint;
+      else if (team !== undefined) color = teamHull(team);
     }
     const scale = style.size * (visual?.scale ?? 1);
     let rotation = alongVelocity(p.velocity);
@@ -201,6 +288,9 @@ export function addProjectiles(
   }
 }
 
+/** Decoy module state bit (state byte 1) while it rubber-bands back. */
+export const DECOY_RETURNING = 0x80;
+
 /** Size of a scrap pile or wreck by its scrap (state byte 0, whole units). */
 export function scrapScale(amount: number): number {
   return Math.min(2.5, 0.6 + 0.12 * Math.sqrt(Math.max(0, amount)));
@@ -239,11 +329,19 @@ export function addEntities(
     }
     let emissive = style.emissive;
     if (e.kind.endsWith("Pickup")) emissive = Math.min(1, emissive + 0.15 * Math.sin(time * 4 + ph));
+    // A decoy on its way back (module state 0x80) glows hot.
+    const returning = e.kind === "decoy" && (e.state[1] & DECOY_RETURNING) !== 0;
+    if (returning) emissive = 0.6 + 0.4 * Math.sin(time * 20);
     const inst: Instance = { position, rotation, scale, color, emissive };
     if (style.opacity !== undefined) {
-      push(scene, "translucent", style.mesh, { ...inst, opacity: style.opacity });
+      // Borrowed Time ghosts flicker.
+      const opacity = e.kind === "ghost" ? style.opacity * (0.6 + 0.4 * Math.sin(time * 13 + ph)) : style.opacity;
+      push(scene, "translucent", style.mesh, { ...inst, opacity });
     } else {
       push(scene, "opaque", style.mesh, inst);
+    }
+    if (returning) {
+      push(scene, "translucent", "sphere", { position, rotation: q.identity(), scale: scale * 1.8, color, emissive: 1, opacity: 0.3 });
     }
     if (style.glow) {
       push(scene, "translucent", "sphere", {
@@ -258,6 +356,16 @@ export function addEntities(
   }
 }
 
+/** Optional extras for `buildScene` (M2 wave C mechanics). */
+export interface SceneExtras {
+  /** Gadget kind of a ship id ("shield", "cloak", "decoy", ""). */
+  gadgetOf?: (id: number) => string;
+  beams?: readonly Beam[];
+  flashes?: readonly Flash[];
+  /** Projectiles not to draw (e.g. the Eyeball the camera rides). */
+  hideShot?: ((p: ProjectileState) => boolean) | undefined;
+}
+
 /** Builds the whole instance scene for one frame. */
 export function buildScene(
   ships: readonly ShipState[],
@@ -266,11 +374,14 @@ export function buildScene(
   visuals: readonly VisualDef[],
   teamOf: (owner: number) => number | undefined,
   time: number,
+  extras: SceneExtras = {},
 ): SceneInstances {
   const scene = emptyScene();
-  addShips(scene, ships);
-  addProjectiles(scene, shots, visuals, teamOf, time);
+  addShips(scene, ships, extras.gadgetOf, time);
+  const hide = extras.hideShot;
+  addProjectiles(scene, hide ? shots.filter((p) => !hide(p)) : shots, visuals, teamOf, time);
   addEntities(scene, entities, visuals, time);
+  addEffects(scene, extras.beams ?? [], extras.flashes ?? [], time);
   return scene;
 }
 

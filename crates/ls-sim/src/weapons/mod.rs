@@ -204,6 +204,13 @@ pub trait WeaponBehavior: Send + Sync + Debug {
     /// An entity this weapon spawned expires (before it is removed). Setting
     /// a later `e.expires_tick` keeps it.
     fn entity_expired(&self, _ctx: &mut Ctx, _e: &mut Entity) {}
+
+    /// The weapon mode key (V, `Buttons::WEAPON_MODE`) went down while this
+    /// weapon is the ship's selected primary (Paint Thrower: next colour).
+    /// Per-weapon state lives in `ShipState::weapon_state` (read it with
+    /// `ship.weapon_state_of(weapon)`, write it with
+    /// `ctx.set_weapon_state`). Default: nothing.
+    fn on_mode(&self, _ctx: &mut Ctx, _ship: &ShipState, _weapon: WeaponId) {}
 }
 
 /// Default charge rule: auto-release at `max_secs` if the data says so.

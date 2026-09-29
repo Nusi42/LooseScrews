@@ -15,7 +15,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use ls_math::terrain::{
-    BoxRoomTerrain, PlaneTerrain, SurfaceStates, TerrainEdit, TerrainQuery, MATERIAL_ROCK,
+    paint_color, BoxRoomTerrain, PlaneTerrain, SurfaceStates, TerrainEdit, TerrainQuery,
+    MATERIAL_ROCK,
 };
 use ls_math::{det, Aabb, Vec3};
 use serde::{Deserialize, Serialize};
@@ -70,8 +71,9 @@ pub trait SimTerrain: TerrainQuery {
         None
     }
 
-    /// Surface states (hot, charged, glow) active at tick `now` on the
-    /// surface within `radius` of `center`: for a cell grid, every surface
+    /// Surface states (hot, charged, glow active at tick `now`, and
+    /// permanent scorch) on the surface within `radius` of `center`: for a
+    /// cell grid, every surface
     /// cell that overlaps the sphere counts (so a ship scraping a wall with
     /// `radius` = its hull radius plus a margin finds the wall's states).
     /// The world uses it for the charged-surface drain and hooks read it
@@ -122,7 +124,8 @@ pub struct PaintedTerrain<T> {
     pub inner: T,
     cell: f32,
     surface: BTreeSet<Cell>,
-    paint: BTreeMap<Cell, u8>,
+    /// Painted cells: (team, colour).
+    paint: BTreeMap<Cell, (u8, u8)>,
 }
 
 impl<T: SimTerrain> PaintedTerrain<T> {
@@ -190,7 +193,7 @@ impl<T: SimTerrain> PaintedTerrain<T> {
         }
     }
 
-    fn paint_sphere(&mut self, center: Vec3, radius: f32, team: u8) {
+    fn paint_sphere(&mut self, center: Vec3, radius: f32, team: u8, color: u8) {
         let region = Aabb::from_center_half_extents(center, Vec3::splat(radius));
         let (lo, hi) = self.cell_range(region);
         let r2 = radius * radius;
@@ -202,7 +205,7 @@ impl<T: SimTerrain> PaintedTerrain<T> {
                         if team == NO_PAINT {
                             self.paint.remove(&c);
                         } else {
-                            self.paint.insert(c, team);
+                            self.paint.insert(c, (team, paint_color(color)));
                         }
                     }
                 }
@@ -213,7 +216,14 @@ impl<T: SimTerrain> PaintedTerrain<T> {
     /// Paint team id of the cell containing `p`, or [`NO_PAINT`] if unpainted.
     pub fn paint_at(&self, p: Vec3) -> u8 {
         let (c, _) = self.cell_range(Aabb::new(p, p));
-        self.paint.get(&c).copied().unwrap_or(NO_PAINT)
+        self.paint.get(&c).map_or(NO_PAINT, |&(t, _)| t)
+    }
+
+    /// Paint colour id (`ls_math::terrain::PAINT_*`) of the cell containing
+    /// `p`, if painted.
+    pub fn paint_color_at(&self, p: Vec3) -> Option<u8> {
+        let (c, _) = self.cell_range(Aabb::new(p, p));
+        self.paint.get(&c).map(|&(_, color)| color)
     }
 
     pub fn surface_cells(&self) -> u64 {
@@ -237,6 +247,26 @@ impl<T: SimTerrain> TerrainQuery for PaintedTerrain<T> {
     fn sphere_overlap(&self, center: Vec3, radius: f32) -> bool {
         self.inner.sphere_overlap(center, radius)
     }
+    /// Colours of the painted cells overlapping the sphere.
+    fn paint_colors_near(&self, center: Vec3, radius: f32) -> u8 {
+        if !center.is_finite() || !(0.0..=64.0).contains(&radius) {
+            return 0;
+        }
+        let region = Aabb::from_center_half_extents(center, Vec3::splat(radius));
+        let (lo, hi) = self.cell_range(region);
+        let mut bits = 0u8;
+        for (&c, &(_, color)) in self.paint.range(lo..=(hi.0, i32::MAX, i32::MAX)) {
+            let inside = (lo.0..=hi.0).contains(&c.0)
+                && (lo.1..=hi.1).contains(&c.1)
+                && (lo.2..=hi.2).contains(&c.2);
+            let min = Vec3::new(c.0 as f32, c.1 as f32, c.2 as f32) * self.cell;
+            let cell = Aabb::new(min, min + Vec3::splat(self.cell));
+            if inside && cell.sdf(center) <= radius {
+                bits |= 1 << color;
+            }
+        }
+        bits
+    }
 }
 
 impl<T: SimTerrain> SimTerrain for PaintedTerrain<T> {
@@ -247,7 +277,8 @@ impl<T: SimTerrain> SimTerrain for PaintedTerrain<T> {
                 center,
                 radius,
                 team,
-            } => self.paint_sphere(center, radius, team),
+                color,
+            } => self.paint_sphere(center, radius, team, color),
             _ => {
                 let region = edit.bounds().expand(self.cell * 2.0);
                 self.refresh_region(region);
@@ -265,7 +296,7 @@ impl<T: SimTerrain> SimTerrain for PaintedTerrain<T> {
 
     fn paint_coverage(&self) -> Option<PaintCoverage> {
         let mut team_cells = [0u64; 2];
-        for &id in self.paint.values() {
+        for &(id, _) in self.paint.values() {
             if let Some(team) = team_from_paint_id(id) {
                 if (team as usize) < 2 {
                     team_cells[team as usize] += 1;
@@ -347,6 +378,7 @@ mod tests {
             center: floor,
             radius: 2.0,
             team: paint_team_id(1),
+            color: 0,
         });
         let cov = t.paint_coverage().unwrap();
         assert_eq!(cov.team_cells[0], 0);
@@ -361,6 +393,7 @@ mod tests {
             center: floor,
             radius: 3.0,
             team: paint_team_id(0),
+            color: 0,
         });
         let cov2 = t.paint_coverage().unwrap();
         assert_eq!(cov2.team_cells[1], 0);
@@ -378,9 +411,42 @@ mod tests {
             center: floor,
             radius: 6.0,
             team: NO_PAINT,
+            color: 0,
         });
         assert_eq!(t.paint_coverage().unwrap().team_cells, [0, 0]);
         assert_eq!(t.paint_at(floor + Vec3::new(3.2, 0.1, 0.2)), NO_PAINT);
+    }
+
+    #[test]
+    fn painted_terrain_reports_paint_colours_under_a_sphere() {
+        use ls_math::terrain::{PAINT_BLUE, PAINT_YELLOW};
+        let room = BoxRoomTerrain::centered(Vec3::new(20.0, 10.0, 20.0));
+        let mut t = PaintedTerrain::new(room, 1.0);
+        let floor = Vec3::new(0.0, -5.0, 0.0);
+        let paint = |team, color, x: f32| TerrainEdit::Paint {
+            center: floor + Vec3::X * x,
+            radius: 2.0,
+            team,
+            color,
+        };
+        t.apply_edit(&paint(0, PAINT_YELLOW, 0.0));
+        t.apply_edit(&paint(1, PAINT_BLUE, 6.0));
+        let above = floor + Vec3::Y * 0.6;
+        assert_eq!(t.paint_colors_near(above, 0.7), 1 << PAINT_YELLOW);
+        assert_eq!(
+            t.paint_color_at(floor + Vec3::new(0.2, 0.1, 0.2)),
+            Some(PAINT_YELLOW)
+        );
+        assert_eq!(
+            t.paint_colors_near(above + Vec3::X * 3.0, 1.2),
+            (1 << PAINT_YELLOW) | (1 << PAINT_BLUE)
+        );
+        // Out of reach of the floor: nothing.
+        assert_eq!(t.paint_colors_near(floor + Vec3::Y * 3.0, 0.7), 0);
+        // Painting over replaces the colour; coverage counts teams only.
+        t.apply_edit(&paint(1, PAINT_BLUE, 0.0));
+        assert_eq!(t.paint_colors_near(above, 0.7), 1 << PAINT_BLUE);
+        assert_eq!(t.paint_coverage().unwrap().team_cells[0], 0);
     }
 
     #[test]

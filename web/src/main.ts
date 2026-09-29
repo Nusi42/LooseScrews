@@ -8,6 +8,11 @@
 // entities from the data-driven visual table (game/scene.ts), place name
 // tags, update the HUD (with the weapon panel) and the overlays (Tab
 // scoreboard, F3 debug overlay, end-of-match screen).
+// Mechanics UI (M2 wave C, game/mechanics.ts): game cues become effects
+// (Flash Pod whiteout, screen shake by Tectonic zone, banners, Leech Arc
+// beams, flashes), the camera rides a guided Eyeball, the HUD shows the
+// charge meter, gadget cooldown and paint colour (V), and the ship bay (B,
+// or by itself while destroyed) picks the ship type for the next respawn.
 // While the tab is hidden (no animation frames) a timer keeps the online
 // session alive with idle input, so the server neither drops the player
 // after its idle timeout nor keeps repeating held buttons.
@@ -25,7 +30,20 @@ import { GameSession, type FrameResult } from "./game/session.ts";
 import { buildScene, dustDensityAt, dustFog } from "./game/scene.ts";
 import { connectTransport, transportPreference } from "./net/connect.ts";
 import { serverUrl } from "./net/transport.ts";
+import {
+  EffectsState,
+  eyeballPose,
+  gadgetKey,
+  guidedProjectile,
+  shakeOffset,
+  shipForKey,
+  shipPositionLookup,
+  type EffectsContext,
+} from "./game/mechanics.ts";
 import { DebugOverlay, formatDebugLines, FpsMeter } from "./ui/debugOverlay.ts";
+import { EffectsOverlay } from "./ui/effects.ts";
+import { ShipPanel, shipPanelModel } from "./ui/shipSelect.ts";
+import * as q from "./math/quat.ts";
 import { showErrorScreen } from "./ui/errorScreen.ts";
 import { Hud } from "./ui/hud.ts";
 import { NameTags, nameTagModel } from "./ui/nameTags.ts";
@@ -115,18 +133,22 @@ async function start(): Promise<void> {
     horizonAssist: options.horizonAssist,
     debugOverlay: false,
     controls: { ...DEFAULT_CONTROL_SETTINGS },
+    shipType: options.shipType,
   };
   const url = serverUrl(location);
   // WebTransport first where available, WebSocket fallback; `?transport=ws|wt` forces one.
   const open = (u: string) => connectTransport(u, { prefer: transportPreference(location) });
   const connect = (): Promise<GameSession> =>
-    GameSession.connect(api, url, prefs.name, prefs.horizonAssist, open, prefs.controls);
+    GameSession.connect(api, url, prefs.name, prefs.horizonAssist, open, prefs.controls, prefs.shipType);
 
   const loading = showLoading(ui, options.mode === "online" ? "Connecting…" : "Generating world…");
   let session: GameSession;
   try {
     await nextPaint();
-    session = options.mode === "online" ? await connect() : GameSession.practice(api, options.shareCode, prefs.horizonAssist);
+    session =
+      options.mode === "online"
+        ? await connect()
+        : GameSession.practice(api, options.shareCode, prefs.horizonAssist, prefs.shipType);
   } catch (err) {
     loading.remove();
     const title = options.mode === "online" ? "Could not join the server" : "Could not build the practice world";
@@ -134,6 +156,7 @@ async function start(): Promise<void> {
     return;
   }
   loading.remove();
+  const weaponNames = api.weaponNames();
 
   for (;;) {
     if (renderer.isLost) {
@@ -141,7 +164,7 @@ async function start(): Promise<void> {
       return;
     }
     active = session;
-    const end = await runGame(canvas, ui, renderer, session, options, prefs);
+    const end = await runGame(canvas, ui, renderer, session, options, prefs, weaponNames);
     active = null;
     if (end.kind === "stopped") return;
     if (end.kind === "disconnected") {
@@ -174,6 +197,7 @@ function runGame(
   session: GameSession,
   options: StartOptions,
   prefs: PlayerPrefs,
+  weaponNames: readonly string[],
 ): Promise<GameEnd> {
   return new Promise((resolve) => {
     const game = session.game;
@@ -188,6 +212,21 @@ function runGame(
     if (prefs.debugOverlay) overlay.toggle();
     const nameTags = new NameTags(ui);
     const fpsMeter = new FpsMeter();
+    const effectsOverlay = new EffectsOverlay(ui);
+    const shipPanel = new ShipPanel(ui);
+    const effects = new EffectsState();
+    let shipBayOpen = false;
+    let shipError = "";
+    let dead = false;
+    const pickShip = (shipType: number): void => {
+      const err = session.selectShip(shipType);
+      shipError = err ?? "";
+      if (!err) {
+        prefs.shipType = shipType;
+        shipBayOpen = false;
+      }
+    };
+    shipPanel.onPick = pickShip;
     const input = new InputController(canvas);
     input.onLockChange = (locked) => hud.showPrompt(!locked);
     hud.showPrompt(true);
@@ -225,6 +264,8 @@ function runGame(
         renderer.settings.fogColor = DEFAULT_SETTINGS.fogColor;
       }
       hud.root.remove();
+      effectsOverlay.dispose();
+      shipPanel.dispose();
       nameTags.dispose();
       scoreboard.dispose();
       endScreen.dispose();
@@ -271,18 +312,56 @@ function runGame(
         overlay.toggle();
         overlayTimer = 0;
       }
+      if (state.toggleShipSelect) {
+        shipBayOpen = !shipBayOpen;
+        shipError = "";
+      }
+      // While the ship bay shows, 1-4 pick a ship type instead of a weapon.
+      const bay = shipBayOpen || dead;
+      if (bay && state.weaponKey >= 1 && state.weaponKey <= 4) {
+        const choice = shipForKey(session.shipChoices(), state.weaponKey);
+        if (choice) pickShip(choice.shipType);
+        else shipError = "The rule set does not allow that ship";
+        state.weaponKey = 0;
+      }
       const r = session.frame(dt, state);
       if (r.disconnected) {
         end(r);
         return;
       }
+      dead = r.pose !== null && !r.pose.alive;
 
-      const view = camera.update(r.pose);
+      const time = now / 1000;
+      const shipPos = shipPositionLookup(game.player, r.pose, r.ships);
+      const fxCtx: EffectsContext = {
+        player: game.player,
+        camera: camera.current.position,
+        shipPos,
+        weaponsOfflineSecs: r.weaponsOffline,
+      };
+      effects.apply(r.cues, time, fxCtx);
+      const fx = effects.frame(time, fxCtx);
+      // Eyeball: while the own missile is guided, the camera rides it.
+      const guided = guidedProjectile(r.projectiles, game.player);
+      const shipUp = r.pose ? q.up(r.pose.orientation) : q.up(camera.current.orientation);
+      const ride = guided ? eyeballPose(guided, shipUp) : null;
+      const view = camera.update(r.pose, ride, shakeOffset(fx.shake, time));
       chunkStats = chunks.update(game, view.position, initialLoad ? LOADING_BUDGET : PLAY_BUDGET);
       if (initialLoad && chunkStats.pending === 0) initialLoad = false;
 
-      const time = now / 1000;
-      renderer.setScene(buildScene(r.ships, r.projectiles, r.entities, session.visuals, session.teamOf(r.ships), time));
+      const players = r.players;
+      renderer.setScene(
+        buildScene(r.ships, r.projectiles, r.entities, session.visuals, session.teamOf(r.ships), time, {
+          gadgetOf: (id) => {
+            for (const p of players) if (p.id === id) return gadgetKey(session.gadgetIds, p.gadget);
+            return "";
+          },
+          beams: fx.beams,
+          flashes: fx.flashes,
+          // The guided Eyeball is the camera; hide only that one missile.
+          hideShot: guided ? (p) => p === guided : undefined,
+        }),
+      );
       // Inside a dust cloud the fog closes in (visibility is cut).
       const fog = dustFog(DEFAULT_SETTINGS, dustDensityAt(view.position, r.entities, session.visuals));
       renderer.settings.fogDensity = fog.fogDensity;
@@ -318,7 +397,23 @@ function runGame(
         : info.over
           ? ""
           : (r.hud.status ?? "");
-      hud.update({ ...r.hud, status, scavenging: state.scavenge, debug: "" });
+      hud.update({
+        ...r.hud,
+        status,
+        scavenging: state.scavenge,
+        debug: "",
+        gadget: r.gadget,
+        charge: r.charge ? { name: weaponNames[r.charge.weapon] ?? "Charge", meter: r.charge } : null,
+        paintColor: r.paintColor,
+        weaponsOffline: Math.max(r.weaponsOffline, fx.weaponsOffline),
+      });
+      effectsOverlay.update({
+        whiteout: fx.whiteout,
+        banners: fx.banners,
+        eyeball: guided !== null,
+        cloaked: r.gadget.active && r.gadget.key === "cloak",
+      });
+      shipPanel.update(shipPanelModel(bay || shipBayOpen || dead ? session.shipChoices() : [], shipBayOpen, dead, shipError));
 
       overlayTimer -= dt;
       if (overlay.visible && overlayTimer <= 0) {

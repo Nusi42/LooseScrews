@@ -232,6 +232,12 @@ impl Room {
     pub fn terrain(&self) -> &GameTerrain {
         &self.terrain
     }
+    /// Mutable terrain access (tests): edits made here reach clients like
+    /// the simulation's.
+    #[cfg(test)]
+    pub(crate) fn terrain_mut(&mut self) -> &mut GameTerrain {
+        &mut self.terrain
+    }
     pub fn conv(&self) -> &NetConv {
         &self.conv
     }
@@ -336,6 +342,9 @@ impl Room {
         // Encode the Welcome before registering the client: if it cannot be
         // sent (edit log or rule set too large for the wire), the join fails
         // instead of leaving a ghost ship without a client.
+        // Surface-state edits that expired before now stay out of the log
+        // (they change nothing a late joiner can see).
+        let (edit_log, edit_count) = self.terrain.welcome_log(self.tick);
         let welcome = Welcome {
             protocol_version: PROTOCOL_VERSION,
             player_id: id,
@@ -347,7 +356,8 @@ impl Room {
             ruleset: self.ruleset_ron.clone().into_bytes(),
             quant: *self.conv.quantizer().config(),
             server_tick: self.tick as u32,
-            edit_log: self.terrain.edit_log().to_vec(),
+            edit_log,
+            edit_count,
         };
         let welcome_bytes = match Message::Welcome(Box::new(welcome)).encode() {
             Ok(b) => b,
@@ -658,8 +668,14 @@ impl Room {
                     clients: &self.clients,
                 },
             );
-            let packed = self.conv.quantizer().pack_snapshot(&snap);
+            let mut packed = self.conv.quantizer().pack_snapshot(&snap);
             let baseline = c.sent.choose_baseline(tick, c.acked_snapshot);
+            // Straight projectiles within a few position steps of their
+            // predicted path go out as predicted (one bit each); what is
+            // sent is what the client stores, so both stay identical.
+            if let Some(b) = baseline.and_then(|t| c.sent.get(t)) {
+                ls_net::settle_projectiles(&mut packed, b, ls_net::SETTLE_TOLERANCE);
+            }
             let msg = Message::Snapshot(Box::new(SnapshotMsg {
                 baseline,
                 snapshot: packed.clone(),

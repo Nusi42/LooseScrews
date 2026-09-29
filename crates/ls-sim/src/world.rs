@@ -24,7 +24,7 @@ use ls_math::terrain::{RayHit, SurfaceStates, TerrainEdit, TerrainQuery};
 use ls_math::{Aabb, Pcg32, Quat, Vec3, DT};
 use serde::{Deserialize, Serialize};
 
-use crate::behavior::{Command, Ctx, Cue, CueKind, DamageSource, View};
+use crate::behavior::{gadget_cue, Command, Ctx, Cue, CueKind, DamageSource, View};
 use crate::entity::{
     state_byte, step_debris, Entity, EntityKind, EntitySpawn, EntityView, ReplicatedKind, Source,
     DEBRIS_PUSH, MAX_DEBRIS, NO_TEAM, WIRE_ID_MASK,
@@ -375,6 +375,9 @@ impl<T: TerrainQuery + ?Sized> TerrainQuery for TerrainRef<'_, T> {
     }
     fn sphere_overlap(&self, center: Vec3, radius: f32) -> bool {
         self.0.sphere_overlap(center, radius)
+    }
+    fn paint_colors_near(&self, center: Vec3, radius: f32) -> u8 {
+        self.0.paint_colors_near(center, radius)
     }
 }
 
@@ -865,10 +868,15 @@ impl World {
             }
             let gadget_pressed = cmd.buttons.contains(Buttons::GADGET)
                 && !ship.prev_buttons.contains(Buttons::GADGET);
+            let mode_pressed = cmd.buttons.contains(Buttons::WEAPON_MODE)
+                && !ship.prev_buttons.contains(Buttons::WEAPON_MODE);
             if cmd.buttons.contains(Buttons::SCAVENGE) && tuning.can_pass_scrap {
                 self.pass_scrap(&cfg, id);
             }
             self.gadget_step(&cfg, terrain, id, gadget_pressed, &mut events);
+            if mode_pressed {
+                self.weapon_mode(&cfg, terrain, id, &mut events);
+            }
             let overdrive = cmd.buttons.contains(Buttons::OVERDRIVE);
             for (slot, button) in [
                 (WeaponSlot::Primary, Buttons::FIRE_PRIMARY),
@@ -926,6 +934,20 @@ impl World {
             });
         }
         events
+    }
+
+    /// Runs `f` as a hook of the current tick and applies its commands
+    /// (tests of `Ctx` helpers).
+    #[cfg(test)]
+    pub(crate) fn hook_for_test<T: SimTerrain + ?Sized, R>(
+        &mut self,
+        terrain: &mut T,
+        f: impl FnOnce(&mut Ctx) -> R,
+    ) -> (R, Vec<Event>) {
+        let cfg = Arc::clone(&self.config);
+        let mut events = Vec::new();
+        let r = self.run_hook(&cfg, terrain, &mut events, f);
+        (r, events)
     }
 
     /// Runs a hook with a fresh context and applies the commands it queued.
@@ -1008,6 +1030,8 @@ impl World {
             None,
             On,
             Off,
+            /// Switched off because the energy ran out (no cooldown).
+            Empty,
             Use,
         }
         let mut action = Action::None;
@@ -1041,7 +1065,7 @@ impl World {
             if ship.energy <= 0.0 {
                 ship.energy = 0.0;
                 ship.gadget_active = false;
-                action = Action::Off;
+                action = Action::Empty;
             }
         }
         let active = ship.gadget_active;
@@ -1057,8 +1081,10 @@ impl World {
         };
         match action {
             Action::On => events.push(cue(g.0 as u16)),
-            Action::Off => events.push(cue(u8::MAX as u16)),
-            _ => {}
+            Action::Off => events.push(cue(gadget_cue::OFF)),
+            Action::Empty => events.push(cue(gadget_cue::EMPTY)),
+            Action::Use => events.push(cue(gadget_cue::USED | g.0 as u16)),
+            Action::None => {}
         }
         let call = |w: &mut World, which: u8, terrain: &mut T, events: &mut Vec<Event>| {
             w.run_hook(cfg, terrain, events, |ctx| {
@@ -1079,12 +1105,36 @@ impl World {
         };
         match action {
             Action::On | Action::Use => call(self, 0, terrain, events),
-            Action::Off => call(self, 1, terrain, events),
+            Action::Off | Action::Empty => call(self, 1, terrain, events),
             Action::None => {}
         }
         if active {
             call(self, 2, terrain, events);
         }
+    }
+
+    /// The weapon mode key went down: the selected primary's `on_mode` hook.
+    fn weapon_mode<T: SimTerrain + ?Sized>(
+        &mut self,
+        cfg: &SimConfig,
+        terrain: &mut T,
+        id: PlayerId,
+        events: &mut Vec<Event>,
+    ) {
+        let Some(w) = self
+            .ships
+            .get(&id)
+            .filter(|s| s.alive)
+            .and_then(|s| s.primary)
+        else {
+            return;
+        };
+        let beh = cfg.behavior(w);
+        self.run_hook(cfg, terrain, events, |ctx| {
+            if let Some(s) = ctx.view.ships.get(&id) {
+                beh.on_mode(ctx, s, w);
+            }
+        });
     }
 
     /// Trigger handling for one slot of ship `id` (see `crate::weapons`).
@@ -1852,6 +1902,22 @@ impl World {
                         self.kill(cfg, now, target, None, None, events);
                     }
                 }
+                Command::SetWeaponState {
+                    ship,
+                    weapon,
+                    value,
+                } => {
+                    if let Some(s) = self.ships.get_mut(&ship) {
+                        if s.weapon(weapon).is_none() {
+                            continue;
+                        }
+                        if value == 0 {
+                            s.weapon_state.remove(&weapon);
+                        } else {
+                            s.weapon_state.insert(weapon, value);
+                        }
+                    }
+                }
                 Command::Emit(e) => events.push(e),
             }
         }
@@ -2504,6 +2570,11 @@ fn hash_ship(h: &mut StateHasher, s: &ShipState) {
     h.write_u64(s.weapons_offline_until);
     h.write_u64(s.last_fired_tick.unwrap_or(u64::MAX));
     h.write_u8(s.next_ship_type.map_or(u8::MAX, |t| t.index()));
+    h.write_u32(s.weapon_state.len() as u32);
+    for (w, v) in &s.weapon_state {
+        h.write_u8(w.0);
+        h.write_u32(*v);
+    }
 }
 
 fn hash_projectile(h: &mut StateHasher, p: &Projectile) {

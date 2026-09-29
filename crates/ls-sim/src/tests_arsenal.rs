@@ -4,7 +4,7 @@
 //! upgrade and gadget pickups, per-map caps, enforcement), debris and the
 //! generic entity view.
 
-use ls_math::terrain::BoxRoomTerrain;
+use ls_math::terrain::{BoxRoomTerrain, SurfaceStates};
 use ls_math::{Quat, Vec3};
 
 use crate::*;
@@ -814,4 +814,107 @@ fn entity_ids_never_collide_on_the_wire() {
         // Drop it again (as if scavenged).
         w.remove_last_scrap_for_test();
     }
+}
+
+/// A room that remembers scorch marks (surface edits with the scorch bit).
+struct ScorchRoom {
+    room: BoxRoomTerrain,
+    marks: Vec<(Vec3, f32)>,
+}
+
+impl ls_math::terrain::TerrainQuery for ScorchRoom {
+    fn sdf(&self, p: Vec3) -> f32 {
+        self.room.sdf(p)
+    }
+    fn bounds(&self) -> ls_math::Aabb {
+        self.room.bounds()
+    }
+}
+
+impl SimTerrain for ScorchRoom {
+    fn apply_edit(&mut self, edit: &ls_math::terrain::TerrainEdit) {
+        if let ls_math::terrain::TerrainEdit::Surface {
+            center,
+            radius,
+            states,
+            until,
+        } = *edit
+        {
+            if states & SurfaceStates::SCORCH.bits() != 0 && until != 0 {
+                self.marks.push((center, radius));
+            }
+        }
+    }
+    fn surface_states_near(&self, center: Vec3, radius: f32, _now: u64) -> SurfaceStates {
+        if self
+            .marks
+            .iter()
+            .any(|&(c, r)| c.distance(center) <= r + radius)
+        {
+            SurfaceStates::SCORCH
+        } else {
+            SurfaceStates::NONE
+        }
+    }
+}
+
+/// `Ctx::scorch` marks the surface for good (hot for a while too) and skips
+/// spots already scorched; `Ctx::set_weapon_state` only touches carried
+/// weapons, and dropping a weapon drops its state.
+#[test]
+fn scorch_helper_and_weapon_state_commands() {
+    use ls_math::terrain::TerrainEdit;
+    let mut w = world();
+    let a = w.add_player(Some(0), ShipType::Tinker).unwrap();
+    let mut t = ScorchRoom {
+        room: room(),
+        marks: Vec::new(),
+    };
+    let wall = Vec3::new(-30.0, 0.0, 0.0);
+    let now = w.tick();
+    let (_, ev) = w.hook_for_test(&mut t, |ctx| ctx.scorch(wall, 1.0, 10.0));
+    let edits: Vec<TerrainEdit> = ev
+        .iter()
+        .filter_map(|e| match e {
+            Event::TerrainEdit(e) => Some(*e),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(edits, [TerrainEdit::scorch(wall, 1.0, now, 600)]);
+    let (_, ev) = w.hook_for_test(&mut t, |ctx| {
+        ctx.scorch(wall + Vec3::Y * 0.3, 1.0, 10.0);
+        ctx.scorch(wall + Vec3::Y * 5.0, 0.5, 0.0);
+    });
+    let edits: Vec<&Event> = ev
+        .iter()
+        .filter(|e| matches!(e, Event::TerrainEdit(_)))
+        .collect();
+    assert_eq!(edits.len(), 1, "the scorched spot is skipped");
+    assert!(matches!(
+        edits[0],
+        Event::TerrainEdit(TerrainEdit::Surface {
+            states: 8,
+            until: u32::MAX,
+            ..
+        })
+    ));
+
+    let laser = w.weapons().find("scrap_laser").unwrap();
+    let rocket = w.weapons().find("heavy_rocket").unwrap();
+    assert!(w.ship(a).unwrap().weapon(laser).is_some());
+    assert!(w.ship(a).unwrap().weapon(rocket).is_none());
+    w.hook_for_test(&mut t, |ctx| {
+        ctx.set_weapon_state(a, laser, 7);
+        ctx.set_weapon_state(a, rocket, 9);
+    });
+    let s = w.ship(a).unwrap();
+    assert_eq!(s.weapon_state_of(laser), 7);
+    assert_eq!(s.weapon_state_of(rocket), 0, "not carried");
+    let h = w.state_hash();
+    w.hook_for_test(&mut t, |ctx| ctx.set_weapon_state(a, laser, 0));
+    assert!(w.ship(a).unwrap().weapon_state.is_empty());
+    assert_ne!(w.state_hash(), h, "weapon state is hashed");
+    w.hook_for_test(&mut t, |ctx| ctx.set_weapon_state(a, laser, 3));
+    w.ship_mut(a).unwrap().remove_weapon(laser);
+    assert!(w.ship(a).unwrap().weapon_state.is_empty());
 }

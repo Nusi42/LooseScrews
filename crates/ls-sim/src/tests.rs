@@ -773,6 +773,8 @@ fn scripted_inputs(
             ] {
                 buttons.set(b, rng.chance(p));
             }
+            // V now and then (Paint Thrower colours), without an RNG draw.
+            buttons.set(Buttons::WEAPON_MODE, (tick + 17 * id.0 as u64) % 97 == 0);
             let axis = |r: &mut Pcg32| (r.below(3) as f32) - 1.0;
             let thrust = Vec3::new(axis(rng), axis(rng), axis(rng));
             (
@@ -881,6 +883,10 @@ fn replay_same_inputs_same_state_hash() {
         .iter()
         .any(|e| matches!(e, Event::Cue(c) if c.kind == CueKind::Gadget)));
     assert!(e1.iter().any(|e| matches!(e, Event::PickupTaken { .. })));
+    // Paint colours: V switches them.
+    assert!(e1
+        .iter()
+        .any(|e| matches!(e, Event::Cue(c) if c.kind == CueKind::PaintColor)));
     // All hashes differ over time (the state evolves).
     let unique: std::collections::BTreeSet<_> = h1.iter().collect();
     assert_eq!(unique.len(), h1.len());
@@ -895,7 +901,7 @@ fn replay_same_inputs_same_state_hash() {
 /// (run the crate tests under `wasm-bindgen-test-runner`, see `CLAUDE.md`).
 /// Changing simulation behavior or tuning changes it: update the constant in
 /// the same change and say so in the commit.
-const REPLAY_GOLDEN_HASH: u64 = 0x08f8_5cd9_ee05_fd2c;
+const REPLAY_GOLDEN_HASH: u64 = 0x8321_c0ab_902b_8ee5;
 
 #[test]
 fn replay_golden_hash() {

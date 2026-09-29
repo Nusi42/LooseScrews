@@ -139,7 +139,17 @@ impl Quantizer {
     /// snapshot, so the client never recomputes it (no float agreement is
     /// needed); prediction only shrinks residuals, it never changes values.
     pub fn ship_motion_scale(&self) -> [u32; 3] {
-        let vel_step = self.config.max_ship_speed as f64 / VEL_MAX as f64;
+        self.motion_scale(self.config.max_ship_speed)
+    }
+
+    /// Like [`Quantizer::ship_motion_scale`] for projectiles (packed
+    /// projectile velocity steps; positions use the ship position packing).
+    pub fn projectile_motion_scale(&self) -> [u32; 3] {
+        self.motion_scale(self.config.max_projectile_speed)
+    }
+
+    fn motion_scale(&self, max_speed: f32) -> [u32; 3] {
+        let vel_step = max_speed as f64 / VEL_MAX as f64;
         let one = (1u64 << MOTION_SCALE_SHIFT) as f64;
         let size = self.config.bounds.max - self.config.bounds.min;
         let k = |extent: f32| {

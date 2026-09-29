@@ -34,8 +34,10 @@ use crate::wire::{
 
 /// Bumped whenever the wire format changes incompatibly (2: M2 entities,
 /// players, cues, data hash, ship choice; 3: predictive ship deltas with
-/// the snapshot's ship motion scale).
-pub const PROTOCOL_VERSION: u16 = 3;
+/// the snapshot's ship motion scale; 4: paint colours in paint edits,
+/// `Welcome::edit_count` (pruned edit logs), predictive projectile deltas
+/// with the snapshot's projectile motion scale).
+pub const PROTOCOL_VERSION: u16 = 4;
 /// First bytes of a [`Hello`] body: ASCII `LSCR` when read as little-endian.
 pub const MAGIC: u32 = u32::from_le_bytes(*b"LSCR");
 
@@ -127,9 +129,14 @@ pub struct Welcome {
     pub quant: QuantConfig,
     /// Server tick at the time of sending, for clock sync.
     pub server_tick: u32,
-    /// Every terrain edit so far, in order; `edit_log.len()` is the sequence
-    /// number of the next edit.
+    /// The terrain edits so far that still matter, in order: the server
+    /// leaves out surface-state edits that expired before `server_tick`
+    /// without changing what the log builds (see
+    /// `ls_game::GameTerrain::welcome_log`).
     pub edit_log: Vec<TerrainEdit>,
+    /// Number of edits so far (`>= edit_log.len()`): the sequence number of
+    /// the next edit. Travels as the number of left-out edits.
+    pub edit_count: u32,
 }
 
 /// Why the server refused or dropped a client.
@@ -354,6 +361,9 @@ impl Message {
                 if wl.edit_log.len() > MAX_EDIT_LOG {
                     return Err(EncodeError::OutOfRange("edit log too long"));
                 }
+                let Some(pruned) = wl.edit_count.checked_sub(wl.edit_log.len() as u32) else {
+                    return Err(EncodeError::OutOfRange("edit count below the log length"));
+                };
                 if wl.player_id >= MAX_SHIPS {
                     return Err(EncodeError::OutOfRange("player id"));
                 }
@@ -375,6 +385,7 @@ impl Message {
                     check_edit(&bits)?;
                     write_edit(&mut w, &bits);
                 }
+                w.write_varint(pruned as u64);
             }
             Message::Reject(rj) => {
                 check_len(&rj.message, MAX_REASON_LEN, "reject message too long")?;
@@ -540,6 +551,9 @@ impl Message {
                 for _ in 0..n {
                     edit_log.push(read_edit(&mut r)?.into());
                 }
+                let edit_count = (n as u32)
+                    .checked_add(r.read_varint_u32()?)
+                    .ok_or(DecodeError::Invalid("edit count overflows"))?;
                 Message::Welcome(Box::new(Welcome {
                     protocol_version: version,
                     player_id,
@@ -552,6 +566,7 @@ impl Message {
                     quant,
                     server_tick,
                     edit_log,
+                    edit_count,
                 }))
             }
             tag::REJECT => Message::Reject(Reject {
@@ -789,12 +804,14 @@ mod tests {
                     center: Vec3::new(-4.0, 0.25, 9.0),
                     radius: 2.0,
                     team: 1,
+                    color: ls_math::terrain::PAINT_RED,
                 },
                 TerrainEdit::AddSphere {
                     center: Vec3::new(0.0, -60.0, 100.0),
                     radius: 4.0,
                 },
             ],
+            edit_count: 3,
         }
     }
 
@@ -874,6 +891,7 @@ mod tests {
         assert!(bytes.len() < 200, "{}", bytes.len());
         let back = check_welcome(Message::decode(&bytes).unwrap()).unwrap();
         assert_eq!(back.edit_log, w.edit_log);
+        assert_eq!(back.edit_count, 3);
         // A big log still round-trips.
         let mut big = welcome();
         big.edit_log = (0..5000)
@@ -882,7 +900,17 @@ mod tests {
                 radius: 3.0,
             })
             .collect();
+        big.edit_count = 5000;
         round_trip(&Message::Welcome(Box::new(big)));
+        // A pruned log carries the full edit count.
+        let mut pruned = welcome();
+        pruned.edit_count = 1_000_003;
+        let bytes = round_trip(&Message::Welcome(Box::new(pruned)));
+        assert!(bytes.len() < 200, "{}", bytes.len());
+        // The count cannot be below the log length.
+        let mut bad = welcome();
+        bad.edit_count = 2;
+        assert!(Message::Welcome(Box::new(bad)).encode().is_err());
     }
 
     #[test]
@@ -1011,6 +1039,7 @@ mod tests {
                 center: Vec3::new(1.0, 2.0, 3.0),
                 radius: 2.0,
                 team: 0,
+                color: 0,
             }],
             ships,
             projectiles: vec![NetProjectile {

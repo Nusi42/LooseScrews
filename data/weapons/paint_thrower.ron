@@ -1,6 +1,7 @@
 // Paint Thrower: special. Deals no damage; paints terrain in the shooter's team color
-// (the core tool of Paint the Void). Surface effects of paint colors come in a later milestone.
-// Behaviour: crates/ls-sim/src/weapons/specials/paint_thrower.rs (implemented: the generic hooks are the M1 behaviour).
+// (the core tool of Paint the Void) with an effect colour: V cycles red (bouncy), blue
+// (slippery), yellow (sticky). The effects' numbers are ship tuning (data/ships/*.ron).
+// Behaviour: crates/ls-sim/src/weapons/specials/paint_thrower.rs.
 WeaponDef(
     id: "paint_thrower",
     name: "Paint Thrower",

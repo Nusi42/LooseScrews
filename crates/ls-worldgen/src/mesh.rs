@@ -33,8 +33,12 @@ pub struct Mesh {
     pub normals: Vec<[f32; 3]>,
     /// Paint team per vertex ([`crate::NO_TEAM`] = unpainted).
     pub teams: Vec<u8>,
+    /// Paint effect colour per vertex (`ls_math::terrain::PAINT_*`: 0 plain,
+    /// 1 red bouncy, 2 blue slippery, 3 yellow sticky; 0 where unpainted).
+    pub colors: Vec<u8>,
     /// Surface state bits per vertex (`ls_math::SurfaceStates`: 1 hot,
-    /// 2 charged, 4 glow), active at the chunk store's display tick.
+    /// 2 charged, 4 glow active at the chunk store's display tick, 8
+    /// permanent scorch).
     pub states: Vec<u8>,
     /// Rock material id per vertex ([`crate::Material::id`]: 0 weak, 1 rock,
     /// 2 hard). Filled by the [`crate::ChunkStore`] meshers; empty for meshes
@@ -58,9 +62,9 @@ impl Mesh {
     }
 
     /// SHA-256 over the geometry, paint and surface states (little-endian
-    /// bit patterns), for golden tests. States are hashed only when a vertex
-    /// has one, so meshes without states hash as they did before states
-    /// existed. Materials are a pure function of the vertex positions and the
+    /// bit patterns), for golden tests. States and paint colours are hashed
+    /// only when a vertex has one, so meshes without them hash as they did
+    /// before they existed. Materials are a pure function of the vertex positions and the
     /// seed and are not hashed.
     pub fn hash(&self) -> [u8; 32] {
         let mut h = Sha256::new();
@@ -83,6 +87,10 @@ impl Mesh {
         if self.states.iter().any(|&b| b != 0) {
             h.update(b"states");
             h.update(&self.states);
+        }
+        if self.colors.iter().any(|&b| b != 0) {
+            h.update(b"colors");
+            h.update(&self.colors);
         }
         h.finalize().into()
     }
@@ -300,6 +308,7 @@ fn build(grid: &SampleGrid, placement: Placement<'_>) -> Mesh {
                 ]);
                 mesh.normals.push(normalize_or_up(normal));
                 mesh.teams.push(grid.team(i, j, k));
+                mesh.colors.push(grid.color(i, j, k));
                 mesh.states.push(grid.states(i, j, k));
             }
         }
@@ -502,6 +511,7 @@ mod tests {
         assert!(m.triangle_count() > 500);
         assert_eq!(m.positions.len(), m.normals.len());
         assert_eq!(m.positions.len(), m.teams.len());
+        assert_eq!(m.positions.len(), m.colors.len());
         for (p, n) in m.positions.iter().zip(&m.normals) {
             let p = Vec3::from_array(*p);
             assert!((p.distance(center) - r).abs() < 0.1, "{p:?}");

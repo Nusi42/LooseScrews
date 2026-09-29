@@ -26,7 +26,8 @@ WeaponDef(
         // to `falloff_min` of it at the end of the bolt's lifetime.
         "falloff_start": 8.0,
         "falloff_min": 0.4,
-        // Scorch marks: hot rock for `hot_secs` within `scorch_radius` u of each bolt's hit.
+        // Scorch marks: permanent scorch within `scorch_radius` u of each bolt's hit, hot for
+        // `hot_secs`.
         "scorch_radius": 0.4,
         "hot_secs": 10.0,
     },

@@ -148,6 +148,22 @@ pub struct ShipTuning {
     /// Scrap per second passed to a teammate while scavenging next to them.
     #[serde(default)]
     pub scrap_pass_rate: f32,
+    /// Restitution against red (bouncy) paint (Paint Thrower, M2 plan: 0.9).
+    #[serde(default = "default_paint_bounce")]
+    pub paint_bounce_restitution: f32,
+    /// Speed fraction a ship keeps while touching yellow (sticky) paint: the
+    /// per-axis caps and the ship's local velocity are limited to this share
+    /// of the cruise or boost cap (M2 plan: 0.4).
+    #[serde(default = "default_paint_sticky")]
+    pub paint_sticky_speed: f32,
+}
+
+fn default_paint_bounce() -> f32 {
+    0.9
+}
+
+fn default_paint_sticky() -> f32 {
+    0.4
 }
 
 impl ShipTuning {
@@ -284,6 +300,8 @@ mod tests {
             wreck_scrap: 30.0,
             can_pass_scrap: false,
             scrap_pass_rate: 0.0,
+            paint_bounce_restitution: 0.9,
+            paint_sticky_speed: 0.4,
         }
     }
 

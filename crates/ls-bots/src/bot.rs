@@ -6,9 +6,9 @@
 
 use ls_game::client::{ClientSession, Incoming, Reconcile};
 use ls_game::ls_math::terrain::TerrainQuery;
-use ls_game::ls_math::Vec3;
-use ls_game::ls_net::{ship_flags, Message, NetEvent, Welcome};
-use ls_game::ls_sim::{Buttons, InputCmd, ShipTuning, WeaponTable};
+use ls_game::ls_math::{Pcg32, Vec3};
+use ls_game::ls_net::{ship_flags, Hello, Message, NetEvent, Welcome};
+use ls_game::ls_sim::{Buttons, CueKind, InputCmd, ShipTuning, ShipType, WeaponId, WeaponTable};
 use ls_game::ls_worldgen::ShareCode;
 use ls_game::{match_setup, GameError, GameTerrain};
 use thiserror::Error;
@@ -21,6 +21,28 @@ use crate::stats::BotStats;
 const LIFE_EVENT_WINDOW: u64 = 240;
 /// Server ticks after a starvation report in which a snap counts as lag.
 const STARVATION_WINDOW: u64 = 180;
+/// Server ticks a snap waits for a teleport cue (Swap Harpoon, Borrowed
+/// Time) before it counts as a desync: events arrive after the snapshot
+/// that shows the new position.
+const TELEPORT_GRACE: u64 = 60;
+
+/// Stream id of the RNG that picks a bot's ship type ("BOT_SHIP").
+const RNG_STREAM_SHIP: u64 = 0x424f_545f_5348_4950;
+
+/// The ship type a bot with this seed asks for (uniform over all types;
+/// the server falls back if the rule set does not allow it, and
+/// [`BotCore`] then picks an allowed one).
+pub fn preferred_ship(seed: u64) -> ShipType {
+    let mut rng = Pcg32::from_seed(seed, RNG_STREAM_SHIP);
+    ShipType::ALL[rng.below(ShipType::ALL.len() as u32) as usize]
+}
+
+/// The `Hello` a bot sends: its name, the built-in data hash and the ship
+/// type [`preferred_ship`] picks for `seed` (pass the seed later given to
+/// [`BotCore::from_welcome`]).
+pub fn bot_hello(name: impl Into<String>, seed: u64) -> Hello {
+    ls_game::client_hello(name, None, Some(preferred_ship(seed)))
+}
 
 /// Why a session has to end.
 #[derive(Debug, Error)]
@@ -47,12 +69,22 @@ pub struct BotCore {
     session: ClientSession,
     brain: Brain,
     prev_alive: Option<bool>,
-    /// Server tick of the newest own death / respawn event.
+    /// Server tick of the newest own death, respawn or teleport (Swap
+    /// Harpoon swap, Borrowed Time rewind) event.
     last_life_event: Option<u64>,
+    /// An unexplained snap (server tick, error) waiting [`TELEPORT_GRACE`]
+    /// for a teleport cue before it counts as a desync.
+    pending_snap: Option<(u64, f32)>,
     prev_starved: u64,
     last_starved_tick: Option<u64>,
     /// Terrain edits already passed to the brain's navigation grid.
     edits_seen: usize,
+    /// Ship type to ask the server for (sent with the next tick).
+    pending_ship: Option<ShipType>,
+    /// Ids of own projectiles already counted as shots.
+    own_projectiles: Vec<u16>,
+    /// Alive in the previous tick (lives per ship type).
+    was_alive: bool,
 }
 
 impl BotCore {
@@ -77,6 +109,17 @@ impl BotCore {
             seed,
         );
         brain.set_spawn_points(setup.spawns.iter().map(|s| (s.team, s.pos)).collect());
+        // A random allowed ship type: the one asked for in the `Hello` if
+        // the rule set allows it, else another allowed one.
+        let allowed = &session.rules().allowed_ship_types;
+        let wanted = preferred_ship(seed);
+        let ship = if allowed.is_empty() || allowed.contains(&wanted) {
+            wanted
+        } else {
+            let mut rng = Pcg32::from_seed(seed, RNG_STREAM_SHIP ^ 1);
+            allowed[rng.below(allowed.len() as u32) as usize]
+        };
+        let pending_ship = (ship != session.ship_type()).then_some(ship);
         // The grid is built from the session's terrain, which already holds
         // the edits from the `Welcome`.
         let edits_seen = session.terrain().edit_log().len();
@@ -85,9 +128,13 @@ impl BotCore {
             brain,
             prev_alive: None,
             last_life_event: None,
+            pending_snap: None,
             prev_starved: 0,
             last_starved_tick: None,
             edits_seen,
+            pending_ship,
+            own_projectiles: Vec::new(),
+            was_alive: false,
         })
     }
 
@@ -102,14 +149,28 @@ impl BotCore {
     /// Runs one 60 Hz tick: decides the controls and advances the session.
     /// Returns the messages to send, in order.
     pub fn tick(&mut self, stats: &mut BotStats) -> Vec<Message> {
+        let ship_type = self.session.ship_type();
+        self.brain
+            .set_ship(ship_type, self.session.conv().tuning_for(ship_type));
         let cmd = match Perception::from_session(&self.session) {
             Some(p) if self.session.is_synced() => {
+                if p.alive && !self.was_alive {
+                    *stats
+                        .ship_lives
+                        .entry(ship_type.name().to_string())
+                        .or_default() += 1;
+                }
+                self.was_alive = p.alive;
                 self.brain
                     .think(&p, self.session.terrain(), &mut stats.behavior)
             }
             _ => InputCmd::idle(0).with_buttons(Buttons::HORIZON_ASSIST),
         };
-        let msgs = self.session.frame(1, cmd);
+        let mut msgs = Vec::new();
+        if let Some(t) = self.pending_ship.take() {
+            msgs.push(self.session.select_ship(t));
+        }
+        msgs.extend(self.session.frame(1, cmd));
         for m in &msgs {
             match m {
                 Message::Input(_) => stats.inputs_sent += 1,
@@ -152,6 +213,7 @@ impl BotCore {
                     stats.stale_snapshots += 1;
                 } else {
                     self.on_fresh_snapshot(tick as u64, reconcile, stats);
+                    self.count_shots(stats);
                 }
                 Ok(Flow::Continue)
             }
@@ -172,6 +234,9 @@ impl BotCore {
     /// Adds this session's snapshot kind counters to `stats` (call once when
     /// the session ends).
     pub fn finish(&self, stats: &mut BotStats) {
+        if let Some((tick, error)) = self.pending_snap {
+            self.judge_snap(tick, error, stats);
+        }
         let s = self.session.stats();
         stats.full_snapshots += s.full_snapshots;
         stats.delta_snapshots += s.delta_snapshots;
@@ -189,6 +254,12 @@ impl BotCore {
     }
 
     fn on_fresh_snapshot(&mut self, tick: u64, reconcile: Option<Reconcile>, stats: &mut BotStats) {
+        if let Some((t, e)) = self.pending_snap {
+            if tick > t + TELEPORT_GRACE {
+                self.pending_snap = None;
+                self.judge_snap(t, e, stats);
+            }
+        }
         let starved = self.session.clock().starved;
         if starved > self.prev_starved {
             stats.starved_snapshots += starved - self.prev_starved;
@@ -230,13 +301,11 @@ impl BotCore {
                     if near(self.last_starved_tick, STARVATION_WINDOW) {
                         stats.lag_snaps += 1;
                     } else {
-                        stats.desyncs += 1;
-                        stats.max_reconcile_error = stats.max_reconcile_error.max(error);
-                        let msg = format!(
-                            "prediction snapped by {error:.2} u at tick {tick} without a respawn"
-                        );
-                        tracing::warn!(bot = %stats.name, "{msg}");
-                        stats.note_error(msg);
+                        // Judged once a teleport cue had time to arrive.
+                        if let Some((t, e)) = self.pending_snap.take() {
+                            self.judge_snap(t, e, stats);
+                        }
+                        self.pending_snap = Some((tick, error));
                     }
                 }
             }
@@ -247,31 +316,92 @@ impl BotCore {
         }
     }
 
+    /// A snap by `error` u at server tick `tick` that no death, respawn or
+    /// starvation explained: a desync unless a teleport cue (or a life
+    /// event) arrived for it meanwhile.
+    fn judge_snap(&self, tick: u64, error: f32, stats: &mut BotStats) {
+        if self
+            .last_life_event
+            .is_some_and(|t| tick.abs_diff(t) <= LIFE_EVENT_WINDOW)
+        {
+            return;
+        }
+        stats.desyncs += 1;
+        stats.max_reconcile_error = stats.max_reconcile_error.max(error);
+        let msg = format!("prediction snapped by {error:.2} u at tick {tick} without a respawn");
+        tracing::warn!(bot = %stats.name, "{msg}");
+        stats.note_error(msg);
+    }
+
+    /// Data id of weapon `w`, if it is one.
+    fn weapon_name(&self, w: u8) -> Option<String> {
+        let table = self.session.weapons();
+        ((w as usize) < table.len()).then(|| table.get(WeaponId(w)).id.clone())
+    }
+
+    /// Counts own projectiles new in the newest snapshot as shots, one per
+    /// weapon per snapshot. The Railspike is counted by its muzzle flash
+    /// cue instead (its spikes can hit before a snapshot shows them).
+    fn count_shots(&mut self, stats: &mut BotStats) {
+        let me = self.session.player();
+        let Some(snap) = self.session.latest_snapshot() else {
+            return;
+        };
+        let mut fresh: Vec<u8> = Vec::new();
+        let mut ids: Vec<u16> = Vec::new();
+        for q in snap.projectiles.iter().filter(|q| q.owner == me) {
+            ids.push(q.id);
+            if !self.own_projectiles.contains(&q.id) && !fresh.contains(&q.kind) {
+                fresh.push(q.kind);
+            }
+        }
+        self.own_projectiles = ids;
+        for k in fresh {
+            match self.weapon_name(k) {
+                Some(name) if name != "railspike" => stats.weapon_mut(&name).fired += 1,
+                _ => {}
+            }
+        }
+    }
+
     fn on_events(&mut self, stats: &mut BotStats) {
         let me = self.session.player();
+        let now = self.session.next_input_tick();
         for e in self.session.take_events() {
             match e {
                 NetEvent::Hit {
-                    attacker, victim, ..
+                    attacker,
+                    victim,
+                    weapon,
+                    ..
                 } => {
                     if attacker == me && victim != me {
                         stats.hits_dealt += 1;
+                        if let Some(name) = self.weapon_name(weapon) {
+                            stats.weapon_mut(&name).hits += 1;
+                        }
                     }
                     if victim == me {
                         stats.hits_taken += 1;
+                        let w = ((weapon as usize) < self.session.weapons().len())
+                            .then_some(WeaponId(weapon));
+                        self.brain.on_damaged(w, now);
                     }
                 }
                 NetEvent::Kill {
                     tick,
                     killer,
                     victim,
-                    ..
+                    weapon,
                 } => {
                     if victim == me {
                         stats.deaths += 1;
                         self.last_life_event = Some(tick as u64);
                     } else if killer == me {
                         stats.kills += 1;
+                        if let Some(name) = self.weapon_name(weapon) {
+                            stats.weapon_mut(&name).kills += 1;
+                        }
                     }
                     if let Some(pos) = self.ship_position(victim) {
                         let now = self.session.next_input_tick();
@@ -284,7 +414,47 @@ impl BotCore {
                     }
                 }
                 NetEvent::MatchOver { .. } => stats.matches_over += 1,
-                NetEvent::Cue { .. } => {}
+                NetEvent::Cue {
+                    tick,
+                    kind,
+                    source,
+                    target,
+                    pos,
+                    value,
+                } => {
+                    let kind = CueKind::from_u8(kind);
+                    // Server-side teleports of the own ship (Swap Harpoon,
+                    // Borrowed Time) snap the prediction like a respawn.
+                    let teleported = match kind {
+                        CueKind::Swapped => source == me || target == me,
+                        CueKind::Rewound => target == me,
+                        _ => false,
+                    };
+                    if teleported {
+                        self.last_life_event = Some(tick as u64);
+                    }
+                    if source == me {
+                        // A beam cue covers `value` ticks of Leech Arc arcs
+                        // (one every fire interval); a muzzle flash is one
+                        // Railspike shot.
+                        let fired = match kind {
+                            CueKind::Beam => {
+                                let table = self.session.weapons();
+                                let arcs = table.find("leech_arc").map_or(1, |w| {
+                                    let every = table.get(w).fire_interval_ticks().max(1);
+                                    (u64::from(value) / every).max(1)
+                                });
+                                Some(("leech_arc", arcs))
+                            }
+                            CueKind::MuzzleFlash => Some(("railspike", 1)),
+                            _ => None,
+                        };
+                        if let Some((name, n)) = fired {
+                            stats.weapon_mut(name).fired += n;
+                        }
+                    }
+                    self.brain.on_cue(kind, pos, value, now);
+                }
             }
         }
     }

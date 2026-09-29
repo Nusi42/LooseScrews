@@ -34,12 +34,34 @@ export class ShipCamera {
     this.view = { position: { ...fallback }, orientation: q.identity(), ...this.params };
   }
 
-  /** Follows `pose` if present (and alive); otherwise keeps the previous view. */
-  update(pose: LocalPose | null): CameraView {
-    if (pose && pose.alive) {
+  /**
+   * Follows `pose` if present (and alive); otherwise keeps the previous view.
+   * `ride` replaces the pose (the Eyeball camera while guiding); `shake`
+   * offsets the returned view along its right and up axes (u) without
+   * moving the held view.
+   */
+  update(
+    pose: LocalPose | null,
+    ride: { position: Vec3; orientation: q.Quat } | null = null,
+    shake: { x: number; y: number } = { x: 0, y: 0 },
+  ): CameraView {
+    if (ride) {
+      this.view = { position: ride.position, orientation: ride.orientation, ...this.params };
+    } else if (pose && pose.alive) {
       this.view = { position: pose.position, orientation: pose.orientation, ...this.params };
     }
-    return this.view;
+    if (shake.x === 0 && shake.y === 0) return this.view;
+    const r = q.right(this.view.orientation);
+    const u = q.up(this.view.orientation);
+    const p = this.view.position;
+    return {
+      ...this.view,
+      position: {
+        x: p.x + r.x * shake.x + u.x * shake.y,
+        y: p.y + r.y * shake.x + u.y * shake.y,
+        z: p.z + r.z * shake.x + u.z * shake.y,
+      },
+    };
   }
 
   get current(): CameraView {

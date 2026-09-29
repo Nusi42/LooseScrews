@@ -1,6 +1,6 @@
 # Milestone 2 — Arsenal and physics
 
-Status: in progress (waves A and B integrated, wave C next) · Design source: [design/game-design-doc.md](design/game-design-doc.md) · M1 plan: [implementation-plan.md](implementation-plan.md)
+Status: complete (waves A–D integrated; open items listed under wave C status) · Design source: [design/game-design-doc.md](design/game-design-doc.md) · M1 plan: [implementation-plan.md](implementation-plan.md)
 
 Milestone 2 turns the four-weapon vertical slice into the full combat sandbox from the design doc: every weapon, all four ship types, gadgets, lasting physical effects (debris, surface states, dust) and configurable match rules. It also fixes two M1 issues found in soak testing and closes the M1 gaps that M2 depends on.
 
@@ -112,7 +112,8 @@ cross-check; e2e over WebSocket and WebTransport (7 bots, 90 s) and a full sandb
 8 bots (0 desyncs, worst window tick p99 3.7 ms, under the 4 ms budget but with little margin
 while other builds ran on the machine).
 
-Open for wave C/D: the client (`ls-wasm` ShotPredictor) still predicts straight bolts (it draws
+Open for wave C/D at the end of wave B (see wave C status for what is left): the client
+(`ls-wasm` ShotPredictor) still predicted straight bolts (it draws
 a stray bolt for the instant Leech Arc and mis-predicts Scatter / Corkscrew fans); client
 visuals for the new cues and states (Leech beam, muzzle flash, decoy return, overcharge,
 ghost, spike marker, glow, riding Tectonic Charge); bots use only the laser, Rivet Gun and
@@ -121,6 +122,70 @@ paint colour effects are M3; no permanent scorch surface state (scorch is long-l
 projectile deltas have no motion prediction yet (busy fights with many shots in flight exceed
 the budget); the rule set editor has been checked by its Node tests only, not in a browser;
 `userDocs/` describe none of wave B yet (wave D).
+
+### Wave C status (integrated)
+
+Done:
+- **Client mechanics** (`crates/ls-wasm/src/mechanics.rs`, `web/src/game/mechanics.ts`,
+  `web/src/ui/effects.ts`, `web/src/ui/shipSelect.ts`): Flash Pod whiteout, shake by
+  Tectonic zone, banners (Polite warning, Tectonic launch and crack naming the own zone,
+  overcharge, decoy return, swap, rewind with the weapons-offline countdown), Leech beams,
+  muzzle and decoy flashes, shockwave shells, Eyeball camera and frame, charge meter, gadget
+  line with cooldown, cloak shimmer in a light team shade, shield bubble, ghost, rock
+  materials, permanent scorch and paint colours in the terrain shader, the ship bay (B, 1-4)
+  and ship choice on the start screen.
+- **Shot prediction per weapon**: Leech Arc, Borrowed Time and Prox Mine draw nothing (cost
+  kept), Scatter fans, Corkscrew helices, charge weapons on release, the Scrap Shotgun's
+  random cone as its centre pellet only, Borrowed Time takes the weapons offline as it fires.
+- **Paint colours end to end**: V is `Buttons::WEAPON_MODE` (bit 7) from the browser;
+  `GameCore` keeps G and V presses from frames without a tick. The HUD colour is the
+  simulation's (practice: weapon state; online: the server's `PaintColor` cue, guessed ahead
+  on V, red after a respawn) and only shows while the Paint Thrower is selected. Blobs are
+  tinted by their colour bits. Each effect has its own pattern (red stripes, blue waves,
+  yellow dots) drawn in a dark team shade, so neither effect nor owner relies on hue.
+  Sticky paint scales the whole local velocity (direction kept).
+- **Gadget cues** (`ls_sim::gadget_cue`): instant use (`0x100 | id`) and running out of
+  energy (254) are told apart from a key-press off (255), so the online cooldown is right
+  for the Decoy and after an empty toggle.
+- **Sim follow-ups**: protocol 4 / `SIM_BEHAVIOR_VERSION` 4 (paint colours and their flight
+  effects, Leech Arc lock, permanent `SCORCH` used by the Stalker Mine trail, Echo Cannon
+  and Scatter Laser marks, Welcome pruning of expired timed edits with the true edit count,
+  projectile motion prediction and settling).
+- **Bots use the arsenal** (`crates/ls-bots`): every weapon has a role and range band,
+  primaries by range, secondaries by situation, gadgets, Eyeball guidance, Tectonic zones
+  fled, pickups collected (also mid-fight within 30 u; the Tectonic Charge counts three
+  times closer; a carrier fires it after 20 s at the rock on the line to its target if that is
+  30 u+ away), random ship types, per-weapon stats. Swap and rewind teleports no longer count
+  as desyncs (a snap waits 1 s for their cue).
+- **Tests and tools**: `tests/arsenal_match.rs` (8 bots, 240 s sandbox: at least 15 distinct
+  combat weapons incl. a mine and the Tectonic Charge, reconciliation under 1 u; last run 18
+  plus the Paint Thrower); the browser smoke test (`tools/browser-smoke`, part of CI when
+  Chrome or Edge is present) with a mechanics phase against a second server
+  (`tools/browser-smoke/mechanics.ron`); e2e `--min-debris`, `--max-full-per-join` and
+  `tools/e2e-rulesets/sandbox_debris.ron`; the server's `tick stats` line has `debris`,
+  `debris_peak` and per-phase maxima (`recv_max_us`, `step_max_us`, `send_max_us`).
+
+Checks at integration (CARGO_TARGET_DIR=target/integrator-c): `pwsh tools/ci.ps1` passed
+(fmt, clippy, workspace tests, ls-bots release tests, wasm32 unit tests, web typecheck/tests
+/build, determinism cross-check, browser smoke 60 checks); e2e over WebSocket and
+WebTransport (7 bots, 90 s, worst p99 317 / 295 us); stress and soak runs in the acceptance
+section below.
+
+Open (after M2):
+- Bandwidth: busy 32-ship fights average within 17,280 B/s at every baseline age, but the
+  busiest snapshots are up to about 6 % over at a 4-tick and 19 % over at a 6-tick baseline
+  (`busy_fight_with_projectiles_fits_the_budget`, four seeds; netcode.md). New projectiles'
+  velocity residuals dominate; needs a velocity predictor from the owner's orientation or
+  coarser new-projectile velocities.
+- A Tectonic collapse makes one 2-7 ms tick (a 35 u exact crater plus cracks, about 30
+  edits in one tick); it does not move a window's p99. Spreading the cracks over later ticks
+  would cap it.
+- Tick p99 in e2e is wall-clock: on a busy machine (other builds, a file sync
+  client) windows go over 4 ms with the time in the receive/send phases. Stress runs need a
+  quiet machine.
+- Optional: `WeaponState::shots` in `Message::Inventory` (the predictor infers fan/helix
+  phase from snapshots), a weapon-state byte in `NetWeapon`, drawing the own Leech beam
+  locally instead of one round trip late.
 
 ## 4. Acceptance criteria
 
@@ -133,3 +198,20 @@ the budget); the rule set editor has been checked by its Node tests only, not in
 - e2e with 8 bots using mixed ship types and all weapons: 0 desyncs, 0 protocol errors, tick p99 < 4 ms with debris at cap.
 - Rule set editor produces a code that the server accepts and enforces (banned weapons never spawn or fire).
 - docs/ and userDocs/ describe every weapon, gadget, ship type and the rule set editor as built.
+
+### Acceptance status (wave C integration)
+
+Evidence with `CARGO_TARGET_DIR=target/integrator-c` on Windows 11, 32 threads, NVIDIA GPU.
+
+| Criterion | Status | Evidence |
+| --- | --- | --- |
+| Every weapon, gadget and ship type in `data/`, scenario tests for bonus, malus, lasting effect | met (code); docs part open | `cargo test --workspace` (in `pwsh tools/ci.ps1`): ls-sim 246 unit tests pass (243 on wasm32), including a scenario-test module per weapon and gadget and `weapons::tests`, which fails if any module falls back to the generic behaviour |
+| Tectonic zones match the design table | met | `tectonic_charge::tests::numbers_and_limits_follow_the_design_doc`, `zones_core_damage_and_shockwave`, `collapse_caves_in_35_u_and_instability_sets_the_cracks`, `six_sub_charges_scatter_up_to_20_u_and_explode_0_5_s_later` pass |
+| Decoy return = 99 % of remaining integrity, first ship on its path, teammates included | met | `decoy::tests::launched_decoy_snaps_back_and_hits_its_owner_for_99_percent`, `a_shot_up_decoy_hits_for_99_percent_of_what_is_left` pass |
+| Replay determinism and the WASM golden-hash check | met | CI: `replay_golden_hash` native and wasm32 pass (hash unchanged by the wave C integration fixes); `node tools/determinism-check.mjs`: all 6 share codes match the native golden hashes |
+| Bots fight on 10 random worlds (hits > 0 in each 60 s run) | met | `cargo test -p ls-bots --release`: `tests/nav_sweep.rs` 11 tests pass (soak world + 9 random worlds + the 5-minute match) |
+| Steady-state full snapshots <= 1 per join in a 10-minute soak | met | `node tools/e2e.mjs ... --ruleset data/rulesets/sandbox_all_weapons.ron --count 8 --duration 600 --max-full-per-join 1`: 16 full snapshots for 16 joins (two matches), 143,168 deltas, 0 stale, all 23 checks pass (worst p99 2064 us) |
+| e2e with 8 bots, mixed ship types, all weapons: 0 desyncs, 0 protocol errors, tick p99 < 4 ms with debris at cap | met on a quiet machine | `node tools/e2e.mjs ... --ruleset tools/e2e-rulesets/sandbox_debris.ron --count 8 --duration 330 --min-debris 64`: 0 desyncs, 0 protocol errors, debris at the 64 cap in 12 windows, worst p99 462 us (452 us in the windows at cap), 10 Tectonic Charges, 17 weapons fired, all 23 checks pass. The plain sandbox (`sandbox_all_weapons.ron`, same flags without `--min-debris`) passes with worst p99 438 us but peaks at 24-48 debris pieces. Runs while other builds or a file sync client loaded the machine failed the 4 ms check (up to 5.3 ms) with the time in the receive/send phases (`recv_max_us`, `send_max_us` up to 10 ms), i.e. the sim thread was descheduled; the game work itself (`Room::step`, in-process: p99 at most 345 us per 5 s window, one 4-7 ms tick per Tectonic collapse) fits |
+| Rule set editor code accepted and enforced | met | `pwsh tools/browser-smoke.ps1` (CI): the editor in headless Chrome produces `LR6V-69CM-G200-C0AC-48` and a second ls-server starts with that `rules_code` (60 checks pass); `tests_arsenal::banned_weapons_never_spawn_or_fire`, `tests::banned_weapon_cannot_be_fired` / `_picked_up` pass |
+| docs/ and userDocs/ describe every weapon, gadget, ship type and the editor as built | met in wave D (docs review) | `docs/architecture/arsenal-framework.md` covers the arsenal as built; `userDocs/player-manual.md` describes all 27 weapons, 3 gadgets, 4 ship types, the keys V/B, the HUD mechanics and the rule set editor; `userDocs/hosting-guide.md` covers rule set codes, the editor, bans and balance lists; the number tables in `userDocs/reference/` are generated from `data/` (`node tools/gen-weapon-docs.mjs --check` in CI). Commands, flags, log lines and example codes checked against `--help` and a running `ls-server` |
+

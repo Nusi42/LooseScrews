@@ -5,8 +5,8 @@
 // Out leg records a path point every `record_ticks`, passes through ships it hits and waits at a
 // wall; after `return_after_secs` it flies back along the points and on past the muzzle (lifetime
 // = 2 x return time + a margin, so an owner who stayed put is hit). Scorch trail: path points
-// within `scorch_reach` u of rock and impacts heat the rock (`scorch_radius` u, `scorch_secs`),
-// at most `max_scorch_edits` per shot. Numbers are tuning starting points.
+// within `scorch_reach` u of rock and impacts scorch the rock for good (`scorch_radius` u, hot
+// for `scorch_hot_secs`), at most `max_scorch_edits` per shot. Numbers are tuning starting points.
 WeaponDef(
     id: "echo_cannon",
     name: "Echo Cannon",
@@ -28,7 +28,7 @@ WeaponDef(
         // Every `scorch_every`-th recorded point near rock gets a mark of `scorch_radius`; at
         // most `max_scorch_edits` per shot (every mark is a networked, logged edit).
         "scorch_radius": 1.5,
-        "scorch_secs": 10.0,
+        "scorch_hot_secs": 10.0,
         "scorch_every": 2.0,
         "max_scorch_edits": 6.0,
     },

@@ -67,13 +67,20 @@ because the default raycast sphere-traces it.
 pub enum TerrainEdit {
     SubtractSphere { center: Vec3, radius: f32 }, // crater
     AddSphere { center: Vec3, radius: f32 },      // add rock
-    Paint { center: Vec3, radius: f32, team: u8 },// paint surface cells, no geometry change
-    Surface { center: Vec3, radius: f32, states: u8, until: u32 }, // timed surface states
+    Paint { center: Vec3, radius: f32, team: u8, color: u8 }, // claim cells, no geometry change
+    Surface { center: Vec3, radius: f32, states: u8, until: u32 }, // surface states
 }
 ```
 
 - Edits are applied **in tick order** and logged; late joiners replay the log. Two peers that
-  apply the same log to the same share code must end up with identical terrain.
+  apply the same log to the same share code must end up with identical terrain. The one
+  exception is deliberate: a `Welcome` leaves out surface-state edits whose timed states
+  expired before the join and can no longer matter (`ls_game::GameTerrain::welcome_log`, see
+  [netcode.md](netcode.md#terrain-edit-replication)); the late joiner then has the same
+  geometry, paint and scorch, and the same timed states from its join tick on, and counts
+  the left-out edits so sequence numbers still agree. Desync hashes compare only that
+  (`GameTerrain::state_hash`, time-independent; `state_hash_at(tick)` with the running timed
+  states).
 - Helpers: `center()`, `radius()`, `changes_geometry()`, `bounds()` (affected `Aabb`), and
   `apply_to_sdf(d, p)`, the reference CSG: subtract = `max(d, radius - |p - c|)`,
   add = `min(d, |p - c| - radius)`.
@@ -82,22 +89,39 @@ pub enum TerrainEdit {
 - `radius` is in u. The design doc gives crater sizes as **diameters**, so weapon data
   stores `crater_radius = diameter / 2` (e.g. the 2 u Bolt Rocket crater is
   `crater_radius: 1.0`).
-- `Surface` sets timed surface states on the surface cells whose centre is within `radius`
-  (the query `GameTerrain::surface_states_near` instead counts every 1 u surface cell that
-  overlaps the query sphere, so a ship scraping a wall finds the state of the cell under it):
-  for every bit in `states` (`ls_math::SurfaceStates`: `HOT` 1, `CHARGED` 2, `GLOW` 4; other
-  bits ignored) the cell's expiry tick becomes `until` (absolute simulation tick; `0` clears).
-  A state is active while `tick < until`; the cell's other states are kept. Default durations
-  (design doc): hot 10 s, charged 15 s, glow 30 s (`SurfaceStates::DEFAULT_TICKS`,
-  `TerrainEdit::surface_for_default(center, radius, state, now)`). The edit carries the
-  expiry, not a duration, so peers that apply it late (snapshots, late-join replay) agree.
-  Charged cells drain 5 energy/s from ships scraping them (simulation rule; the query is
-  `GameTerrain::surface_states_near`).
+- `Surface` sets surface states on the surface cells whose centre is within `radius` (the
+  query `GameTerrain::surface_states_near` instead counts every 1 u surface cell that
+  overlaps the query sphere, so a ship scraping a wall finds the state of the cell under it).
+  Timed states: for every timed bit in `states` (`ls_math::SurfaceStates`: `HOT` 1, `CHARGED`
+  2, `GLOW` 4; `SurfaceStates::TIMED` = 7) the cell's expiry tick becomes `until` (absolute
+  simulation tick; `0` clears). A timed state is active while `tick < until`; the cell's
+  other states are kept. Default durations (design doc): hot 10 s, charged 15 s, glow 30 s
+  (`SurfaceStates::DEFAULT_TICKS`, `TerrainEdit::surface_for_default(center, radius, state,
+  now)`). The edit carries the expiry, not a duration, so peers that apply it late
+  (snapshots, late-join replay) agree. Charged cells drain 5 energy/s from ships scraping
+  them (simulation rule; the query is `GameTerrain::surface_states_near`).
+- **Scorch** (`SurfaceStates::SCORCH` = 8) is permanent: a `Surface` edit with that bit
+  scorches its cells for the rest of the match (`until = 0` clears it instead; only a crater
+  that removes the surface also removes the mark). Queries report it next to the timed states
+  that are running; meshes carry it in `states` (bit 8). Scorch trails and marks use it instead
+  of long-lived `HOT` edits: `TerrainEdit::scorch(center, radius, now, hot_ticks)` scorches and
+  heats for `hot_ticks` (0: scorch only, `until = u32::MAX`); `ls_sim::Ctx::scorch` skips
+  already scorched spots. Other bits (16 and up) are ignored.
+  `TerrainEdit::without_expired_states(now)` is the part of an edit that still matters once
+  its timed states expired (the scorch bit, or nothing).
 - `Paint.team` is the simulation team (0-based). `255` (`ls_worldgen::NO_TEAM`,
   `ls_sim::NO_PAINT`) means unpainted; a paint edit with team 255 erases. The same ids
   appear in `PaintCoverage.team_cells`, in mesh vertex `teams`, and in the web client's
   `MeshData.team`. A crater clears paint and surface states from cells that stop being
   surface.
+- `Paint.color` is the effect colour stored with the team (`ls_math::terrain::PAINT_*`):
+  `PAINT_PLAIN` 0 (no effect: generic weapon paint), `PAINT_RED` 1 (bouncy), `PAINT_BLUE` 2
+  (slippery), `PAINT_YELLOW` 3 (sticky); other values are stored as plain
+  (`paint_color`), and the wire carries 2 bits. Painting over replaces team and colour.
+  Paint the Void scoring counts teams only. Ships react to the colour under them through
+  `TerrainQuery::paint_colors_near` (M2 plan: red rebounds at 0.9 restitution, blue has no wall
+  friction and keeps the speed, yellow holds ships to 40% of their speed caps; numbers in
+  `data/ships/*.ron`, see [arsenal-framework.md](arsenal-framework.md#ship-types)).
 
 ### Terrain strength (`ls_worldgen::material`)
 
@@ -134,8 +158,15 @@ pub trait TerrainQuery {
         -> Option<RayHit>;                                    // default: sphere tracing
     fn bounds(&self) -> Aabb;                                 // outside counts as solid
     fn sphere_overlap(&self, center: Vec3, radius: f32) -> bool; // default: sdf(center) < radius
+    fn paint_colors_near(&self, center: Vec3, radius: f32) -> u8; // default: 0 (no paint)
 }
 ```
+
+- `paint_colors_near` returns the paint colours (bit set `1 << PAINT_*`) of the painted
+  surface cells overlapping the sphere; the ship flight model reads it
+  (`ls_sim::simulate_movement`), so every terrain a ship flies through must answer it the same
+  way on every peer (`ChunkStore`, `GameTerrain` and `ls_sim::PaintedTerrain` do; test
+  terrains without paint report none).
 
 - Only `sdf` and `bounds` are required; implementers may override the rest with faster exact
   versions as long as results stay deterministic.
@@ -162,15 +193,23 @@ number on the wire.
 
 `ls_worldgen::Mesh` holds `positions: Vec<[f32; 3]>`, `normals: Vec<[f32; 3]>`,
 `indices: Vec<u32>`, `teams: Vec<u8>` (one paint id per vertex, see `Paint.team`),
-`states: Vec<u8>` (surface state bits per vertex, active at the chunk store's display tick,
-`GameTerrain::advance_to`) and `materials: Vec<u8>` (material id per vertex; filled by the
-`ChunkStore` meshers).
+`colors: Vec<u8>` (paint colour id per vertex, `PAINT_*`, 0 where unpainted),
+`states: Vec<u8>` (surface state bits per vertex: timed states active at the chunk store's
+display tick, `GameTerrain::advance_to`, plus scorch 8) and `materials: Vec<u8>` (material
+id per vertex; filled by the `ChunkStore` meshers). `Mesh::hash` covers colours and states
+only when a vertex has one, so the worldgen golden hashes did not change.
 Vertices are in world space and faces are counter-clockwise seen from open space. `ls-wasm`
 hands the client a `MeshData` (`web/src/renderer/mesh.ts`) by flattening only:
 `positions` and `normals` as `Float32Array` (xyz triples), `indices` as `Uint32Array`, and
-`teams` as the `Uint8Array` field `team` with values unchanged (`states` and `materials` are
-to be exported the same way by the client work of wave A3/C). The client renders with
-back-face culling and `frontFace: "ccw"`.
+`teams` as the `Uint8Array` field `team` with values unchanged; `states` travel as the
+optional `surface` field, `materials` and `colors` through `ChunkMesh.materials()` and
+`ChunkMesh.paintColors()` (unknown colour ids become plain). The web client packs them into
+one `u32` terrain vertex attribute (`web/src/renderer/shaders.ts`): bits 0-7 paint team (255
+unpainted), bits 8-15 surface states, bits 16-23 material + 1 (0 unknown), bits 24-31 paint
+colour; without the optional layers the packing is the M1 one. Coloured paint draws a
+per-effect pattern (red stripes, blue waves, yellow dots) in a dark shade of the team colour,
+so neither the effect nor the owner relies on hue alone. The client renders with back-face
+culling and `frontFace: "ccw"`.
 
 ## Share codes
 

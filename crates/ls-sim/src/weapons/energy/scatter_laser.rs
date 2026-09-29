@@ -11,13 +11,13 @@
 //! - Malus: the fan opens with range, so fewer bolts connect far away, and each bolt's damage
 //!   and knockback fall linearly from full at `falloff_start` u of flight to `falloff_min` of
 //!   it at the end of its lifetime.
-//! - Lasting effect: every bolt scorches the rock it hits (`SurfaceStates::HOT` for
-//!   `hot_secs`, `scorch_radius`); a volley leaves a fan-shaped row of scorch marks.
+//! - Lasting effect: every bolt scorches the rock it hits for good (`Ctx::scorch`: the
+//!   permanent `SCORCH` state within `scorch_radius`, hot for `hot_secs`); a volley leaves a
+//!   fan-shaped row of scorch marks.
 
-use ls_math::terrain::{RayHit, SurfaceStates};
+use ls_math::terrain::RayHit;
 use ls_math::{Quat, DT};
 
-use super::scrap_laser::heat_surface;
 use crate::behavior::Ctx;
 use crate::weapons::{projectile_for, HitResponse, ShipHit, Shot, WeaponBehavior};
 use crate::world::Projectile;
@@ -82,7 +82,8 @@ impl WeaponBehavior for ScatterLaser {
         let def = ctx.def(p.weapon);
         let radius = def.param("scorch_radius", 0.4);
         let secs = def.param("hot_secs", 10.0);
-        heat_surface(ctx, hit.point, radius, SurfaceStates::HOT, secs);
+        // Permanent scorch marks (the fan pattern), hot for `hot_secs`.
+        ctx.scorch(hit.point, radius, secs);
         HitResponse::Stop
     }
 }

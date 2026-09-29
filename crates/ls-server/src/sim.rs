@@ -139,6 +139,11 @@ struct Sim {
     times: TickTimes,
     window_room: RoomStats,
     window_skipped: u64,
+    /// Most networked debris pieces at the end of a tick in this stats window.
+    window_debris_peak: usize,
+    /// Longest time (us) of each tick phase in this stats window: commands
+    /// and receive, `Room::step`, dispatch (send) and the rest.
+    window_phase_max: [u64; 3],
     window_dropped: u64,
     /// Counters of the rooms replaced by [`Sim::new_match`], so the shared
     /// totals keep growing across matches.
@@ -216,6 +221,8 @@ impl Sim {
             times: TickTimes::default(),
             window_room: RoomStats::default(),
             window_skipped: 0,
+            window_debris_peak: 0,
+            window_phase_max: [0; 3],
             window_dropped: 0,
             past_matches: RoomStats::default(),
             past_ticks: 0,
@@ -271,15 +278,38 @@ impl Sim {
     /// One 60 Hz tick: commands, received packets, step, outgoing packets,
     /// then the match-end policy.
     fn tick(&mut self) {
+        let t0 = Instant::now();
         self.process_commands();
         self.receive();
+        let t1 = Instant::now();
         // The match clock only runs while someone plays.
         if self.room.player_count() > 0 {
             self.room.step();
+            let debris = self.debris_count();
+            self.window_debris_peak = self.window_debris_peak.max(debris);
         }
+        let t2 = Instant::now();
         self.dispatch();
         self.check_match_end();
         self.publish_stats();
+        let t3 = Instant::now();
+        for (m, d) in self
+            .window_phase_max
+            .iter_mut()
+            .zip([t1 - t0, t2 - t1, t3 - t2])
+        {
+            *m = (*m).max(d.as_micros() as u64);
+        }
+    }
+
+    /// Networked debris pieces now (capped at `ls_sim::entity::MAX_DEBRIS`).
+    fn debris_count(&self) -> usize {
+        self.room
+            .world()
+            .entities()
+            .iter()
+            .filter(|e| e.kind == ls_sim::EntityKind::Debris)
+            .count()
     }
 
     fn publish_stats(&self) {
@@ -572,6 +602,9 @@ impl Sim {
         let match_left_s = mode.remaining_ticks(world.tick()) as f64 / f64::from(TICK_HZ);
         let match_over = !mode.is_running();
         let edits = self.room.terrain().edit_count();
+        let debris = self.debris_count();
+        let debris_peak = std::mem::take(&mut self.window_debris_peak).max(debris);
+        let [recv_max_us, step_max_us, send_max_us] = std::mem::take(&mut self.window_phase_max);
         info!(
             tick = self.room.tick(),
             total_ticks = self.past_ticks + self.room.tick(),
@@ -580,6 +613,9 @@ impl Sim {
             p50_us = t.p50_us,
             p99_us = t.p99_us,
             max_us = t.max_us,
+            recv_max_us,
+            step_max_us,
+            send_max_us,
             over_budget = t.over_budget,
             skipped,
             late_inputs = late,
@@ -594,6 +630,8 @@ impl Sim {
             edits,
             total_edits = self.past_edits + edits as u64,
             craters,
+            debris,
+            debris_peak,
             paint_cells_0 = cov.team_cells[0],
             paint_cells_1 = cov.team_cells[1],
             surface_cells = cov.surface_cells,

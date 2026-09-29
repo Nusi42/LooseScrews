@@ -15,6 +15,10 @@
 //   --web-root <dir>        served web client [web/dist]
 //   --stats-interval <s>    server stats window [5]
 //   --p99-budget-us <n>     tick p99 limit [4000]
+//   --min-debris <n>        networked debris pieces some stats window must
+//                           reach (64 = the cap; 0 = no check) [0]
+//   --max-full-per-join <n> full snapshots the bots may receive per join
+//                           (0 = no check) [0]
 //   --min-craters <n>       crater edits required (0 for levels where bots
 //                           only paint) [1]
 //   --log-dir <dir>         where server.log / bots.log go [target/e2e-logs]
@@ -52,6 +56,8 @@ const defaults = {
   "stats-interval": "5",
   "p99-budget-us": "4000",
   "min-craters": "1",
+  "min-debris": "0",
+  "max-full-per-join": "0",
   "log-dir": join(repoRoot, "target", "e2e-logs"),
   transport: "ws",
 };
@@ -91,6 +97,8 @@ function parseArgs(argv) {
     statsInterval: posNum(o["stats-interval"], "stats-interval"),
     p99BudgetUs: posInt(o["p99-budget-us"], "p99-budget-us"),
     minCraters: Math.max(0, Number.parseInt(o["min-craters"], 10) || 0),
+    minDebris: Math.max(0, Number.parseInt(o["min-debris"], 10) || 0),
+    maxFullPerJoin: Math.max(0, Number(o["max-full-per-join"]) || 0),
     logDir: o["log-dir"],
     transport: o.transport,
   };
@@ -217,6 +225,11 @@ function check(name, ok, detail) {
   console.log(`${ok ? "PASS" : "FAIL"}  ${name}${detail ? ` - ${detail}` : ""}`);
 }
 
+/** An informational line (not a check). */
+function note(text) {
+  console.log(`      ${text}`);
+}
+
 async function httpChecks(base, webRoot) {
   const indexPath = join(webRoot, "index.html");
   if (!existsSync(indexPath)) {
@@ -286,6 +299,16 @@ function checkBots(bots, exit, opts) {
   // Joins include rejoins after a match restart (runs longer than a match).
   const [, j, , disc, , inputs, snaps] = joins.map(Number);
   check(`all ${opts.count} bots joined, none dropped`, j >= opts.count && disc === 0, `joins ${j}, disconnects ${disc}`);
+  const kinds = text.match(/snapshots \d+ \((\d+) delta, (\d+) full, (\d+) stale\)/);
+  if (kinds) {
+    const full = Number(kinds[2]);
+    note(`snapshots: ${kinds[1]} delta, ${full} full (${(full / Math.max(1, j)).toFixed(2)} per join), ${kinds[3]} stale`);
+    if (opts.maxFullPerJoin > 0) {
+      check(`at most ${opts.maxFullPerJoin} full snapshot(s) per join`, full <= opts.maxFullPerJoin * j, `${full} full snapshots for ${j} joins`);
+    }
+  } else if (opts.maxFullPerJoin > 0) {
+    check("bots summary: snapshot kinds parsed", false, "no '(delta, full, stale)' in the totals line");
+  }
   const pe = text.match(/protocol errors (\d+), desyncs (\d+)/);
   check("bots saw no protocol errors or desyncs", !!pe && pe[1] === "0" && pe[2] === "0", pe ? pe[0] : "line missing");
   // 30 Hz snapshots: expect at least a third of the ideal count.
@@ -317,6 +340,17 @@ function checkServer(server, exit, opts) {
   const worst = Math.max(...p99s);
   check(`tick p99 < ${opts.p99BudgetUs} us in every window`, worst < opts.p99BudgetUs,
     `worst ${worst} us, max ${Math.max(...active.map((w) => num(w.max_us)))} us over ${active.length} windows`);
+  // Peak within each window (debris_peak), else the end-of-window sample.
+  const debrisOf = (w) => ("debris_peak" in w ? num(w.debris_peak) : num(w.debris));
+  const debris = Math.max(...active.map(debrisOf));
+  if (opts.minDebris > 0) {
+    check(`debris reached ${opts.minDebris} pieces`, debris >= opts.minDebris, `peak ${debris} networked debris pieces`);
+  } else {
+    note(`peak ${debris} networked debris pieces`);
+  }
+  // Tick p99 while the debris was at its peak.
+  const atCap = active.filter((w) => debrisOf(w) >= Math.max(1, debris));
+  if (atCap.length) note(`windows at peak debris: ${atCap.length}, worst p99 ${Math.max(...atCap.map((w) => num(w.p99_us)))} us`);
   const skipped = num(final.skipped_ticks);
   check("no skipped ticks", skipped === 0, `${final.skipped_ticks} skipped`);
   const peak = Math.max(...active.map((w) => num(w.players)));

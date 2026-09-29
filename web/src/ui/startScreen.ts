@@ -12,6 +12,8 @@ export interface StartOptions {
   shareCode: string | null;
   horizonAssist: boolean;
   name: string;
+  /** Ship type to fly first (ls-sim ShipType index; the rule set may refuse it). */
+  shipType: number;
 }
 
 /** Full validation (checksum, generator version) from ls-wasm; the format check runs first. */
@@ -26,6 +28,22 @@ interface Stored {
   shareCode?: string;
   horizonAssist?: boolean;
   name?: string;
+  shipType?: number;
+}
+
+/** Ship types offered on the start screen, by ls-sim ShipType index. */
+export const START_SHIPS: readonly { name: string; role: string }[] = [
+  { name: "Skitter", role: "fast and fragile, 1 secondary" },
+  { name: "Tinker", role: "all-rounder" },
+  { name: "Hauler", role: "tough and slow, most secondaries" },
+  { name: "Tug", role: "support, passes scrap" },
+];
+/** Tinker. */
+export const DEFAULT_SHIP = 1;
+
+/** A stored ship type index, or the Tinker when missing or out of range. */
+export function readShipType(v: unknown): number {
+  return typeof v === "number" && Number.isInteger(v) && v >= 0 && v < START_SHIPS.length ? v : DEFAULT_SHIP;
 }
 
 function loadStored(): Stored {
@@ -84,6 +102,12 @@ export function showStartScreen(parent: HTMLElement, validate?: CodeValidator): 
                maxlength="${SHARE_CODE_PRINTED_LEN + 6}" placeholder="LSxx-xxxx-xxxx-… (empty = server's / random world)" />
       </label>
       <p class="field-error code-error" role="alert"></p>
+      <label class="field">
+        <span>Ship</span>
+        <select name="ship">
+          ${START_SHIPS.map((s, i) => `<option value="${i}">${s.name} · ${s.role}</option>`).join("")}
+        </select>
+      </label>
       <label class="check">
         <input name="assist" type="checkbox" />
         <span>Horizon assist (slowly levels your roll)</span>
@@ -95,8 +119,8 @@ export function showStartScreen(parent: HTMLElement, validate?: CodeValidator): 
       <p class="controls-hint">
         Online plays the world the server runs; a share code you enter is used for practice.
         Mouse look · W/S thrust · A/D strafe · Space/Ctrl (or C) up/down · Q/E roll ·
-        Shift boost · mouse buttons fire · 1-4 weapons · F overdrive · R scavenge · H horizon assist ·
-        Tab scoreboard · F3 debug overlay
+        Shift boost · mouse buttons fire · 1-9, 0 and the wheel pick primaries · X secondaries · G gadget ·
+        V paint colour · B ship bay · F overdrive · R scavenge · H horizon assist · Tab scoreboard · F3 debug overlay
       </p>
     </form>`;
   parent.appendChild(root);
@@ -105,6 +129,8 @@ export function showStartScreen(parent: HTMLElement, validate?: CodeValidator): 
   const nameInput = form.elements.namedItem("name") as HTMLInputElement;
   const codeInput = form.elements.namedItem("code") as HTMLInputElement;
   const assistInput = form.elements.namedItem("assist") as HTMLInputElement;
+  const shipInput = form.elements.namedItem("ship") as HTMLSelectElement;
+  shipInput.value = String(readShipType(stored.shipType));
   const error = root.querySelector(".code-error") as HTMLElement;
   nameInput.value = stored.name ?? DEFAULT_NAME;
   codeInput.value = stored.shareCode ?? "";
@@ -133,8 +159,14 @@ export function showStartScreen(parent: HTMLElement, validate?: CodeValidator): 
         shareCode: check.code,
         horizonAssist: assistInput.checked,
         name: cleanName(nameInput.value),
+        shipType: readShipType(Number(shipInput.value)),
       };
-      saveStored({ shareCode: check.code ?? "", horizonAssist: options.horizonAssist, name: options.name });
+      saveStored({
+        shareCode: check.code ?? "",
+        horizonAssist: options.horizonAssist,
+        name: options.name,
+        shipType: options.shipType,
+      });
       root.remove();
       resolve(options);
     });

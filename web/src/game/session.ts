@@ -9,6 +9,16 @@ import type { GameHandle, HudStateHandle, WasmApi } from "../wasm/api.ts";
 import { connectTransport, transportLabel } from "../net/connect.ts";
 import { ControlState, type ControlSettings } from "./controls.ts";
 import {
+  emptyGadget,
+  parseCharge,
+  parseCues,
+  parseShipChoices,
+  type ChargeMeter,
+  type Cue,
+  type GadgetState,
+  type ShipChoice,
+} from "./mechanics.ts";
+import {
   parseDebugStats,
   parseMatchInfo,
   parseScoreboard,
@@ -70,6 +80,16 @@ export interface FrameResult {
   hud: Partial<HudValues>;
   /** New kill-feed lines. */
   feed: string[];
+  /** Game cues since the last frame (effects, banners). */
+  cues: Cue[];
+  /** Charge in progress (Fusion Charger, Polite Laser), for the charge meter. */
+  charge: ChargeMeter | null;
+  /** The own gadget. */
+  gadget: GadgetState;
+  /** Own Paint Thrower colour (1 red, 2 blue, 3 yellow) while it is the selected primary; 0 otherwise. */
+  paintColor: number;
+  /** Seconds until the own weapons are back online (Borrowed Time), 0 = online. */
+  weaponsOffline: number;
   /** Set once when the online session ends (server closed, connection lost, desync). */
   disconnected: string | null;
   /** With `disconnected`: the server finished the match and starts a new one (rejoin). */
@@ -130,8 +150,14 @@ export class GameSession {
   readonly visuals: readonly VisualDef[];
   /** Server `Disconnect` reason that means "match over, rejoin" (see ls_game::MATCH_RESTART_REASON). */
   readonly restartReason: string | null;
+  /** Gadget string ids by gadget id (cloak shimmer, shield bubble). */
+  gadgetIds: readonly string[] = [];
   private ended: string | null = null;
   private disposed = false;
+  /** Parsed ship choices (see shipChoices()); null = refresh. */
+  private choices: ShipChoice[] | null = null;
+  /** Own ship alive at the previous frame (a change refreshes the ship choices). */
+  private wasAlive: boolean | null = null;
   /** Monotonic clock in ms (times pings for the debug overlay). */
   clock: () => number = () => performance.now();
 
@@ -150,11 +176,17 @@ export class GameSession {
     this.controls = new ControlState(horizonAssist);
   }
 
-  /** Offline practice on `code` (null = a fresh random level). */
-  static practice(api: WasmApi, code: string | null, horizonAssist = true): GameSession {
+  /** Offline practice on `code` (null = a fresh random level), flying `shipType` if given. */
+  static practice(api: WasmApi, code: string | null, horizonAssist = true, shipType?: number): GameSession {
     const [lo, hi] = entropy();
     const level = code ?? api.randomShareCode(lo, hi, 45, 35);
-    return new GameSession(api.Game.practice(level, PRACTICE_DUMMIES), null, sceneNames(api), horizonAssist);
+    const game =
+      shipType !== undefined && api.Game.practiceAs
+        ? api.Game.practiceAs(level, PRACTICE_DUMMIES, shipType)
+        : api.Game.practice(level, PRACTICE_DUMMIES);
+    const session = new GameSession(game, null, sceneNames(api), horizonAssist);
+    session.gadgetIds = api.gadgetIds?.() ?? [];
+    return session;
   }
 
   /**
@@ -168,13 +200,17 @@ export class GameSession {
     horizonAssist = true,
     open: LinkOpener = (u) => connectTransport(u),
     controls?: ControlSettings,
+    shipType?: number,
   ): Promise<GameSession> {
     const link = await open(url);
     try {
-      link.send(api.helloPacket(name, -1));
+      const hello =
+        shipType !== undefined && api.helloPacketAs ? api.helloPacketAs(name, -1, shipType) : api.helloPacket(name, -1);
+      link.send(hello);
       const welcome = await link.nextPacket();
       const game = api.Game.fromWelcome(welcome);
       const session = new GameSession(game, link, sceneNames(api), horizonAssist, api.matchRestartReason());
+      session.gadgetIds = api.gadgetIds?.() ?? [];
       if (controls) session.controls.settings = { ...controls };
       return session;
     } catch (err) {
@@ -258,17 +294,74 @@ export class GameSession {
       for (const p of out) if (p instanceof Uint8Array) this.link.send(p, true);
     }
 
+    const pose = parsePose(this.game.localPose());
+    const alive = pose ? pose.alive : null;
+    if (alive !== this.wasAlive) {
+      this.wasAlive = alive;
+      this.choices = null;
+    }
     return {
-      pose: parsePose(this.game.localPose()),
+      pose,
       ships: parseShips(this.game.remoteShips()),
       projectiles: parseProjectiles(this.game.projectiles()),
       entities: parseEntities(this.game.entities(), this.names.entityKinds),
       players: parsePlayers(this.game.playerInfo(), this.game.playerNames()),
       hud: { ...hudValues(this.game.hud()), horizonAssist: this.controls.horizonAssist, loadout: this.loadout() },
       feed: this.game.takeFeed(),
+      cues: parseCues(this.game.takeCues?.()),
+      charge: parseCharge(this.game.charge?.()),
+      gadget: this.gadget(),
+      paintColor: this.game.paintColor ?? 0,
+      weaponsOffline: this.game.weaponsOfflineSecs ?? 0,
       disconnected,
       matchRestart,
     };
+  }
+
+  /** The own gadget (name, on/off, cooldown). */
+  gadget(): GadgetState {
+    const h = this.disposed ? undefined : this.game.gadget?.();
+    if (!h) return emptyGadget();
+    try {
+      return {
+        id: h.id,
+        key: h.key,
+        name: h.name,
+        active: h.active,
+        toggle: h.toggle,
+        cooldownLeft: h.cooldownLeft,
+        cooldownSecs: h.cooldownSecs,
+        energyCost: h.energyCost,
+        drainPerSec: h.drainPerSec,
+      };
+    } finally {
+      h.free();
+    }
+  }
+
+  /** Ship types with numbers, rule set permission and loadout preview. */
+  shipChoices(): ShipChoice[] {
+    if (this.disposed) return [];
+    // Cached: the choices change only on a pick or when the ship dies or
+    // respawns (the new type flies then), not every frame.
+    this.choices ??= parseShipChoices(this.game.shipChoices?.());
+    return this.choices;
+  }
+
+  /**
+   * Picks the ship type for the next respawn (online: sends SelectShip
+   * reliably). Returns an error text, or null on success.
+   */
+  selectShip(shipType: number): string | null {
+    if (this.disposed || !this.game.selectShip) return "Ship selection is not available";
+    this.choices = null;
+    try {
+      const packet = this.game.selectShip(shipType);
+      if (packet && this.link && this.ended === null) this.link.send(packet, false);
+      return null;
+    } catch (err) {
+      return err instanceof Error ? err.message : String(err);
+    }
   }
 
   /**

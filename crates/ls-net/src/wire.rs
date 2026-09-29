@@ -12,6 +12,7 @@
 //!
 //! [`Quantizer::pack_snapshot`] and [`Quantizer::unpack_snapshot`] convert.
 
+use ls_math::terrain::paint_color;
 use ls_math::{Quat, TerrainEdit, Vec3};
 
 use crate::bits::{BitReader, BitWriter};
@@ -269,6 +270,12 @@ pub struct PackedSnapshot {
     /// units of `2^-MOTION_SCALE_SHIFT`. Zero disables prediction (deltas
     /// stay exact, only larger). [`Quantizer::pack_snapshot`] fills it.
     pub ship_motion: [u32; 3],
+    /// The same for projectiles (packed position steps one packed
+    /// projectile velocity step moves per tick, see
+    /// [`Quantizer::projectile_motion_scale`](crate::Quantizer::projectile_motion_scale));
+    /// [`Quantizer::pack_snapshot`] fills it only when the snapshot carries
+    /// projectiles.
+    pub projectile_motion: [u32; 3],
 }
 
 impl PackedSnapshot {
@@ -321,32 +328,37 @@ pub struct TerrainEditBits {
     pub radius: u32,
     /// Paint team for paint, state bits for surface states (0 for geometry edits).
     pub team: u8,
+    /// Paint colour id for paint (`0..4`, `ls_math::terrain::PAINT_*`; 0 for
+    /// every other kind).
+    pub color: u8,
     /// Expiry tick of surface states (0 for every other kind).
     pub until: u32,
 }
 
 impl From<TerrainEdit> for TerrainEditBits {
     fn from(e: TerrainEdit) -> Self {
-        let (kind, c, r, team, until) = match e {
-            TerrainEdit::SubtractSphere { center, radius } => (0, center, radius, 0, 0),
-            TerrainEdit::AddSphere { center, radius } => (1, center, radius, 0, 0),
+        let (kind, c, r, team, color, until) = match e {
+            TerrainEdit::SubtractSphere { center, radius } => (0, center, radius, 0, 0, 0),
+            TerrainEdit::AddSphere { center, radius } => (1, center, radius, 0, 0, 0),
             TerrainEdit::Paint {
                 center,
                 radius,
                 team,
-            } => (2, center, radius, team, 0),
+                color,
+            } => (2, center, radius, team, paint_color(color), 0),
             TerrainEdit::Surface {
                 center,
                 radius,
                 states,
                 until,
-            } => (3, center, radius, states, until),
+            } => (3, center, radius, states, 0, until),
         };
         TerrainEditBits {
             kind,
             center: c.to_bits(),
             radius: r.to_bits(),
             team,
+            color,
             until,
         }
     }
@@ -373,6 +385,7 @@ impl From<TerrainEditBits> for TerrainEdit {
                 center,
                 radius,
                 team: e.team,
+                color: paint_color(e.color),
             },
         }
     }
@@ -381,9 +394,9 @@ impl From<TerrainEditBits> for TerrainEdit {
 /// Minimum encoded size of a terrain edit in bits (geometry edit).
 pub(crate) const EDIT_MIN_BITS: usize = 2 + 4 * 32;
 
-/// Terrain edit: 2-bit kind, center and radius as raw `f32`, 8-bit team for
-/// paint, 8-bit states and 32-bit expiry tick for surface states (130, 138
-/// or 170 bits).
+/// Terrain edit: 2-bit kind, center and radius as raw `f32`, 8-bit team and
+/// 2-bit colour for paint, 8-bit states and 32-bit expiry tick for surface
+/// states (130, 140 or 170 bits).
 pub(crate) fn write_edit(w: &mut BitWriter, e: &TerrainEditBits) {
     w.write_bits(e.kind as u64, 2);
     for c in e.center {
@@ -392,6 +405,9 @@ pub(crate) fn write_edit(w: &mut BitWriter, e: &TerrainEditBits) {
     w.write_u32(e.radius);
     if e.kind >= 2 {
         w.write_u8(e.team);
+    }
+    if e.kind == 2 {
+        w.write_bits(paint_color(e.color) as u64, 2);
     }
     if e.kind == 3 {
         w.write_u32(e.until);
@@ -410,12 +426,14 @@ pub(crate) fn read_edit(r: &mut BitReader) -> Result<TerrainEditBits, DecodeErro
         return Err(DecodeError::Invalid("negative edit radius"));
     }
     let team = if kind >= 2 { r.read_u8()? } else { 0 };
+    let color = if kind == 2 { r.read_bits(2)? as u8 } else { 0 };
     let until = if kind == 3 { r.read_u32()? } else { 0 };
     Ok(TerrainEditBits {
         kind,
         center,
         radius: radius.to_bits(),
         team,
+        color,
         until,
     })
 }
@@ -522,6 +540,13 @@ impl Quantizer {
             scores: s.scores.clone(),
             match_ticks_left: s.match_ticks_left,
             ship_motion: self.ship_motion_scale(),
+            // Only snapshots with projectiles pay for the scale (a delta
+            // sends it again when it changes against its baseline).
+            projectile_motion: if s.projectiles.is_empty() {
+                [0; 3]
+            } else {
+                self.projectile_motion_scale()
+            },
         }
     }
 
@@ -554,6 +579,9 @@ pub mod buttons {
     pub const OVERDRIVE: u16 = 1 << 4;
     pub const HORIZON_ASSIST: u16 = 1 << 5;
     pub const GADGET: u16 = 1 << 6;
+    /// V: weapon mode of the selected primary (press edge; Paint Thrower
+    /// colour).
+    pub const WEAPON_MODE: u16 = 1 << 7;
 }
 
 /// One input command for one simulation tick, already in wire units
@@ -873,11 +901,12 @@ mod tests {
                 center: Vec3::new(5.0, 6.0, 7.0),
                 radius: 2.0,
                 team: 1,
+                color: ls_math::terrain::PAINT_YELLOW,
             },
             TerrainEdit::Surface {
                 center: Vec3::new(8.0, 9.0, 10.0),
                 radius: 1.5,
-                states: 5,
+                states: 5 | ls_math::SurfaceStates::SCORCH.bits(),
                 until: 0xdead_beef,
             },
         ];
@@ -885,7 +914,7 @@ mod tests {
         for e in edits {
             write_edit(&mut w, &e.into());
         }
-        assert_eq!(w.bit_len(), 130 + 130 + 138 + 170);
+        assert_eq!(w.bit_len(), 130 + 130 + 140 + 170);
         let bytes = w.finish();
         let mut r = BitReader::new(&bytes);
         for e in edits {

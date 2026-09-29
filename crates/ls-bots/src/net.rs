@@ -189,7 +189,7 @@ async fn play_session(
         Ok(Err(e)) => return SessionEnd::ConnectFailed(e),
         Err(_) => return SessionEnd::ConnectFailed("connect timed out".into()),
     };
-    let hello = Message::Hello(ls_game::client_hello(cfg.name.as_str(), None, None));
+    let hello = Message::Hello(crate::bot::bot_hello(cfg.name.as_str(), seed));
     let bytes = match hello.encode() {
         Ok(b) => b,
         Err(e) => return protocol_error(stats, format!("cannot encode Hello: {e}")),

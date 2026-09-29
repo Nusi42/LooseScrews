@@ -118,6 +118,7 @@ pub fn golden_hashes(code: &ShareCode) -> Result<GoldenHashes, WorldgenError> {
         center: hit,
         radius: 4.0,
         team: 1,
+        color: ls_math::terrain::PAINT_PLAIN,
     }));
     dirty.sort();
     dirty.dedup();

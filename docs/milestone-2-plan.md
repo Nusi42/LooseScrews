@@ -42,9 +42,9 @@ The design doc gives behavior but not every number; these defaults live in `data
 | Debris | Server-simulated spheres (radius 0.3–1.5 u) with damping, bounce and a cap of 64 networked pieces; small cosmetic chips are client-only |
 | Surface states | Stored per surface cell next to paint: hot (10 s, visual), charged (15 s, drains 5 energy/s from ships scraping it), glow (30 s, light) |
 | Rule set codes | Rule sets serialize to a compact code like share codes (`LR` prefix); invite links carry world + rule set codes |
+| Paint Thrower colours | Paint always claims the cell for the shooter's team (Paint the Void scoring is unchanged); the V key cycles the effect colour stored with it: red = bouncy (ships rebound at 0.9 restitution), blue = slippery (no wall friction, speed kept), yellow = sticky (ships touching it drop to 40% speed). Painting over replaces both team and colour |
 | Data hash | `Hello` carries a hash of all loaded `data/` files; the server rejects mismatches with a clear message |
 | Time to kill (wave B) | Primaries tuned to 3-8 s on a Tinker at point blank: Scatter Laser 3 per bolt, Plasma Repeater 3 (1.5 s reach), Corkscrew 0.5 s between volleys (2 s reach), Rivet Gun 10/s at half a scrap per rivet, Railspike 1.5 s between shots. The Scrap Laser at level 6 (1.75 s) is above the band by the table's numbers, on purpose: it takes five upgrade pickups |
-| Paint Thrower colours | The design doc's paint effects (red bouncy, blue slippery, yellow sticky) need a colour choice beyond the team colour; they move to M3. In M2 the Paint Thrower paints the team colour for Paint the Void |
 | Balance list | `ls-server --balance-list` bans apply on top of any rule set; its tuning multiplies the rule set's (rounded to twentieths), so a list meant to weaken a weapon never strengthens it; its shield overrides replace the rule set's |
 | Level connectivity | Generator version 2 carves a network of caverns and 4 u tunnels linking both team ends into every level; spawns and pickups must reach it (`ls_game::setup::CONNECT_MARGIN`) |
 

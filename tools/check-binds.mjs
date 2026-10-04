@@ -26,6 +26,9 @@ export const ALLOWLIST = {
     "/// Generates the certificate and binds the UDP socket. `0.0.0.0` binds",
     "let want_dual = addr.ip() == IpAddr::V4(Ipv4Addr::UNSPECIFIED);",
   ],
+  // Directory hosting default and its doc comment.
+  "crates/ls-directory/src/lib.rs": ['pub const DEFAULT_BIND: &str = "0.0.0.0:7780";'],
+  "crates/ls-directory/src/main.rs": ["//! ls-directory --bind 0.0.0.0:7780"],
   // Bots against a remote server (loopback servers get loopback_bind).
   "crates/ls-bots/src/transport.rs": ["None => builder.with_bind_default(),"],
   // This checker.

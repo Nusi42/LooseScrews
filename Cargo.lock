@@ -672,6 +672,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "ls-directory"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "getrandom 0.4.3",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "ls-game"
 version = "0.1.0"
 dependencies = [

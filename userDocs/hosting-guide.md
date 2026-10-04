@@ -24,6 +24,7 @@ design that the server doesn't have yet are listed under
 - [Lobby, match end and rotation](#lobby-match-end-and-rotation)
 - [Stopping the server](#stopping-the-server)
 - [Troubleshooting](#troubleshooting)
+- [Server directory (optional)](#server-directory-optional)
 - [Not in this build yet](#not-in-this-build-yet)
 
 ## What the server does
@@ -738,6 +739,33 @@ stopped with a hard kill (closing the terminal window, Task Manager, `kill -9`) 
 | Players time out when their tab is hidden | Browsers slow down background tabs to about one update per second, which still keeps the connection alive. A computer going to sleep drops the connection. |
 | Stuttering, `tick p99 over budget` warnings | Use a release build, and check CPU load on the host. With `RUST_LOG=debug` the log itself adds load. |
 | Nobody gets to the next match | See the log for "could not build the next room; trying again". Players can reload the page to rejoin. |
+
+## Server directory (optional)
+
+`ls-directory` is a small, separate service that collects game servers for the in-game server
+list. You don't need it: players can always join a server by its link or address. Run one if you
+want a server list for your community:
+
+```sh
+cargo run -p ls-directory --release -- --bind 0.0.0.0:7780
+```
+
+It keeps everything in memory (a restart forgets the list; servers re-register within 10 s) and
+speaks plain HTTP on TCP port 7780. Browsers on an `https://` page need it behind an HTTPS reverse
+proxy.
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `--bind` | `0.0.0.0:7780` | Address and TCP port to listen on |
+| `--ttl` | 30 | Seconds a server stays listed after its last heartbeat |
+| `--heartbeat` | 10 | How often servers are asked to check in (seconds) |
+| `--max-servers` | 1000 | Most listed servers |
+| `--invite-ttl` | 30 | Seconds a relayed duel invite stays available |
+| `--max-invites` | 10000 | Most pending invites |
+| `--rate` / `--burst` | 10 / 40 | Requests per second (and burst) per client IP; raise them behind a reverse proxy |
+
+`http://<host>:7780/servers` shows the current list as JSON. Game servers registering with it
+(`ls-server --directory ...`) and the browser's server list are not in this build yet.
 
 ## Not in this build yet
 

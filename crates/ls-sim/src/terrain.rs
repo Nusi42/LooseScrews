@@ -329,6 +329,88 @@ pub fn world_normal<T: TerrainQuery + ?Sized>(t: &T, p: Vec3) -> Vec3 {
     }
 }
 
+/// Smallest field slope [`surface_estimate`] divides by: where the field is
+/// flatter than this (degenerate gradients, kinks), the estimate is at most
+/// `1 / MIN_CONTACT_SLOPE` times the bound.
+pub const MIN_CONTACT_SLOPE: f32 = 0.2;
+
+/// Estimated distance to the surface and the open-space normal near a point
+/// (see [`surface_estimate`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SurfaceEstimate {
+    /// First-order distance estimate to the surface (negative inside rock).
+    pub distance: f32,
+    /// Unit normal pointing into open space (the gradient of [`world_sdf`]).
+    pub normal: Vec3,
+}
+
+/// First-order distance estimate `d / |grad d|` of [`world_sdf`] at `p`, with
+/// its normal (one central-difference gradient: 6 extra field evaluations).
+///
+/// The terrain field is only a lower bound on the distance (the cave
+/// generator's noise reports about 0.3 of it), so a sphere that treated `d`
+/// as the distance would stop well short of the visible rock. Dividing by
+/// the local slope (clamped to `[MIN_CONTACT_SLOPE, 1]`, so the estimate is
+/// never below the bound) gives the true distance to first order; exact
+/// fields (slope 1) are unchanged. Inside rock (`d <= 0`) the bound itself is
+/// returned, so the push-out never overshoots on a clamped, flat field.
+///
+/// Deterministic: plain IEEE arithmetic and `sqrt` only. Sphere contact uses
+/// it ([`sphere_contact_distance`], `ship::move_sphere_with`); sphere tracing
+/// keeps the bound. See `docs/architecture/contracts.md` (terrain distance).
+pub fn surface_estimate<T: TerrainQuery + ?Sized>(t: &T, p: Vec3) -> SurfaceEstimate {
+    estimate_from(t, p, world_sdf(t, p))
+}
+
+/// [`surface_estimate`] with `d = world_sdf(t, p)` already evaluated.
+fn estimate_from<T: TerrainQuery + ?Sized>(t: &T, p: Vec3, d: f32) -> SurfaceEstimate {
+    let e = ls_math::terrain::NORMAL_EPS;
+    let f = |q: Vec3| world_sdf(t, q);
+    let g = Vec3::new(
+        f(p + Vec3::new(e, 0.0, 0.0)) - f(p - Vec3::new(e, 0.0, 0.0)),
+        f(p + Vec3::new(0.0, e, 0.0)) - f(p - Vec3::new(0.0, e, 0.0)),
+        f(p + Vec3::new(0.0, 0.0, e)) - f(p - Vec3::new(0.0, 0.0, e)),
+    );
+    let len = g.length();
+    let normal = if len > 0.0 && len.is_finite() {
+        g / len
+    } else {
+        Vec3::Y
+    };
+    let slope = (len / (2.0 * e)).clamp(MIN_CONTACT_SLOPE, 1.0);
+    let distance = if d > 0.0 { d / slope } else { d };
+    SurfaceEstimate { distance, normal }
+}
+
+/// The surface estimate a sphere contact test needs, or `None` when the
+/// bound [`world_sdf`] already proves the point at least `reach` (the sphere
+/// radius plus any margin) from the rock: one field evaluation then, so open
+/// flight costs nothing extra.
+pub fn sphere_contact<T: TerrainQuery + ?Sized>(
+    t: &T,
+    p: Vec3,
+    reach: f32,
+) -> Option<SurfaceEstimate> {
+    let d = world_sdf(t, p);
+    if d >= reach {
+        None
+    } else {
+        Some(estimate_from(t, p, d))
+    }
+}
+
+/// Distance from `p` to the surface for a sphere test whose answer only
+/// matters below `reach`: the bound when it is `>= reach`, else the
+/// [`surface_estimate`] (see [`sphere_contact`]).
+pub fn sphere_contact_distance<T: TerrainQuery + ?Sized>(t: &T, p: Vec3, reach: f32) -> f32 {
+    let d = world_sdf(t, p);
+    if d >= reach {
+        d
+    } else {
+        estimate_from(t, p, d).distance
+    }
+}
+
 /// Earliest `t` in `[0, max]` where the segment `origin + dir * t` (unit `dir`)
 /// enters the sphere, or `None`. A segment starting inside the sphere hits at 0.
 pub fn segment_sphere(origin: Vec3, dir: Vec3, max: f32, center: Vec3, radius: f32) -> Option<f32> {

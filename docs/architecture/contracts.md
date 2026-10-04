@@ -60,6 +60,32 @@ The signed distance field is **negative inside rock, positive in open space**; t
 is the zero level set. `sdf` must be 1-Lipschitz (a true distance or a lower bound on it),
 because the default raycast sphere-traces it.
 
+### Terrain distance: bound vs. contact estimate
+
+`sdf` (and `ls_sim::terrain::world_sdf`, which adds the solid level bounds) is a **lower
+bound** on the distance, not the distance: the cave generator's noise fields report about
+0.3 of it (noise divided by its worst-case slope `NOISE_LIPSCHITZ = 3.6`), while boxes,
+planes and crater/add-rock spheres are exact. Code uses it in two ways:
+
+- **Sphere tracing and "is it clear?" proofs** use the bound as is: stepping by it never
+  crosses the surface, and `d >= r` proves a sphere of radius `r` clear. Projectile terrain
+  hits are sphere-traced rays (exact at the hit; a projectile's radius only applies to ships
+  and entities).
+- **Sphere contact** (ships, debris, decoys: `ship::move_sphere_with`; paint touching;
+  the near-miss scrape gap) uses the first-order estimate `d / |grad d|`
+  (`ls_sim::terrain::surface_estimate`, `sphere_contact`, `sphere_contact_distance`), but
+  only when the bound is below the test's reach (radius plus margin), so open flight costs one
+  evaluation. The gradient is one central difference (`NORMAL_EPS`, 6 evaluations) that also
+  gives the contact normal; the slope is clamped to `[MIN_CONTACT_SLOPE = 0.2, 1]` (never
+  below the bound), and inside rock (`d <= 0`) the bound is used. Plain IEEE ops and `sqrt`
+  only (deterministic, checked on wasm32 by `ship::tests::bound_field_contact_golden_hash`).
+  A hull at contact sits within about 0.01 u of its radius from the true surface in cavern
+  worlds (`crates/ls-game/tests/contact_fit.rs`).
+- Bot navigation (`ls-bots`, the clearance grid in `nav.rs`) keeps the bound: conservative, bots stay out of
+  gaps a human can now fly through.
+
+A terrain that adds a new field must keep it 1-Lipschitz; it does not have to be exact.
+
 ### `TerrainEdit`
 
 ```rust

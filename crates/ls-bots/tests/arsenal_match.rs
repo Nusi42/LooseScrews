@@ -68,7 +68,12 @@ struct Client {
     ignore = "a 4 minute 8-bot match with whole-level generation; run with --release"
 )]
 fn bots_fire_the_whole_arsenal() {
-    let code = ShareCode::new(0x5a4d_b0c5_a115_0001, Sliders::default());
+    // One level, one chaotic 8-bot match: whether a bot happens to pick up
+    // and drop a mine depends on every trajectory. VQ0 (ships touch the
+    // visible rock, not a shell 1-2 u out) changed them, and on the old seed
+    // (`..._0001`, one mine in the M2 runs) no bot dropped one any more; the
+    // next seed drops mines with and without VQ0 (6 and 2).
+    let code = ShareCode::new(0x5a4d_b0c5_a115_0002, Sliders::default());
     let mut mc = MatchConfig::paint_the_void(code);
     mc.rules = RuleSet::sandbox_all_weapons();
     let ModeRules::PaintTheVoid(rules) = &mut mc.rules.mode else {

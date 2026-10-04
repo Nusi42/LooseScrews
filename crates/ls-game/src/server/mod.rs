@@ -346,6 +346,8 @@ impl Room {
         // (they change nothing a late joiner can see).
         let (edit_log, edit_count) = self.terrain.welcome_log(self.tick);
         let welcome = Welcome {
+            epoch: 0,
+            room_code: String::new(),
             protocol_version: PROTOCOL_VERSION,
             player_id: id,
             team,
@@ -650,6 +652,7 @@ impl Room {
             let from = (c.known_edits as usize).min(log.len());
             let to = (from + self.cfg.max_edits_per_snapshot).min(log.len());
             let mut snap = Snapshot {
+                mode: Default::default(),
                 tick,
                 ack_input: c.ack_input as u32,
                 edit_base: from as u32,
@@ -677,6 +680,7 @@ impl Room {
                 ls_net::settle_projectiles(&mut packed, b, ls_net::SETTLE_TOLERANCE);
             }
             let msg = Message::Snapshot(Box::new(SnapshotMsg {
+                epoch: 0,
                 baseline,
                 snapshot: packed.clone(),
             }));
@@ -825,6 +829,8 @@ fn inventory_msg(tick: u32, s: &ShipState) -> InventoryMsg {
             .weapons
             .iter()
             .map(|w| NetWeapon {
+                shots: 0,
+                state: 0,
                 weapon: w.weapon.0,
                 ammo: w.ammo.min(u16::MAX as u32) as u16,
                 level: w.level,
@@ -887,19 +893,7 @@ fn wire_id(clients: &BTreeMap<u8, ClientState>, player: PlayerId) -> Option<u8> 
 }
 
 fn message_name(m: &Message) -> &'static str {
-    match m {
-        Message::Hello(_) => "Hello",
-        Message::Welcome(_) => "Welcome",
-        Message::Reject(_) => "Reject",
-        Message::Input(_) => "Input",
-        Message::Snapshot(_) => "Snapshot",
-        Message::Events(_) => "Events",
-        Message::Ping { .. } => "Ping",
-        Message::Pong { .. } => "Pong",
-        Message::Disconnect { .. } => "Disconnect",
-        Message::SelectShip { .. } => "SelectShip",
-        Message::Inventory(_) => "Inventory",
-    }
+    m.name()
 }
 
 /// The moves that undo lag compensation after a step: each compensated ship

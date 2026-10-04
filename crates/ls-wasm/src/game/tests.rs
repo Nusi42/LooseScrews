@@ -328,6 +328,7 @@ fn online_edits_from_snapshots_dirty_loaded_chunks() {
         radius: 4.0,
     };
     let packet = Message::Snapshot(Box::new(ls_net::SnapshotMsg {
+        epoch: 0,
         baseline: None,
         snapshot: ls_net::PackedSnapshot {
             tick: newest + 2,
@@ -725,6 +726,7 @@ fn online_scoreboard_counts_kills_and_match_info_reports_the_end() {
     };
     let newest = o.session.latest_snapshot().unwrap().tick;
     let end = Message::Snapshot(Box::new(ls_net::SnapshotMsg {
+        epoch: 0,
         baseline: None,
         snapshot: ls_net::PackedSnapshot {
             tick: newest + 2,

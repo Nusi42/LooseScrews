@@ -559,7 +559,7 @@ fn run_weapon(
         );
         if reconcile {
             let own: Vec<NetProjectile> = w.projectiles().iter().map(net).collect();
-            p.reconcile_in(tick, &own, &terrain);
+            p.reconcile(tick, &own);
         }
         fired_log.push((tick, fired));
     }
@@ -771,8 +771,10 @@ fn charge_weapons_fire_on_release_and_polite_laser_by_itself() {
     assert_eq!(p.stats().predicted, 0);
 }
 
+/// The server's shot count (protocol 5 inventory) sets the fan phase: no
+/// phase is inferred from projectiles.
 #[test]
-fn wrong_fan_phase_is_corrected_from_a_snapshot() {
+fn fan_phase_follows_the_inventory_shot_count() {
     let t = Tables::new();
     let scatter = t.id("scatter_laser");
     let (mut w, me) = world();
@@ -783,8 +785,9 @@ fn wrong_fan_phase_is_corrected_from_a_snapshot() {
     let mut p = ShotPredictor::new(&t.rules);
     p.carry([scatter]);
     let interval = t.weapons.get(scatter).fire_interval_ticks();
+    let start = w.tick();
     let mut fired_ticks = Vec::new();
-    for i in 0..(interval + 1) {
+    for _ in 0..(interval + 1) {
         let c = InputCmd {
             tick: w.tick() + 1,
             ..cmd(Buttons::FIRE_PRIMARY.0, scatter.0 + 1)
@@ -799,31 +802,33 @@ fn wrong_fan_phase_is_corrected_from_a_snapshot() {
         if p.on_tick(tick, &ship, &c, t.fire(), &terrain) > 0 {
             fired_ticks.push(tick);
         }
-        // One snapshot, right after the first volley went out.
-        if i == 0 {
-            let own: Vec<NetProjectile> = w.projectiles().iter().map(net).collect();
-            p.reconcile_in(tick, &own, &terrain);
-        }
     }
     assert_eq!(fired_ticks.len(), 2);
-    let s = p.stats();
-    assert!(s.rephased >= 1, "{s:?}");
-    assert_eq!(s.confirmed, 3, "{s:?}");
-    // The counter follows the server: the second volley is horizontal
-    // (server shot 2) and matches the world.
+    // Both volleys were predicted with the local count (phases 0 and 1):
+    // horizontal first, which the world did not fire.
+    assert_eq!(p.shot_count(scatter), 2);
+    // The inventory from before the first shot arrives late (it was in
+    // flight): shots = 1 at `start`. Both volleys after it are rebuilt with
+    // the server's phases 1 and 2.
+    p.on_inventory(start, &[(scatter, 1)], Some(&terrain));
+    assert_eq!(p.stats().rephased, 2);
     assert_eq!(p.shot_count(scatter), 3);
-    let last = *fired_ticks.last().unwrap();
     let now = w.tick() as f64;
-    let second: Vec<_> = w
-        .projectiles()
-        .iter()
-        .filter(|x| x.spawn_tick == last)
-        .collect();
-    assert_eq!(second.len(), 3);
-    for real in second {
+    assert_eq!(w.projectiles().len(), 6);
+    for real in w.projectiles() {
         let d = nearest(&p, real.pos, now).pos_at(now).distance(real.pos);
         assert!(d < 1e-3, "{d}");
     }
+    // Every projectile is then confirmed by its prediction.
+    let own: Vec<NetProjectile> = w.projectiles().iter().map(net).collect();
+    p.reconcile(w.tick(), &own);
+    assert_eq!(p.stats().confirmed, 6, "{:?}", p.stats());
+    assert_eq!(p.stats().unpredicted, 0);
+    // A newer inventory that agrees changes nothing.
+    let last = *fired_ticks.last().unwrap();
+    p.on_inventory(last, &[(scatter, 3)], Some(&terrain));
+    assert_eq!(p.shot_count(scatter), 3);
+    assert_eq!(p.stats().rephased, 2);
 }
 
 #[test]

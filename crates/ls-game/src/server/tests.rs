@@ -773,3 +773,198 @@ fn welcome_prunes_expired_surface_edits() {
         );
     }
 }
+
+#[test]
+fn welcome_epoch_room_code_lobby_requests_and_stale_inputs() {
+    let code = ShareCode::new(77, Sliders::new(40, 30));
+    let cfg = RoomConfig { epoch: 5, ..cfg() };
+    let mut r = Room::new(MatchConfig::paint_the_void(code), cfg).unwrap();
+    r.set_room_code("R-ABC");
+    let a = r.join(&client_hello("a", None, None)).unwrap();
+    let b = r.join(&client_hello("b", None, None)).unwrap();
+    let welcomes: Vec<Welcome> = r
+        .take_outgoing()
+        .iter()
+        .filter_map(|o| ls_net::check_welcome(Message::decode(&o.bytes).ok()?).ok())
+        .collect();
+    assert_eq!(welcomes.len(), 2);
+    for w in &welcomes {
+        assert_eq!((w.epoch, w.room_code.as_str()), (5, "R-ABC"));
+    }
+    // Lobby requests are queued for the host, in order.
+    for m in [
+        Message::Ready { ready: true },
+        Message::PickTeam { team: Some(1) },
+        Message::Spectate { spectate: true },
+        Message::PickTeam { team: None },
+    ] {
+        r.handle_packet(a, &m.encode().unwrap()).unwrap();
+    }
+    assert_eq!(
+        r.take_lobby_requests(),
+        vec![
+            (a, LobbyRequest::Ready(true)),
+            (a, LobbyRequest::PickTeam(Some(1))),
+            (a, LobbyRequest::Spectate(true)),
+            (a, LobbyRequest::PickTeam(None)),
+        ]
+    );
+    assert!(r.take_lobby_requests().is_empty());
+    // An input of another epoch (the previous match's) is dropped and does
+    // not make the client ready for snapshots.
+    let mut stale = input_msg(&[1, 0], Vec3::ZERO, None);
+    if let Message::Input(m) = &mut stale {
+        m.epoch = 4;
+    }
+    r.handle_message(b, stale).unwrap();
+    assert_eq!(r.stats().stale_epoch_inputs, 1);
+    let mut fresh = input_msg(&[2, 1], Vec3::ZERO, None);
+    if let Message::Input(m) = &mut fresh {
+        m.epoch = 5;
+    }
+    r.handle_message(a, fresh).unwrap();
+    r.step();
+    r.step();
+    let snaps: Vec<(u8, u8)> = r
+        .take_outgoing()
+        .iter()
+        .filter_map(|o| match Message::decode(&o.bytes) {
+            Ok(Message::Snapshot(sm)) => Some((o.client, sm.epoch)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(snaps, vec![(a, 5)], "only the client with a current input");
+    // Lobby messages from the host: to one client or to all.
+    let lobby = Message::LobbyState(Box::new(ls_net::LobbyStateMsg {
+        phase: ls_net::LobbyPhase::Countdown,
+        phase_ticks_left: 600,
+        ..Default::default()
+    }));
+    assert!(r.send(b, &lobby));
+    assert!(!r.send(30, &lobby), "unknown client");
+    r.broadcast(&lobby);
+    let to: Vec<u8> = r.take_outgoing().iter().map(|o| o.client).collect();
+    assert_eq!(to, vec![b, a, b]);
+}
+
+#[test]
+fn inventory_carries_shots_and_weapon_state() {
+    let mut r = room();
+    let a = r.join(&client_hello("a", Some(0), None)).unwrap();
+    r.take_outgoing();
+    let pa = r.player_of(a).unwrap();
+    // Not in this rule set's pickups: carried as if picked up elsewhere.
+    let paint = r.world().weapons().find("paint_thrower").unwrap();
+    {
+        let ship = r.world_mut().ship_mut(pa).unwrap();
+        ship.weapons.push(ls_sim::WeaponState {
+            weapon: paint,
+            ammo: 0,
+            level: 1,
+            shots: 0,
+        });
+        ship.weapon_state
+            .insert(paint, ls_math::terrain::PAINT_BLUE as u32);
+        for w in &mut ship.weapons {
+            w.shots = 1000 + w.weapon.0 as u32;
+        }
+    }
+    r.handle_message(a, input_msg(&[1], Vec3::ZERO, None))
+        .unwrap();
+    r.step();
+    r.step();
+    let inv = r
+        .take_outgoing()
+        .iter()
+        .find_map(|o| match Message::decode(&o.bytes) {
+            Ok(Message::Inventory(inv)) => Some(inv),
+            _ => None,
+        })
+        .expect("inventory");
+    let pw = inv.weapons.iter().find(|w| w.weapon == paint.0).unwrap();
+    assert_eq!(pw.state, ls_math::terrain::PAINT_BLUE);
+    for w in &inv.weapons {
+        assert_eq!(w.shots, 1000 + w.weapon as u32);
+    }
+    // A shot count change alone is reported (the predictor's fan phase).
+    r.world_mut().ship_mut(pa).unwrap().weapons[0].shots += 1;
+    r.step();
+    r.step();
+    assert!(r
+        .take_outgoing()
+        .iter()
+        .any(|o| matches!(Message::decode(&o.bytes), Ok(Message::Inventory(_)))));
+}
+
+#[test]
+fn mode_state_in_snapshots_and_results_once_at_the_end() {
+    let mut r = room();
+    let a = r.join(&client_hello("a", Some(0), None)).unwrap();
+    let welcome = r
+        .take_outgoing()
+        .iter()
+        .find_map(|o| ls_net::check_welcome(Message::decode(&o.bytes).ok()?).ok())
+        .unwrap();
+    let mut s =
+        crate::client::ClientSession::from_welcome_with(&welcome, ls_sim::GameData::builtin())
+            .unwrap();
+    let deliver = |r: &mut Room, s: &mut crate::client::ClientSession| {
+        for o in r.take_outgoing() {
+            s.handle_packet(&o.bytes).unwrap();
+        }
+    };
+    r.handle_message(a, input_msg(&[1], Vec3::ZERO, None))
+        .unwrap();
+    for _ in 0..4 {
+        r.step();
+    }
+    deliver(&mut r, &mut s);
+    let m = s.mode().clone();
+    assert_eq!(m.kind, ls_sim::ModeKind::PaintTheVoid.index());
+    assert_eq!(m.phase, ls_net::mode_phase::RUNNING);
+    assert_eq!(m.teams, 2);
+    assert_eq!(m.team_scores.len(), 2);
+    assert_eq!(m.players.len(), 1);
+    assert_eq!(m.players[0].id, a);
+    assert_eq!(m, r.net_mode_state());
+    assert!(r.results().is_none());
+    // The mode ends early (as a kill target would): results go out once.
+    let end = r.world().tick();
+    r.world_mut().mode_mut().phase = ls_sim::MatchPhase::Ended { winner: Some(0) };
+    r.step();
+    let results: Vec<ls_net::MatchResultsMsg> = r
+        .take_outgoing()
+        .iter()
+        .filter_map(|o| match Message::decode(&o.bytes) {
+            Ok(Message::MatchResults(m)) => Some(*m),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].winner, 0);
+    assert_eq!(results[0].rows.len(), 1);
+    assert_eq!(results[0].rows[0].name, "a");
+    assert_eq!(Some(&results[0]), r.results());
+    for _ in 0..3 {
+        r.step();
+    }
+    deliver(&mut r, &mut s);
+    // Snapshots say where the match ended; the client freezes there.
+    assert_eq!(s.mode().phase, ls_net::mode_phase::ENDED);
+    assert_eq!(s.mode().winner, 0);
+    assert_eq!(s.mode().end_tick as u64, end);
+    assert_eq!(s.match_end_tick(), Some(end));
+    assert!(r
+        .take_outgoing()
+        .iter()
+        .all(|o| !matches!(Message::decode(&o.bytes), Ok(Message::MatchResults(_)))));
+    // A player joining the finished match gets the results after the Welcome.
+    let b = r.join(&client_hello("b", None, None)).unwrap();
+    let kinds: Vec<&'static str> = r
+        .take_outgoing()
+        .iter()
+        .filter(|o| o.client == b)
+        .map(|o| Message::decode(&o.bytes).unwrap().name())
+        .collect();
+    assert_eq!(kinds, vec!["Welcome", "MatchResults"]);
+}

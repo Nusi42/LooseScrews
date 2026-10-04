@@ -13,15 +13,16 @@ use ls_math::terrain::TerrainQuery;
 use ls_math::Vec3;
 use ls_net::message::MAX_EVENTS;
 use ls_net::{
-    check_data_hash, Channel, Hello, InputMsg, InventoryMsg, Message, NetEntity, NetEvent,
-    NetInput, NetShip, NetWeapon, Reject, RejectReason, Relevance, Snapshot, SnapshotHistory,
-    SnapshotMsg, Welcome, MAX_SHIPS, PROTOCOL_VERSION,
+    check_data_hash, Channel, Hello, InputMsg, InventoryMsg, MatchResultsMsg, Message, NetEntity,
+    NetEvent, NetInput, NetShip, NetWeapon, Reject, RejectReason, Relevance, Snapshot,
+    SnapshotHistory, SnapshotMsg, Welcome, MAX_SHIPS, PROTOCOL_VERSION,
 };
 use ls_sim::terrain::segment_sphere;
 use ls_sim::{Event, InputCmd, PlayerId, ReplicatedKind, ShipState, ShipType, World};
 
 use crate::client::INTERP_DELAY_TICKS;
 use crate::convert::{entity_to_net, events_to_net, net_to_input, projectile_to_net};
+use crate::mode::{legacy_scores, match_results, mode_view_to_net, results_to_net, Tally};
 use crate::setup::{build_match, MatchConfig};
 use crate::{GameError, GameTerrain, NetConv};
 pub use lagcomp::{Displacement, HistoryFrame, ShipHistory};
@@ -49,6 +50,10 @@ pub struct RoomConfig {
     /// query (tick 30) does not stall a tick. Tests that never reach it can
     /// turn this off; debug builds generate slowly.
     pub pregenerate: bool,
+    /// Match epoch (`Welcome::epoch`): a host that runs several matches on
+    /// the same connections gives each match a different one (wrapping), so
+    /// inputs of the previous match still in flight are dropped.
+    pub epoch: u8,
 }
 
 impl Default for RoomConfig {
@@ -62,6 +67,7 @@ impl Default for RoomConfig {
             max_input_lead: 120,
             max_edits_per_snapshot: 64,
             pregenerate: true,
+            epoch: 0,
         }
     }
 }
@@ -95,6 +101,19 @@ pub struct RoomStats {
     /// Messages that could not be encoded and were not sent (only reachable
     /// with inconsistent state; a non-zero value is a bug).
     pub encode_errors: u64,
+    /// `Input` messages of another match epoch (the previous match's,
+    /// still in flight after a transition), dropped.
+    pub stale_epoch_inputs: u64,
+}
+
+/// A lobby request from a client (`Message::Ready`, `PickTeam`,
+/// `Spectate`), queued for the host's lobby ([`Room::take_lobby_requests`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LobbyRequest {
+    Ready(bool),
+    /// Team for the next match (`None` = auto-balance).
+    PickTeam(Option<u8>),
+    Spectate(bool),
 }
 
 /// What one [`Room::step`] did.
@@ -172,6 +191,13 @@ pub struct Room {
     pending_events: Vec<NetEvent>,
     outgoing: Vec<Outgoing>,
     stats: RoomStats,
+    /// Room code sent in `Welcome` (empty for the public room).
+    room_code: String,
+    /// Kills and deaths of this match (for the results table).
+    tally: Tally,
+    /// The results, once the mode ended (sent once, and to late joiners).
+    results: Option<MatchResultsMsg>,
+    lobby_requests: Vec<(u8, LobbyRequest)>,
 }
 
 impl Room {
@@ -207,6 +233,10 @@ impl Room {
             pending_events: Vec::new(),
             outgoing: Vec::new(),
             stats: RoomStats::default(),
+            room_code: String::new(),
+            tally: Tally::default(),
+            results: None,
+            lobby_requests: Vec::new(),
         })
     }
 
@@ -251,6 +281,70 @@ impl Room {
     pub fn history(&self) -> &ShipHistory {
         &self.history
     }
+    /// Match epoch sent in `Welcome` (see [`RoomConfig::epoch`]).
+    pub fn epoch(&self) -> u8 {
+        self.cfg.epoch
+    }
+    /// Room code sent in `Welcome` (empty for the public room).
+    pub fn room_code(&self) -> &str {
+        &self.room_code
+    }
+    /// Sets the room code for the `Welcome`s sent from now on (at most
+    /// `ls_net::mode::MAX_CODE_LEN` bytes, else joins fail to encode).
+    pub fn set_room_code(&mut self, code: impl Into<String>) {
+        self.room_code = code.into();
+    }
+    /// The replicated mode state (`ls_sim::ModeView`) of the match: the
+    /// scoreboard of every mode.
+    pub fn mode_view(&self) -> ls_sim::ModeView {
+        crate::mode::mode_view(&self.world)
+    }
+    /// The mode state as snapshots carry it (wire ids).
+    pub fn net_mode_state(&self) -> ls_net::NetModeState {
+        mode_view_to_net(&self.mode_view(), |p| wire_id(&self.clients, p))
+    }
+    /// Kills and deaths so far.
+    pub fn tally(&self) -> &Tally {
+        &self.tally
+    }
+    /// The match results once the mode ended (also sent to every client as
+    /// `Message::MatchResults`, once, and to clients joining afterwards).
+    pub fn results(&self) -> Option<&MatchResultsMsg> {
+        self.results.as_ref()
+    }
+    /// The current results table (also while running), for hosts.
+    pub fn current_results(&self) -> MatchResultsMsg {
+        self.build_results()
+    }
+    /// Lobby requests (`Ready`, `PickTeam`, `Spectate`) received since the
+    /// last call, in order, with the sender's wire id.
+    pub fn take_lobby_requests(&mut self) -> Vec<(u8, LobbyRequest)> {
+        std::mem::take(&mut self.lobby_requests)
+    }
+    /// Queues a message for one client (e.g. `Message::LobbyState`).
+    /// Returns false for unknown clients or messages that cannot be encoded.
+    pub fn send(&mut self, client: u8, msg: &Message) -> bool {
+        if !self.clients.contains_key(&client) {
+            return false;
+        }
+        let before = self.stats.encode_errors;
+        self.push_message(client, msg);
+        self.stats.encode_errors == before
+    }
+    /// Queues a message for every client.
+    pub fn broadcast(&mut self, msg: &Message) {
+        let Ok(bytes) = msg.encode() else {
+            self.stats.encode_errors += 1;
+            return;
+        };
+        for &client in self.clients.keys() {
+            self.outgoing.push(Outgoing {
+                client,
+                channel: msg.channel(),
+                bytes: bytes.clone(),
+            });
+        }
+    }
     pub fn player_count(&self) -> usize {
         self.clients.len()
     }
@@ -292,8 +386,9 @@ impl Room {
     /// Adds a player for an accepted `Hello` and queues its `Welcome`
     /// (reliable). Returns the new client's wire id, or the `Reject` to send.
     ///
-    /// Team: the preferred team if it would not make that team two or more
-    /// players larger than the other, otherwise the smaller team. Ship type:
+    /// Team (team modes): the preferred team if it would not make that team
+    /// two or more players larger than the smallest team, otherwise the
+    /// world's choice (the smallest team); free-for-all ignores it. Ship type:
     /// the preferred one if the rule set allows it, otherwise the Tinker (or
     /// the first allowed type). A client built with other game data is
     /// rejected with [`RejectReason::DataMismatch`].
@@ -318,9 +413,11 @@ impl Room {
         let id = (0..self.max_players())
             .find(|i| !self.clients.contains_key(i))
             .ok_or_else(|| reject(RejectReason::ServerFull, "room is full"))?;
+        let teams = self.world.mode().teams;
         let team = hello.preferred_team.filter(|&t| {
             let count = |team: u8| self.world.ships().filter(|s| s.team == team).count();
-            t < 2 && count(t) <= count(1 - t)
+            let smallest = (0..teams).map(count).min().unwrap_or(0);
+            t < teams && count(t) <= smallest
         });
         let allowed = &self.world.resolved_rules().allowed_ship_types;
         let ship_type = hello
@@ -346,8 +443,8 @@ impl Room {
         // (they change nothing a late joiner can see).
         let (edit_log, edit_count) = self.terrain.welcome_log(self.tick);
         let welcome = Welcome {
-            epoch: 0,
-            room_code: String::new(),
+            epoch: self.cfg.epoch,
+            room_code: self.room_code.clone(),
             protocol_version: PROTOCOL_VERSION,
             player_id: id,
             team,
@@ -397,6 +494,10 @@ impl Room {
             channel: Channel::Reliable,
             bytes: welcome_bytes,
         });
+        // Joining a finished match: the results screen right away.
+        if let Some(r) = self.results.clone() {
+            self.push_message(id, &Message::MatchResults(Box::new(r)));
+        }
         Ok(id)
     }
 
@@ -434,8 +535,27 @@ impl Room {
             return Err(GameError::Protocol(format!("unknown client {client}")));
         }
         match msg {
+            Message::Input(m) if m.epoch != self.cfg.epoch => {
+                self.stats.stale_epoch_inputs += 1;
+                Ok(())
+            }
             Message::Input(m) => {
                 self.on_input(client, &m);
+                Ok(())
+            }
+            Message::Ready { ready } => {
+                self.lobby_requests
+                    .push((client, LobbyRequest::Ready(ready)));
+                Ok(())
+            }
+            Message::PickTeam { team } => {
+                self.lobby_requests
+                    .push((client, LobbyRequest::PickTeam(team)));
+                Ok(())
+            }
+            Message::Spectate { spectate } => {
+                self.lobby_requests
+                    .push((client, LobbyRequest::Spectate(spectate)));
                 Ok(())
             }
             Message::Ping {
@@ -585,10 +705,16 @@ impl Room {
                 self.world.projectiles().iter().map(|p| p.id).collect();
             self.rewinds.retain(|id, _| live.contains(id));
         }
+        self.tally.record(&report.events);
         self.history.record(k, &self.world);
         let net_events = events_to_net(&report.events, k, |p| wire_id(&self.clients, p));
         self.pending_events.extend(net_events);
 
+        if self.results.is_none() && !self.world.mode().is_running() {
+            let results = self.build_results();
+            self.results = Some(results.clone());
+            self.broadcast(&Message::MatchResults(Box::new(results)));
+        }
         if k % self.cfg.snapshot_interval.max(1) == 0 {
             self.send_snapshots();
             report.snapshot = true;
@@ -596,14 +722,40 @@ impl Room {
         report
     }
 
+    fn build_results(&self) -> MatchResultsMsg {
+        let results = match_results(&self.world, &self.tally);
+        results_to_net(
+            &results,
+            self.world.tick(),
+            |p| wire_id(&self.clients, p),
+            |id| {
+                self.clients
+                    .get(&id)
+                    .map(|c| c.name.clone())
+                    .unwrap_or_default()
+            },
+        )
+    }
+
     fn send_snapshots(&mut self) {
         let tick = self.tick as u32;
-        let cov = self.world.mode().coverage;
-        let scores: Vec<u32> = [cov.team_cells[0], cov.team_cells[1], cov.surface_cells]
-            .iter()
-            .map(|&v| v.min(u32::MAX as u64) as u32)
-            .collect();
-        let match_ticks_left = self.world.mode().remaining_ticks(self.world.tick()) as u32;
+        // Mode-agnostic: the scoreboard is the mode view.
+        let view = self.mode_view();
+        let scores = legacy_scores(&view);
+        let mut mode = mode_view_to_net(&view, |p| wire_id(&self.clients, p));
+        if !view.is_running() {
+            // Ended (possibly early): `end_tick` is the last simulated tick,
+            // so clients freeze their prediction exactly where the server
+            // stopped moving ships.
+            mode.end_tick = self.world.tick().min(u32::MAX as u64) as u32;
+        }
+        // 0 once the mode ended, also before the timer ran out (a kill
+        // target, the last ship standing): the world no longer steps.
+        let match_ticks_left = if view.is_running() {
+            self.world.mode().remaining_ticks(self.world.tick()) as u32
+        } else {
+            0
+        };
         // Wire ids (`id as u16`) are unique among live projectiles: the
         // simulation's allocator skips live ones (`World::alloc_projectile_id`).
         let mut projectiles: Vec<_> = self
@@ -652,7 +804,7 @@ impl Room {
             let from = (c.known_edits as usize).min(log.len());
             let to = (from + self.cfg.max_edits_per_snapshot).min(log.len());
             let mut snap = Snapshot {
-                mode: Default::default(),
+                mode: mode.clone(),
                 tick,
                 ack_input: c.ack_input as u32,
                 edit_base: from as u32,
@@ -680,7 +832,7 @@ impl Room {
                 ls_net::settle_projectiles(&mut packed, b, ls_net::SETTLE_TOLERANCE);
             }
             let msg = Message::Snapshot(Box::new(SnapshotMsg {
-                epoch: 0,
+                epoch: self.cfg.epoch,
                 baseline,
                 snapshot: packed.clone(),
             }));
@@ -829,11 +981,11 @@ fn inventory_msg(tick: u32, s: &ShipState) -> InventoryMsg {
             .weapons
             .iter()
             .map(|w| NetWeapon {
-                shots: 0,
-                state: 0,
                 weapon: w.weapon.0,
                 ammo: w.ammo.min(u16::MAX as u32) as u16,
                 level: w.level,
+                shots: w.shots,
+                state: s.weapon_state_of(w.weapon) as u8,
             })
             .collect(),
         primary: s.primary.map_or(u8::MAX, |w| w.0),

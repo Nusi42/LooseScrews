@@ -18,6 +18,7 @@ ls-math <- ls-worldgen --+
 | `terrain` | `GameTerrain`: `ChunkStore` + edit log + dirty chunks; `TerrainQuery` + `SimTerrain` |
 | `setup` | `MatchConfig`, `match_setup` (spawn and pickup points), `build_match` (world + terrain) |
 | `convert` | `NetConv` (ships, status, quantization), inputs, projectiles, events |
+| `mode` | `mode_view` (the replicated `ls_sim::ModeView` of a world), `mode_view_to_net`, `Tally` (kills/deaths), `match_results`, `results_to_net` (protocol 5) |
 | `client` | `InputSequencer`, `Predictor`, `InterpolationBuffer`, `ClientClock`, `ClientSession` |
 | `server` | `Room` (feature `server`, on by default), `ShipHistory`, lag compensation |
 
@@ -109,17 +110,21 @@ implement them.
 | Inputs | Thrust/roll to 1/127, look to 1/8192 rad; button bits identical to `ls_sim::Buttons`; `weapon` = `InputCmd::weapon_select` |
 | Projectiles | `id` = sim id truncated to u16 (unique among live projectiles: the sim's allocator skips live wire ids), `kind` = weapon id, `owner` = wire id or 255, `state` = `Projectile::net_state` (low byte of `proj_flags`) |
 | Entities | `World::entity_views` -> `entity_to_net`: `id` = entity id & 0x7fff, `kind` = `ReplicatedKind`, `visual` = `VisualId`, `owner` = wire id or 255, debris without velocity (see [arsenal-framework.md](arsenal-framework.md)) |
-| Inventory | `Message::Inventory` (reliable, own client only, whenever it changes): weapons (id, ammo clamped to u16, level), selected primary and secondary, gadget (255 = none) |
+| Inventory | `Message::Inventory` (reliable, own client only, whenever it changes): weapons (id, ammo clamped to u16, level, paid shots `WeaponState::shots`, low byte of `ShipState::weapon_state`), selected primary and secondary, gadget (255 = none) |
 | Players | Every connected client: wire id, team, ship type index, gadget id (255 none), name (at most 32 bytes); sorted by id |
 | Relevance | `Snapshot::retain_relevant(viewer, &SimRelevance)`: ships hidden by `World::ship_visible_to` (Cloak) are left out, and moving debris more than 100 u from the viewer's ship; the own ship always stays |
-| Handshake | `Hello` carries `ls_sim::data_hash()` (build it with `ls_game::client_hello(name, team, ship)`) and an optional ship type; a different hash gets `Reject { reason: DataMismatch }`. `Welcome` carries the ship type and the data hash |
+| Handshake | `Hello` carries `ls_sim::data_hash()` (build it with `ls_game::client_hello(name, team, ship)`) and an optional ship type; a different hash gets `Reject { reason: DataMismatch }`; optional room and party codes (`Hello::with_room` / `with_party`). `Welcome` carries the ship type, the data hash, the match epoch (`RoomConfig::epoch`) and the room code (`Room::set_room_code`) |
 | Ship choice | `Message::SelectShip { ship_type }` (reliable, `ClientSession::select_ship`) sets the type for the next respawn; types the rule set does not allow are ignored |
-| Scores | `[team 0 cells, team 1 cells, surface cells]` (raw counts; percent = cells / surface) |
+| Scores | `Snapshot::scores` = the mode view's team scores, then `score_total` (`ls_game::mode::legacy_scores`): Paint the Void with 2 teams gives `[team 0 cells, team 1 cells, surface cells]` (raw counts; percent = cells / surface) |
+| Mode state | `Snapshot::mode` = `ls_game::mode::mode_view_to_net(&mode_view(world))` (ids are wire ids; players without one are left out); once ended, `end_tick` is the last simulated tick |
+| Results | `Message::MatchResults` once when the mode stops running (`ls_game::mode::match_results`: winner and team scores from the view, kills and deaths from the room's `Tally` of kill events, rows best first), and after the `Welcome` to clients joining a finished match |
+| Lobby | `Ready`, `PickTeam`, `Spectate` are queued as `LobbyRequest`s (`Room::take_lobby_requests`); hosts send `LobbyState` with `Room::send` / `Room::broadcast` |
 | Edits | Each snapshot carries up to 64 edits starting at the client's acknowledged edit count (`edit_end` of its newest acked snapshot); resent until acked |
 | Events | `Damaged` -> `Hit` (pos = impact point), `Killed` -> `Kill` (255 = none), `Respawned`, `MatchEnded`, `Cue` -> `Cue` (kind byte, source, target, pos, value); batched per snapshot, reliable |
 | Ping | Send right after the input for tick `c`; `Pong::server_tick - c` measures input slack |
-| Match end | After the timer runs out (`match_ticks_left == 0`) the server stops stepping the world: ships freeze at the end tick, snapshots continue |
-| Match restart | A host that replaces a finished match sends every client `Disconnect { reason: ls_game::MATCH_RESTART_REASON }`; clients rejoin (a new `Welcome`) instead of reporting an error |
+| Match end | Once the mode stops running (timer, or early: kill target, last ship) the server stops stepping the world: ships freeze at the end tick, snapshots continue with `match_ticks_left == 0` and the mode's `end_tick` = the last simulated tick |
+| Match transition | A host that starts the next match builds a new `Room` with the next `RoomConfig::epoch` (wrapping) and `join`s every connected client again: each gets the new `Welcome` on its open connection; `ClientSession` rebuilds in place (`Incoming::MatchTransition`). Inputs and snapshots of another epoch are dropped (`RoomStats::stale_epoch_inputs`, `SessionStats::stale_epoch_snapshots`) |
+| Match restart | (Protocol 4 hosts, and bots until they handle transitions in place) a host that replaces a finished match may still send `Disconnect { reason: ls_game::MATCH_RESTART_REASON }`; clients rejoin instead of reporting an error |
 
 ## Client core
 
@@ -135,6 +140,17 @@ the new snapshot sections, and `inventory()` the own ship's inventory from the l
 an own projectile with `GUIDED_STATE_BIT` (Eyeball), the predictor gets the command without
 thrust or look, as the server applies it. Per frame the host calls `frame(due_ticks,
 controls)` and sends the returned messages; every received packet goes to `handle_packet`.
+
+Protocol 5: `mode()` is the newest snapshot's mode state, `lobby()` the newest
+`LobbyState` (kept across matches), `results()` the match results once they arrived
+(`Incoming::Lobby` / `Incoming::Results`); `ready`, `pick_team` and `spectate` build the lobby
+requests. A `Welcome` on the open connection calls `transition(welcome)`: the session rebuilds
+itself from it with the same game data (on error it stays unchanged), keeps its counters (plus
+`SessionStats::transitions`), ping nonces and lobby state, and returns
+`Incoming::MatchTransition { epoch }`; hosts rebuild what they derived from the old level
+(meshes, bot navigation). Inputs are stamped with `epoch()`; snapshots of another epoch are
+counted (`stale_epoch_snapshots`) and ignored. A snapshot whose mode is ended freezes the
+prediction after the mode's `end_tick`.
 
 `frame` is `plan_ticks(due)` (advances the clock, returns how many ticks to run: `due` plus up to
 4 while catching up, 64 before sync, or one fewer when skipping) followed by `run_ticks(n, due,
@@ -190,7 +206,21 @@ catch-up sends only the newest 8 `Input` messages (older ones would be late anyw
   server projectile takes over and the difference becomes a fading render offset. A prediction
   the server never shows is dropped 4 ticks after it was fired; shots are hidden past the first
   wall or their lifetime. The server does not send the secondary selection: the predictor
-  knows the loadout secondary plus any weapon kind seen on an own projectile.
+  knows the loadout secondary plus any weapon kind seen on an own projectile. Alternating and
+  rotating patterns (Scatter Laser, Corkscrew) take their phase from the inventory's shot
+  counts (`ShotPredictor::on_inventory`: server count plus the shots predicted after the
+  inventory's tick; volleys predicted after it with another phase are rebuilt); nothing is
+  inferred from projectiles.
+- **Paint Thrower colour**: from the inventory's weapon state byte (a V press guesses ahead
+  until an inventory at least as new as the press arrives) and the `PaintColor` cues, so a
+  client that missed the cues (a rejoin, a transition) still shows the server's colour.
+- **Modes, lobby, transitions (protocol 5)**: `Game.modeState()`, `lobbyState()` and
+  `results()` return JSON (`crates/ls-wasm/src/modes.rs`), `readyPacket`, `pickTeamPacket`,
+  `spectatePacket` and `helloPacketWith` (room and party codes) build packets. A match
+  transition rebuilds the online core in place (inventory, shot predictor, chunk streamer,
+  per-match HUD state; ping state carries over); `takeMatchTransition()` reports it once and
+  `takeUnloads` first returns every chunk of the previous level. The loadout HUD carries each
+  weapon's shot count and state byte (`shots`, `states`).
 - **Stats for overlays**: flat arrays for the F3 debug overlay (ping, corrections, snaps, shot
   counters, chunk counts) and the scoreboard / end-of-match screen (per-ship team, paint per
   team, match info). The browser passes its clock with `setClockMs` before handling packets so
@@ -217,8 +247,9 @@ catch-up sends only the newest 8 `Input` messages (older ones would be late anyw
 4. sends `take_outgoing()` (`Outgoing { client, channel, bytes }`; a host may send a too-large
    unreliable packet reliably, as `ls_net::send_message` does).
 
-Team assignment: the preferred team unless it would put that team two or more players ahead,
-otherwise the smaller team (ties to team 0). Inputs are queued per client by tick (duplicates
+Team assignment (team modes): the preferred team unless it would put that team two or more
+players ahead of the smallest team, otherwise the world's choice (the smallest team, ties to
+the lowest index); free-for-all ignores the preference. Inputs are queued per client by tick (duplicates
 counted and ignored, far-future inputs beyond 120 ticks dropped). `RoomStats` counts missing,
 late, duplicate and dropped inputs, compensated hits, snapshot bytes and messages that could
 not be encoded (`encode_errors`, a bug if not zero). Missing inputs count only from a client's
@@ -264,7 +295,8 @@ rewound target positions for projectile tests would remove the displacement tric
 | `tests/netplay.rs::lag_compensation_hits_target_that_moved_after_the_shot` | 5-tick latency each way; the target starts climbing as the shot is fired. Without compensation the shot misses on the server, with it the rewound target takes a direct hit |
 | `tests/netplay.rs::slow_setup_client_syncs_within_a_few_round_trips` | A client that builds its session 240 ticks after the `Welcome` synchronizes within 3 round trips |
 | `tests/netplay.rs::a_join_costs_one_full_snapshot_and_starves_once` | M1 issue B regression: bots with 250-350 ms level generation on 1-tick links, joining, rejoining with reused wire ids and after a match restart (fresh room): exactly 1 full snapshot per join (at most `1 + (RTT - 1) / 2` on an 8-tick RTT), at most 1 starvation report and 1 prediction snap, and none of the three after the join settled; a few late inputs per client while joining (the catch-up) and none after the join settled |
-| `server::tests` | join/leave/team balance, full room, late/duplicate/missing inputs (repeat last), no missing inputs before the first input, no snapshots before the first input, 30 Hz snapshots with deltas after acks, 250 ms history, `leave` drops queued packets before the id is reused, per-command rewind, unencodable `Welcome` rejects without a ghost ship, inventory messages only on change, far moving debris culled and sent without velocity, guided-projectile prediction and entity interpolation in a `ClientSession` |
+| `tests/transition.rs` | Three match transitions on the same connections (local, 3-tick and lossy reordering links): every session rebuilds in place, one full snapshot per transition on a local link (on longer links the ones sent before the first acknowledgement, as for any join), terrain equal to the server's, results and lobby state received, synced again, prediction converged; inputs and snapshots of another epoch are dropped on both ends |
+| `server::tests` | epoch and room code in `Welcome`, lobby requests queued, stale-epoch inputs dropped, `send`/`broadcast`, shot counts and state bytes in the inventory, mode state in snapshots, results once at an early end and to late joiners, join/leave/team balance, full room, late/duplicate/missing inputs (repeat last), no missing inputs before the first input, no snapshots before the first input, 30 Hz snapshots with deltas after acks, 250 ms history, `leave` drops queued packets before the id is reused, per-command rewind, unencodable `Welcome` rejects without a ghost ship, inventory messages only on change, far moving debris culled and sent without velocity, guided-projectile prediction and entity interpolation in a `ClientSession` |
 | `client::*::tests` | input redundancy, prediction without corrections against a delayed server, misprediction correction and smoothing, replay of inputs sent before the first snapshot, frozen prediction after the match end, interpolation, clock (including catching up from far behind, a snapshot backlog counting as one starvation) |
 | `ls-wasm` `game::tests::online_client_under_latency_applies_look_exactly_once` | The browser core over a 4-7 tick jittery link with a delay spike (clock catch-up) and uneven frames: synced, converged, every mouse delta sent exactly once, `Disconnect` reason reported |
 | `ls-bots` `tests/room_play.rs` | A full room of 8 bots plays a (60 s) match to its end and 5 s beyond: no desyncs or protocol errors, terrain identical to the server's, no corrections after the match end |

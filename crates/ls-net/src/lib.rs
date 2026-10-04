@@ -37,9 +37,9 @@ pub use message::{
     PROTOCOL_VERSION,
 };
 pub use mode::{
-    mode_phase, mode_player_flags, winner_kind, LobbyPhase, LobbyPlayer, LobbyStateMsg,
-    MatchResultsMsg, NetModePlayer, NetModeState, NetObjective, PackedModeState, PackedObjective,
-    ResultRow, MAX_MODE_TEAMS, MAX_OBJECTIVES,
+    mode_phase, mode_player_flags, LobbyPhase, LobbyPlayer, LobbyStateMsg, MatchResultsMsg,
+    NetModePlayer, NetModeState, NetObjective, PackedModeState, PackedObjective, ResultRow,
+    MAX_MODE_TEAMS, MAX_OBJECTIVES,
 };
 pub use quant::{
     pack_quat, unpack_quat, PackedVec3, QuantConfig, Quantizer, ENTITY_POS_MAX, ENTITY_POS_SHIFT,

@@ -14,7 +14,8 @@
 //! - [`inventory`]: carried weapons for the weapon HUD and selection by
 //!   number key, wheel and X;
 //! - [`mechanics`]: game cues for effects, the charge meter, the gadget
-//!   state and ship type choice with its loadout preview (M2 wave C).
+//!   state and ship type choice with its loadout preview (M2 wave C);
+//! - [`modes`]: mode state, lobby state and match results as JSON (M3).
 //!
 //! This file only converts to JavaScript types. Flat arrays keep the
 //! boundary cheap; their layouts are documented on each method and mirrored
@@ -26,6 +27,7 @@ pub mod controls;
 pub mod game;
 pub mod inventory;
 pub mod mechanics;
+pub mod modes;
 pub mod scene;
 pub mod sharecode;
 pub mod shots;
@@ -140,6 +142,37 @@ pub fn hello_packet_as(name: &str, preferred_team: i32, ship_type: u8) -> Result
         .map_err(|e| JsError::new(&e.to_string()))
 }
 
+/// [`hello_packet_as`] with a private room code and a party code (empty
+/// strings for none); `ship_type` 255 lets the server choose.
+#[wasm_bindgen(js_name = helloPacketWith)]
+pub fn hello_packet_with(
+    name: &str,
+    preferred_team: i32,
+    ship_type: u8,
+    room: &str,
+    party: &str,
+) -> Result<Vec<u8>, JsError> {
+    let team = u8::try_from(preferred_team).ok();
+    let ship = ls_sim::ShipType::from_index(ship_type);
+    let code = |s: &str| (!s.is_empty()).then(|| s.to_string());
+    ls_net::Message::Hello(
+        ls_game::client_hello(name, team, ship)
+            .with_room(code(room))
+            .with_party(code(party)),
+    )
+    .encode()
+    .map_err(|e| JsError::new(&e.to_string()))
+}
+
+/// Mode ids in `ModeKind` index order (`kind` of the mode state).
+#[wasm_bindgen(js_name = modeIds)]
+pub fn mode_ids() -> Vec<String> {
+    ls_sim::ModeKind::ALL
+        .iter()
+        .map(|k| k.id().to_string())
+        .collect()
+}
+
 /// Gadget string ids in id order (`gadget` of [`Game::player_info`]).
 #[wasm_bindgen(js_name = gadgetIds)]
 pub fn gadget_ids() -> Vec<String> {
@@ -215,12 +248,16 @@ pub fn entity_kind_name(k: ls_sim::ReplicatedKind) -> &'static str {
 /// Carried weapons and gadget for the weapon HUD (see
 /// `inventory::LoadoutView`). Per weapon, primaries first (key order), then
 /// secondaries: `names[i]`, `ammo[i]` and 4 bytes `info[4i..4i+4]` =
-/// `[slot (0 primary, 1 secondary), selected, key (1-10, 0 none), level]`.
+/// `[slot (0 primary, 1 secondary), selected, key (1-10, 0 none), level]`,
+/// `shots[i]` (paid shots, the pattern phase) and `states[i]` (the weapon
+/// module's state byte, e.g. the Paint Thrower colour; 0 = unset).
 #[wasm_bindgen(getter_with_clone)]
 pub struct LoadoutHud {
     pub names: Vec<String>,
     pub ammo: Vec<String>,
     pub info: Vec<u8>,
+    pub shots: Vec<u32>,
+    pub states: Vec<u8>,
     #[wasm_bindgen(js_name = maxLevels)]
     pub max_levels: Vec<u8>,
     /// Gadget name, empty for none.
@@ -237,6 +274,8 @@ pub fn loadout_hud(v: &inventory::LoadoutView) -> LoadoutHud {
         names: Vec::new(),
         ammo: Vec::new(),
         info: Vec::new(),
+        shots: Vec::new(),
+        states: Vec::new(),
         max_levels: Vec::new(),
         gadget: v.gadget.clone(),
         gadget_active: v.gadget_active,
@@ -251,6 +290,8 @@ pub fn loadout_hud(v: &inventory::LoadoutView) -> LoadoutHud {
             e.level,
         ]);
         h.max_levels.push(e.max_level);
+        h.shots.push(e.shots);
+        h.states.push(e.state);
     }
     h
 }
@@ -424,7 +465,7 @@ pub fn gadget_hud(g: &mechanics::GadgetView) -> GadgetHud {
 }
 
 /// JSON string literal for `s`.
-fn json_str(s: &str) -> String {
+pub(crate) fn json_str(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
     out.push('"');
     for c in s.chars() {
@@ -714,6 +755,64 @@ impl Game {
         self.core.paint_color()
     }
 
+    /// The mode state as JSON (`modes::mode_state_json`): phase, timer,
+    /// team and player scores, lives, meters, objective markers.
+    #[wasm_bindgen(js_name = modeState)]
+    pub fn mode_state(&self) -> String {
+        modes::mode_state_json(&self.core.mode_state())
+    }
+
+    /// The lobby state as JSON (`modes::lobby_json`), `undefined` before
+    /// the server sent one (and offline).
+    #[wasm_bindgen(js_name = lobbyState)]
+    pub fn lobby_state(&self) -> Option<String> {
+        self.core.lobby().map(modes::lobby_json)
+    }
+
+    /// The match results as JSON (`modes::results_json`), `undefined` until
+    /// the match ended.
+    pub fn results(&self) -> Option<String> {
+        self.core.results().map(modes::results_json)
+    }
+
+    /// True once after each match transition (a new `Welcome` on the open
+    /// connection): the game now plays the next match. The old level's
+    /// chunks are reported by `takeUnloads`; reset HUD and scene state.
+    #[wasm_bindgen(js_name = takeMatchTransition)]
+    pub fn take_match_transition(&mut self) -> bool {
+        self.core.take_match_transition()
+    }
+
+    /// Match transitions handled so far.
+    #[wasm_bindgen(getter)]
+    pub fn transitions(&self) -> u32 {
+        self.core.transitions() as u32
+    }
+
+    /// Room code of the match (empty for the public room).
+    #[wasm_bindgen(getter, js_name = roomCode)]
+    pub fn room_code(&self) -> String {
+        self.core.room_code()
+    }
+
+    /// `Ready` packet for the lobby (send reliably; `undefined` offline).
+    #[wasm_bindgen(js_name = readyPacket)]
+    pub fn ready_packet(&self, ready: bool) -> Option<Vec<u8>> {
+        self.core.ready_packet(ready)
+    }
+
+    /// `PickTeam` packet for the next match (`team` < 0 = auto-balance).
+    #[wasm_bindgen(js_name = pickTeamPacket)]
+    pub fn pick_team_packet(&self, team: i32) -> Option<Vec<u8>> {
+        self.core.pick_team_packet(u8::try_from(team).ok())
+    }
+
+    /// `Spectate` packet (spectate from the next match on, or play again).
+    #[wasm_bindgen(js_name = spectatePacket)]
+    pub fn spectate_packet(&self, spectate: bool) -> Option<Vec<u8>> {
+        self.core.spectate_packet(spectate)
+    }
+
     #[wasm_bindgen(getter, js_name = isOnline)]
     pub fn is_online(&self) -> bool {
         self.core.is_online()
@@ -914,7 +1013,8 @@ impl Game {
         })
     }
 
-    /// Keys of chunks to drop (far from the camera).
+    /// Keys of chunks to drop (far from the camera; after a match
+    /// transition first every chunk of the previous level).
     #[wasm_bindgen(js_name = takeUnloads)]
     pub fn take_unloads(&mut self, x: f32, y: f32, z: f32) -> Vec<String> {
         self.core
@@ -1082,7 +1182,9 @@ mod tests {
     fn loadout_hud_flattens_primaries_then_secondaries() {
         use crate::inventory::{LoadoutView, WeaponEntry};
         use ls_sim::{WeaponId, WeaponSlot};
-        let e = |name: &str, slot, selected, key| WeaponEntry {
+        let e = |name: &str, slot, selected, key: u8| WeaponEntry {
+            shots: key as u32 * 10,
+            state: key,
             weapon: WeaponId(0),
             name: name.into(),
             slot,
@@ -1107,6 +1209,8 @@ mod tests {
         assert_eq!(&h.info[4..8], &[0, 1, 2, 2]);
         assert_eq!(&h.info[8..12], &[1, 1, 0, 2]);
         assert_eq!(h.max_levels, [6, 6, 6]);
+        assert_eq!(h.shots, [10, 20, 0]);
+        assert_eq!(h.states, [1, 2, 0]);
         assert!(h.gadget_active && h.gadget == "Shield");
     }
 

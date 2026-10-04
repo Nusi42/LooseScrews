@@ -1071,9 +1071,7 @@ mod tests {
 
     #[test]
     fn protocol_5_messages_round_trip() {
-        use crate::mode::{
-            winner_kind, LobbyPhase, LobbyPlayer, LobbyStateMsg, MatchResultsMsg, ResultRow,
-        };
+        use crate::mode::{LobbyPhase, LobbyPlayer, LobbyStateMsg, MatchResultsMsg, ResultRow};
         // Hello with room and party codes.
         let h = Hello::new("Rivet Rita", None)
             .with_room(Some("R-7K2M".into()))
@@ -1112,7 +1110,7 @@ mod tests {
                 phase,
                 phase_ticks_left: 600,
                 room_code: String::new(),
-                next_mode: "team_brawl".into(),
+                next_mode: 1,
                 next_ruleset: "team_brawl".into(),
                 next_share_code: "LS-7K2M-9QXA-04RT-ZZ1C".into(),
                 min_players: 4,
@@ -1130,20 +1128,21 @@ mod tests {
         }
         round_trip(&Message::LobbyState(Box::default()));
         let bad = LobbyStateMsg {
-            next_mode: "m".repeat(65),
+            next_ruleset: "m".repeat(65),
             ..Default::default()
         };
         assert!(Message::LobbyState(Box::new(bad)).encode().is_err());
         round_trip(&Message::MatchResults(Box::new(MatchResultsMsg {
             tick: 36_000,
-            winner_kind: winner_kind::TEAM,
+            kind: 1,
+            teams: 2,
             winner: 1,
             team_scores: vec![14, 15],
             rows: (0..8u8)
                 .map(|id| ResultRow {
                     id,
-                    team: id % 2,
-                    kills: id as u16 * 3,
+                    side: id % 2,
+                    kills: id as u32 * 3,
                     deaths: 2,
                     score: -(id as i32),
                     name: format!("pilot {id}"),
@@ -1339,14 +1338,17 @@ mod tests {
         Snapshot {
             // Scores change every 5th snapshot, the carried objective moves.
             mode: crate::mode::NetModeState {
+                kind: 1,
+                teams: 2,
                 phase: crate::mode::mode_phase::RUNNING,
-                phase_end_tick: 9000,
-                winner_kind: 0,
                 winner: 255,
-                team_scores: vec![(tick / 10) as i32, 2],
+                end_tick: 9000,
+                score_target: 50,
+                team_scores: vec![(tick / 10) as i64, 2],
                 players: (0..8u8)
                     .map(|id| crate::mode::NetModePlayer {
                         id,
+                        side: id % 2,
                         score: (tick / 10) as i32 * (id as i32 % 3),
                         lives: 3,
                         meter: 100,
@@ -1358,10 +1360,12 @@ mod tests {
                     kind: 1,
                     team: 255,
                     holder: 3,
-                    timer: 0,
-                    value: 0,
+                    state: 0,
+                    timer_end: 0,
+                    radius: 1.0,
                     pos: Vec3::new(20.0 + t, 5.0, 100.0 - t * 2.0),
                 }],
+                ..Default::default()
             },
             tick,
             ack_input: tick + 4,
@@ -1564,7 +1568,7 @@ mod tests {
                 .encode()
                 .unwrap(),
             Message::LobbyState(Box::new(crate::mode::LobbyStateMsg {
-                next_mode: "heist".into(),
+                next_mode: 3,
                 players: vec![crate::mode::LobbyPlayer::default(); 3],
                 ..Default::default()
             }))

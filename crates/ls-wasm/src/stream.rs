@@ -143,6 +143,11 @@ impl ChunkStreamer {
         gone
     }
 
+    /// Chunks the host shows meshes of.
+    pub fn loaded(&self) -> Vec<ChunkCoord> {
+        self.loaded.iter().copied().collect()
+    }
+
     /// Forgets every mesh (e.g. after the host lost its GPU buffers).
     pub fn reset(&mut self) {
         self.loaded.clear();

@@ -28,6 +28,15 @@
 //! ([`GameCore::loadout`]) and weapon selection by number key, mouse wheel
 //! and X ([`crate::inventory`]); online the inventory comes from the
 //! server (`Message::Inventory`).
+//!
+//! M3 (protocol 5): the generic mode state of every mode
+//! ([`GameCore::mode_state`]), the lobby state and match results
+//! ([`GameCore::lobby`], [`GameCore::results`]), lobby requests
+//! ([`GameCore::ready_packet`] and friends) and match transitions on the
+//! open connection: a new `Welcome` rebuilds the online core in place
+//! ([`GameCore::take_match_transition`]; the old level's chunks come back
+//! from [`GameCore::take_unloads`]). The Paint Thrower colour and the shot
+//! phases follow the server's inventory (weapon state byte and shot counts).
 
 use std::collections::{BTreeMap, VecDeque};
 
@@ -36,7 +45,10 @@ use ls_game::setup::match_setup;
 use ls_game::{GameError, GameTerrain, MatchConfig};
 use ls_math::terrain::TerrainQuery;
 use ls_math::{Aabb, Quat, Vec3};
-use ls_net::{check_welcome, ship_flags, Message, NetEvent, NetPlayer, NetShip};
+use ls_net::{
+    check_welcome, ship_flags, LobbyStateMsg, MatchResultsMsg, Message, NetEvent, NetModeState,
+    NetPlayer, NetShip,
+};
 use ls_sim::{
     Event, GadgetTable, GameData, InputCmd, MatchPhase, PlayerId, ResolvedRules, ShipState,
     ShipTable, ShipTuning, ShipType, VisualTable, WeaponCost, WeaponDef, WeaponId, WeaponSlot,
@@ -277,6 +289,13 @@ impl Online {
         };
         let mut inv = Inventory::from_server(msg, weapons);
         self.shots.carry(inv.states().iter().map(|w| w.weapon));
+        // The server's shot counts set the alternating / rotating patterns'
+        // phases (no inference from projectiles).
+        self.shots.on_inventory(
+            msg.tick as u64,
+            &inv.shot_counts(),
+            Some(self.session.terrain()),
+        );
         match self.select_tick {
             Some(t) if (msg.tick as u64) < t => {
                 for w in [self.inventory.primary, self.inventory.secondary]
@@ -326,9 +345,10 @@ impl Online {
             own.iter()
                 .any(|p| p.state & ls_game::client::GUIDED_STATE_BIT != 0),
         );
-        self.shots
-            .reconcile_in(snap.tick as u64, &own, self.session.terrain());
-        if snap.match_ticks_left == 0 {
+        self.shots.reconcile(snap.tick as u64, &own);
+        let ended = snap.mode.phase == ls_net::mode_phase::ENDED
+            && snap.mode != ls_net::NetModeState::default();
+        if snap.match_ticks_left == 0 || ended {
             self.shots.clear();
             if self.ended_at.is_none() {
                 let tick = snap.tick as u64;
@@ -455,6 +475,42 @@ pub struct GameCore {
     pending_edges: u16,
     /// Buttons of the last command sent with a tick.
     last_buttons: u16,
+    /// Online: first input tick of the newest V press guessing the next
+    /// paint colour; inventories older than it keep the guess.
+    paint_guess_tick: Option<u64>,
+    /// Match transitions (new `Welcome`s on the open connection) handled.
+    transitions: u64,
+    /// A transition the host has not taken yet.
+    transition_pending: bool,
+    /// Chunks of the previous match's level the host still shows: reported
+    /// by [`GameCore::take_unloads`] after a transition.
+    unload_backlog: Vec<ChunkCoord>,
+}
+
+/// What the online core derives from a session's rule set: the resolved
+/// rules, the loadout inventory and a fresh shot predictor (for every
+/// `Welcome`).
+fn online_parts(
+    session: &ClientSession,
+    data: &GameData,
+) -> Result<(ResolvedRules, Inventory, ShotPredictor), String> {
+    let resolved = session
+        .rules()
+        .resolve_with(&data.weapons, &data.gadgets)
+        .map_err(|e| e.to_string())?;
+    let slots = data.ships.get(session.ship_type()).secondary_slots;
+    let inventory = Inventory::loadout(&resolved, slots);
+    let shots = ShotPredictor::new(&resolved);
+    Ok((resolved, inventory, shots))
+}
+
+/// Paint colour (`ls_math::terrain::PAINT_*`) of a Paint Thrower state byte
+/// (unset = red, like `paint_thrower::selected_color`).
+fn paint_color_of_state(state: u8) -> u8 {
+    match state {
+        c @ 1..=3 => c,
+        _ => DEFAULT_PAINT_COLOR,
+    }
 }
 
 impl GameCore {
@@ -469,18 +525,12 @@ impl GameCore {
         let data = GameData::builtin();
         let session =
             ClientSession::from_welcome_with(&welcome, data.clone()).map_err(|e| e.to_string())?;
+        let (resolved, inventory, shots) = online_parts(&session, &data)?;
         let GameData {
             weapons,
             ships,
             gadgets,
         } = data;
-        let resolved = session
-            .rules()
-            .resolve_with(&weapons, &gadgets)
-            .map_err(|e| e.to_string())?;
-        let slots = ships.get(session.ship_type()).secondary_slots;
-        let inventory = Inventory::loadout(&resolved, slots);
-        let shots = ShotPredictor::new(&resolved);
         let streamer = ChunkStreamer::new(session.terrain().chunk_coords());
         let visuals = VisualTable::new(&weapons, &gadgets);
         Ok(GameCore {
@@ -513,6 +563,10 @@ impl GameCore {
             paint_color: DEFAULT_PAINT_COLOR,
             pending_edges: 0,
             last_buttons: 0,
+            paint_guess_tick: None,
+            transitions: 0,
+            transition_pending: false,
+            unload_backlog: Vec::new(),
         })
     }
 
@@ -586,6 +640,10 @@ impl GameCore {
             paint_color: DEFAULT_PAINT_COLOR,
             pending_edges: 0,
             last_buttons: 0,
+            paint_guess_tick: None,
+            transitions: 0,
+            transition_pending: false,
+            unload_backlog: Vec::new(),
         })
     }
 
@@ -688,8 +746,25 @@ impl GameCore {
         let incoming = o.session.handle_packet(bytes).map_err(|e| e.to_string())?;
         match &incoming {
             ls_game::client::Incoming::Snapshot { stale: false, .. } => o.reconcile_shots(),
-            ls_game::client::Incoming::Inventory => o.apply_inventory(&self.weapons),
+            ls_game::client::Incoming::Inventory => {
+                o.apply_inventory(&self.weapons);
+                // The Paint Thrower colour is the server's weapon state, so a
+                // client that missed the colour cues (a rejoin, a transition)
+                // shows the right one; a V press the server has not
+                // processed yet keeps its guess.
+                let pt = self.weapons.find("paint_thrower");
+                if let (Some(pt), Some(msg)) = (pt, o.session.inventory()) {
+                    let fresh = self.paint_guess_tick.is_none_or(|g| msg.tick as u64 >= g);
+                    if let Some(x) = msg.weapons.iter().find(|x| x.weapon == pt.0) {
+                        if fresh {
+                            self.paint_color = paint_color_of_state(x.state);
+                            self.paint_guess_tick = None;
+                        }
+                    }
+                }
+            }
             ls_game::client::Incoming::Pong { nonce, .. } => o.on_pong(*nonce),
+            ls_game::client::Incoming::MatchTransition { .. } => self.on_match_transition()?,
             _ => {}
         }
         self.collect_online_events();
@@ -740,6 +815,7 @@ impl GameCore {
                         && o.inventory.primary == paint_thrower
                     {
                         self.paint_color = next_paint_color(self.paint_color);
+                        self.paint_guess_tick = Some(o.session.next_input_tick());
                     }
                     self.last_buttons = cmd.buttons.0;
                 }
@@ -1063,6 +1139,7 @@ impl GameCore {
                     });
                 view.gadget = self.gadget_name(gadget);
                 view.gadget_active = own.is_some_and(|x| x.flags & ship_flags::GADGET_ACTIVE != 0);
+                view.set_weapon_states(|w| inv.weapon_state(w));
                 view
             }
             Mode::Practice(p) => {
@@ -1078,6 +1155,7 @@ impl GameCore {
                 );
                 view.gadget = self.gadget_name(ship.gadget.map(|g| g.0));
                 view.gadget_active = ship.gadget_active;
+                view.set_weapon_states(|w| ship.weapon_state_of(w) as u8);
                 view
             }
         }
@@ -1648,6 +1726,118 @@ impl GameCore {
         }
     }
 
+    // ----- modes, lobby, transitions -------------------------------------------
+
+    /// Rebuilds the online core after the session moved to the next match:
+    /// new inventory, shot predictor, chunk streamer and per-match HUD state;
+    /// ping state carries over. The old level's chunks go to the unload
+    /// backlog.
+    fn on_match_transition(&mut self) -> Result<(), String> {
+        let data = GameData {
+            weapons: self.weapons.clone(),
+            ships: self.ships.clone(),
+            gadgets: self.gadgets.clone(),
+        };
+        let Mode::Online(o) = &mut self.mode else {
+            return Ok(());
+        };
+        let (resolved, inventory, shots) = online_parts(&o.session, &data)?;
+        o.resolved = resolved;
+        o.inventory = inventory;
+        o.shots = shots;
+        o.select_tick = None;
+        o.match_over = None;
+        o.tally.clear();
+        o.ended_at = None;
+        self.unload_backlog = self.streamer.loaded();
+        let radius = self.streamer.view_radius();
+        self.streamer = ChunkStreamer::new(o.session.terrain().chunk_coords());
+        self.streamer.set_view_radius(radius);
+        self.cues.clear();
+        self.next_ship = None;
+        self.gadget_ready_tick = 0;
+        self.paint_color = DEFAULT_PAINT_COLOR;
+        self.paint_guess_tick = None;
+        self.pending_select = 0;
+        self.pending_edges = 0;
+        self.last_buttons = 0;
+        self.transitions += 1;
+        self.transition_pending = true;
+        Ok(())
+    }
+
+    /// True once after each match transition (the host rebuilds what it
+    /// derived from the old match: meshes come back via
+    /// [`GameCore::take_unloads`], HUD and scene state should reset).
+    pub fn take_match_transition(&mut self) -> bool {
+        std::mem::take(&mut self.transition_pending)
+    }
+
+    /// Match transitions handled since the session started.
+    pub fn transitions(&self) -> u64 {
+        self.transitions
+    }
+
+    /// The generic mode state (phase, timer, scores, lives, objectives):
+    /// online the newest snapshot's, in practice the local world's (ids are
+    /// player ids there).
+    pub fn mode_state(&self) -> NetModeState {
+        match &self.mode {
+            Mode::Online(o) => o.session.mode().clone(),
+            Mode::Practice(p) => {
+                let view = ls_game::mode::mode_view(&p.world);
+                ls_game::mode::mode_view_to_net(&view, |pl| u8::try_from(pl.0).ok())
+            }
+        }
+    }
+
+    /// The newest lobby state from the server (online only).
+    pub fn lobby(&self) -> Option<&LobbyStateMsg> {
+        match &self.mode {
+            Mode::Online(o) => o.session.lobby(),
+            Mode::Practice(_) => None,
+        }
+    }
+
+    /// The results of the match once the server sent them (online only).
+    pub fn results(&self) -> Option<&MatchResultsMsg> {
+        match &self.mode {
+            Mode::Online(o) => o.session.results(),
+            Mode::Practice(_) => None,
+        }
+    }
+
+    /// Code of the room this match runs in (empty: the public room or
+    /// practice).
+    pub fn room_code(&self) -> String {
+        match &self.mode {
+            Mode::Online(o) => o.session.room_code().to_string(),
+            Mode::Practice(_) => String::new(),
+        }
+    }
+
+    /// `Ready` for the next match (send reliably; `None` offline).
+    pub fn ready_packet(&self, ready: bool) -> Option<Vec<u8>> {
+        self.lobby_packet(Message::Ready { ready })
+    }
+
+    /// `PickTeam` for the next match (`None` team = auto-balance).
+    pub fn pick_team_packet(&self, team: Option<u8>) -> Option<Vec<u8>> {
+        self.lobby_packet(Message::PickTeam { team })
+    }
+
+    /// `Spectate` from the next match on (or play again).
+    pub fn spectate_packet(&self, spectate: bool) -> Option<Vec<u8>> {
+        self.lobby_packet(Message::Spectate { spectate })
+    }
+
+    fn lobby_packet(&self, msg: Message) -> Option<Vec<u8>> {
+        match &self.mode {
+            Mode::Online(_) => msg.encode().ok(),
+            Mode::Practice(_) => None,
+        }
+    }
+
     // ----- terrain meshes --------------------------------------------------------
 
     /// Meshes the next chunk around `cam` (dirty chunks first, then missing
@@ -1665,8 +1855,11 @@ impl GameCore {
     }
 
     /// Chunks whose meshes should be dropped (far from `cam`).
+    /// After a match transition: first every chunk of the previous level.
     pub fn take_unloads(&mut self, cam: Vec3) -> Vec<ChunkCoord> {
-        self.streamer.take_unloads(cam)
+        let mut out = std::mem::take(&mut self.unload_backlog);
+        out.extend(self.streamer.take_unloads(cam));
+        out
     }
 
     /// Chunks waiting to be meshed around `cam`.

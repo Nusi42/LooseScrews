@@ -22,6 +22,7 @@
 - Start: read `.claude/memory/next-steps.md`; `git -C <win1> fetch`; check the `WINn` branches (`node tools/work-folders.mjs status`)
 - Integrate in win1: merge `origin/WINn` into `WIN1`, run `pwsh tools/ci.ps1` there; only when green: `git push origin WIN1`, then `git -C <master> merge --ff-only WIN1`. `main` is always green
 - Update `.claude/memory/next-steps.md` after every finished step and before the maintainer closes a session, commit it on WIN1 and fast-forward `main` so the master's copy is current
+- CodeGraph's index lives in `loosescrews.win1/.codegraph` (the master has none): pass `projectPath: <work root>/loosescrews.win1` to `codegraph_explore`, or run `codegraph explore` there
 - Agents belong to the session that started them; a new session can't see or stop an older session's agents
 - "Can I close this session?": report running background tasks, uncommitted/unpushed work per winN and `main` vs `WIN1` (`node tools/work-folders.mjs status`)
 

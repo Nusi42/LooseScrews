@@ -47,10 +47,14 @@ pub use error::SimError;
 pub use gadgets::{GadgetActivation, GadgetDef, GadgetId, GadgetTable};
 pub use hash::StateHasher;
 pub use input::{Buttons, InputCmd};
-pub use mode::{MatchPhase, PaintTheVoid};
+pub use mode::{
+    MatchPhase, MatchResults, ModeKind, ModeState, ModeView, Objective, ObjectiveView, PlayerMode,
+    PlayerModeView, ResultRow,
+};
 pub use ruleset::{
-    Availability, Loadout, ModeRules, Mutator, PaintTheVoidRules, PickupKind, PickupRule,
-    ResolvedRules, RuleSet, ScrapPickupRule, WeaponTuning,
+    Availability, HeistRules, HotReactorRules, LastColorStandingRules, Loadout, ModeField,
+    ModeRules, Mutator, PaintTheVoidRules, PickupKind, PickupRule, ResolvedRules, RuleSet,
+    ScrapPickupRule, TeamBrawlRules, TheSqueezeRules, WeaponTuning,
 };
 pub use ship::{simulate_movement, ChargeState, MovementReport, PlayerId, ShipState, WeaponState};
 pub use terrain::{

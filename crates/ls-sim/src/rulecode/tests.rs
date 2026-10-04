@@ -62,7 +62,9 @@ fn edited() -> RuleSet {
     r.absurdity = 0;
     r.allowed_ship_types = vec![ShipType::Tug, ShipType::Skitter];
     r.scrap_pickup = None;
-    let crate::ModeRules::PaintTheVoid(m) = &mut r.mode;
+    let crate::ModeRules::PaintTheVoid(m) = &mut r.mode else {
+        unreachable!()
+    };
     m.match_secs = 600.0;
     m.respawn_secs = 1.5;
     r
@@ -138,7 +140,9 @@ fn every_single_setting_round_trips_as_a_diff() {
         (
             "mode",
             Box::new(|r| {
-                let ModeRules::PaintTheVoid(m) = &mut r.mode;
+                let ModeRules::PaintTheVoid(m) = &mut r.mode else {
+                    unreachable!()
+                };
                 m.respawn_secs = 0.0;
             }),
         ),
@@ -660,7 +664,9 @@ fn vectors() -> Vec<(&'static str, RuleSet)> {
                 r.name = "a-Z 09".into();
                 r.friendly_fire_percent = 10;
                 r.absurdity = 100;
-                let ModeRules::PaintTheVoid(m) = &mut r.mode;
+                let ModeRules::PaintTheVoid(m) = &mut r.mode else {
+                    unreachable!()
+                };
                 m.match_secs = 65535.0;
                 m.respawn_secs = 25.5;
             }),
@@ -685,14 +691,18 @@ fn vectors() -> Vec<(&'static str, RuleSet)> {
         (
             "invalid: 3 teams",
             with(&|r| {
-                let ModeRules::PaintTheVoid(m) = &mut r.mode;
+                let ModeRules::PaintTheVoid(m) = &mut r.mode else {
+                    unreachable!()
+                };
                 m.teams = 3;
             }),
         ),
         (
             "invalid: match 0 s",
             with(&|r| {
-                let ModeRules::PaintTheVoid(m) = &mut r.mode;
+                let ModeRules::PaintTheVoid(m) = &mut r.mode else {
+                    unreachable!()
+                };
                 m.match_secs = 0.0;
             }),
         ),

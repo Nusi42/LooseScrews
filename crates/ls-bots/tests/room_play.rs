@@ -59,7 +59,9 @@ fn bots_play_a_full_match_without_desync() {
     const MATCH_SECS: u64 = 60;
     let code = ShareCode::new(0x00b0_7b07, Sliders::new(40, 30));
     let mut mc = MatchConfig::paint_the_void(code);
-    let ModeRules::PaintTheVoid(rules) = &mut mc.rules.mode;
+    let ModeRules::PaintTheVoid(rules) = &mut mc.rules.mode else {
+        unreachable!("a Paint the Void rule set")
+    };
     rules.match_secs = MATCH_SECS as f32;
     let mut room = Room::new(mc, RoomConfig::default()).unwrap();
     let mut clients: Vec<Client> = Vec::new();

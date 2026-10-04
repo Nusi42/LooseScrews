@@ -5,6 +5,7 @@
 //!     --ruleset data/rulesets/paint_the_void.ron --max-players 8 --web-root web/dist
 //! ls-server --ruleset LR6V-69CM-G006-58R --ban tectonic_charge --ban railspike \
 //!     --balance-list balance.ron
+//! ls-server --playlist playlist.ron --warmup 20 --countdown 5 --private-rooms 2
 //! ```
 //!
 //! Rules: `--ruleset` takes a rule set file or an `LR...` rule set code (from
@@ -14,9 +15,16 @@
 //! re-read before every match. The effective rules are logged with their
 //! code and sent to every player in the `Welcome`.
 //!
-//! After a match ends, players see the result for `--intermission` seconds,
-//! then get `Disconnect` with `ls_game::MATCH_RESTART_REASON` and rejoin; the
-//! first join builds the next match on the same level.
+//! Rotation: `--playlist <file>` (see `ls_server::playlist`); without it,
+//! `--ruleset` plays that rule set on every match (a one-entry playlist) and
+//! neither flag plays the default rotation (the built-in mode rule sets).
+//! Each match runs through the lobby: warm-up (weapons off, up to
+//! `--warmup` seconds or until everyone is ready), `--countdown`, the match,
+//! then its result for `--intermission` seconds while the next match is
+//! built; players stay connected and get the next match's `Welcome`.
+//! `--warmup 0 --countdown 0` turns the lobby off (matches start at once).
+//! `--private-rooms` caps the private rooms (duels, parties) next to the
+//! public room.
 //!
 //! WebTransport listens on UDP `--wt-bind` (default: the `--bind` address,
 //! so the same port number); the hash of its self-signed certificate is
@@ -30,7 +38,7 @@ use std::time::Duration;
 
 use anyhow::Context;
 use clap::Parser;
-use ls_server::{match_config_with, Server, ServerConfig, ServerRules};
+use ls_server::{match_config_with, LobbyTiming, Playlist, Server, ServerConfig, ServerRules};
 use tracing_subscriber::EnvFilter;
 
 /// Command line arguments.
@@ -53,14 +61,20 @@ struct Args {
     #[arg(long)]
     no_webtransport: bool,
 
-    /// Share code of the world (a random world if omitted).
-    #[arg(long)]
+    /// Share code of the world (a random world if omitted). With the
+    /// default rotation, every match plays on this world.
+    #[arg(long, conflicts_with = "playlist")]
     code: Option<String>,
 
-    /// Rule set file or LR rule set code (the built-in Paint the Void rules
-    /// if omitted).
-    #[arg(long, value_name = "FILE|CODE")]
+    /// Rule set file, LR rule set code or built-in rule set id, played on
+    /// every match (the default rotation if omitted).
+    #[arg(long, value_name = "FILE|CODE|ID", conflicts_with = "playlist")]
     ruleset: Option<String>,
+
+    /// Playlist file: the match rotation (rule set, world, player range per
+    /// entry).
+    #[arg(long, value_name = "FILE")]
+    playlist: Option<PathBuf>,
 
     /// Bans a weapon on top of the rule set (repeatable).
     #[arg(long = "ban", value_name = "WEAPON_ID")]
@@ -84,10 +98,25 @@ struct Args {
     #[arg(long, default_value_t = 10.0, value_parser = parse_interval)]
     stats_interval: f64,
 
-    /// Seconds a finished match stays on screen before players are sent
-    /// off to rejoin the next match.
+    /// Seconds a finished match's result stays on screen before the next
+    /// match's warm-up (players stay connected).
     #[arg(long, default_value_t = 10.0, value_parser = parse_interval)]
     intermission: f64,
+
+    /// Longest warm-up in seconds (weapons off) before the countdown starts,
+    /// once enough players are there; shorter when everyone is ready. 0
+    /// together with --countdown 0 turns the lobby off.
+    #[arg(long, default_value_t = 30.0, value_parser = parse_lobby_secs)]
+    warmup: f64,
+
+    /// Countdown in seconds before a match starts.
+    #[arg(long, default_value_t = 10.0, value_parser = parse_lobby_secs)]
+    countdown: f64,
+
+    /// Most private rooms (duels, parties, custom matches) at once, each on
+    /// its own thread; capped at one per CPU core beyond the public room's.
+    #[arg(long, default_value_t = 4, value_parser = clap::value_parser!(u8).range(0..=64))]
+    private_rooms: u8,
 
     /// Shut down gracefully once every player has left (after at least one
     /// joined). For scripted runs such as tools/e2e.*.
@@ -102,14 +131,15 @@ fn parse_interval(s: &str) -> Result<f64, String> {
     }
 }
 
-fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
-        )
-        .init();
-    let args = Args::parse();
+fn parse_lobby_secs(s: &str) -> Result<f64, String> {
+    match s.parse::<f64>() {
+        Ok(v) if v.is_finite() && (0.0..=3600.0).contains(&v) => Ok(v),
+        _ => Err("expected seconds between 0 and 3600".into()),
+    }
+}
 
+/// The server configuration the flags describe (up to the network setup).
+fn server_config(args: &Args) -> anyhow::Result<ServerConfig> {
     let rules = ServerRules::new(
         args.ruleset.as_deref(),
         args.bans.clone(),
@@ -118,13 +148,46 @@ fn main() -> anyhow::Result<()> {
     .context("invalid match configuration")?;
     let match_cfg =
         match_config_with(args.code.as_deref(), &rules).context("invalid match configuration")?;
+    let playlist = match (&args.playlist, &args.ruleset) {
+        (Some(path), _) => Some(
+            Playlist::load(path, &args.bans, args.balance_list.as_deref())
+                .context("invalid playlist")?,
+        ),
+        // --ruleset: a one-entry playlist (ServerConfig::effective_playlist).
+        (None, Some(_)) => None,
+        (None, None) => {
+            let world = args.code.is_some().then_some(match_cfg.code);
+            Some(
+                Playlist::default_rotation(world, &args.bans, args.balance_list.as_deref())
+                    .context("invalid default rotation")?,
+            )
+        }
+    };
     let mut cfg = ServerConfig::new(args.bind, match_cfg);
     cfg.rules = Some(rules);
+    cfg.playlist = playlist;
     cfg.webtransport = (!args.no_webtransport).then(|| args.wt_bind.unwrap_or(args.bind));
     cfg.room.max_players = args.max_players;
     cfg.stats_interval = Duration::from_secs_f64(args.stats_interval);
-    cfg.intermission = Duration::from_secs_f64(args.intermission);
-    cfg.web_root = args.web_root.or_else(|| {
+    cfg.lobby = LobbyTiming {
+        warmup: Duration::from_secs_f64(args.warmup),
+        countdown: Duration::from_secs_f64(args.countdown),
+        results: Duration::from_secs_f64(args.intermission),
+    };
+    cfg.private_rooms = usize::from(args.private_rooms);
+    Ok(cfg)
+}
+
+fn main() -> anyhow::Result<()> {
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+        )
+        .init();
+    let args = Args::parse();
+
+    let mut cfg = server_config(&args)?;
+    cfg.web_root = args.web_root.clone().or_else(|| {
         let default = PathBuf::from(ls_server::DEFAULT_WEB_ROOT);
         default.is_dir().then_some(default)
     });
@@ -174,15 +237,15 @@ fn main() -> anyhow::Result<()> {
     })
 }
 
-/// Resolves once at least one player has joined and the room has been empty
-/// for a moment since (short gaps, e.g. a reconnect, do not count).
+/// Resolves once at least one player has joined and every room has been
+/// empty for a moment since (short gaps, e.g. a reconnect, do not count).
 async fn wait_until_empty(server: &ls_server::ServerHandle) {
     const GRACE: Duration = Duration::from_secs(2);
     let mut empty_since: Option<std::time::Instant> = None;
     let mut had_players = false;
     loop {
         tokio::time::sleep(Duration::from_millis(100)).await;
-        let players = server.stats().players;
+        let players = server.total_players();
         had_players |= players > 0;
         if !had_players || players > 0 {
             empty_since = None;
@@ -255,5 +318,57 @@ mod tests {
         assert!(e.contains("no_such_gun"), "{e}");
         let a = parse(&["--ruleset", "LR00-0000"]).unwrap();
         assert!(ServerRules::new(a.ruleset.as_deref(), vec![], None).is_err());
+    }
+
+    #[test]
+    fn rotation_and_lobby_flags_build_the_config() {
+        // Neither --ruleset nor --playlist: the default rotation.
+        let cfg = server_config(&parse(&[]).unwrap()).unwrap();
+        let p = cfg.playlist.as_ref().expect("default rotation");
+        assert!(p.entries().iter().any(|e| e.source == "paint_the_void"));
+        assert_eq!(cfg.lobby, LobbyTiming::default());
+        assert_eq!(cfg.private_rooms, 4);
+        // --code: every entry on that world.
+        let code = ls_worldgen::ShareCode::new(9, ls_worldgen::Sliders::default())
+            .encode()
+            .unwrap();
+        let cfg = server_config(&parse(&["--code", &code]).unwrap()).unwrap();
+        assert!(cfg.playlist.unwrap().entries().iter().all(|e| matches!(
+            e.world,
+            ls_server::WorldChoice::Fixed(c) if c.encode().unwrap() == code
+        )));
+        // --ruleset alone: a one-entry playlist of that rule set.
+        let a = parse(&[
+            "--ruleset",
+            "sandbox_all_weapons",
+            "--warmup",
+            "0",
+            "--countdown",
+            "0",
+            "--intermission",
+            "3",
+            "--private-rooms",
+            "0",
+        ])
+        .unwrap();
+        let cfg = server_config(&a).unwrap();
+        assert!(cfg.playlist.is_none());
+        let p = cfg.effective_playlist();
+        assert_eq!(p.len(), 1);
+        assert_eq!(
+            p.entries()[0].rules.base,
+            ls_sim::RuleSet::sandbox_all_weapons()
+        );
+        assert!(cfg.lobby.is_off());
+        assert_eq!(cfg.lobby.results, Duration::from_secs(3));
+        assert_eq!(cfg.private_rooms, 0);
+        // --playlist conflicts with --ruleset and --code; ranges are checked.
+        assert!(parse(&["--playlist", "p.ron", "--ruleset", "x"]).is_err());
+        assert!(parse(&["--playlist", "p.ron", "--code", &code]).is_err());
+        assert!(parse(&["--private-rooms", "65"]).is_err());
+        assert!(parse(&["--warmup", "-1"]).is_err());
+        let e =
+            server_config(&parse(&["--playlist", "no/such/playlist.ron"]).unwrap()).unwrap_err();
+        assert!(format!("{e:#}").contains("no/such/playlist.ron"), "{e:#}");
     }
 }

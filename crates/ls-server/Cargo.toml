@@ -15,6 +15,8 @@ ls-worldgen.workspace = true
 ls-game = { workspace = true, features = ["server"] }
 anyhow.workspace = true
 thiserror.workspace = true
+serde.workspace = true
+ron.workspace = true
 clap.workspace = true
 tokio.workspace = true
 tokio-tungstenite.workspace = true

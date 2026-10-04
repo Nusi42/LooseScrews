@@ -16,13 +16,20 @@ use ls_sim::{rulecode, GadgetTable, RuleSet, WeaponTable};
 
 use crate::server::ServerError;
 
-/// Loads a rule set from a file path or an `LR...` rule set code. An
-/// existing file wins; text that looks like a code is decoded; anything
-/// else is reported as a missing file.
+/// Loads a rule set from a file path, an `LR...` rule set code or a
+/// built-in rule set id (`paint_the_void`, `sandbox_all_weapons`, ...: the
+/// file name in `data/rulesets/` without `.ron`). An existing file wins;
+/// then built-in ids; text that looks like a code is decoded; anything else
+/// is reported as a missing file.
 pub fn load_rule_set(arg: &str) -> Result<RuleSet, ServerError> {
     let path = Path::new(arg);
-    if !path.is_file() && rulecode::looks_like_code(arg) {
-        return Ok(RuleSet::from_code(arg)?);
+    if !path.is_file() {
+        if let Some(text) = crate::playlist::builtin_rule_set(arg) {
+            return Ok(RuleSet::from_ron(&format!("{arg}.ron"), text)?);
+        }
+        if rulecode::looks_like_code(arg) {
+            return Ok(RuleSet::from_code(arg)?);
+        }
     }
     Ok(RuleSet::load(path)?)
 }
@@ -149,6 +156,15 @@ mod tests {
         // A missing file names the file.
         let e = load_rule_set("no/such/rules.ron").unwrap_err().to_string();
         assert!(e.contains("no/such/rules.ron"), "{e}");
+        // Built-in ids.
+        assert_eq!(
+            load_rule_set("sandbox_all_weapons").unwrap(),
+            RuleSet::sandbox_all_weapons()
+        );
+        assert_eq!(
+            load_rule_set("paint_the_void").unwrap(),
+            RuleSet::paint_the_void()
+        );
         std::fs::remove_file(file).unwrap();
     }
 

@@ -2,9 +2,8 @@
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Arc, RwLock};
-use std::thread::JoinHandle as ThreadHandle;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{mpsc, Arc, Mutex, RwLock};
 use std::time::Duration;
 
 use ls_game::server::{Room, RoomConfig};
@@ -17,6 +16,9 @@ use tracing::info;
 
 use crate::endpoint::{CertHash, ConnSettings, Endpoint, EndpointContext, Hub};
 use crate::http::HttpEndpoint;
+use crate::lobby::LobbyTiming;
+use crate::playlist::{Playlist, WorldChoice};
+use crate::rooms::{RoomCode, RoomEntry, RoomStatus, Rooms, SharedStatus, PUBLIC_ROOM};
 use crate::rules::ServerRules;
 use crate::sim::{self, RoomInfo, SimCommand, SimParams};
 use crate::stats::{SharedStats, StatsSnapshot};
@@ -35,6 +37,10 @@ pub enum ServerError {
     Room(String),
     #[error("the simulation thread has stopped")]
     SimStopped,
+    #[error("playlist: {0}")]
+    Playlist(String),
+    #[error("rooms: {0}")]
+    Rooms(String),
 }
 
 /// Everything needed to start a server.
@@ -44,6 +50,8 @@ pub struct ServerConfig {
     pub bind: SocketAddr,
     /// UDP address of the WebTransport endpoint (`None`: WebSocket only).
     pub webtransport: Option<SocketAddr>,
+    /// The first match without a `playlist`; the weapon, ship and gadget
+    /// tables of every match.
     pub match_cfg: MatchConfig,
     pub room: RoomConfig,
     /// Directory served over HTTP (the built web client); `None` serves a
@@ -52,18 +60,29 @@ pub struct ServerConfig {
     pub conn: ConnSettings,
     /// Interval of the tick statistics log line.
     pub stats_interval: Duration,
-    /// How long a finished match stays on screen before players are sent
-    /// off to rejoin the next one (see [`crate::sim`]).
-    pub intermission: Duration,
-    /// Where the rules come from. When set, the effective rules (rule set,
-    /// balance list, bans) are rebuilt before every new match, re-reading
-    /// the balance list; `None` keeps `match_cfg.rules` for every match.
+    /// Warm-up, countdown and results (`--intermission`) times of every
+    /// room (see [`crate::lobby`]).
+    pub lobby: LobbyTiming,
+    /// Where the rules come from when there is no `playlist`. When set, the
+    /// effective rules (rule set, balance list, bans) are rebuilt before
+    /// every new match, re-reading the balance list; `None` keeps
+    /// `match_cfg.rules` for every match.
     pub rules: Option<ServerRules>,
+    /// The public room's rotation. `None`: one entry, `match_cfg`'s world
+    /// with `rules` (or `match_cfg.rules`), any player count.
+    pub playlist: Option<Playlist>,
+    /// Most private rooms at once (capped by the machine's cores, see
+    /// [`ServerConfig::private_room_cap`]).
+    pub private_rooms: usize,
+    /// Extra time every next-room build takes (tests of slow builds).
+    pub build_delay: Duration,
 }
 
 impl ServerConfig {
     /// Defaults: 8 players, 30 Hz snapshots, lag compensation on, stats
-    /// every 10 s, 10 s intermission after a match, no web root, no
+    /// every 10 s, no lobby (a match starts when its first player joins;
+    /// 10 s of results; the `ls-server` binary turns the lobby on with
+    /// [`LobbyTiming::default`]), up to 4 private rooms, no web root, no
     /// WebTransport.
     pub fn new(bind: SocketAddr, match_cfg: MatchConfig) -> Self {
         ServerConfig {
@@ -74,8 +93,57 @@ impl ServerConfig {
             web_root: None,
             conn: ConnSettings::default(),
             stats_interval: Duration::from_secs(10),
-            intermission: sim::DEFAULT_INTERMISSION,
+            lobby: LobbyTiming::off(sim::DEFAULT_INTERMISSION),
             rules: None,
+            playlist: None,
+            private_rooms: crate::rooms::DEFAULT_PRIVATE_ROOMS,
+            build_delay: Duration::ZERO,
+        }
+    }
+
+    /// The public room's playlist (see [`ServerConfig::playlist`]).
+    pub fn effective_playlist(&self) -> Playlist {
+        self.playlist.clone().unwrap_or_else(|| {
+            let rules = self.rules.clone().unwrap_or_else(|| ServerRules {
+                base: self.match_cfg.rules.clone(),
+                bans: Vec::new(),
+                balance_list: None,
+            });
+            let source = rules.base.name.clone();
+            Playlist::single(&source, rules, WorldChoice::Fixed(self.match_cfg.code))
+        })
+    }
+
+    /// Private rooms allowed on this machine: `private_rooms`, but at most
+    /// one per core beyond the public room's (at least one if any are asked
+    /// for), so every room's sim thread has a core.
+    pub fn private_room_cap(&self) -> usize {
+        let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
+        self.private_rooms.min(cores.saturating_sub(1).max(1))
+    }
+}
+
+/// Settings of a private room ([`ServerHandle::create_private_room`]).
+#[derive(Debug, Clone)]
+pub struct PrivateRoomSpec {
+    /// What the room plays (typically one entry: a duel or a custom match).
+    pub playlist: Playlist,
+    /// `None`: the server's lobby timing.
+    pub lobby: Option<LobbyTiming>,
+    /// `None`: the server's player limit.
+    pub max_players: Option<u8>,
+}
+
+impl PrivateRoomSpec {
+    /// A custom match: `rules` on `world` (a new random world per match if
+    /// `None`).
+    pub fn custom(rules: ServerRules, world: Option<ShareCode>) -> Self {
+        let world = world.map_or_else(WorldChoice::random, WorldChoice::Fixed);
+        let source = rules.base.name.clone();
+        PrivateRoomSpec {
+            playlist: Playlist::single(&source, rules, world),
+            lobby: None,
+            max_players: None,
         }
     }
 }
@@ -109,13 +177,15 @@ pub fn match_config_with(
     Ok(cfg)
 }
 
-/// A seed for a random world (wall clock and process id; not deterministic
-/// on purpose, and outside the deterministic crates).
-fn random_seed() -> u64 {
+/// A seed for a random world (wall clock, process id and a counter; not
+/// deterministic on purpose, and outside the deterministic crates).
+pub(crate) fn random_seed() -> u64 {
+    static CALLS: AtomicU64 = AtomicU64::new(0);
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_nanos() as u64);
-    ls_math::rng::mix64(nanos ^ ((std::process::id() as u64) << 32))
+    let n = CALLS.fetch_add(1, Ordering::Relaxed);
+    ls_math::rng::mix64(nanos ^ ((std::process::id() as u64) << 32) ^ n.rotate_left(17))
 }
 
 /// Starts servers; see [`Server::start`].
@@ -123,9 +193,9 @@ fn random_seed() -> u64 {
 pub struct Server;
 
 impl Server {
-    /// Binds the ports, builds the match on the sim thread (waits until it
-    /// is ready) and starts accepting HTTP, WebSocket and (if configured)
-    /// WebTransport connections.
+    /// Binds the ports, builds the public room's first room on its sim
+    /// thread (waits until it is ready) and starts accepting HTTP, WebSocket
+    /// and (if configured) WebTransport connections.
     pub async fn start(config: ServerConfig) -> Result<ServerHandle, ServerError> {
         let endpoint = HttpEndpoint::bind(config.bind, config.web_root.clone()).await?;
         let local_addr = endpoint.local_addr()?;
@@ -135,39 +205,42 @@ impl Server {
             .transpose()?;
         let webtransport_addr = wt_endpoint.as_ref().map(|e| e.local_addr()).transpose()?;
         let stats = Arc::new(SharedStats::default());
-        let (cmd_tx, cmd_rx) = mpsc::channel();
-        let sim_stop = Arc::new(AtomicBool::new(false));
-        let (ready_tx, ready_rx) = oneshot::channel();
+        let playlist = config.effective_playlist();
         let params = SimParams {
-            match_cfg: config.match_cfg.clone(),
+            template: config.match_cfg.clone(),
             room_cfg: config.room,
             stats_interval: config.stats_interval,
-            intermission: config.intermission,
-            rules: config.rules.clone(),
+            lobby: config.lobby,
+            playlist: playlist.clone(),
+            label: PUBLIC_ROOM.into(),
+            close_when_empty: false,
+            build_delay: config.build_delay,
         };
-        let sim_thread = sim::spawn(params, cmd_rx, sim_stop.clone(), stats.clone(), ready_tx)?;
+        let (entry, ready_rx) = start_room(params, stats.clone())?;
         let room = match ready_rx.await {
             Ok(Ok(info)) => info,
             Ok(Err(e)) => {
-                let _ = sim_thread.join();
+                join_room(&entry).await;
                 return Err(ServerError::Room(e));
             }
             Err(_) => {
-                let _ = sim_thread.join();
+                join_room(&entry).await;
                 return Err(ServerError::SimStopped);
             }
         };
+        let rooms = Arc::new(Rooms::new(entry, config.private_room_cap()));
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let mut handle = ServerHandle {
             local_addr,
             webtransport_addr,
             room,
             stats: stats.clone(),
-            hub: Hub::new(cmd_tx, stats, config.conn),
+            hub: Hub::with_rooms(rooms.clone(), stats, config.conn),
+            rooms,
+            config: Arc::new(config.clone()),
+            code_counter: Arc::new(AtomicU64::new(random_seed())),
             shutdown_tx,
             shutdown_rx,
-            sim_stop,
-            sim_thread: Some(sim_thread),
             endpoints: Vec::new(),
             cert_hash: Arc::new(RwLock::new(None)),
         };
@@ -182,13 +255,51 @@ impl Server {
             ruleset = %handle.room.ruleset,
             rules_code = %handle.room.rules_code,
             max_players = config.room.max_players,
+            playlist_entries = playlist.len(),
+            private_rooms = handle.rooms.max_private(),
+            lobby = !config.lobby.is_off(),
             "listening (http + websocket at /ws)"
         );
         Ok(handle)
     }
 }
 
-/// A running server. Dropping it stops the sim thread and the endpoints
+/// Spawns a room's sim thread; the receiver reports when its first room is
+/// built.
+fn start_room(
+    params: SimParams,
+    stats: Arc<SharedStats>,
+) -> std::io::Result<(RoomEntry, oneshot::Receiver<Result<RoomInfo, String>>)> {
+    let (cmd_tx, cmd_rx) = mpsc::channel();
+    let stop = Arc::new(AtomicBool::new(false));
+    let (ready_tx, ready_rx) = oneshot::channel();
+    let status = SharedStatus::default();
+    let thread = sim::spawn(
+        params,
+        cmd_rx,
+        stop.clone(),
+        stats.clone(),
+        status.clone(),
+        ready_tx,
+    )?;
+    let entry = RoomEntry {
+        commands: cmd_tx,
+        stats,
+        status,
+        stop,
+        thread: Mutex::new(Some(thread)),
+    };
+    Ok((entry, ready_rx))
+}
+
+/// Stops a room's sim thread and waits for it.
+async fn join_room(entry: &RoomEntry) {
+    if let Some(t) = entry.stop() {
+        let _ = tokio::task::spawn_blocking(move || t.join()).await;
+    }
+}
+
+/// A running server. Dropping it stops the sim threads and the endpoints
 /// without waiting; [`ServerHandle::shutdown`] stops them gracefully.
 #[derive(Debug)]
 pub struct ServerHandle {
@@ -197,10 +308,12 @@ pub struct ServerHandle {
     room: RoomInfo,
     stats: Arc<SharedStats>,
     hub: Hub,
+    rooms: Arc<Rooms>,
+    config: Arc<ServerConfig>,
+    /// Source of private room codes.
+    code_counter: Arc<AtomicU64>,
     shutdown_tx: watch::Sender<bool>,
     shutdown_rx: watch::Receiver<bool>,
-    sim_stop: Arc<AtomicBool>,
-    sim_thread: Option<ThreadHandle<()>>,
     endpoints: Vec<JoinHandle<()>>,
     cert_hash: CertHash,
 }
@@ -216,7 +329,8 @@ impl ServerHandle {
         self.webtransport_addr
     }
 
-    /// The match's share code, as printed.
+    /// The first match's share code, as printed (later matches of a
+    /// rotation have their own; see [`ServerHandle::rooms`]).
     pub fn share_code(&self) -> &str {
         &self.room.share_code
     }
@@ -226,16 +340,27 @@ impl ServerHandle {
     }
 
     /// Rule set code of the first match's effective rules (empty if the
-    /// rules cannot be encoded as a code). It is not updated when a changed
-    /// balance list alters the rules of a later match; the log line at each
-    /// match start shows the current code.
+    /// rules cannot be encoded as a code). It is not updated for later
+    /// matches; [`ServerHandle::rooms`] and the log line at each match start
+    /// show the current code.
     pub fn rules_code(&self) -> &str {
         &self.room.rules_code
     }
 
-    /// Current counters.
+    /// Current counters of the public room (the connection counters are
+    /// server-wide).
     pub fn stats(&self) -> StatsSnapshot {
         self.stats.snapshot()
+    }
+
+    /// Players connected over all rooms.
+    pub fn total_players(&self) -> u64 {
+        self.rooms.total_players()
+    }
+
+    /// Status and counters of every room, the public one first.
+    pub fn rooms(&self) -> Vec<(RoomStatus, StatsSnapshot)> {
+        self.rooms.statuses()
     }
 
     /// The hub endpoints use to register connections.
@@ -259,8 +384,8 @@ impl ServerHandle {
         self.endpoints.push(endpoint.spawn(ctx));
     }
 
-    /// Runs `f` on the sim thread against the room at the start of the next
-    /// tick and returns its result.
+    /// Runs `f` on the public room's sim thread against its current room at
+    /// the start of the next tick and returns its result.
     pub async fn with_room<R, F>(&self, f: F) -> Result<R, ServerError>
     where
         R: Send + 'static,
@@ -275,13 +400,76 @@ impl ServerHandle {
         rx.await.map_err(|_| ServerError::SimStopped)
     }
 
+    /// Opens a private room on its own sim thread and returns its code once
+    /// its first room is built. Players join it with the code in their
+    /// `Hello` (see [`crate::rooms::requested_room`]); it closes when empty.
+    /// Fails while [`ServerConfig::private_room_cap`] rooms are open.
+    pub async fn create_private_room(
+        &self,
+        spec: PrivateRoomSpec,
+    ) -> Result<RoomCode, ServerError> {
+        let mut room_cfg = self.config.room;
+        if let Some(n) = spec.max_players {
+            room_cfg.max_players = n;
+        }
+        let mut ready = None;
+        let counter = self.code_counter.clone();
+        let code = self.rooms.insert_private(
+            || RoomCode::from_bits(ls_math::rng::mix64(counter.fetch_add(1, Ordering::Relaxed))),
+            |code| {
+                let params = SimParams {
+                    template: self.config.match_cfg.clone(),
+                    room_cfg,
+                    stats_interval: self.config.stats_interval,
+                    lobby: spec.lobby.unwrap_or(self.config.lobby),
+                    playlist: spec.playlist.clone(),
+                    label: code.to_string(),
+                    close_when_empty: true,
+                    build_delay: self.config.build_delay,
+                };
+                let stats = Arc::new(SharedStats {
+                    links: self.stats.links.clone(),
+                    ..SharedStats::default()
+                });
+                let (entry, rx) = start_room(params, stats)?;
+                ready = Some(rx);
+                Ok(entry)
+            },
+        )?;
+        let built = match ready {
+            Some(rx) => rx.await,
+            None => return Err(ServerError::SimStopped),
+        };
+        match built {
+            Ok(Ok(info)) => {
+                info!(
+                    room = %code,
+                    share_code = %info.share_code,
+                    ruleset = %info.ruleset,
+                    private_rooms = self.rooms.private_count(),
+                    "private room open"
+                );
+                Ok(code)
+            }
+            other => {
+                if let Some(t) = self.rooms.remove_private(&code) {
+                    let _ = tokio::task::spawn_blocking(move || t.join()).await;
+                }
+                Err(match other {
+                    Ok(Err(e)) => ServerError::Room(e),
+                    _ => ServerError::SimStopped,
+                })
+            }
+        }
+    }
+
     /// Graceful shutdown: players get `Disconnect`, sockets flush and close,
-    /// then the sim thread and endpoints are joined.
+    /// then the sim threads and endpoints are joined.
     pub async fn shutdown(mut self) {
         info!("shutting down");
-        self.sim_stop.store(true, Ordering::Release);
+        let threads = self.rooms.stop_all();
         let _ = self.shutdown_tx.send(true);
-        if let Some(t) = self.sim_thread.take() {
+        for t in threads {
             let _ = tokio::task::spawn_blocking(move || t.join()).await;
         }
         for e in std::mem::take(&mut self.endpoints) {
@@ -293,7 +481,7 @@ impl ServerHandle {
 
 impl Drop for ServerHandle {
     fn drop(&mut self) {
-        self.sim_stop.store(true, Ordering::Release);
+        self.rooms.signal_stop();
         let _ = self.shutdown_tx.send(true);
     }
 }

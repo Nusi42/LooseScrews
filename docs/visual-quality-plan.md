@@ -1,0 +1,141 @@
+# Visual quality plan: first impression
+
+Status: proposal. Trigger: review findings after M2: the FOV feels wrong; openings look passable up close, but the ship does not fit through; the ships look too basic; the effects look dated and sparse; the textures are too simple and switch hard between polygons. Requirement: the first impression must be strong, because players rarely give a game a second chance.
+
+This plan treats visual quality as a first-class track that runs alongside the M3 waves (`docs/milestone-3-plan.md`). It has three parts: findings with evidence (§1), the immediate fix for openings that look passable but block the ship (§2), and a prioritized overhaul as work packages (§3–§5).
+
+## 1. Findings
+
+### 1.1 Openings that look passable but block the ship: the cause is the collision distance, not the FOV
+
+The sim's ship collision (`crates/ls-sim/src/ship.rs`, `move_sphere_with`) treats `world_sdf(p)` as the true distance to the rock: a ship touches when `sdf < radius` and is pushed out until `sdf = radius`. The generator only promises a **lower bound** on the distance (`contracts.md`: "1-Lipschitz (a true distance or a lower bound on it)"). The cavern field is gradient noise scaled by its worst-case slope (`CHAMBER_SCALE = 28 / NOISE_LIPSCHITZ`, `TUNNEL_SCALE = 24 / NOISE_LIPSCHITZ`, `NOISE_LIPSCHITZ = 3.6`, `crates/ls-worldgen/src/generator.rs`). The typical slope is about 1, so the field reports about 0.3 of the real distance. The ship stops against an invisible shell that is 2–3× its radius away from the rock you see.
+
+Measured with a scratch probe (outside the repo) that compares `ChunkStore::eval` (what the sim uses) with the distance to the surface-nets mesh the client draws. It sampled 20 000 points per world in the 3×3×3 chunks around the room centre:
+
+| World (seed, enclosure, density) | median \|∇sdf\| near rock | Visible gap to the wall when a Tinker (r = 0.5) touches: p10 / p50 / p90 | Points where the mesh says "fits" (≥ 0.5 u clear) but the sim blocks |
+| --- | --- | --- | --- |
+| 7, 50, 50 (caverns) | 0.28 | 1.09 / **1.66** / 2.92 u | 81 % |
+| 42, 50, 50 (caverns) | 0.35 | 0.85 / **1.35** / 1.90 u | 35 % |
+| 99, 70, 60 (caverns/mines blend) | 0.47 | 0.79 / **0.96** / 1.29 u | 55 % |
+| 7, 20, 70 (sky + rocks) | 1.00 | 0.50 / 0.65 / 0.85 u | 8 % |
+| 7, 100, 30 (mine shafts, exact boxes) | 1.00 | 0.40 / 0.50 / 0.64 u | 3 % |
+
+Read the table like this: in a typical cave world a Tinker, whose ship is 1 u long, needs a hole about **3.3 u across** (2 × 1.66), not 1 u. A Hauler (r = 0.65) needs about 4.8 u. All four hulls are affected (Skitter 0.4 → median visible gap 1.36 u, Tug 0.55 → 1.92 u). Mine-shaft worlds are fine because their box SDFs are exact. That matches the review finding: openings look passable from up close and are not.
+
+The same bound distance is used everywhere a sphere meets terrain: scrape, paint touching (`paint_touching`), projectiles with a radius (rockets hit an invisible shell early), debris and decoy spheres. Sphere-traced raycasts stay correct, but they take about 3.6× more steps than they would on a true distance.
+
+**The fix works.** Replacing `d` with the first-order distance estimate `d / |∇d|` (only when `d < radius`, so open flight costs nothing extra) brings the visible gap at contact to the hull radius: median 0.49 u for r = 0.5 (p10 0.40, p90 0.54) in seed 7 caverns, 0.50 u in seed 42, 0.45 u in seed 99. Exact-SDF worlds are unchanged.
+
+Second-order contributors:
+- **Surface nets on a 1 u grid** draw the rock 0.15–0.4 u from the true surface (world 7/20/70: +0.16 u median, +0.39 u p95). Surface nets also round off convex bumps and box edges (mine shafts: −0.1 to +0.36 u), so bumps that stick into a passage look smaller than they are. §3 VQ3a reduces this.
+- **FOV and lack of a size reference.** `web/src/game/camera.ts`: vertical FOV 75°, which is 107° horizontal at 16:9 and 122° at 21:9 (fixed vertical, so ultrawide gets wider). The eye sits at the centre of the collision sphere and nothing on screen shows how big the ship is. A Descent-like game needs a size cue: a hull or nose frame, or a reticle that shows the ship's cross-section at the distance of the surface ahead. 107° is at the wide end and stretches the periphery, which makes nearby openings read larger at the screen edges. The near plane (0.05 u) and far plane (600 u) are fine: the eye never gets closer than 0.4 u to rock.
+
+### 1.2 Ships and props: too basic
+
+- `web/src/renderer/primitives.ts` `shipMesh()`: **8 flat triangles**, a dart. All four ship types (Skitter, Tinker, Hauler, Tug) use this same mesh, scaled by hitbox radius (`scene.ts addShips`). `ShipState.shipType` is available but not used for the look. There is no engine glow, cockpit, lights, panel detail or team livery apart from a flat tint. See `target/browser-smoke/mech-decoy.png`: the decoy reads as a tiny orange arrowhead.
+- Projectiles, pickups and wrecks are 8–60-triangle primitives (octahedron bolt, box crate, icosphere orbs) with the same Lambert lighting.
+
+### 1.3 Terrain: simple textures, hard switches between polygons
+
+From `web/src/renderer/shaders.ts` (`TERRAIN_WGSL`) and the screenshots (`practice-scene.png`, `online-rocket.png`, `online-shield.png`, `mech-charge.png`, `mech-decoy.png`):
+- **Blocky "texture"**: `grain(p) = hash3(floor(p * 0.5))`, a constant random shade per 2 u cube. That is the Minecraft-like checkerboard on every wall. Hard rock glints use `floor(p * 4)` cubes. `hash3` is `fract(sin(dot(p, k)) * 43758)`, and on GPUs `sin` loses precision at level-scale arguments (up to about 16 000). That causes the diagonal streak and moiré patterns on the big walls in `online-rocket.png`.
+- **Hard triangle-shaped colour patches**: the vertex attribute that carries material, paint and surface state is `@interpolate(flat)`, so one vertex decides the material of the whole triangle. Material borders (weak, rock, hard), paint edges and hot or charged patches show up as sawtooth triangles (the light/grey patches in `practice-scene.png`). This is the main "hard switch between polygons".
+- **Faceted lighting**: surface-nets vertex normals are the gradient of the trilinear interpolant inside one cell (`mesh.rs`, `trilinear_gradient(&c, l)`). That gradient is not continuous across cells, so neighbouring triangles get visibly different shades on smooth rock.
+- **Lighting**: Lambert sun, hemisphere ambient and a camera headlight. No specular, no ambient occlusion, no shadows, no dynamic lights from shots or explosions. Caves are lit like a flat-shaded 90s engine.
+- **No LOD popping in practice**: the stream radius is 224 u and exp2 fog (density 0.012) is 95 % opaque at about 173 u, so new chunks appear inside fog. Remeshed chunks (craters) swap in a single frame, which is acceptable once explosions cover them (VQ5).
+
+### 1.4 Output pipeline and effects: dated look, few visual effects
+
+- **No HDR, no tonemapping, no gamma**: the renderer draws straight into the swapchain (`getPreferredCanvasFormat()` is `bgra8unorm`, which is not sRGB) and writes linear lighting values unconverted. Mid-tones come out too dark and muddy, and anything brighter than 1 clips to flat white (emissive is `color * 1.5`).
+- **No anti-aliasing** (sample count 1), no bloom, no AO, no colour grading, no motion feedback.
+- **"Effects" are scaled meshes**: an explosion is a translucent icosphere (`addEffects`: `sphere` with `opacity 0.6 * strength`), a trail is the bolt mesh stretched along Z, the Leech Arc is two stretched bolts, and the shield is a translucent sphere. There is **no particle system**: no sparks, smoke, fire, debris bursts, muzzle flashes, engine exhaust, impact flashes, dust motes or speed streaks. The screen-space layer (`ui/effects.ts`) does a whiteout, banners and a cloak edge in DOM/CSS.
+- **Backdrop**: open space is a flat clear colour (`fogColor` 0.05/0.06/0.09). Open-sky worlds have no stars, nebula or sky gradient.
+- **Performance headroom**: the smoke screenshots show 60 fps (vsync-capped) with 150–260 k triangles and 55–110 chunks drawn. The current frame does almost no GPU work, so the budget below is available for the overhaul.
+
+### 1.5 What a modern WebGPU 6DOF arena shooter does (target)
+
+Descent-likes live in dark enclosed spaces, so the look depends on **light**: coloured dynamic lights from every shot and explosion (Descent's signature), emissive materials with bloom, and AO that gives rock its form. For the rest of the bar:
+- HDR rendering with filmic tonemapping (AgX or ACES) and sRGB output; MSAA 4× or TAA.
+- Bloom on emissives; light colour grading per world type.
+- Smooth-shaded terrain with triplanar rock materials: albedo variation and detail normals at 2–3 scales, strata, cavity/AO darkening, and specular on hard rock and metal veins. Smooth blends between materials and paint.
+- GPU particles for every event: muzzle flashes, tracers with ribbon trails, impact sparks and dust, fireball and smoke explosions with shockwave and debris, engine exhaust that reacts to thrust and boost, hull-damage smoke, shield ripples and pickup sparkle. Ambient dust motes give motion parallax and a sense of speed.
+- Ships of a few hundred to 2 000 triangles each, with distinct silhouettes per class, team livery, glowing engines, cockpit canopy and blinking nav lights.
+- Camera feel: sensible FOV with a setting, a slight FOV kick on boost, hit shake and a damage vignette.
+
+Everything above runs well within a 60 fps budget on mid-range GPUs in WebGPU (instanced draws, compute-driven particles, one bloom mip chain).
+
+## 2. Immediate fix: fit and scale (do first)
+
+### VQ0 Contact distance (sim; **not** parallel-safe, touches `crates/ls-sim`)
+
+- **Change**: add `contact_distance(terrain, p, d)` in `crates/ls-sim/src/terrain.rs`. It returns `d` when `d >= r_query` (the bound already proves the sphere is clear, so open flight costs nothing). Otherwise it returns `d / max(|∇d|, 0.2)`, using the central-difference gradient that `world_normal` already evaluates (fold the two calls together). Use it in `move_sphere_with` (contact test and push-out `radius - d_est`), `paint_touching`, the scrape gap, projectile-vs-terrain tests with a radius, and debris/decoy spheres. `world_sdf` stays the 1-Lipschitz bound for sphere tracing, so `contracts.md` keeps its rule; add one paragraph there: "sphere contact uses the first-order estimate `d/|∇d|`".
+- **Determinism**: `det`-safe ops only (sqrt is IEEE-exact). Bump `SIM_BEHAVIOR_VERSION` and re-bless `REPLAY_GOLDEN_HASH`. **Schedule it with M3 A1**, which already bumps `SIM_BEHAVIOR_VERSION` to 5 and re-blesses, so there is one re-bless window and no extra protocol churn. Either the A1 package takes it, or the lead lands it on WIN1 immediately before A1 starts.
+- **Bots**: `ls-bots` navigation and `ClearanceGrid` keep using the bound (conservative), so bots stay safe and humans gain the room. Add a follow-up note to A5 (bot nav cache) so it can switch clearance to the estimate later.
+- **Acceptance**:
+  - a test in `ls-sim` that builds a ChunkStore (seed 7, sliders 50/50) and probes contact points: median visible gap at contact within ±0.1 u of the hull radius for all four hulls, p10 ≥ radius − 0.15 (no visible clipping into rock);
+  - a scenario test that flies a Tinker through a carved tunnel of diameter 1.2 u in a cavern world, and a Hauler through 1.5 u;
+  - existing ship tests still pass; replay hash re-blessed with the reason documented;
+  - `cargo test -p ls-bots --release` arsenal match unchanged (0 desyncs).
+- **Cost**: at most 6 extra SDF evaluations per substep and only while touching rock. Measure with the arsenal match tick p99 (must stay < 4 ms per room).
+
+### VQ1 Camera and scale cues (client; parallel-safe)
+
+- **FOV setting**: switch from a fixed vertical FOV to a fixed **horizontal** FOV (Hor+ clamped so 21:9 does not exceed 115°). Default **100° horizontal** (66.7° vertical at 16:9). Add a slider (80–120°) in the start-screen settings, stored in `localStorage`. Add a boost FOV kick of +4° eased over 250 ms.
+- **Size cue**: a minimal view-space **hull frame** (canopy struts and nose silhouette of the selected ship type at the screen edges, drawn after terrain with its own depth range, lit by the scene). Add a **fit reticle**: a thin ring around the crosshair whose screen radius is the ship's radius projected at the distance of the surface straight ahead (one raycast per frame). When the ring is bigger than the opening you are aiming at, you won't fit. The ring fades in only within 12 u of a surface.
+- **Files**: `web/src/game/camera.ts`, new `web/src/renderer/hullFrame.ts`, `web/src/ui/hud.ts` (ring), `web/src/ui/startScreen.ts` (setting). Needs a `raycast(origin, dir, max)` export on the ls-wasm `Game`, an additive one-function change in `crates/ls-wasm/src/lib.rs` (shared file, merged after A2).
+- **Acceptance**: FOV unit tests (Hor+ math at 4:3, 16:9 and 21:9, clamp); the browser smoke takes the screenshot `fit-tunnel.png` at a fixed pose in front of a 1.2 u tunnel with the ring visible; frame time +0.1 ms or less.
+
+## 3. Visual overhaul: work packages
+
+Rules for every package:
+- Never touch `crates/ls-sim`, `crates/ls-net` or `crates/ls-server`. Visuals are client-only and never change replay hashes.
+- **Frame budget**, at 1080p on the reference mid GPU (GTX 1660 / RX 6600 / Apple M1 class), measured by VQ8's GPU timestamps: whole frame ≤ **8 ms GPU** at "high"; integrated GPU (Iris Xe class) ≤ **14 ms** at "medium". Each package states its own share below and adds its quality-preset switches to the single `RenderQuality` object (low / medium / high, auto-picked from measured GPU time during the first 5 s).
+- **Before/after screenshots**: every package adds its fixed-pose shots to the VQ8 gallery and attaches the before/after pairs to its merge note. The lead sends them for the phone review (see `.claude/memory/next-steps.md`).
+- Tests: pure TS logic (packing, maths, effect timelines, presets) gets `node --test` unit tests. Shaders are compiled in the browser smoke run, and the smoke run fails on any WebGPU validation error.
+
+### Priority order and ownership
+
+| # | Package | What | Owner files | Share of the budget (mid GPU, high) | Depends on |
+| --- | --- | --- | --- | --- | --- |
+| 1 | **VQ8 Visual QA harness** | GPU timing via optional `timestamp-query` (per pass: terrain, objects, particles, post) shown in the debug overlay; `tools/browser-smoke/gallery.mjs` renders fixed scenes (cave tunnel close-up, open sky with islands, mine shaft, the 4-ship lineup, a scripted fight frame with an explosion at a fixed time) for fixed share codes into `target/visual-gallery/`, with a before/after HTML index; a budget check that fails the gallery run if any pass exceeds its share by more than 25 % | `web/src/renderer/gpuTimer.ts` (new), `web/src/ui/debugOverlay.ts`, `tools/browser-smoke/gallery.mjs` (new) | 0 (debug only) | — |
+| 2 | **VQ2 HDR core and post** | Render to `rgba16float` with MSAA 4× (resolve), exposure, **AgX tonemap** and sRGB output (fixes washed or muddy mid-tones and clipped emissives), **bloom** (6-mip dual-filter down/up chain), vignette, film grain off by default, colour-grade hook (a LUT or curve per world type; later used by C1's Last Color Standing monochrome). Split `shaders.ts` into `shaders/frame.ts` (uniforms), `shaders/lighting.ts`, `shaders/terrain.ts`, `shaders/objects.ts` and `shaders/post.ts`, so later packages edit disjoint files | `web/src/renderer/renderer.ts`, new `web/src/renderer/post.ts`, `web/src/renderer/shaders/*` | post ≤ 1.2 ms; MSAA ≤ 0.8 ms | VQ8 (timing) |
+| 3 | **VQ4 Ships and props** | A small procedural modelling kit in TS (extrude, lathe, bevel, mirror, smooth groups, emissive and livery masks per vertex) and **four distinct hulls** (Skitter: needle interceptor; Tinker: balanced wedge with side pods; Hauler: blocky armoured freighter; Tug: wide body with grapple arms), 600–2 000 triangles each, smooth or flat per part, team livery stripes, glowing engine nozzles (emissive, scale with `boosting`), canopy, blinking nav lights (red port, green starboard). Mesh per ship type (`MeshKind` `ship_skitter` and so on, selected by `ShipState.shipType`); decoys and ghosts use the owner's hull. Rework rocket, mine, crate, upgrade, gadget and wreck (wrecks break the actual hull into 3–4 parts). Hulls must stay inside their collision sphere (radius × 1.05, unit test) | `web/src/renderer/primitives.ts` → `web/src/renderer/models/*` (new), `web/src/game/scene.ts` (ship mesh choice only) | ships + props ≤ 0.5 ms (8 ships, 200 props) | — (works on current pipeline; looks better after VQ2) |
+| 4 | **VQ3a Terrain mesh data** (Rust, client-only data) | (a) **Continuous normals**: per vertex, the gradient of the sample grid by central differences over neighbouring cells (the padded grid already has the neighbours), so normals agree across cells and chunks. (b) **Vertex AO**: 6–8 SDF probes along the normal and a cone (classic SDF AO: `1 − Σ_i w_i · max(0, k·i − sdf(p + n·k·i))`, k ≈ 0.5 u), packed into one u8 per vertex. (c) Optional single **Newton projection** of each vertex onto the zero set (`v −= sdf(v)·∇/|∇|²`), so the drawn rock matches the collision surface to about 0.05 u (§1.1 second-order error). Surface-nets golden mesh hash re-blessed; `sdf` golden unchanged (no `GENERATOR_VERSION` bump needed unless the fixture demands it). Meshing time per chunk +≤ 40 % (bench: `worldgen_bench`) | `crates/ls-worldgen/src/mesh.rs`, `crates/ls-worldgen/src/chunk.rs` (`mesh_surface_nets` only); the `ao` array export is an additive change in `crates/ls-wasm/src/lib.rs` (`ChunkMesh`) and `web/src/game/chunks.ts` | 0 GPU; CPU meshing ≤ 1.4× today | Must merge **before M3 B3** (B3 owns `ls-worldgen` and bumps the generator); ls-wasm line after A2 |
+| 5 | **VQ3b Terrain shading** | Replace `grain`/`hash3(floor)` with **triplanar procedural rock**: 3-octave gradient-noise albedo variation, strata bands in world Y with per-world tilt, two detail-normal scales (tiling noise textures generated once at start-up by a compute shader into a 512² texture array, mipmapped, so no aliasing and no `sin`-hash artefacts); a per-material look (weak: sandy, crumbly, rough; rock: neutral; hard: dark blue-grey with **specular** mineral veins); **smooth material and paint blends**: replace `@interpolate(flat)` with per-vertex one-hot weights (vec4 unorm8), interpolated and sharpened with noise, so borders are organic curves, not triangles; paint keeps its colour-blind patterns. GGX specular (roughness per material), AO from VQ3a, hot/charged/glow states feeding bloom (emissive > 1) | `web/src/renderer/shaders/terrain.ts`, `web/src/renderer/mesh.ts` (attribute packing), new `web/src/renderer/rockTextures.ts` | terrain ≤ 2.0 ms (+1.0 over today) | VQ2 (split shaders), VQ3a for AO (falls back to AO = 1) |
+| 6 | **VQ5 Particles and VFX** | **GPU particle system**: compute update, a pool of 32 k, camera-facing billboards and stretched velocity sprites, additive and alpha (sorted per emitter), **soft particles** against the depth buffer, procedural sprite atlas (spark, smoke puff, flame, ring, glow) baked at start-up. **Effect library** driven by existing events (`mechanics.ts` flashes, beams, shots, hits, deaths, pickups, scorch): muzzle flash per weapon family; projectile cores plus ribbon trails (replace stretched octahedra); impact sparks plus rock dust, with a debris burst on terrain hits; **explosions** (flash, fireball noise sphere, smoke, shockwave ring, embers, debris chunks, camera shake by distance); **engine exhaust** for every ship (flame plus heat glow, boost flare); hull damage smoke and sparks below 30 % hull; death explosion that throws the VQ4 wreck parts; shield hit ripple (impact point on the bubble); cloak refraction shimmer; pickup sparkle; ambient **dust motes** around the camera (motion parallax, speed sense, 1 500 motes, wrap-around volume). Effects are data-driven by visual id like `SHAPE_STYLES` (weapon data names an effect preset), so new weapons need no client code | new `web/src/renderer/particles.ts`, `web/src/renderer/shaders/particles.ts`, new `web/src/game/vfx.ts`, `web/src/game/scene.ts` (`addEffects` → vfx) | particles ≤ 1.0 ms (20 k live) | VQ2 (bloom, depth) |
+| 7 | **VQ6 Dynamic lights** | Up to 128 point lights per frame (projectiles, explosions, muzzle flashes, engines, glowing pickups, hot rock hot-spots), **clustered forward** (16×9×24 froxel grid built in a compute pass), applied to terrain and objects with range falloff; light lifetimes from VQ5 effect presets; the headlight becomes a soft spot light. The biggest single step toward "nice to watch" in dark caves | `web/src/renderer/shaders/lighting.ts`, new `web/src/renderer/lights.ts` | lights ≤ 1.0 ms (64 lights) | VQ2; integrates with VQ5 (light emitters in effect presets) |
+| 8 | **VQ7 Atmosphere and backdrop** | Starfield plus procedural nebula skybox for open-sky worlds (seeded by share code); fog colour tinted toward the sun and a subtle height gradient; per-world-type grade (caves warm, mines sodium-orange, sky cold blue) through VQ2's grade hook; light shafts through cave openings (screen-space radial blur from the sun, high only) | new `web/src/renderer/sky.ts`, `web/src/renderer/shaders/sky.ts`, grade presets in `post.ts` | ≤ 0.6 ms | VQ2 |
+
+Total at "high" on the mid GPU: about 6.5–7.5 ms GPU, under the 8 ms target. "Medium" drops MSAA to 2×, bloom to 4 mips, particles to 10 k, lights to 32, and turns off light shafts.
+
+### Acceptance (whole track)
+
+- The five review findings each map to a before/after pair in the gallery:
+  - fit (VQ0 + VQ1 `fit-tunnel.png`);
+  - ships (4-ship lineup);
+  - textures (cave close-up);
+  - polygon switches (material border and paint edge close-ups);
+  - effects (fight frame with explosion and trails).
+- 60 fps at 1080p "high" on the reference mid GPU in the scripted fight scene (`worst frame` ≤ 20 ms over 60 s); "medium" holds 60 fps on Iris Xe at 1080p (or 900p dynamic resolution).
+- Zero WebGPU validation errors in the browser smoke, on Chrome and Edge.
+- No change to any replay or worldgen sdf golden hash from VQ1–VQ8 (VQ3a re-blesses the surface-nets mesh hash only).
+
+## 4. Scheduling against M3
+
+M3's wave A owns `ls-sim` (A1), `ls-net`/`ls-game`/`ls-wasm` (A2), `ls-server` (A3), `ls-directory` (A4) and `ls-bots` (A5). Wave B owns `ls-worldgen` (B3) and `web/src/ui` (B6, B7). Wave C1 owns `web/src/renderer` and `mechanics.ts`.
+
+| When | Visual work | Why there |
+| --- | --- | --- |
+| Now, with M3 wave A | **VQ0** inside A1's re-bless window (or by the lead just before A1); **VQ8**, **VQ2**, **VQ1**, **VQ4**, **VQ3a** in their own work folders | No file overlap with A1–A5 apart from the additive ls-wasm exports (merged after A2) and `ls-worldgen` (free in wave A). VQ2 must land early because it splits `shaders.ts` for everyone after it |
+| With M3 wave B | **VQ3b**, **VQ5**, **VQ6**, **VQ7** | Renderer-only; B6/B7 do not touch `web/src/renderer`. VQ1's settings slider in `startScreen.ts` merges before B6 starts, or B6 absorbs it |
+| **M3 wave C1** (extended scope) | C1 builds its mode visuals **on the new pipeline**, not on the old primitives: Squeeze wall glow and grind = VQ5 sparks and VQ6 lights at the shell; reactor fuse ring and holder highlight = VQ5 presets plus bloom; Heist core, carrier and extraction markers = emissive VQ4-style props plus particles; **Last Color Standing monochrome = a VQ2 grade pass** (not a separate shader path); **4 team colours** applied to VQ4 liveries, paint, exhaust and particles. Also in C1: the **first-impression pass**: a live 3D flythrough of the next world behind the start screen and lobby (camera on a spline through the network, all effects on), and the ship bay showing the rotating VQ4 hull of each type | C1 already owns `web/src/renderer` in wave C; the lobby screens exist only after B6 |
+| M3 wave D | Review of the full gallery on the phone; tune exposure and grades; document the renderer in `docs/architecture/renderer.md` | |
+
+If capacity is short, the order of value is: VQ0 → VQ2 → VQ5 → VQ4 → VQ3b (with VQ3a) → VQ6 → VQ1 → VQ7. VQ8 runs first because it costs little and every later package needs its timing and gallery.
+
+## 5. Notes for package authors
+
+- The terrain vertex attribute layout (`team` u32: team, surface, material, paint colour) is documented in `contracts.md` "Chunk meshes". VQ3a and VQ3b add attributes (AO and material weights) on the client side of that contract. Update the doc in the same change.
+- Keep emissive values in physical HDR units after VQ2 (for example bolt cores at 4–8, explosion flash peak 20, paint glow 0.3) and let exposure and bloom do the work. Do not clamp to 1 in shaders any more.
+- Particles and lights are cosmetic and may use `Math.random`. Never feed anything back into the sim or prediction.
+- Each package keeps the old path behind `RenderQuality.low` until the gallery shows parity, so a GPU without `timestamp-query` or with low limits still runs.

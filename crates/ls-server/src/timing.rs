@@ -201,12 +201,27 @@ mod tests {
         assert_eq!(t.take_summary(), TickSummary::default());
     }
 
-    #[test]
-    fn wait_until_is_accurate() {
-        let start = Instant::now();
-        let deadline = start + Duration::from_millis(5);
+    /// Lateness of one 5 ms `wait_until`.
+    fn wait_lateness() -> Duration {
+        let deadline = Instant::now() + Duration::from_millis(5);
         wait_until(deadline);
-        let late = Instant::now() - deadline;
+        Instant::now() - deadline
+    }
+
+    /// Loose bound for the normal (parallel, possibly loaded) test run: only
+    /// gross breakage fails here.
+    #[test]
+    fn wait_until_is_not_grossly_late() {
+        let late = wait_lateness();
+        assert!(late < Duration::from_millis(50), "{late:?}");
+    }
+
+    /// The strict bound, run by tools/ci.* in its own serial step
+    /// (`--ignored --test-threads=1`), where parallel builds can't delay it.
+    #[test]
+    #[ignore = "wall-clock sensitive: run serially by tools/ci.* (--ignored --test-threads=1)"]
+    fn wait_until_is_accurate() {
+        let late = wait_lateness();
         assert!(late < Duration::from_millis(10), "{late:?}");
     }
 }

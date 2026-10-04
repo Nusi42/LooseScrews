@@ -229,7 +229,8 @@ Steps, in order: `cargo fmt --check`; `node tools/gen-weapon-docs.mjs --check` (
 player reference pages, [below](#generated-player-reference)); `node tools/check-binds.mjs` and
 the tools tests (`node --test "tools/test/*.test.mjs"`: hooks, guards, settings); clippy with `-D warnings`;
 `cargo test --workspace`;
-`cargo test -p ls-bots --release`; the wasm32 unit tests (skipped with a message if
+the strict `ls-server` timing test alone (`--ignored --test-threads=1`; the parallel run only
+checks a loose bound); `cargo test -p ls-bots --release`; the wasm32 unit tests (skipped with a message if
 `wasm-bindgen-test-runner` or `node` is missing); `cargo build -p ls-wasm` for wasm32; in
 `web/`: `npm ci`, `typecheck`, `test`, `build`; `tools/determinism-check.mjs`; finally the
 browser smoke test (skipped without Chrome or Edge, or with `LS_SKIP_BROWSER_SMOKE=1`; a

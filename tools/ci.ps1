@@ -33,6 +33,9 @@ try {
     Step 'cargo test --workspace'
     Invoke-Checked cargo @('test', '--workspace')
 
+    Step 'ls-server timing accuracy (strict, serial: ignored in the parallel run)'
+    Invoke-Checked cargo @('test', '-p', 'ls-server', '--lib', 'timing::tests::wait_until_is_accurate', '--', '--ignored', '--test-threads=1')
+
     Step 'cargo test -p ls-bots --release (bot end-to-end tests are ignored in debug builds)'
     Invoke-Checked cargo @('test', '-p', 'ls-bots', '--release')
 

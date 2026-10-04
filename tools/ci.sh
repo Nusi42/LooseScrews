@@ -26,6 +26,9 @@ cargo clippy --workspace --all-targets -- -D warnings
 step "cargo test --workspace"
 cargo test --workspace
 
+step "ls-server timing accuracy (strict, serial: ignored in the parallel run)"
+cargo test -p ls-server --lib timing::tests::wait_until_is_accurate -- --ignored --test-threads=1
+
 step "cargo test -p ls-bots --release (bot end-to-end tests are ignored in debug builds)"
 cargo test -p ls-bots --release
 

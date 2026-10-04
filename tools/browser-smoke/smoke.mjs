@@ -484,7 +484,7 @@ async function main() {
     // 127.0.0.1, not localhost: the server binds IPv4 only here, and WebTransport
     // (UDP) does not fall back from ::1 the way TCP connections do.
     const base = `http://127.0.0.1:${port}`;
-    const serverArgs = ["--bind", `127.0.0.1:${port}`, "--web-root", opts.webRoot, "--code", opts.code, "--stats-interval", "5"];
+    const serverArgs = ["--bind", `127.0.0.1:${port}`, "--warmup", "0", "--countdown", "0", "--web-root", opts.webRoot, "--code", opts.code, "--stats-interval", "5"];
     if (opts.transport === "ws") serverArgs.push("--no-webtransport");
     server = run(opts.serverBin, serverArgs, join(opts.outDir, "server.log"));
     if (!check("server started", await waitForLine(server, /listening \(http \+ websocket/, 60_000), `port ${port}`)) {
@@ -689,7 +689,7 @@ async function main() {
     {
       const mport = await freePort();
       const mbase = `http://127.0.0.1:${mport}`;
-      const margs = ["--bind", `127.0.0.1:${mport}`, "--web-root", opts.webRoot, "--code", opts.code, "--ruleset", join(here, "mechanics.ron")];
+      const margs = ["--bind", `127.0.0.1:${mport}`, "--warmup", "0", "--countdown", "0", "--web-root", opts.webRoot, "--code", opts.code, "--ruleset", join(here, "mechanics.ron")];
       if (opts.transport === "ws") margs.push("--no-webtransport");
       const mserver = run(opts.serverBin, margs, join(opts.outDir, "server-mechanics.log"));
       try {
@@ -807,7 +807,7 @@ async function serverAccepts(opts, code, banned) {
   const port = await freePort();
   const proc = run(
     opts.serverBin,
-    ["--bind", `127.0.0.1:${port}`, "--no-webtransport", "--web-root", opts.webRoot, "--ruleset", code],
+    ["--bind", `127.0.0.1:${port}`, "--warmup", "0", "--countdown", "0", "--no-webtransport", "--web-root", opts.webRoot, "--ruleset", code],
     join(opts.outDir, "server-ruleset.log"),
   );
   try {

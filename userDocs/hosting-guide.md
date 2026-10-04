@@ -21,15 +21,16 @@ design that the server doesn't have yet are listed under
 - [Firewall and router](#firewall-and-router)
 - [Filling the match with bots](#filling-the-match-with-bots)
 - [Logs and tick stats](#logs-and-tick-stats)
-- [Match end, intermission and restart](#match-end-intermission-and-restart)
+- [Lobby, match end and rotation](#lobby-match-end-and-rotation)
 - [Stopping the server](#stopping-the-server)
 - [Troubleshooting](#troubleshooting)
 - [Not in this build yet](#not-in-this-build-yet)
 
 ## What the server does
 
-One `ls-server` process hosts **one match** of Paint the Void for up to 8 players (32 at most,
-see `--max-players`) on one world with one rule set. It:
+One `ls-server` process hosts a **public room** that plays a rotation of matches (a playlist)
+for up to 8 players (32 at most, see `--max-players`), plus a few **private rooms** for duels
+and parties. It:
 
 - runs the authoritative game simulation at 60 ticks per second and sends state updates to
   players 30 times per second
@@ -38,10 +39,10 @@ see `--max-players`) on one world with one rule set. It:
 - accepts players over **WebSocket** (TCP) and **WebTransport** (UDP). The browser picks
   WebTransport when it can and falls back to WebSocket.
 - enforces its rule set: banned weapons, gadgets and ship types never spawn and can't be used
-- restarts the match on the same world and rules when the timer runs out, and players rejoin
-  automatically
+- runs a lobby between matches: warm-up flying with weapons off, a countdown, the match, its
+  result; then the next match of the rotation, with players staying connected
 
-There is no lobby, account system or server list: players join by opening your address.
+There is no account system or server list yet: players join by opening your address.
 
 ## Building
 
@@ -119,15 +120,19 @@ Verified against `ls-server --help` of this build (`ls-server 0.1.0`).
 | `--bind <ADDR>` | `0.0.0.0:7777` | TCP address and port for HTTP (web client, `/cert-hash`) and the WebSocket at `/ws`. `0.0.0.0` accepts connections on every network interface. Use `127.0.0.1:7777` to allow only this computer. `[::]:7777` listens on IPv6 (on Windows IPv6 only, so IPv4 players can't connect). |
 | `--wt-bind <ADDR>` | same as `--bind` | UDP address and port for WebTransport. By default it uses the same port number as `--bind`, but over UDP. Can't be combined with `--no-webtransport`. |
 | `--no-webtransport` | off | Don't start WebTransport. Everyone connects over WebSocket, and `/cert-hash` answers 404. |
-| `--code <CODE>` | a random world | Share code of the world to host. Without it, the server picks a random seed with the default sliders (Enclosure 50, Density 40, Instability 30). |
-| `--ruleset <FILE\|CODE>` | built-in Paint the Void rules | A rule set file (RON) or an `LR…` rule set code (see [Rule sets](#rule-sets)). An existing file wins; text that looks like a code is decoded. Read once at startup. |
+| `--code <CODE>` | a random world | Share code of the world to host; with the default rotation every match plays on it. Without it, the server picks a random seed with the default sliders (Enclosure 50, Density 40, Instability 30): once with `--ruleset`, for every match with the default rotation. |
+| `--ruleset <FILE\|CODE\|ID>` | the default rotation | A rule set file (RON), a built-in rule set id (`paint_the_void`, `sandbox_all_weapons`) or an `LR…` rule set code (see [Rule sets](#rule-sets)), played in every match on one world. An existing file wins, then built-in ids; text that looks like a code is decoded. Read once at startup. Can't be combined with `--playlist`. |
+| `--playlist <FILE>` | the default rotation | A playlist file: the matches to rotate through, each with a rule set, a world and a player range (see [Playlists](#playlists)). Can't be combined with `--ruleset` or `--code`. |
 | `--ban <WEAPON_ID>` | none | Bans a weapon on top of the rule set. Repeat it for more weapons (`--ban railspike --ban tectonic_charge`). Weapon ids are listed in [Rule sets](#weapon-gadget-and-ship-ids). |
 | `--balance-list <FILE>` | none | A balance list file: weapons and gadgets banned or retuned server-wide, applied on top of the rule set and **re-read before every match** (see [Banning and balancing weapons](#banning-and-balancing-weapons)). |
 | `--max-players <N>` | `8` | Player limit, 1 to 32. Bots count as players. Players who try to join a full server get "room is full". |
 | `--web-root <DIR>` | `web/dist` if that folder exists | Folder with the built web client, served over HTTP. If the folder doesn't exist, the server logs a warning and serves a placeholder page, but the game connection still works. |
 | `--stats-interval <SECONDS>` | `10` | Seconds between two `tick stats` log lines, 0.1 to 3600 |
-| `--intermission <SECONDS>` | `10` | Seconds the result of a finished match stays on screen before players are sent to the next match, 0.1 to 3600 |
-| `--exit-when-empty` | off | Shut down about 2 seconds after the last player leaves (only after at least one player joined). Meant for scripted test runs (see the warning under [Match end](#match-end-intermission-and-restart)). |
+| `--intermission <SECONDS>` | `10` | Seconds the result of a finished match stays on screen before the next match's warm-up, 0.1 to 3600 |
+| `--warmup <SECONDS>` | `30` | Longest warm-up (flying the next level with weapons off) before the countdown starts, once enough players are there; shorter when everyone is ready. 0 to 3600. `--warmup 0 --countdown 0` turns the lobby off: matches start right away. |
+| `--countdown <SECONDS>` | `10` | Countdown before a match starts, 0 to 3600 |
+| `--private-rooms <N>` | `4` | Most private rooms (duels, parties, custom matches) open at once next to the public room, 0 to 64; each runs on its own CPU core, so at most one per core beyond the public room's |
+| `--exit-when-empty` | off | Shut down about 2 seconds after the last player leaves (only after at least one player joined). Meant for scripted test runs. |
 | `-h`, `--help` | | Print help |
 | `-V`, `--version` | | Print the version |
 
@@ -572,7 +577,7 @@ Important lines:
 | Log line | Meaning |
 | --- | --- |
 | `serving the web client web_root=…` | The web client folder in use |
-| `match ready share_code=… ruleset=… build_ms=…` | The world is built. Note the share code if you want to keep the level. |
+| `match ready room=public entry=… share_code=… ruleset=… warmup=… build_ms=…` | The first room is built (`warmup=true`: a warm-up room). Note the share code if you want to keep the level. |
 | `rules: <name> LR… (banned weapons: …)` | The rules the server plays (rule set, balance list and bans applied), with their rule set code |
 | `rules changed (balance list): <name> LR… (banned weapons: …)` | The balance list changed the rules for the next match |
 | `webtransport listening … port=… cert_sha256=…` | WebTransport is up, with its certificate hash |
@@ -582,8 +587,11 @@ Important lines:
 | `join rejected … reason=ServerFull` | The server was full. Other reasons: `DataMismatch` (the browser or bot was built from different game data), a version mismatch, or a bad handshake. |
 | `player left … reason=…` | A player left, timed out or was removed |
 | `tick stats …` | Performance and match counters, every `--stats-interval` seconds (see below) |
-| `match over; sending players off to rejoin the next match` | The intermission ended |
-| `previous match finished; started a new one build_ms=… matches=…` | The next match is built |
+| `countdown started …` / `countdown cancelled …` | The lobby counts down to the match (or stopped because players left) |
+| `player count does not fit; warm-up on another playlist entry` | Too few or too many players for the next playlist entry; the room switches to another one |
+| `match over; building the next room … next=… next_share_code=…` | The match ended; the result shows while the next room is built |
+| `next room swapped in room=… warmup=… entry=… share_code=… players=… matches=…` | Everyone moved to the next room (warm-up or match) without reconnecting |
+| `private room open room=R-…` / `private room closed` | A private room started or closed (its last player left) |
 | `final stats …` | Totals at shutdown |
 
 Warnings to watch:
@@ -594,12 +602,18 @@ Warnings to watch:
 | `sim fell behind; skipped ticks to catch up` | The simulation couldn't keep up (the computer was busy or asleep). Players may see a hitch. |
 | `input starvation: clients will mispredict (desync risk)` | Players' inputs arrived too rarely, usually because of a bad connection. Their ships may jump or feel laggy. |
 | `could not reload the rules; keeping the previous ones` | The balance list couldn't be read or is invalid at a match start. Fix the file; the next match reads it again. |
+| `player not accepted by the next room` | A player could not move to the next match (for example a smaller `max_players`); they are disconnected with the reason |
 | `web root not found; serving a placeholder page` | The `--web-root` folder is missing. Build the web client or fix the path. |
 
 ### Tick stats fields
 
+Every room writes its own `tick stats` line.
+
 | Field | Meaning |
 | --- | --- |
+| `room` | `public` or the private room's code |
+| `phase` | Lobby phase: `warmup`, `countdown`, `match` or `results` |
+| `warmup` | Whether the room is a warm-up room (weapons off) |
 | `tick` | Tick of the current match (60 per second) |
 | `total_ticks` | Ticks over all matches since startup |
 | `players` | Connected players |
@@ -622,7 +636,7 @@ Warnings to watch:
 | `paint_cells_0`, `paint_cells_1`, `surface_cells` | Surface painted by Orange and Blue, and the level's total paintable surface. The score is `paint_cells / surface_cells`. |
 | `match_left_s` | Seconds left in the match |
 | `match_over` | Whether the match has ended |
-| `matches` | Matches played since startup, including the current one |
+| `matches` | Matches started since startup, including the current one (warm-ups don't count) |
 | `desync_warnings` | Input starvation warnings since startup |
 
 The `final stats` line at shutdown adds totals: `connections`, `rejected`, `kicked`
@@ -634,28 +648,69 @@ The `final stats` line at shutdown adds totals: `connections`, `rejected`, `kick
 many shots in flight, single snapshots can run a little over that; `snapshot_kib_s` shows the
 total for all players.
 
-## Match end, intermission and restart
+## Lobby, match end and rotation
 
-1. When the match timer runs out (5 minutes by default, `match_secs` in the rule set), the team
-   with more painted surface wins. Players see the result screen.
-2. After `--intermission` seconds (default 10), the server disconnects every player with the
-   message "match over; a new match is starting". This isn't counted as a kick.
-3. The browsers and bots reconnect by themselves (after half a second, then with growing pauses,
-   up to 12 attempts in the browser).
-4. The **first join** after a finished match builds a fresh match on the **same share code and
-   rule set** (with the balance list read again): the level is back to pristine (no craters,
-   paint or debris), and teams are assigned again. Building takes under a second in a release
-   build. Joins wait for it.
+Every match runs through the lobby:
 
-If a match ends while nobody is connected, the server waits and builds the next match when
-someone joins. To change the world or the rule set, restart the server with other flags; to
-change bans and tuning between matches, edit the balance list.
+1. **Warm-up.** Players fly the next match's level with weapons and gadgets off. When enough
+   players for the next playlist entry are there and either everyone pressed ready or
+   `--warmup` seconds (default 30) have passed, the countdown starts. If the warm-up time
+   passes with too few or too many players for that entry, the server switches to another entry
+   that fits (a new warm-up on its level); if none fits better, the entry is played anyway.
+2. **Countdown** (`--countdown`, default 10 s). If players leave so the count no longer fits,
+   the countdown stops and the warm-up continues.
+3. **Match.** A fresh copy of the level (no warm-up craters), with the real rules.
+4. **Result** (`--intermission`, default 10 s). Meanwhile the server builds the next
+   playlist entry's level in the background (the balance list is read again here).
+5. Everyone moves to the next warm-up **on the same connection**: nobody is disconnected and
+   nobody waits for a level to build, players who join during the result join right away.
 
-> **Warning:** `--exit-when-empty` sees the moment between the intermission and the next match
-> as "everyone left". If rebuilding the match and rejoining take longer than about 2 seconds
-> (always with a debug build, and possible with a release build), the server shuts down
-> instead of starting the next match. Don't use
-> this flag for a server people play on.
+`--warmup 0 --countdown 0` turns the lobby off: a match starts as soon as its first player
+joins, and after the result the next match starts straight away.
+
+If a match ends while nobody is connected, the server waits. To change bans and tuning between
+matches, edit the balance list; to change the rotation, restart the server with another
+playlist.
+
+### Playlists
+
+Without `--playlist` and `--ruleset`, the server rotates through the default playlist: Team
+Brawl (4 players or more), The Squeeze, Paint the Void, Hot Reactor, Heist and Last Color
+Standing, each on a new random world (or on `--code`'s world). Modes whose rule set isn't in
+this build yet are left out. `--ruleset` plays one rule set on one world in every match.
+
+A playlist file lists the matches in order (RON, like rule sets):
+
+```ron
+Playlist(
+    entries: [
+        // A built-in rule set by id, a random world, 4 to 32 players.
+        (rules: "team_brawl", min_players: 4),
+        // Your own rule set file (relative to the playlist file) on a fixed world.
+        (rules: "my_rules.ron", world: Code("LS08-0000-0000-0000-8006-8001-8F9G")),
+        // A rule set code from the editor, a random world with slider ranges, at most 8 players.
+        (rules: "LR6V-69CM-G006-58R", world: RandomSliders(enclosure: (20, 60), density: (30, 70)), max_players: 8),
+    ],
+)
+```
+
+- `rules`: a built-in rule set id (the file name in `data/rulesets/` without `.ron`), a rule set
+  file or an `LR…` code. `--ban` and `--balance-list` apply to every entry.
+- `world`: `Random` (default: a new random world with the default sliders every time),
+  `RandomSliders(enclosure: (low, high), density: (low, high))` or `Code("LS…")`.
+- `min_players` (default 1) and `max_players` (default 32): the entry is skipped while the
+  player count is outside this range. If no entry fits, a Team Brawl entry is played (with 2
+  teams from 4 players on, free-for-all below), otherwise the next entry anyway.
+
+The server checks the whole playlist at startup and refuses to start if an entry is invalid.
+
+### Private rooms
+
+Next to the public room, the server runs up to `--private-rooms` private rooms (default 4) for
+duels, parties and custom matches, each with its own code (`R-` and six characters) and its
+own simulation thread. A private room closes when its last player leaves. Players reach one
+through an invite (coming with the server list and party features); a client asking for an
+unknown or closed room code gets "unknown room".
 
 ## Stopping the server
 
@@ -681,15 +736,15 @@ stopped with a hard kill (closing the terminal window, Task Manager, `kill -9`) 
 | A weapon still shows up after a ban | Bans on the command line need a restart; balance list bans apply from the next match. The `rules:` line at startup (and `rules changed (balance list):` later) lists the banned weapons. |
 | Players time out when their tab is hidden | Browsers slow down background tabs to about one update per second, which still keeps the connection alive. A computer going to sleep drops the connection. |
 | Stuttering, `tick p99 over budget` warnings | Use a release build, and check CPU load on the host. With `RUST_LOG=debug` the log itself adds load. |
-| Nobody gets back in after a match | See the log for "could not start a new match". Players can reload the page to rejoin. |
+| Nobody gets to the next match | See the log for "could not build the next room; trying again". Players can reload the page to rejoin. |
 
 ## Not in this build yet
 
-- **One match per server process:** one world, one mode (Paint the Void, two teams). Run several
-  servers on different ports for more matches. Other game modes and mutators come later; rule
-  sets can't enable mutators yet.
-- **No lobby, server list, party codes or accounts.** Players need your address. Invite links
-  carry a world and a rule set code but don't start or join a match by themselves.
+- **Modes arrive one by one:** the default rotation only holds the modes whose rule sets are in
+  this build; rule sets can't enable mutators yet.
+- **No server list, party codes or accounts.** Players need your address. Invite links
+  carry a world and a rule set code but don't start or join a match by themselves, and private
+  rooms can't be opened from the browser yet.
 - **No admin commands** while running (kick, change world or rule set, end match). Restart the
   server with new flags; bans and tuning can change between matches through the balance list.
 - **No slider tool:** you can't create a share code with chosen slider values yet, and only

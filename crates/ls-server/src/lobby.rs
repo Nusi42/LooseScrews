@@ -29,7 +29,6 @@
 use std::time::Duration;
 
 use ls_math::TICK_HZ;
-use ls_sim::ruleset::ModeRules;
 use ls_sim::RuleSet;
 
 /// Default longest warm-up before the countdown starts.
@@ -98,15 +97,8 @@ pub fn warmup_rules(rules: &RuleSet) -> RuleSet {
     r.starting_loadout.primaries.clear();
     r.starting_loadout.secondaries.clear();
     r.starting_loadout.gadget = None;
-    set_match_secs(&mut r.mode, WARMUP_MATCH_SECS);
+    r.mode.set_field("match_secs", WARMUP_MATCH_SECS);
     r
-}
-
-#[allow(irrefutable_let_patterns)]
-fn set_match_secs(mode: &mut ModeRules, secs: f32) {
-    if let ModeRules::PaintTheVoid(p) = mode {
-        p.match_secs = secs;
-    }
 }
 
 /// Lobby phase. Times are sim-thread ticks ([`Lobby::update`]'s `now`).
@@ -127,6 +119,16 @@ pub enum Phase {
 }
 
 impl Phase {
+    /// The phase on the wire (`LobbyState`).
+    pub fn to_net(&self) -> ls_net::LobbyPhase {
+        match self {
+            Phase::Warmup { .. } => ls_net::LobbyPhase::Lobby,
+            Phase::Countdown { .. } => ls_net::LobbyPhase::Countdown,
+            Phase::Match => ls_net::LobbyPhase::Match,
+            Phase::Results { .. } => ls_net::LobbyPhase::Results,
+        }
+    }
+
     /// Short name for logs and status.
     pub fn name(&self) -> &'static str {
         match self {
@@ -435,7 +437,7 @@ mod tests {
             .weapons
             .iter()
             .all(|(_, w)| rules.availability(&w.id).is_banned()));
-        assert_eq!(rules.paint_the_void_rules().match_secs, WARMUP_MATCH_SECS);
+        assert_eq!(rules.mode.match_secs(), WARMUP_MATCH_SECS);
         // A room builds, a player joins, holds fire for a while: nothing breaks.
         let cfg = RoomConfig {
             pregenerate: false,
@@ -450,6 +452,7 @@ mod tests {
                 ls_sim::Buttons::FIRE_PRIMARY.0 | ls_sim::Buttons::FIRE_SECONDARY.0,
             );
             let msg = ls_net::Message::Input(ls_net::InputMsg {
+                epoch: 0,
                 ack_snapshot: None,
                 cmds: vec![ls_game::convert::input_to_net(&cmd)],
             });

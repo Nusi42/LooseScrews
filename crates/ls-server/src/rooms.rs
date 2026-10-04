@@ -75,12 +75,9 @@ impl std::fmt::Display for RoomCode {
     }
 }
 
-/// The room a `Hello` asks for (`None`: the public room).
-///
-/// Protocol 4 has no room field yet; protocol 5 (wave A, package A2) adds
-/// an optional room code to `Hello`, read here.
-pub fn requested_room(_hello: &Hello) -> Option<String> {
-    None
+/// The room a `Hello` asks for (`None` or empty: the public room).
+pub fn requested_room(hello: &Hello) -> Option<String> {
+    hello.room.clone().filter(|r| !r.trim().is_empty())
 }
 
 /// What a room is doing, for status queries (updated by its sim thread).

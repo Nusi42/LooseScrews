@@ -60,10 +60,14 @@ fn entry(name: &str) -> PlaylistEntry {
 }
 
 async fn connect(addr: SocketAddr, name: &str) -> (Ws, Welcome, Duration) {
+    connect_to(addr, name, None).await
+}
+
+/// Connects with a room code in the `Hello` (`None`: the public room).
+async fn connect_to(addr: SocketAddr, name: &str, room: Option<&str>) -> (Ws, Welcome, Duration) {
     let (mut ws, _) = connect_async(format!("ws://{addr}/ws")).await.unwrap();
-    let hello = Message::Hello(ls_game::client_hello(name, None, None))
-        .encode()
-        .unwrap();
+    let hello = ls_game::client_hello(name, None, None).with_room(room.map(String::from));
+    let hello = Message::Hello(hello).encode().unwrap();
     let t0 = Instant::now();
     ws.send(WsMessage::Binary(hello.into())).await.unwrap();
     let welcome = next_welcome(&mut ws, name).await;
@@ -203,6 +207,9 @@ async fn private_rooms_run_next_to_the_public_room_and_close_when_empty() {
     assert!(code.as_str().starts_with("R-"), "{code}");
 
     let hello = |n: &str| ls_game::client_hello(n, None, None);
+    // Over a real WebSocket, with the code in the Hello.
+    let (_ws, w0, _) = connect_to(server.local_addr(), "w", Some(code.as_str())).await;
+    assert_eq!(rules_name(&w0), "Duel");
     let p1 = hub
         .open_in(Some(code.as_str()), "test", addr, hello("x"), 1200)
         .unwrap();
@@ -222,9 +229,26 @@ async fn private_rooms_run_next_to_the_public_room_and_close_when_empty() {
     assert_eq!(rooms[0].0.label, "public");
     assert_eq!(rooms[0].0.players, 1);
     assert_eq!(rooms[1].0.label, code.as_str());
-    assert_eq!(rooms[1].0.players, 2);
+    assert_eq!(rooms[1].0.players, 3);
     assert_eq!(rooms[1].0.ruleset, "Duel");
-    assert_eq!(server.total_players(), 3);
+    assert_eq!(server.total_players(), 4);
+    // An unknown code in a Hello is rejected over the wire too.
+    let (mut ws, _) = connect_async(format!("ws://{}/ws", server.local_addr()))
+        .await
+        .unwrap();
+    let unknown = hello("u").with_room(Some("R-ZZZZZZ".into()));
+    ws.send(WsMessage::Binary(
+        Message::Hello(unknown).encode().unwrap().into(),
+    ))
+    .await
+    .unwrap();
+    match tokio::time::timeout(Duration::from_secs(10), ws.next()).await {
+        Ok(Some(Ok(WsMessage::Binary(b)))) => match Message::decode(&b).unwrap() {
+            Message::Reject(r) => assert!(r.message.contains("unknown room"), "{r:?}"),
+            other => panic!("{other:?}"),
+        },
+        other => panic!("{other:?}"),
+    }
 
     // Unknown codes are rejected.
     assert!(hub
@@ -236,7 +260,8 @@ async fn private_rooms_run_next_to_the_public_room_and_close_when_empty() {
     let e = server.create_private_room(spec()).await.unwrap_err();
     assert!(e.to_string().contains("in use"), "{e}");
 
-    // Both players leave: the room closes and its code is gone.
+    // Everyone leaves: the room closes and its code is gone.
+    drop(_ws);
     for p in [&p1, &p2] {
         p.push_incoming(
             Message::Disconnect {

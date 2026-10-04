@@ -145,9 +145,20 @@ impl Leave {
 
 struct ClientConn {
     link: SimLink,
-    /// The connection's `Hello`, replayed into every new room.
+    /// The connection's `Hello`, replayed into every new room (`PickTeam`
+    /// updates its team).
     hello: Hello,
+    /// Asked to spectate from the next match on (`Spectate`).
+    spectate: bool,
     errors: u32,
+}
+
+/// A lobby message from a client (handled by the sim thread, not the room).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LobbyMsg {
+    Ready(bool),
+    PickTeam(Option<u8>),
+    Spectate(bool),
 }
 
 /// A warm-up room (weapons off) or a match room.
@@ -254,6 +265,8 @@ struct Sim {
     status: SharedStatus,
     /// Phase and player count last published to `status`.
     published: Option<(&'static str, usize)>,
+    /// The `LobbyState` last sent (with `phase_ticks_left` 0).
+    lobby_sent: Option<ls_net::LobbyStateMsg>,
     clients: BTreeMap<u8, ClientConn>,
     commands: mpsc::Receiver<SimCommand>,
     shutdown: Arc<AtomicBool>,
@@ -272,6 +285,15 @@ struct Sim {
     past_matches: RoomStats,
     past_ticks: u64,
     past_edits: u64,
+}
+
+/// A Team Brawl fallback (no playlist entry fits the player count, plan
+/// §3.1): 2 teams from 4 players on, free-for-all deathmatch below.
+fn fallback_teams(rules: &mut RuleSet, players: usize) {
+    if rules.mode.kind() == ls_sim::ModeKind::TeamBrawl {
+        let teams = if players >= 4 { 2.0 } else { 0.0 };
+        rules.mode.set_field("teams", teams);
+    }
 }
 
 /// Starts a room's sim thread. `ready` receives the first match's info once
@@ -376,6 +398,7 @@ impl Sim {
             closing: false,
             status,
             published: None,
+            lobby_sent: None,
             clients: BTreeMap::new(),
             commands,
             shutdown,
@@ -457,6 +480,7 @@ impl Sim {
         }
         let t2 = Instant::now();
         self.dispatch();
+        self.send_lobby_state();
         self.poll_next();
         self.update_lobby();
         self.check_close();
@@ -559,6 +583,7 @@ impl Sim {
                     ClientConn {
                         link,
                         hello,
+                        spectate: false,
                         errors: 0,
                     },
                 );
@@ -618,6 +643,10 @@ impl Sim {
                     describe(&cfg.rules, &cfg.weapons)
                 );
             }
+        }
+        let mut cfg = cfg;
+        if fallback {
+            fallback_teams(&mut cfg.rules, players);
         }
         Planned::new(index, cfg, fallback)
     }
@@ -854,15 +883,130 @@ impl Sim {
         info!(room = %self.params.label, "private room closed");
     }
 
+    // ----- lobby messages ----------------------------------------------------
+
+    /// `Ready`, `PickTeam` and `Spectate`: they shape the next match, so the
+    /// sim thread keeps them (the room never sees them).
+    fn lobby_message(&mut self, id: u8, m: LobbyMsg) {
+        let Some(c) = self.clients.get_mut(&id) else {
+            return;
+        };
+        debug!(room = %self.params.label, player = id, msg = ?m, "lobby message");
+        match m {
+            LobbyMsg::Ready(true) => {
+                self.ready.insert(id);
+            }
+            LobbyMsg::Ready(false) => {
+                self.ready.remove(&id);
+            }
+            // Applies when the player joins the next room (team balance
+            // still decides, see `Room::join`).
+            LobbyMsg::PickTeam(team) => c.hello.preferred_team = team,
+            LobbyMsg::Spectate(s) => c.spectate = s,
+        }
+    }
+
+    /// The configuration the lobby announces as the next match: the room
+    /// being built after a match, else the current entry.
+    fn upcoming(&self) -> &Planned {
+        match (&self.next, self.lobby.phase()) {
+            (Some(n), Phase::Results { .. }) => &n.planned,
+            _ => &self.current,
+        }
+    }
+
+    /// The `LobbyState` of this tick.
+    fn lobby_state(&self) -> ls_net::LobbyStateMsg {
+        let up = self.upcoming();
+        let entry = self.rotation.entry(up.index);
+        let mode = &up.cfg.rules.mode;
+        let players = self
+            .clients
+            .iter()
+            .map(|(&id, c)| ls_net::LobbyPlayer {
+                id,
+                team: c.hello.preferred_team.unwrap_or(ls_net::mode::NONE),
+                ready: self.ready.contains(&id),
+                spectator: c.spectate,
+            })
+            .collect();
+        ls_net::LobbyStateMsg {
+            phase: self.lobby.phase().to_net(),
+            phase_ticks_left: self
+                .lobby
+                .remaining(self.clock)
+                .map_or(0, |t| t.min(u64::from(u32::MAX)) as u32),
+            room_code: if self.params.close_when_empty {
+                self.params.label.clone()
+            } else {
+                String::new()
+            },
+            next_mode: mode.kind().id().to_string(),
+            next_ruleset: up.cfg.rules.name.clone(),
+            next_share_code: up.share_code.clone(),
+            min_players: entry.min_players,
+            max_players: entry.max_players,
+            teams: mode.teams(),
+            players,
+        }
+    }
+
+    /// Sends `LobbyState` to everyone when it changed (the countdown alone
+    /// is not a change: clients count `phase_ticks_left` down themselves).
+    /// Runs after the room's packets of the tick, so a new `Welcome` always
+    /// arrives before the lobby state of its room.
+    fn send_lobby_state(&mut self) {
+        if self.clients.is_empty() {
+            self.lobby_sent = None;
+            return;
+        }
+        let msg = self.lobby_state();
+        let key = ls_net::LobbyStateMsg {
+            phase_ticks_left: 0,
+            ..msg.clone()
+        };
+        if self.lobby_sent.as_ref() == Some(&key) {
+            return;
+        }
+        self.lobby_sent = Some(key);
+        let bytes = match Message::LobbyState(Box::new(msg)).encode() {
+            Ok(b) => b,
+            Err(e) => {
+                warn!(room = %self.params.label, error = %e, "cannot encode LobbyState");
+                return;
+            }
+        };
+        for c in self.clients.values_mut() {
+            let _ = c.link.send_reliable(&bytes);
+        }
+    }
+
     // ----- connections -------------------------------------------------------
 
     fn receive(&mut self) {
         let mut gone: Vec<(u8, Leave)> = Vec::new();
+        let mut lobby_msgs: Vec<(u8, LobbyMsg)> = Vec::new();
         for (&id, c) in self.clients.iter_mut() {
             for _ in 0..MAX_PACKETS_PER_TICK {
                 match c.link.recv() {
                     Ok(Some(p)) => {
-                        if let Err(e) = self.room.handle_packet(id, &p.data) {
+                        let handled = match Message::decode(&p.data) {
+                            Ok(Message::Ready { ready }) => {
+                                lobby_msgs.push((id, LobbyMsg::Ready(ready)));
+                                Ok(())
+                            }
+                            Ok(Message::PickTeam { team }) => {
+                                lobby_msgs.push((id, LobbyMsg::PickTeam(team)));
+                                Ok(())
+                            }
+                            Ok(Message::Spectate { spectate }) => {
+                                lobby_msgs.push((id, LobbyMsg::Spectate(spectate)));
+                                Ok(())
+                            }
+                            Ok(msg) => self.room.handle_message(id, msg),
+                            Err(e) => Err(e.into()),
+                        };
+                        if let Err(e) = handled {
                             c.errors += 1;
                             debug!(player = id, error = %e, "bad packet");
                             if c.errors > MAX_PROTOCOL_ERRORS {
@@ -883,6 +1027,9 @@ impl Sim {
                     }
                 }
             }
+        }
+        for (id, m) in lobby_msgs {
+            self.lobby_message(id, m);
         }
         // Clients that sent `Disconnect` were already removed from the room.
         for &id in self.clients.keys() {
@@ -1598,6 +1745,134 @@ mod tests {
             matches!(&msgs[..], [Message::Reject(r)] if r.message == ROOM_CLOSED_REASON),
             "{msgs:?}"
         );
+    }
+
+    /// The `LobbyState`s in a message list.
+    fn lobby_states(msgs: &[Message]) -> Vec<ls_net::LobbyStateMsg> {
+        msgs.iter()
+            .filter_map(|m| match m {
+                Message::LobbyState(l) => Some((**l).clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    async fn send(p: &PeerLink, m: Message) {
+        p.push_incoming(m.encode().unwrap()).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn ready_players_skip_the_warmup_and_lobby_state_follows_every_change() {
+        let mut p = params(
+            4,
+            Playlist::new(vec![entry(RuleSet::paint_the_void(), 2, 8)]).unwrap(),
+        );
+        p.lobby = LobbyTiming {
+            warmup: Duration::from_secs(600),
+            countdown: Duration::from_millis(50),
+            results: Duration::from_millis(50),
+        };
+        let (mut s, _tx) = sim_with(p);
+        let a = join(&mut s, 1, LinkConfig::default());
+        s.tick();
+        let msgs = frames(&a);
+        // The Welcome first, then the lobby state of its room.
+        assert!(matches!(msgs[0], Message::Welcome(_)), "{msgs:?}");
+        let l = lobby_states(&msgs);
+        assert_eq!(l.len(), 1);
+        let l = &l[0];
+        assert_eq!(l.phase, ls_net::LobbyPhase::Lobby);
+        assert_eq!(l.next_mode, "paint_the_void");
+        assert_eq!(l.next_ruleset, "Paint the Void");
+        assert_eq!(l.next_share_code, code().encode().unwrap());
+        assert_eq!((l.min_players, l.max_players, l.teams), (2, 8, 2));
+        assert_eq!(l.room_code, "", "public room");
+        assert_eq!(l.players.len(), 1);
+        assert!(!l.players[0].ready);
+        // Unchanged state is not sent again.
+        s.tick();
+        assert!(lobby_states(&frames(&a)).is_empty());
+
+        let b = join(&mut s, 2, LinkConfig::default());
+        s.tick();
+        frames(&b);
+        let l = lobby_states(&frames(&a));
+        assert_eq!(l.last().unwrap().players.len(), 2);
+
+        // Team pick and spectate are kept for the next room and announced.
+        send(&a, Message::PickTeam { team: Some(1) }).await;
+        send(&b, Message::Spectate { spectate: true }).await;
+        send(&a, Message::Ready { ready: true }).await;
+        s.tick();
+        let l = lobby_states(&frames(&a));
+        let p = &l.last().unwrap().players;
+        assert_eq!((p[0].team, p[0].ready), (1, true));
+        assert_eq!((p[1].team, p[1].spectator), (ls_net::mode::NONE, true));
+        assert_eq!(s.lobby.phase().name(), "warmup", "b is not ready yet");
+        assert_eq!(
+            s.stats.snapshot().kicked,
+            0,
+            "lobby messages are no protocol errors"
+        );
+        // Everyone ready: the countdown starts long before the 600 s warm-up.
+        send(&b, Message::Ready { ready: true }).await;
+        tick_until(&mut s, "the countdown", |s| {
+            s.lobby.phase().name() == "countdown"
+        });
+        s.tick();
+        let l = lobby_states(&frames(&a));
+        let l = l.last().unwrap();
+        assert_eq!(l.phase, ls_net::LobbyPhase::Countdown);
+        assert!(l.phase_ticks_left <= 3);
+        tick_until(&mut s, "the match", |s| s.kind == RoomKind::Match);
+        s.tick();
+        // The picked team carried over into the match's Welcome.
+        let msgs = frames(&a);
+        assert_eq!(welcomes(&msgs)[0].team, 1);
+        let l = lobby_states(&msgs);
+        assert_eq!(l.last().unwrap().phase, ls_net::LobbyPhase::Match);
+        assert!(
+            l.last().unwrap().players.iter().all(|p| !p.ready),
+            "ready resets with every room"
+        );
+    }
+
+    #[tokio::test]
+    async fn results_announce_the_next_match() {
+        let mut second = RuleSet::paint_the_void();
+        second.name = "Second".into();
+        let playlist = Playlist::new(vec![
+            entry(RuleSet::paint_the_void(), 1, 32),
+            entry(second, 1, 32),
+        ])
+        .unwrap();
+        let mut p = params(2, playlist);
+        p.lobby.results = Duration::from_secs(600);
+        let (mut s, _tx) = sim_with(p);
+        let a = join(&mut s, 1, LinkConfig::default());
+        s.tick();
+        frames(&a);
+        end_match(&mut s);
+        s.tick();
+        s.tick();
+        let l = lobby_states(&frames(&a));
+        let l = l.last().unwrap();
+        assert_eq!(l.phase, ls_net::LobbyPhase::Results);
+        assert_eq!(l.next_ruleset, "Second");
+        assert!(l.phase_ticks_left > 0);
+    }
+
+    #[test]
+    fn team_brawl_fallback_plays_two_teams_or_free_for_all() {
+        let mut rules = RuleSet::paint_the_void();
+        rules.mode = ls_sim::ruleset::ModeRules::default_for(ls_sim::ModeKind::TeamBrawl);
+        fallback_teams(&mut rules, 3);
+        assert_eq!(rules.mode.teams(), 0);
+        fallback_teams(&mut rules, 5);
+        assert_eq!(rules.mode.teams(), 2);
+        let mut ptv = RuleSet::paint_the_void();
+        fallback_teams(&mut ptv, 1);
+        assert_eq!(ptv, RuleSet::paint_the_void(), "other modes stay");
     }
 
     #[test]

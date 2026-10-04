@@ -715,6 +715,8 @@ dependencies = [
  "ls-net",
  "ls-sim",
  "ls-worldgen",
+ "ron",
+ "serde",
  "thiserror",
  "tokio",
  "tokio-tungstenite",

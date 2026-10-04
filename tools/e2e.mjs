@@ -396,6 +396,8 @@ async function main() {
     opts.serverBin,
     [
       "--bind", `127.0.0.1:${port}`,
+      // No lobby (warm-up with weapons off): bots play from the first second.
+      "--warmup", "0", "--countdown", "0",
       "--code", opts.code,
       "--ruleset", opts.ruleset,
       "--web-root", opts.webRoot,

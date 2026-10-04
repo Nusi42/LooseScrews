@@ -38,16 +38,17 @@ use serde::Deserialize;
 use crate::rules::ServerRules;
 use crate::server::{random_seed, ServerError};
 
-/// Built-in rule set ids of the default playlist, in rotation order (plan
-/// §3.1). Ids without an embedded rule set yet are left out, so the default
-/// playlist grows as the mode rule sets land.
-pub const DEFAULT_ROTATION: [(&str, u8); 6] = [
-    ("team_brawl", 4),
-    ("squeeze", 2),
-    ("paint_the_void", 1),
-    ("hot_reactor", 2),
-    ("heist", 2),
-    ("last_color_standing", 2),
+/// Built-in rule set ids of the default playlist in rotation order (plan
+/// §3.1), each with the alternative file names it may land under, and its
+/// minimum player count. Ids without an embedded rule set yet are left out,
+/// so the default playlist grows as the mode rule sets land.
+pub const DEFAULT_ROTATION: [(&[&str], u8); 6] = [
+    (&["team_brawl"], 4),
+    (&["the_squeeze", "squeeze"], 2),
+    (&["paint_the_void"], 1),
+    (&["hot_reactor"], 2),
+    (&["heist"], 2),
+    (&["last_color_standing"], 2),
 ];
 
 /// Rule set id of the fallback entry when no entry fits the player count.
@@ -237,10 +238,14 @@ impl Playlist {
     ) -> Result<Playlist, ServerError> {
         let world = world.map_or_else(WorldChoice::random, WorldChoice::Fixed);
         let mut entries = Vec::new();
-        for (id, min) in DEFAULT_ROTATION {
-            if builtin_rule_set(id).is_none() {
+        for (ids, min) in DEFAULT_ROTATION {
+            let Some(id) = ids
+                .iter()
+                .copied()
+                .find(|id| builtin_rule_set(id).is_some())
+            else {
                 continue;
-            }
+            };
             entries.push(PlaylistEntry {
                 source: id.to_string(),
                 rules: ServerRules::new(
@@ -535,8 +540,11 @@ mod tests {
         let ids: Vec<&str> = p.entries().iter().map(|e| e.source.as_str()).collect();
         let expected: Vec<&str> = DEFAULT_ROTATION
             .iter()
-            .map(|(id, _)| *id)
-            .filter(|id| builtin_rule_set(id).is_some())
+            .filter_map(|(ids, _)| {
+                ids.iter()
+                    .copied()
+                    .find(|id| builtin_rule_set(id).is_some())
+            })
             .collect();
         assert_eq!(ids, expected);
         assert!(ids.contains(&"paint_the_void"));

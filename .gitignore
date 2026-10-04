@@ -19,5 +19,10 @@ web/src/wasm/pkg/
 Thumbs.db
 .DS_Store
 
+# Work folders (docs/adr/0001): local Cargo config (the master's refuses builds), CodeGraph index
+.cargo/config.local.toml
+.cargo/refuse-build.cmd
+.codegraph/
+
 # Claude Code: keep project memory and settings, ignore local-only settings
 .claude/settings.local.json

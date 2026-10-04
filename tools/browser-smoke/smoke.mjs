@@ -49,6 +49,10 @@ import { createServer } from "node:net";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { assertWorkFolder } from "../lib/work-folder.mjs";
+
+assertWorkFolder("tools/browser-smoke/smoke.mjs");
+
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, "..", "..");
 const exe = process.platform === "win32" ? ".exe" : "";

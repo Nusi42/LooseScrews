@@ -4,6 +4,89 @@ How to build, run, test and extend Loose Screws locally. For how the pieces fit 
 [architecture/overview.md](architecture/overview.md). Commands are given for bash (Git Bash on
 Windows works); PowerShell differences are noted where they matter.
 
+## Work folders
+
+Decision record: [adr/0001-master-repo-and-work-folders.md](adr/0001-master-repo-and-work-folders.md).
+`<master>` is the **master repository**. It holds `main` and only
+receives pushes and `git merge --ff-only WIN1`. Nothing is built, tested, installed, run or
+committed there. All work happens in clones outside OneDrive, with `origin` pointing to the
+master:
+
+| Folder | Branch | Use |
+| --- | --- | --- |
+| `<work root>/loosescrews.win1` | `WIN1` | the lead: integration, full CI, memory, CodeGraph index |
+| `loosescrews.win2`, `loosescrews.win3`, … | `WIN2`, `WIN3`, … | one per parallel work package |
+
+Setting up a fresh work folder (this is what `create` does, plus the build):
+
+```sh
+node tools/work-folders.mjs create 3      # from a work folder: clone the master into loosescrews.win3 (branch WIN3),
+                                          # write .claude/settings.local.json, npm ci in web/ (installs the Git hooks)
+cd <work root>/loosescrews.win3/web && npm run build   # WASM package (wasm-bindgen 0.2.126) + client
+```
+
+By hand: `git clone <master> loosescrews.winN`, `git checkout -b WINN`,
+`cd web && npm ci && npm run build`. After that, pre-push passes in the new folder.
+
+Day to day:
+
+```sh
+git fetch origin && git reset --hard origin/main      # a package folder starts from main (clean tree first)
+git push --force-with-lease origin WIN3               # package done (pre-push runs the fast CI subset)
+# lead, in win1: merge origin/WIN3 into WIN1, run pwsh tools/ci.ps1; when green:
+git push origin WIN1 && git -C <master> merge --ff-only WIN1
+node tools/work-folders.mjs status                    # uncommitted / unpushed per winN, main vs WIN1
+```
+
+`main` only ever moves to a `WIN1` commit whose full `tools/ci.*` passed.
+
+**Hooks.** `npm ci` / `npm install` in `web/` runs `prepare`, which sets
+`core.hooksPath=.githooks`:
+
+- **pre-commit** runs the per-file checks on the staged files (`tools/lib/run-checks.mjs`):
+  rustfmt, the web `tsc`, wildcard binds, LF line endings, and the generated reference docs
+  when `data/` changed. It reads the working-tree copy of each file, so stage the whole file
+  you fixed.
+- **pre-push** runs the fast CI subset; `node tools/hooks/pre-push.mjs --list` prints the steps.
+- **Claude Code** runs the same per-file checks after every edit (`.claude/settings.json` →
+  `tools/post-edit.mjs`). It finds the clone from the edited file, not from the session folder
+  (a session may run in the master), and skips files of the master checkout. Findings go back
+  to the agent: exit 2, at most 20 lines.
+
+No check looks at `target/`, `node_modules/`, `dist/` or the WASM `pkg/`.
+
+**Guards.** The following refuse to run inside any OneDrive folder, with a message that names
+the work folders:
+
+- `tools/ci.*`, `tools/e2e.*`, `tools/browser-smoke.*`;
+- `npm run dev` / `build` / `typecheck` (through `build-wasm.mjs`);
+- `npm ci`'s `prepare`;
+- both Git hooks.
+
+In the master, `node <win1>/tools/work-folders.mjs guard-master` writes the gitignored
+`.cargo/config.local.toml`. The committed `.cargo/config.toml` includes it, and its
+`rustc-wrapper` (`.cargo/refuse-build.cmd`) makes every cargo build there fail. Machine-specific
+cargo settings go into a work folder's own `config.local.toml`. Cargo runs with `jobs = 4`
+(shared machine).
+
+**Ports and binds.** The Vite dev server prefers 127.0.0.1:41873, takes any free port when that
+one is busy, and `LS_DEV_PORT` forces a port. Tests, bots, e2e and the smoke test bind
+`127.0.0.1`, port 0 where possible, so Windows does not ask to allow every new test binary in
+the firewall. `node tools/check-binds.mjs` (in CI and pre-push) fails on a new `0.0.0.0` /
+`[::]` bind; real exceptions go into its allowlist, with a reason.
+
+**The cloud-sync reparse-point fix (done once).** Git for Windows cannot check out
+into OneDrive cloud-file reparse points (`fsutil reparsepoint query crates` → `0x9000e01a`;
+`git merge --ff-only` fails with "unable to unlink"). The fix:
+
+1. Stop everything that uses the master.
+2. Move every folder except `.git` to `<work root>\colent.master-backup`.
+3. Run `git checkout HEAD -- .` in the master, and check that `fsutil` now reports error 4390
+   (not a reparse point).
+
+If it ever comes back, repeat these steps. Never `reset --hard` and never write files by hand in
+the master.
+
 ## 1. Toolchain
 
 | Tool | Version | Notes |
@@ -87,7 +170,7 @@ server process (two servers on one port fail to bind).
 ### Vite dev server (hot reload)
 
 ```sh
-cd web && npm run dev      # http://localhost:5173
+cd web && npm run dev      # http://127.0.0.1:41873 (next free port if taken; LS_DEV_PORT=<port> forces one)
 ```
 
 `npm run dev` builds the WASM package first. Vite proxies `/ws` and `/cert-hash` to
@@ -143,7 +226,8 @@ tools/ci.sh              # bash
 ```
 
 Steps, in order: `cargo fmt --check`; `node tools/gen-weapon-docs.mjs --check` (the generated
-player reference pages, [below](#generated-player-reference)); clippy with `-D warnings`;
+player reference pages, [below](#generated-player-reference)); `node tools/check-binds.mjs` and
+the tools tests (`node --test "tools/test/*.test.mjs"`: hooks, guards, settings); clippy with `-D warnings`;
 `cargo test --workspace`;
 `cargo test -p ls-bots --release`; the wasm32 unit tests (skipped with a message if
 `wasm-bindgen-test-runner` or `node` is missing); `cargo build -p ls-wasm` for wasm32; in
@@ -551,7 +635,7 @@ made from. Format: `crates/ls-sim/src/rulecode.rs`; details in
 of a rule set file, start the server with it: the `rules:` log line prints it.
 
 The browser rule set editor (`web/src/rules/`) opens with `?editor=rules` (for example
-<http://localhost:7777/?editor=rules>, or `npm run dev` and <http://localhost:5173/?editor=rules>);
+<http://localhost:7777/?editor=rules>, or `npm run dev` and the printed dev URL plus `?editor=rules`);
 the start screen links to it. It edits every setting, shows the problems the server would
 report, and gives the `LR` code, an invite link (`?world=<share code>&rules=<LR code>`) and the
 host's `ls-server --code ... --ruleset ...` command line. In M2 only the editor reads invite

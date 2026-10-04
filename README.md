@@ -21,7 +21,7 @@ cargo run -p ls-server --release -- --web-root web/dist       # open http://127.
 cargo run -p ls-bots --release -- --server ws://127.0.0.1:7777/ws --count 3   # optional opponents
 ```
 
-For client development with hot reload use `cd web && npm run dev` (http://localhost:5173).
+For client development with hot reload use `cd web && npm run dev` (http://127.0.0.1:41873, or the next free port Vite prints).
 Full check (fmt, clippy, tests native + wasm32, WASM build, web build, determinism check,
 generated-docs staleness check, headless browser smoke test): `pwsh tools/ci.ps1` on Windows or
 `tools/ci.sh` elsewhere. End-to-end with bots: `tools/e2e.ps1` / `tools/e2e.sh`.

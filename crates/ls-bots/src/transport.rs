@@ -195,8 +195,14 @@ impl WtLink {
         let cert = fetch_cert_hash(authority).await?;
         let host = host_of(authority);
         let url = format!("https://{host}:{}{}", cert.port, cert.path);
-        let cfg = ClientConfig::builder()
-            .with_bind_default()
+        let builder = ClientConfig::builder();
+        // A loopback server gets a loopback socket: a wildcard UDP bind makes
+        // Windows ask to allow every new (hashed) test binary in the firewall.
+        let builder = match loopback_bind(host) {
+            Some(addr) => builder.with_bind_address(addr),
+            None => builder.with_bind_default(),
+        };
+        let cfg = builder
             .with_server_certificate_hashes([Sha256Digest::new(cert.sha256)])
             .keep_alive_interval(Some(Duration::from_secs(4)))
             .build();
@@ -332,6 +338,18 @@ pub(crate) fn host_of(authority: &str) -> &str {
     authority.rsplit_once(':').map_or(authority, |(h, _)| h)
 }
 
+/// The local UDP address for a WebTransport client of `host` (from
+/// [`host_of`]): port 0 on the matching loopback address when `host` is a
+/// loopback IP, else `None` (bind all addresses).
+pub(crate) fn loopback_bind(host: &str) -> Option<std::net::SocketAddr> {
+    let ip: std::net::IpAddr = host
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .parse()
+        .ok()?;
+    ip.is_loopback().then(|| std::net::SocketAddr::new(ip, 0))
+}
+
 /// `GET /cert-hash` over plain HTTP/1.1.
 pub(crate) async fn fetch_cert_hash(authority: &str) -> Result<CertHash, String> {
     let fetch = async {
@@ -414,6 +432,13 @@ mod tests {
         assert_eq!(authority_of("[::1]:7777"), Some("[::1]:7777"));
         assert_eq!(authority_of("ws:///ws"), None);
         assert_eq!(host_of("127.0.0.1:7777"), "127.0.0.1");
+        assert_eq!(
+            loopback_bind("127.0.0.1"),
+            Some("127.0.0.1:0".parse().unwrap())
+        );
+        assert_eq!(loopback_bind("[::1]"), Some("[::1]:0".parse().unwrap()));
+        assert_eq!(loopback_bind("example.org"), None);
+        assert_eq!(loopback_bind("10.0.0.2"), None);
         assert_eq!(host_of("[::1]:7777"), "[::1]");
         assert_eq!(host_of("localhost"), "localhost");
     }

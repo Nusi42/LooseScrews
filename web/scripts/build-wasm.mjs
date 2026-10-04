@@ -14,6 +14,10 @@ import { existsSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { assertWorkFolder } from "../../tools/lib/work-folder.mjs";
+
+assertWorkFolder("npm run build:wasm / build / typecheck");
+
 const here = dirname(fileURLToPath(import.meta.url));
 const webDir = resolve(here, "..");
 const repoRoot = resolve(webDir, "..");

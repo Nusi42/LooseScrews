@@ -1,0 +1,3 @@
+#!/bin/sh
+# Fast CI subset before every push (tools/hooks/pre-push.mjs).
+exec node "$(git rev-parse --show-toplevel)/tools/hooks/pre-push.mjs"

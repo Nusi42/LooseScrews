@@ -40,6 +40,10 @@ import { createServer } from "node:net";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { assertWorkFolder } from "./lib/work-folder.mjs";
+
+assertWorkFolder("tools/e2e.mjs");
+
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 // ----- arguments ---------------------------------------------------------------

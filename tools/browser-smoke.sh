@@ -9,6 +9,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
+node "$ROOT/tools/work-folders.mjs" guard "tools/browser-smoke.sh"
 
 step() { printf '\n==> %s\n' "$*"; }
 

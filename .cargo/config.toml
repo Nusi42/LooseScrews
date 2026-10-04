@@ -1,0 +1,9 @@
+# Committed Cargo config (docs/adr/0001-master-repo-and-work-folders.md).
+# Machine-specific settings go into the gitignored config.local.toml. In the
+# OneDrive master it names a refusing rustc-wrapper
+# (`node tools/work-folders.mjs guard-master`), so nothing is built there.
+include = [{ path = "config.local.toml", optional = true }]
+
+[build]
+# Shared machine: leave cores for the owner's other work.
+jobs = 4

@@ -1,0 +1,3 @@
+#!/bin/sh
+# Per-file checks on the staged files (tools/hooks/pre-commit.mjs).
+exec node "$(git rev-parse --show-toplevel)/tools/hooks/pre-commit.mjs"

@@ -11,6 +11,8 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
 $Root = Resolve-Path (Join-Path $PSScriptRoot '..')
+node (Join-Path $Root 'tools/work-folders.mjs') guard 'tools/e2e.ps1'
+if ($LASTEXITCODE -ne 0) { exit 1 }
 Push-Location $Root
 
 function Step([string]$Name) { Write-Host "`n==> $Name" -ForegroundColor Cyan }

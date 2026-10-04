@@ -5,6 +5,8 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
 $Root = Resolve-Path (Join-Path $PSScriptRoot '..')
+node (Join-Path $Root 'tools/work-folders.mjs') guard 'tools/ci.ps1'
+if ($LASTEXITCODE -ne 0) { exit 1 }
 Push-Location $Root
 
 function Step([string]$Name) { Write-Host "`n==> $Name" -ForegroundColor Cyan }
@@ -20,6 +22,10 @@ try {
 
     Step 'generated reference docs are current (userDocs/reference from data/)'
     Invoke-Checked node @((Join-Path $Root 'tools/gen-weapon-docs.mjs'), '--check')
+
+    Step 'no wildcard binds outside the allowlist; tools tests (hooks, guards)'
+    Invoke-Checked node @((Join-Path $Root 'tools/check-binds.mjs'))
+    Invoke-Checked node @('--test', 'tools/test/*.test.mjs')
 
     Step 'cargo clippy (workspace, all targets, -D warnings)'
     Invoke-Checked cargo @('clippy', '--workspace', '--all-targets', '--', '-D', 'warnings')

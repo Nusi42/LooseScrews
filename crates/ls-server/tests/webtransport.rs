@@ -88,7 +88,7 @@ async fn cert_hash(http: SocketAddr) -> ([u8; 32], u16) {
 
 async fn open_session(port: u16, hash: [u8; 32]) -> Result<Connection, String> {
     let cfg = ClientConfig::builder()
-        .with_bind_default()
+        .with_bind_address("127.0.0.1:0".parse().unwrap())
         .with_server_certificate_hashes([Sha256Digest::new(hash)])
         .build();
     let endpoint = Endpoint::client(cfg).map_err(|e| e.to_string())?;

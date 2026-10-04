@@ -6,6 +6,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
+node "$ROOT/tools/work-folders.mjs" guard "tools/ci.sh"
 
 step() { printf '\n==> %s\n' "$*"; }
 
@@ -14,6 +15,10 @@ cargo fmt --all -- --check
 
 step "generated reference docs are current (userDocs/reference from data/)"
 node "$ROOT/tools/gen-weapon-docs.mjs" --check
+
+step "no wildcard binds outside the allowlist; tools tests (hooks, guards)"
+node "$ROOT/tools/check-binds.mjs"
+node --test "tools/test/*.test.mjs"
 
 step "cargo clippy (workspace, all targets, -D warnings)"
 cargo clippy --workspace --all-targets -- -D warnings

@@ -31,7 +31,7 @@ use crate::entity::{
 };
 use crate::gadgets::{GadgetActivation, GadgetBehavior, GadgetUse, IncomingHit};
 use crate::hash::StateHasher;
-use crate::mode::{MatchPhase, PaintTheVoid, SCORE_INTERVAL_TICKS};
+use crate::mode::{MatchPhase, ModeState, SCORE_INTERVAL_TICKS};
 use crate::ruleset::{PickupKind, ResolvedRules};
 use crate::ship::{move_sphere, simulate_movement, ChargeState, PlayerId, ShipState, WeaponState};
 use crate::terrain::{segment_sphere, SimTerrain, TerrainLayers};
@@ -311,12 +311,12 @@ pub enum Event {
         kind: PickupKind,
     },
     ScoreChanged {
-        team_cells: [u64; 2],
+        team_cells: [u64; 4],
         surface_cells: u64,
     },
     MatchEnded {
         winner: Option<u8>,
-        team_cells: [u64; 2],
+        team_cells: [u64; 4],
     },
     /// Something for clients to show or play (warnings, blinding, chimes).
     Cue(Cue),
@@ -392,7 +392,7 @@ pub struct World {
     entities: Vec<Entity>,
     scrap: Vec<ScrapPile>,
     pickups: Vec<PickupSpawn>,
-    mode: PaintTheVoid,
+    mode: ModeState,
     rng: Pcg32,
     next_player: u16,
     next_projectile: u32,
@@ -452,7 +452,11 @@ impl World {
                 )));
             }
         }
-        let mode = PaintTheVoid::new(resolved.match_ticks);
+        let mode = ModeState::new(
+            config.rules.mode.kind(),
+            config.rules.mode.teams(),
+            resolved.match_ticks,
+        );
         let pickups = config
             .setup
             .pickup_points
@@ -587,12 +591,12 @@ impl World {
     pub fn pickups(&self) -> &[PickupSpawn] {
         &self.pickups
     }
-    pub fn mode(&self) -> &PaintTheVoid {
+    pub fn mode(&self) -> &ModeState {
         &self.mode
     }
     /// Mutable mode state (admin commands such as ending a match early,
     /// host tests). Bypasses the rules.
-    pub fn mode_mut(&mut self) -> &mut PaintTheVoid {
+    pub fn mode_mut(&mut self) -> &mut ModeState {
         &mut self.mode
     }
 

@@ -64,7 +64,9 @@ struct Client {
 /// and the hits scored in the last 60 s.
 fn play(code: ShareCode, secs: u64) -> (Vec<BotStats>, u32) {
     let mut mc = MatchConfig::paint_the_void(code);
-    let ModeRules::PaintTheVoid(rules) = &mut mc.rules.mode;
+    let ModeRules::PaintTheVoid(rules) = &mut mc.rules.mode else {
+        unreachable!("a Paint the Void rule set")
+    };
     // Longer than the run: the match must not end (and restart) inside it.
     rules.match_secs = rules.match_secs.max(secs as f32 + 30.0);
     let mut room = Room::new(mc, RoomConfig::default()).unwrap();

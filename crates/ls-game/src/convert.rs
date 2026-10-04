@@ -492,7 +492,7 @@ mod tests {
             },
             Event::MatchEnded {
                 winner: Some(1),
-                team_cells: [1, 2],
+                team_cells: [1, 2, 0, 0],
             },
             Event::Cue(ls_sim::Cue {
                 kind: ls_sim::CueKind::PoliteWarning,

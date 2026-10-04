@@ -7,7 +7,7 @@
 //! adapter around it) implements; [`PaintedTerrain`] provides a simple grid-based
 //! implementation for tests, bots and prototyping.
 //!
-//! **Paint team ids:** simulation teams are `0` and `1`. Paint edits carry the
+//! **Paint team ids:** simulation teams are `0` to `3`. Paint edits carry the
 //! simulation team unchanged ([`paint_team_id`] is the identity); [`NO_PAINT`]
 //! (`255`, the same value as `ls_worldgen::NO_TEAM`) means unpainted, and a paint
 //! edit with that id erases. See `docs/architecture/contracts.md`.
@@ -44,8 +44,8 @@ pub const fn team_from_paint_id(id: u8) -> Option<u8> {
 /// Painted surface statistics for Paint the Void.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct PaintCoverage {
-    /// Surface cells painted by simulation team 0 and 1.
-    pub team_cells: [u64; 2],
+    /// Surface cells painted by simulation teams 0 to 3.
+    pub team_cells: [u64; 4],
     /// Total paintable surface cells in the level.
     pub surface_cells: u64,
 }
@@ -53,7 +53,7 @@ pub struct PaintCoverage {
 impl PaintCoverage {
     /// Share of the surface painted by `team`, in percent (0 if no surface).
     pub fn percent(&self, team: u8) -> f32 {
-        if self.surface_cells == 0 || team > 1 {
+        if self.surface_cells == 0 || team as usize >= self.team_cells.len() {
             return 0.0;
         }
         (self.team_cells[team as usize] as f64 * 100.0 / self.surface_cells as f64) as f32
@@ -295,10 +295,10 @@ impl<T: SimTerrain> SimTerrain for PaintedTerrain<T> {
     }
 
     fn paint_coverage(&self) -> Option<PaintCoverage> {
-        let mut team_cells = [0u64; 2];
+        let mut team_cells = [0u64; 4];
         for &(id, _) in self.paint.values() {
             if let Some(team) = team_from_paint_id(id) {
-                if (team as usize) < 2 {
+                if (team as usize) < team_cells.len() {
                     team_cells[team as usize] += 1;
                 }
             }
@@ -413,7 +413,7 @@ mod tests {
             team: NO_PAINT,
             color: 0,
         });
-        assert_eq!(t.paint_coverage().unwrap().team_cells, [0, 0]);
+        assert_eq!(t.paint_coverage().unwrap().team_cells, [0; 4]);
         assert_eq!(t.paint_at(floor + Vec3::new(3.2, 0.1, 0.2)), NO_PAINT);
     }
 

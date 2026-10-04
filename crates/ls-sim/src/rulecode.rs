@@ -504,9 +504,7 @@ fn base_for(mode: u64, weapons: &[&str], gadgets: &[&str]) -> Result<RuleSet, Si
 }
 
 fn mode_index(m: &ModeRules) -> u64 {
-    match m {
-        ModeRules::PaintTheVoid(_) => 0,
-    }
+    m.kind().index() as u64
 }
 
 /// Version 2 payload (header included, checksum excluded).
@@ -515,7 +513,9 @@ fn full_payload(r: &RuleSet, weapons: &[&str], gadgets: &[&str]) -> Result<Bits,
     b.push(FULL_VERSION as u64, 4);
     header_counts(&mut b, weapons, gadgets)?;
     write_name(&mut b, &r.name)?;
-    let ModeRules::PaintTheVoid(m) = &r.mode;
+    let ModeRules::PaintTheVoid(m) = &r.mode else {
+        return Err(err("only Paint the Void has a rule set code yet"));
+    };
     b.push(mode_index(&r.mode), 2);
     write_mode(&mut b, m)?;
     b.push(percent(r.friendly_fire_percent, "friendly fire")?, 7);
@@ -1088,9 +1088,7 @@ fn read_diff(
     }
     if r.flag()? {
         let m = read_mode(r)?;
-        match &mut out.mode {
-            ModeRules::PaintTheVoid(x) => *x = m,
-        }
+        out.mode = ModeRules::PaintTheVoid(m);
     }
     if r.flag()? {
         out.friendly_fire_percent = r.read(7)? as u8;

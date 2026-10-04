@@ -1333,7 +1333,7 @@ impl GameCore {
                 MatchInfo {
                     over,
                     winner: if over { mode.leader() } else { None },
-                    team_cells: mode.coverage.team_cells,
+                    team_cells: [mode.coverage.team_cells[0], mode.coverage.team_cells[1]],
                     surface_cells: mode.coverage.surface_cells,
                     secs_since_end: p.over_secs,
                 }

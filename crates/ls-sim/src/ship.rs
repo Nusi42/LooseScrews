@@ -23,7 +23,7 @@ use ls_math::terrain::{TerrainQuery, PAINT_BLUE, PAINT_RED, PAINT_YELLOW};
 use ls_math::{det, Quat, Vec3, DT};
 use serde::{Deserialize, Serialize};
 
-use crate::terrain::{world_normal, world_sdf};
+use crate::terrain::{sphere_contact, sphere_contact_distance};
 use crate::{Buttons, GadgetId, InputCmd, ShipTuning, ShipType, WeaponId, WeaponSlot};
 
 /// Player identifier, assigned by the [`crate::World`] in join order.
@@ -344,12 +344,16 @@ pub(crate) fn move_sphere_with<T: TerrainQuery + ?Sized>(
     for _ in 0..steps {
         *pos += *vel * dt;
         for _ in 0..4 {
-            let d = world_sdf(terrain, *pos);
+            // The field is only a lower bound on the distance: near the rock,
+            // contact uses the first-order estimate `d / |grad d|`.
+            let Some(c) = sphere_contact(terrain, *pos, radius) else {
+                break;
+            };
+            let (d, n) = (c.distance, c.normal);
             if d >= radius {
                 break;
             }
             contact = true;
-            let n = world_normal(terrain, *pos);
             let r = response(*pos - n * d);
             *pos += n * (radius - d + 1e-4);
             let vn = vel.dot(n);
@@ -379,7 +383,7 @@ const PAINT_CONTACT_RADIUS: f32 = 0.5;
 /// none when it is further from the surface.
 pub fn paint_touching<T: TerrainQuery + ?Sized>(terrain: &T, pos: Vec3, radius: f32) -> u8 {
     let reach = radius + PAINT_TOUCH_MARGIN;
-    if world_sdf(terrain, pos) >= reach {
+    if sphere_contact_distance(terrain, pos, reach) >= reach {
         return 0;
     }
     terrain.paint_colors_near(pos, reach)
@@ -470,7 +474,8 @@ pub fn simulate_movement<T: TerrainQuery + ?Sized>(
     // Boost refills: hard braking and near-miss wall scrapes (not actual contact).
     let mut gained = report.hard_braked * t.brake_refill_per_speed;
     if !contact && t.scrape_distance > 0.0 {
-        let gap = world_sdf(terrain, ship.pos) - t.radius;
+        let reach = t.radius + t.scrape_distance;
+        let gap = sphere_contact_distance(terrain, ship.pos, reach) - t.radius;
         if gap > 0.0 && gap < t.scrape_distance && ship.vel.length() >= t.scrape_min_speed {
             gained += t.scrape_refill * (1.0 - gap / t.scrape_distance) * DT;
         }
@@ -738,6 +743,153 @@ mod tests {
             simulate_movement(&mut b, &InputCmd::idle(0), &t, &floor);
         }
         assert!(b.pos.x <= 500.0 - t.radius + 1e-3, "{:?}", b.pos);
+    }
+
+    /// A terrain whose field is `scale` times an exact one: a lower bound on
+    /// the distance, like the cave generator's noise (about 0.3 of it).
+    struct Bound<T> {
+        inner: T,
+        scale: f32,
+    }
+
+    impl<T: TerrainQuery> TerrainQuery for Bound<T> {
+        fn sdf(&self, p: Vec3) -> f32 {
+            self.inner.sdf(p) * self.scale
+        }
+        fn bounds(&self) -> Aabb {
+            self.inner.bounds()
+        }
+    }
+
+    /// A thin horizontal slab of rock (`|y| < half`), exact.
+    struct Slab {
+        half: f32,
+        bounds: Aabb,
+    }
+
+    impl TerrainQuery for Slab {
+        fn sdf(&self, p: Vec3) -> f32 {
+            p.y.abs() - self.half
+        }
+        fn bounds(&self) -> Aabb {
+            self.bounds
+        }
+    }
+
+    #[test]
+    fn contact_uses_the_distance_estimate_on_bound_fields() {
+        let t = ShipTuning::tinker();
+        let bounds = Aabb::new(Vec3::splat(-500.0), Vec3::splat(500.0));
+        let floor = Bound {
+            inner: PlaneTerrain::floor(0.0, bounds),
+            scale: 0.3,
+        };
+        // The ship settles on the visible floor, not on a shell r / 0.3 away.
+        let mut s = ship();
+        s.pos = Vec3::new(0.0, 3.0, 0.0);
+        s.vel = Vec3::new(0.0, -20.0, 0.0);
+        let mut lowest = f32::INFINITY;
+        for _ in 0..60 {
+            if simulate_movement(&mut s, &InputCmd::idle(0), &t, &floor).contact {
+                lowest = lowest.min(s.pos.y);
+            }
+        }
+        // (After the push the bounce moves it on within the same tick.)
+        assert!(
+            lowest >= t.radius - 0.01 && lowest < t.radius + 0.1,
+            "{lowest}"
+        );
+        // Paint touching and scrapes measure the same estimated gap.
+        let skim = Vec3::new(0.0, t.radius + 0.1, 0.0);
+        assert!(sphere_contact_distance(&floor, skim, t.radius + 1.0) > t.radius + 0.09);
+
+        // No tunneling through a thin wall that reports a bound distance.
+        let slab = Bound {
+            inner: Slab { half: 0.2, bounds },
+            scale: 0.3,
+        };
+        let mut d = ship();
+        d.pos = Vec3::new(0.0, 3.0, 0.0);
+        d.vel = Vec3::new(0.0, -60.0, 0.0);
+        for _ in 0..60 {
+            simulate_movement(&mut d, &InputCmd::idle(0), &t, &slab);
+            assert!(d.pos.y >= 0.2 + t.radius - 0.02, "{:?}", d.pos);
+        }
+    }
+
+    /// Ships and debris bouncing around a cratered room with a bound field:
+    /// the contact estimate (gradient, `sqrt`, division) gives the same bits
+    /// on every platform (also run on wasm32, see `CLAUDE.md`).
+    #[test]
+    fn bound_field_contact_golden_hash() {
+        let mut room = BoxRoomTerrain::centered(Vec3::new(30.0, 16.0, 30.0));
+        for (c, r) in [
+            (Vec3::new(0.0, -8.0, 0.0), 5.0),
+            (Vec3::new(15.0, 0.0, 3.0), 4.0),
+            (Vec3::new(-6.0, 8.0, -15.0), 6.0),
+        ] {
+            room.apply(ls_math::terrain::TerrainEdit::SubtractSphere {
+                center: c,
+                radius: r,
+            });
+        }
+        room.apply(ls_math::terrain::TerrainEdit::AddSphere {
+            center: Vec3::new(3.0, 0.0, 4.0),
+            radius: 3.0,
+        });
+        let terrain = Bound {
+            inner: room,
+            scale: 0.3,
+        };
+        let table = crate::ShipTable::builtin();
+        let mut ships: Vec<ShipState> = ShipType::ALL
+            .iter()
+            .enumerate()
+            .map(|(i, &ty)| {
+                let mut s = ShipState::new(
+                    PlayerId(i as u16),
+                    0,
+                    ty,
+                    table.get(ty),
+                    Vec3::new(-8.0 + 5.0 * i as f32, 2.0, -6.0),
+                    Quat::from_axis_angle(Vec3::Y, i as f32),
+                );
+                s.vel = Vec3::new(9.0, -4.0 + i as f32, 7.0 - 3.0 * i as f32);
+                s
+            })
+            .collect();
+        let mut debris = (Vec3::new(5.0, 4.0, 5.0), Vec3::new(-14.0, -6.0, 11.0));
+        let mut h = crate::StateHasher::new();
+        for tick in 0..900u64 {
+            for (i, s) in ships.iter_mut().enumerate() {
+                let yaw = if (tick / 40 + i as u64) % 2 == 0 {
+                    0.03
+                } else {
+                    -0.02
+                };
+                let mut input = InputCmd::idle(tick).with_thrust(Vec3::new(0.3, -0.2, -1.0));
+                input.look_yaw = yaw;
+                input.look_pitch = 0.01;
+                simulate_movement(s, &input, table.get(s.ship_type), &terrain);
+            }
+            move_sphere(&terrain, &mut debris.0, &mut debris.1, 0.6, 0.3);
+        }
+        for s in &ships {
+            for v in [s.pos, s.vel] {
+                for c in v.to_array() {
+                    h.write_bytes(&c.to_bits().to_le_bytes());
+                }
+            }
+            h.write_bytes(&s.boost.to_bits().to_le_bytes());
+        }
+        for c in debris.0.to_array() {
+            h.write_bytes(&c.to_bits().to_le_bytes());
+        }
+        let hash = h.finish();
+        assert_eq!(
+            hash, 0x75cf_cfbd_ba14_3858,
+            "bound-field contact hash {hash:#018x}"
+        );
     }
 
     /// Design doc ship table, flown: the top speed each type reaches

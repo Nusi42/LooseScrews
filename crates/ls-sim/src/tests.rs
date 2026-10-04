@@ -902,7 +902,10 @@ fn replay_same_inputs_same_state_hash() {
 /// Changing simulation behavior or tuning changes it: update the constant in
 /// the same change and say so in the commit. (M3 wave A kept it: Paint the
 /// Void runs bit-identically through the mode framework, and the replay
-/// fires no Tectonic Charge, whose cracks now spread over 6 ticks.)
+/// fires no Tectonic Charge, whose cracks now spread over 6 ticks. VQ0's
+/// contact estimate `d / |grad d|` kept it too: the replay arena's field is
+/// exact, slope 1, so the estimate equals the bound there; the bound-field
+/// path has its own golden hash, `ship::tests::bound_field_contact_golden_hash`.)
 const REPLAY_GOLDEN_HASH: u64 = 0x8321_c0ab_902b_8ee5;
 
 #[test]

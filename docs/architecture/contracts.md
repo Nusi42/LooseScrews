@@ -109,10 +109,11 @@ pub enum TerrainEdit {
   already scorched spots. Other bits (16 and up) are ignored.
   `TerrainEdit::without_expired_states(now)` is the part of an edit that still matters once
   its timed states expired (the scorch bit, or nothing).
-- `Paint.team` is the simulation team (0-based). `255` (`ls_worldgen::NO_TEAM`,
-  `ls_sim::NO_PAINT`) means unpainted; a paint edit with team 255 erases. The same ids
-  appear in `PaintCoverage.team_cells`, in mesh vertex `teams`, and in the web client's
-  `MeshData.team`. A crater clears paint and surface states from cells that stop being
+- `Paint.team` is the simulation team (0-based): 0-3 in team modes; in free-for-all modes
+  (`teams: 0`) the painting ship's side id (`ShipState::team`, 0-253). `255`
+  (`ls_worldgen::NO_TEAM`, `ls_sim::NO_PAINT`) means unpainted; a paint edit with team 255
+  erases. The same ids appear in `PaintCoverage.team_cells` (teams 0-3), in mesh vertex
+  `teams`, and in the web client's `MeshData.team`. A crater clears paint and surface states from cells that stop being
   surface.
 - `Paint.color` is the effect colour stored with the team (`ls_math::terrain::PAINT_*`):
   `PAINT_PLAIN` 0 (no effect: generic weapon paint), `PAINT_RED` 1 (bouncy), `PAINT_BLUE` 2

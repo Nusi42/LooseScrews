@@ -12,7 +12,10 @@
 //!   rule set codes in [`rulecode`]).
 //! - [`World`]: projectiles, entities (debris, decoys, ghosts, dust),
 //!   splash, knockback, craters and paint, pickups, scrap, respawns and the
-//!   Paint the Void mode, advanced by [`World::step`].
+//!   game mode, advanced by [`World::step`].
+//! - Game modes ([`modes`], one module per mode behind [`modes::ModeModule`])
+//!   and mutators ([`mutators`]); the replicated mode state is [`ModeView`]
+//!   ([`World::mode_view`]), the results table [`MatchResults`].
 //! - [`World::state_hash`] for replay and desync checks, [`data::data_hash`]
 //!   for the handshake.
 //!
@@ -30,6 +33,8 @@ pub mod gadgets;
 pub mod hash;
 pub mod input;
 pub mod mode;
+pub mod modes;
+pub mod mutators;
 pub mod rulecode;
 pub mod ruleset;
 pub mod ship;
@@ -47,10 +52,14 @@ pub use error::SimError;
 pub use gadgets::{GadgetActivation, GadgetDef, GadgetId, GadgetTable};
 pub use hash::StateHasher;
 pub use input::{Buttons, InputCmd};
-pub use mode::{MatchPhase, PaintTheVoid};
+pub use mode::{
+    MatchPhase, MatchResults, ModeKind, ModeState, ModeView, Objective, ObjectiveView, PlayerMode,
+    PlayerModeView, ResultRow,
+};
 pub use ruleset::{
-    Availability, Loadout, ModeRules, Mutator, PaintTheVoidRules, PickupKind, PickupRule,
-    ResolvedRules, RuleSet, ScrapPickupRule, WeaponTuning,
+    Availability, HeistRules, HotReactorRules, LastColorStandingRules, Loadout, ModeField,
+    ModeRules, Mutator, PaintTheVoidRules, PickupKind, PickupRule, ResolvedRules, RuleSet,
+    ScrapPickupRule, TeamBrawlRules, TheSqueezeRules, WeaponTuning,
 };
 pub use ship::{simulate_movement, ChargeState, MovementReport, PlayerId, ShipState, WeaponState};
 pub use terrain::{

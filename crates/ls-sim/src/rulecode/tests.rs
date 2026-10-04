@@ -32,6 +32,12 @@ fn version_of(code: &str) -> u64 {
     .unwrap()
 }
 
+/// Format 4 and the full (`true`) or diff (`false`) bit.
+fn is_full(code: &str) -> bool {
+    assert_eq!(version_of(code), CODE_VERSION as u64, "{code}");
+    parse_symbols(code).unwrap()[14]
+}
+
 fn edited() -> RuleSet {
     let mut r = RuleSet::paint_the_void();
     r.name = "Rockets only-2".into();
@@ -62,7 +68,9 @@ fn edited() -> RuleSet {
     r.absurdity = 0;
     r.allowed_ship_types = vec![ShipType::Tug, ShipType::Skitter];
     r.scrap_pickup = None;
-    let crate::ModeRules::PaintTheVoid(m) = &mut r.mode;
+    let crate::ModeRules::PaintTheVoid(m) = &mut r.mode else {
+        unreachable!()
+    };
     m.match_secs = 600.0;
     m.respawn_secs = 1.5;
     r
@@ -81,11 +89,11 @@ fn default_rules_are_a_short_diff_code() {
     let r = RuleSet::paint_the_void();
     let code = round_trip(&r);
     println!("{} chars: {code}", code.len());
-    assert_eq!(version_of(&code), DIFF_VERSION as u64);
-    assert!(code.len() <= 20, "{code}");
+    assert!(!is_full(&code));
+    assert!(code.len() <= 21, "{code}");
     // The full encoding is the long fallback.
     let full = r.to_full_code().unwrap();
-    assert_eq!(version_of(&full), FULL_VERSION as u64);
+    assert!(is_full(&full));
     assert!(full.len() > 200 && full.len() < 320, "{}", full.len());
     // Lenient decoding: case, dashes, whitespace, O/I/L.
     let messy: String = code
@@ -117,7 +125,7 @@ fn a_ban_costs_a_few_symbols() {
 fn edited_rules_round_trip() {
     let r = edited();
     let code = round_trip(&r);
-    assert_eq!(version_of(&code), DIFF_VERSION as u64);
+    assert!(!is_full(&code));
     r.resolve(&WeaponTable::builtin()).unwrap();
 }
 
@@ -138,7 +146,9 @@ fn every_single_setting_round_trips_as_a_diff() {
         (
             "mode",
             Box::new(|r| {
-                let ModeRules::PaintTheVoid(m) = &mut r.mode;
+                let ModeRules::PaintTheVoid(m) = &mut r.mode else {
+                    unreachable!()
+                };
                 m.respawn_secs = 0.0;
             }),
         ),
@@ -225,7 +235,7 @@ fn every_single_setting_round_trips_as_a_diff() {
         edit(&mut r);
         assert_ne!(canonical(&r), canonical(&base), "{what}");
         let code = round_trip(&r);
-        assert_eq!(version_of(&code), DIFF_VERSION as u64, "{what}");
+        assert!(!is_full(&code), "{what}");
         assert!(code.len() >= base_len, "{what}");
         assert!(code.len() < 40, "{what}: {code}");
     }
@@ -265,7 +275,7 @@ fn full_encoding_is_the_fallback_when_it_is_shorter() {
     let r = fallback_rules();
     r.resolve(&WeaponTable::builtin()).unwrap();
     let code = r.to_code().unwrap();
-    assert_eq!(version_of(&code), FULL_VERSION as u64);
+    assert!(is_full(&code));
     assert_eq!(code, r.to_full_code().unwrap());
     round_trip(&r);
 }
@@ -315,8 +325,9 @@ fn codes_from_older_builds_decode_and_newer_ones_are_rejected() {
 fn diff_codes_against_other_default_rules_are_rejected() {
     let code = banned(&["railspike"]).to_code().unwrap();
     let mut bits = parse_symbols(&code).unwrap();
-    // Flip one fingerprint bit (after version 4, counts 10, mode 2).
-    bits[16] = !bits[16];
+    // Flip one fingerprint bit (after version 4, counts 10, full/diff 1,
+    // mode 4).
+    bits[19] = !bits[19];
     // Recompute the checksum over the patched payload.
     let payload_len = {
         let mut r = Reader {
@@ -324,9 +335,13 @@ fn diff_codes_against_other_default_rules_are_rejected() {
             pos: 4,
         };
         let (nw, ng) = (r.read(6).unwrap() as usize, r.read(4).unwrap() as usize);
+        assert!(!r.flag().unwrap());
+        let kind = ModeKind::from_index(r.read(MODE_BITS).unwrap() as u8).unwrap();
         let w = weapon_ids();
         let g = gadget_ids();
-        read_diff(&mut r, &w[..nw], &g[..ng]).unwrap().unwrap_err();
+        read_diff_v4(&mut r, kind, &w[..nw], &g[..ng])
+            .unwrap()
+            .unwrap_err();
         r.pos
     };
     let mut b = Bits {
@@ -507,8 +522,17 @@ fn json_shield(s: &ShieldInteraction) -> String {
     }
 }
 
+/// A mode's settings as `{"kind": ..., <field>: <value>, ...}`.
+fn json_mode(m: &ModeRules) -> String {
+    let mut out = format!("{{\"kind\": {}", json_str(&format!("{:?}", m.kind())));
+    for f in m.fields() {
+        out.push_str(&format!(", {}: {}", json_str(f.name), json_f32(f.value)));
+    }
+    out.push('}');
+    out
+}
+
 fn json_rules(r: &RuleSet) -> String {
-    let m = r.paint_the_void_rules();
     let avail = |map: &BTreeMap<String, Availability>| {
         json_obj(
             map.iter()
@@ -521,15 +545,7 @@ fn json_rules(r: &RuleSet) -> String {
     let lo = &r.starting_loadout;
     let fields = [
         ("name", json_str(&r.name)),
-        (
-            "mode",
-            format!(
-                "{{\"kind\": \"PaintTheVoid\", \"teams\": {}, \"match_secs\": {}, \"respawn_secs\": {}}}",
-                m.teams,
-                json_f32(m.match_secs),
-                json_f32(m.respawn_secs)
-            ),
-        ),
+        ("mode", json_mode(&r.mode)),
         ("weapons", avail(&r.weapons)),
         ("gadgets", avail(&r.gadgets)),
         (
@@ -660,7 +676,9 @@ fn vectors() -> Vec<(&'static str, RuleSet)> {
                 r.name = "a-Z 09".into();
                 r.friendly_fire_percent = 10;
                 r.absurdity = 100;
-                let ModeRules::PaintTheVoid(m) = &mut r.mode;
+                let ModeRules::PaintTheVoid(m) = &mut r.mode else {
+                    unreachable!()
+                };
                 m.match_secs = 65535.0;
                 m.respawn_secs = 25.5;
             }),
@@ -678,21 +696,19 @@ fn vectors() -> Vec<(&'static str, RuleSet)> {
             "invalid: no ship types",
             with(&|r| r.allowed_ship_types.clear()),
         ),
+        ("instagib", with(&|r| r.mutators = vec![Mutator::Instagib])),
+        ("4 teams", with(&|r| r.mode.set_field("teams", 4.0))),
         (
-            "invalid: instagib",
-            with(&|r| r.mutators = vec![Mutator::Instagib]),
+            "invalid: 5 teams",
+            with(&|r| r.mode.set_field("teams", 5.0)),
         ),
-        (
-            "invalid: 3 teams",
-            with(&|r| {
-                let ModeRules::PaintTheVoid(m) = &mut r.mode;
-                m.teams = 3;
-            }),
-        ),
+        ("invalid: 1 team", with(&|r| r.mode.set_field("teams", 1.0))),
         (
             "invalid: match 0 s",
             with(&|r| {
-                let ModeRules::PaintTheVoid(m) = &mut r.mode;
+                let ModeRules::PaintTheVoid(m) = &mut r.mode else {
+                    unreachable!()
+                };
                 m.match_secs = 0.0;
             }),
         ),
@@ -801,6 +817,96 @@ fn vectors() -> Vec<(&'static str, RuleSet)> {
             }),
         ),
         ("unencodable: long name", with(&|r| r.name = "n".repeat(32))),
+        (
+            "unencodable: match 0.5 s",
+            with(&|r| r.mode.set_field("match_secs", 0.5)),
+        ),
+    ]
+    .into_iter()
+    .chain(mode_vectors())
+    .collect()
+}
+
+/// Every mode's default, edited settings, mutators and invalid team counts.
+fn mode_vectors() -> Vec<(&'static str, RuleSet)> {
+    let mode = |kind: ModeKind, f: &dyn Fn(&mut RuleSet)| {
+        let mut r = RuleSet::default_for(kind);
+        f(&mut r);
+        r
+    };
+    vec![
+        ("mode: Team Brawl", mode(ModeKind::TeamBrawl, &|_| {})),
+        ("mode: The Squeeze", mode(ModeKind::TheSqueeze, &|_| {})),
+        ("mode: Heist", mode(ModeKind::Heist, &|_| {})),
+        ("mode: Hot Reactor", mode(ModeKind::HotReactor, &|_| {})),
+        (
+            "mode: Last Color Standing",
+            mode(ModeKind::LastColorStanding, &|_| {}),
+        ),
+        (
+            "Team Brawl duel with instagib",
+            mode(ModeKind::TeamBrawl, &|r| {
+                r.name = "Duel".into();
+                r.mode.set_field("teams", 0.0);
+                r.mode.set_field("kill_target", 10.0);
+                r.mode.set_field("match_secs", 300.0);
+                r.mutators = vec![Mutator::Instagib];
+            }),
+        ),
+        (
+            "Team Brawl 3 teams, banned railspike",
+            mode(ModeKind::TeamBrawl, &|r| {
+                r.mode.set_field("teams", 3.0);
+                r.ban_weapon("railspike");
+            }),
+        ),
+        (
+            "Squeeze edited",
+            mode(ModeKind::TheSqueeze, &|r| {
+                r.mode.set_field("phases", 3.0);
+                r.mode.set_field("crush_per_sec", 40.0);
+                r.mode.set_field("scrap_per_100u2", 1.25);
+            }),
+        ),
+        (
+            "Hot Reactor edited",
+            mode(ModeKind::HotReactor, &|r| {
+                r.mode.set_field("lives", 5.0);
+                r.mode.set_field("fuse_speed_per_ship", 0.75);
+                r.mode.set_field("pass_immunity_secs", 1.5);
+            }),
+        ),
+        (
+            "Heist free-for-all",
+            mode(ModeKind::Heist, &|r| r.mode.set_field("teams", 0.0)),
+        ),
+        (
+            "Last Color Standing edited",
+            mode(ModeKind::LastColorStanding, &|r| {
+                r.mode.set_field("drain_per_kill", 50.0);
+                r.mode.set_field("stalemate_secs", 300.0);
+            }),
+        ),
+        (
+            "invalid: Squeeze with 2 teams",
+            mode(ModeKind::TheSqueeze, &|r| r.mode.set_field("teams", 2.0)),
+        ),
+        (
+            "invalid: Last Color Standing with 4 teams",
+            mode(ModeKind::LastColorStanding, &|r| {
+                r.mode.set_field("teams", 4.0)
+            }),
+        ),
+        (
+            "invalid: Heist with 3 teams",
+            mode(ModeKind::Heist, &|r| r.mode.set_field("teams", 3.0)),
+        ),
+        (
+            "unencodable: Hot Reactor fuse speed 0.33",
+            mode(ModeKind::HotReactor, &|r| {
+                r.mode.set_field("fuse_speed_per_ship", 0.33)
+            }),
+        ),
     ]
 }
 
@@ -849,10 +955,55 @@ fn catalog_ts() -> String {
             .join(", "),
     );
     out.push_str("],\n");
-    out.push_str(&format!(
-        "  \"defaults\": {{\"PaintTheVoid\": {}}},\n",
-        json_rules(&canonical(&RuleSet::paint_the_void()))
-    ));
+    out.push_str("  \"modes\": [\n");
+    for kind in ModeKind::ALL {
+        let fields: Vec<String> = ModeRules::default_for(kind)
+            .fields()
+            .iter()
+            .map(|f| {
+                format!(
+                    "{{\"name\": {}, \"steps\": {}, \"bits\": {}}}",
+                    json_str(f.name),
+                    json_f32(f.steps),
+                    f.bits
+                )
+            })
+            .collect();
+        let module = crate::modes::module(kind);
+        out.push_str(&format!(
+            "    {{\"kind\": {}, \"index\": {}, \"name\": {}, \"teams\": [{}], \"lives\": {}, \"fields\": [{}]}},\n",
+            json_str(&format!("{kind:?}")),
+            kind.index(),
+            json_str(kind.name()),
+            module
+                .team_counts()
+                .iter()
+                .map(|t| t.to_string())
+                .collect::<Vec<_>>()
+                .join(", "),
+            ModeRules::default_for(kind).lives(),
+            fields.join(", ")
+        ));
+    }
+    out.push_str("  ],\n");
+    out.push_str("  \"mutators\": [");
+    out.push_str(
+        &Mutator::ALL
+            .iter()
+            .map(|m| json_str(&format!("{m:?}")))
+            .collect::<Vec<_>>()
+            .join(", "),
+    );
+    out.push_str("],\n");
+    out.push_str("  \"defaults\": {\n");
+    for kind in ModeKind::ALL {
+        out.push_str(&format!(
+            "    {}: {},\n",
+            json_str(&format!("{kind:?}")),
+            json_rules(&canonical(&RuleSet::default_for(kind)))
+        ));
+    }
+    out.push_str("  },\n");
     out.push_str("  \"vectors\": [\n");
     for (label, r) in vectors() {
         let valid = r.resolve(&weapons).is_ok();
@@ -908,4 +1059,116 @@ fn web_catalog_is_current() {
         have == want,
         "web/src/rules/catalog.ts is stale: run LS_BLESS_RULES_CATALOG=1 cargo test -p ls-sim --lib rulecode"
     );
+}
+
+/// Every built-in rule set and every mode's default round-trips (format 4,
+/// diff and full) and decodes to a valid rule set.
+#[test]
+fn every_builtin_rule_set_and_mode_default_round_trips() {
+    let weapons = WeaponTable::builtin();
+    let mut all: Vec<RuleSet> = crate::ruleset::BUILTIN_RULESETS
+        .iter()
+        .map(|(name, text)| RuleSet::from_ron(name, text).unwrap())
+        .collect();
+    all.extend(ModeKind::ALL.iter().map(|k| RuleSet::default_for(*k)));
+    for r in all {
+        let code = round_trip(&r);
+        let back = RuleSet::from_code(&code).unwrap();
+        assert_eq!(back.mode, r.mode);
+        back.resolve(&weapons).unwrap();
+    }
+    // A mode's default is its shortest code.
+    for kind in ModeKind::ALL {
+        let code = RuleSet::default_for(kind).to_code().unwrap();
+        assert!(!is_full(&code) && code.len() <= 21, "{kind:?}: {code}");
+    }
+}
+
+/// Every mode setting of every mode round-trips on its own.
+#[test]
+fn every_mode_setting_round_trips() {
+    for kind in ModeKind::ALL {
+        let base = RuleSet::default_for(kind);
+        for f in base.mode.fields() {
+            let mut r = base.clone();
+            // The largest value the field carries, and one step.
+            for v in [((1u64 << f.bits) - 1) as f32 / f.steps, 1.0 / f.steps] {
+                r.mode.set_field(f.name, v);
+                if r.mode == base.mode {
+                    continue;
+                }
+                let code = round_trip(&r);
+                let back = RuleSet::from_code(&code).unwrap();
+                let got = back.mode.fields().into_iter().find(|g| g.name == f.name);
+                assert_eq!(got.unwrap().value, v, "{kind:?}.{}", f.name);
+            }
+        }
+    }
+}
+
+/// Codes printed by M2 builds (formats 3 and 2, Paint the Void) still decode.
+#[test]
+fn format_3_and_2_codes_still_decode() {
+    for (code, full, rules) in [
+        (
+            "LR6V-69CM-G006-58R",
+            "LR4V-6WGD-RX2W-0Q8K-W0PM-RVR8-0JR7-K4AF-05AN-A5AN-APAM-A40B-1506-A107-H0G3-RG61-W840-Y420-F20R-7H10-2GG8-1W86-0S44-0A8D-0G3T-2840-YGT0-GA42-G61X-1410-PR50-C3T2-840Y-GT0R-7M4G-25N0-RR21-D410-PR8G-42V0-M10P-R908-5MG4-2V14-30F0-0000-1085-MG42-T821-D4R0-7HW0-0000-0000-02B5-4",
+            RuleSet::paint_the_void(),
+        ),
+        (
+            "LR6V-69CM-NS59-ESBY-XD0A-D2DK-ZXX0-4P0F-G20C-M20S-2G58-H1C4-M0V2-GGY0-0ARH-JXJT-058H-34MB-XPR",
+            "LR4V-6WJM-QCNZ-EPG5-6H6S-ZYW8-15G3-R009-1NAN-J5AN-APAM-C48B-1506-T107-H0G3-RG61-W840-Y420-F20R-7H10-2G86-0S44-0A8D-0G3T-2840-YGT0-GA42-G61X-1410-PR50-C3T2-840Y-GT0R-7M4G-25N0-RR21-D410-PR8G-42V0-M10P-R908-5MG4-2V10-0000-1085-MG42-T00G-0327-CP00-000H-2698-0009-7XG",
+            edited(),
+        ),
+        (
+            "LR6V-69CM-G214-D7G1-P6B",
+            "LR4V-6WGD-RX2W-0Q8K-W0PM-RVR8-0JR7-K4AF-05AN-T5AN-EPAM-A40B-1506-A107-H0G3-RG61-W840-Y420-F20R-7H10-2G86-0S44-0A8D-0G3T-2840-YGT0-GA42-G61X-1410-PR50-C3T2-840Y-GT0R-7M48-21D4-10PR-8G42-V0M1-0PR9-085M-G42V-1430-F000-0010-85MG-42T8-21D4-R07H-W000-0000-0002-1DR",
+            banned(&["railspike", "tectonic_charge"]),
+        ),
+    ] {
+        assert_eq!(version_of(code), LEGACY_DIFF_VERSION as u64);
+        assert_eq!(version_of(full), LEGACY_FULL_VERSION as u64);
+        assert_eq!(RuleSet::from_code(code).unwrap(), canonical(&rules), "{code}");
+        assert_eq!(RuleSet::from_code(full).unwrap(), canonical(&rules), "{full}");
+        // Re-encoding prints format 4.
+        assert!(!is_full(&rules.to_code().unwrap()));
+    }
+    // A typo in an old code is still a typo.
+    let e = RuleSet::from_code("LR6V-69CM-G006-58S")
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("checksum"), "{e}");
+}
+
+/// A format 4 code with a mode or mutator this build does not know is
+/// rejected with a clear message.
+#[test]
+fn unknown_modes_and_mutators_are_rejected() {
+    let r = RuleSet::default_for(ModeKind::TeamBrawl);
+    let mut payload = diff_payload(&r, &weapon_ids(), &gadget_ids()).unwrap();
+    // The mode index (bits 15..19) to 15.
+    for b in &mut payload.bits[15..19] {
+        *b = true;
+    }
+    let e = RuleSet::from_code(&finish(payload))
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("unknown mode"), "{e}");
+
+    // Mutator bit 3 in a full code: rejected after the checksum check.
+    let mut r = RuleSet::paint_the_void();
+    r.mutators = vec![Mutator::Instagib];
+    let full = full_payload(&r, &weapon_ids(), &gadget_ids()).unwrap();
+    let mut bits = full.bits.clone();
+    // After version 4, counts 10, full 1, mode 4, name, mode fields,
+    // friendly fire 7, absurdity 7, ships 4: the 4 mutator bits.
+    let name_bits = 5 + 6 * r.name.len();
+    let mode_bits: u32 = r.mode.fields().iter().map(|f| f.bits).sum();
+    let at = 19 + name_bits + mode_bits as usize + 18;
+    assert!(bits[at + 3], "Instagib is bit 0 (the last of the four)");
+    bits[at] = true;
+    let e = RuleSet::from_code(&finish(Bits { bits }))
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("unknown mutator"), "{e}");
 }

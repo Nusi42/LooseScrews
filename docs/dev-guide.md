@@ -618,17 +618,24 @@ The embedded rule sets are `data/rulesets/paint_the_void.ron` (`RuleSet::paint_t
 the default and the practice mode's rules) and `data/rulesets/sandbox_all_weapons.ron` (every
 weapon and gadget as a pickup, every ship type). Test and tool rule sets live next to their
 tools (`tools/e2e-rulesets/sandbox_debris.ron`, `tools/browser-smoke/mechanics.ron`). A new
-**mode** is code: a `ModeRules` variant in `crates/ls-sim/src/ruleset.rs`, its logic next to
-`crates/ls-sim/src/mode.rs`, and scoring and HUD support in `ls-game`, `ls-wasm` and `web/`.
+**mode** is code: a `ModeRules` variant with its settings (`mode_settings!` in
+`crates/ls-sim/src/ruleset.rs`; the field list is part of the rule set code format, append
+only), a `ModeKind`, and a module `crates/ls-sim/src/modes/<id>.rs` implementing `ModeModule`,
+registered in `modes/mod.rs` (see
+[arsenal-framework.md](architecture/arsenal-framework.md#mode-framework-m3)); its default rule
+set is `data/rulesets/<file>.ron` (`ModeKind::ruleset_file`, listed in `BUILTIN_RULESETS`).
+A mutator is a module in `crates/ls-sim/src/mutators/`. Then regenerate the editor catalog
+(`LS_BLESS_RULES_CATALOG=1 cargo test -p ls-sim --lib rulecode`).
 
 ### Rule set codes and the editor
 
 A rule set travels as a short code: `RuleSet::to_code()` prints `LR` plus Crockford base32 in
 groups of four (CRC-16 at the end), `RuleSet::from_code` reads it back exactly, and
 `ls-server --ruleset <code>` accepts one wherever it takes a file (an existing file of that name
-wins). Codes of version 3 store only the differences from the mode's default rules, so the
-default Paint the Void rules are `LR6V-69CM-G006-58R` and a ban adds about three symbols; a
-rule set far from the default falls back to the full version 2 encoding when that is shorter.
+wins). Codes (format 4, every mode) store only the differences from the mode's default rules
+(`RuleSet::default_for`), so the default Paint the Void rules are `LR8V-6097-G000-TMBG` and a
+ban adds about three symbols; a rule set far from the default falls back to the full encoding
+when that is shorter. Codes of the M2 formats 2 and 3 (Paint the Void, `LR6...`) still decode.
 Values the format cannot carry exactly (tuning in twentieths, shield fractions in hundredths,
 weights like 0.3) are rejected when encoding, so a code always decodes to the rule set it was
 made from. Format: `crates/ls-sim/src/rulecode.rs`; details in
@@ -674,7 +681,7 @@ BalanceList(
 Effective rules = rule set, then balance list, then `--ban`s, validated at startup. The list is
 re-read before every match (if it no longer loads, the server warns and keeps the previous
 rules), so a host can change it while the server runs. Example:
-`cargo run -p ls-server --release -- --ruleset LR6V-69CM-G006-58R --ban seeker --balance-list balance.ron`
+`cargo run -p ls-server --release -- --ruleset LR8V-6097-G000-TMBG --ban seeker --balance-list balance.ron`
 logs `rules: Paint the Void LR6V-... (banned weapons: seeker, tectonic_charge)`; the `Welcome`
 carries these effective rules, so clients see the bans. Host-facing details:
 [`userDocs/hosting-guide.md`](../userDocs/hosting-guide.md).

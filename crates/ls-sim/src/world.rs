@@ -15,7 +15,11 @@
 //! 4. entities (debris physics, decoys, entity hooks, expiry);
 //! 5. scrap piles and pickups;
 //! 6. ship trails (Borrowed Time history);
-//! 7. mode: scores and timer.
+//! 7. mode: the mode's `on_tick` hook, then `end_check` (timer, scores,
+//!    eliminations; see [`crate::modes`]).
+//!
+//! Before stage 1: the mode's `on_start` hook on the first tick, then the
+//! deferred terrain edits due this tick ([`Ctx::later`]).
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
@@ -31,7 +35,11 @@ use crate::entity::{
 };
 use crate::gadgets::{GadgetActivation, GadgetBehavior, GadgetUse, IncomingHit};
 use crate::hash::StateHasher;
-use crate::mode::{MatchPhase, PaintTheVoid, SCORE_INTERVAL_TICKS};
+use crate::mode::{
+    player_flags, MatchPhase, MatchResults, ModeState, ModeView, ResultRow, MAX_FFA_SIDE, MAX_TEAMS,
+};
+use crate::modes::{Kill, ModeCtx, ModeHit, ModeModule, ModeMut, ModeRef};
+use crate::mutators::MutatorModule;
 use crate::ruleset::{PickupKind, ResolvedRules};
 use crate::ship::{move_sphere, simulate_movement, ChargeState, PlayerId, ShipState, WeaponState};
 use crate::terrain::{segment_sphere, SimTerrain, TerrainLayers};
@@ -48,8 +56,6 @@ pub const PICKUP_RADIUS: f32 = 1.0;
 pub const MAX_WRECKS: usize = 64;
 /// RNG stream for pickup rolls (see `docs/architecture/contracts.md`, RNG streams).
 pub const RNG_STREAM_PICKUPS: u64 = 0x5349_4d5f_5049_434b; // "SIM_PICK"
-/// Number of teams in Paint the Void.
-pub const TEAMS: u8 = 2;
 /// Ticks of position/velocity/hull history kept per ship (3 s, Borrowed Time).
 pub const TRAIL_TICKS: usize = 180;
 /// Hit iterations per projectile and tick (pierce and pass-through chains).
@@ -123,6 +129,9 @@ struct SimConfig {
     gadget_behaviors: Vec<&'static dyn GadgetBehavior>,
     /// Energy per second a charged surface drains from a ship touching it.
     charged_drain_per_sec: f32,
+    /// The mode's module and the mutators' (in rule set order).
+    mode_module: &'static dyn ModeModule,
+    mutator_modules: Vec<&'static dyn MutatorModule>,
 }
 
 impl SimConfig {
@@ -311,12 +320,19 @@ pub enum Event {
         kind: PickupKind,
     },
     ScoreChanged {
-        team_cells: [u64; 2],
+        team_cells: [u64; 4],
         surface_cells: u64,
     },
+    /// A player is out of the match (no lives or colour left); their ship
+    /// left play.
+    Eliminated {
+        player: PlayerId,
+    },
+    /// The match is over: `winner` is the winning side (team, or the
+    /// winner's side id in free-for-all), `None` on a draw.
     MatchEnded {
         winner: Option<u8>,
-        team_cells: [u64; 2],
+        team_cells: [u64; 4],
     },
     /// Something for clients to show or play (warnings, blinding, chimes).
     Cue(Cue),
@@ -392,12 +408,13 @@ pub struct World {
     entities: Vec<Entity>,
     scrap: Vec<ScrapPile>,
     pickups: Vec<PickupSpawn>,
-    mode: PaintTheVoid,
+    mode: ModeState,
     rng: Pcg32,
     next_player: u16,
     next_projectile: u32,
     next_entity: u32,
-    spawn_cursor: [u32; 2],
+    /// Next spawn point per team (free-for-all uses slot 0).
+    spawn_cursor: [u32; MAX_TEAMS as usize],
     trails: BTreeMap<PlayerId, Trail>,
     /// This tick's sanitized inputs (hooks read them through the view).
     inputs: BTreeMap<PlayerId, InputCmd>,
@@ -405,6 +422,8 @@ pub struct World {
     /// order) and the ones already stepped this tick. Empty otherwise.
     stepping: Vec<Projectile>,
     stepped: Vec<Projectile>,
+    /// Terrain edits queued for later ticks (`Ctx::later`), in queue order.
+    deferred_edits: Vec<(u64, TerrainEdit)>,
 }
 
 impl World {
@@ -415,19 +434,17 @@ impl World {
             .rules
             .resolve_with(&config.weapons, &config.gadgets)?;
         for s in &config.setup.spawns {
-            if s.team >= TEAMS {
+            if s.team >= MAX_TEAMS {
                 return Err(SimError::InvalidTeam(s.team));
             }
         }
         if config.setup.pickup_points.len() > u16::MAX as usize {
             return Err(SimError::InvalidRuleSet("too many pickup points".into()));
         }
-        for team in 0..TEAMS {
-            if !config.setup.spawns.iter().any(|s| s.team == team) {
-                return Err(SimError::InvalidRuleSet(format!(
-                    "team {team} has no spawn point"
-                )));
-            }
+        // A team without spawn points of its own (3 or 4 teams on a level
+        // set up for two) spawns at any spawn point.
+        if config.setup.spawns.is_empty() {
+            return Err(SimError::InvalidRuleSet("no spawn points".into()));
         }
         // Reject loadouts an allowed ship type cannot carry instead of
         // trimming them at respawn.
@@ -452,7 +469,18 @@ impl World {
                 )));
             }
         }
-        let mode = PaintTheVoid::new(resolved.match_ticks);
+        let mode = ModeState::new(
+            config.rules.mode.kind(),
+            resolved.teams,
+            resolved.match_ticks,
+        );
+        let mode_module = crate::modes::module(config.rules.mode.kind());
+        let mutator_modules = config
+            .rules
+            .mutators
+            .iter()
+            .map(|m| crate::mutators::module(*m))
+            .collect();
         let pickups = config
             .setup
             .pickup_points
@@ -497,6 +525,8 @@ impl World {
                 behaviors,
                 gadget_behaviors,
                 charged_drain_per_sec,
+                mode_module,
+                mutator_modules,
             }),
             tick: 0,
             ships: BTreeMap::new(),
@@ -508,11 +538,12 @@ impl World {
             next_player: 0,
             next_projectile: 0,
             next_entity: 0,
-            spawn_cursor: [0; 2],
+            spawn_cursor: [0; MAX_TEAMS as usize],
             trails: BTreeMap::new(),
             inputs: BTreeMap::new(),
             stepping: Vec::new(),
             stepped: Vec::new(),
+            deferred_edits: Vec::new(),
         };
         let mut events = Vec::new();
         world.update_pickup_spawns(&mut events);
@@ -587,13 +618,132 @@ impl World {
     pub fn pickups(&self) -> &[PickupSpawn] {
         &self.pickups
     }
-    pub fn mode(&self) -> &PaintTheVoid {
+    pub fn mode(&self) -> &ModeState {
         &self.mode
     }
     /// Mutable mode state (admin commands such as ending a match early,
     /// host tests). Bypasses the rules.
-    pub fn mode_mut(&mut self) -> &mut PaintTheVoid {
+    pub fn mode_mut(&mut self) -> &mut ModeState {
         &mut self.mode
+    }
+
+    /// Number of teams (0 = free-for-all: every ship is its own side, with
+    /// its own side id in `ShipState::team`).
+    pub fn teams(&self) -> u8 {
+        self.mode.teams
+    }
+
+    /// The replicated mode state (scores, phase, timer, lives, objectives).
+    pub fn mode_view(&self) -> ModeView {
+        let cfg = &self.config;
+        let mut view = crate::modes::base_view(
+            &self.mode,
+            &self.ships,
+            &cfg.rules.mode,
+            &cfg.rules.mutators,
+        );
+        cfg.mode_module.view(&self.mode, &cfg.rules.mode, &mut view);
+        view
+    }
+
+    /// The results table: winner (side) or draw, and one row per player
+    /// (best mode score first, then kills, fewer deaths, player id).
+    pub fn results(&self) -> MatchResults {
+        let mut rows: Vec<ResultRow> = self
+            .ships
+            .values()
+            .map(|s| ResultRow {
+                player: s.player,
+                side: s.team,
+                kills: s.kills,
+                deaths: s.deaths,
+                score: self.mode.player(s.player).map_or(0, |p| p.score),
+            })
+            .collect();
+        rows.sort_by(|a, b| {
+            b.score
+                .cmp(&a.score)
+                .then(b.kills.cmp(&a.kills))
+                .then(a.deaths.cmp(&b.deaths))
+                .then(a.player.cmp(&b.player))
+        });
+        let view = self.mode_view();
+        let (ended, winner) = match self.mode.phase {
+            MatchPhase::Running => (false, None),
+            MatchPhase::Ended { winner } => (true, winner),
+        };
+        MatchResults {
+            kind: self.mode.kind,
+            teams: self.mode.teams,
+            ended,
+            winner,
+            team_scores: view.team_scores,
+            rows,
+        }
+    }
+
+    /// Whether a player spectates (eliminated, joined late in an
+    /// elimination mode, or by choice): no ship in play, no respawn.
+    pub fn is_spectator(&self, id: PlayerId) -> bool {
+        self.mode.player(id).is_some_and(|p| p.is_out())
+    }
+
+    /// Switches a player to spectating (the ship leaves play without a
+    /// death) or back to playing (it respawns on the next tick). Leaving
+    /// is refused for eliminated players and while the mode keeps late
+    /// joiners out (elimination modes after the start).
+    pub fn set_spectator(&mut self, id: PlayerId, spectate: bool) -> Result<(), SimError> {
+        let cfg = Arc::clone(&self.config);
+        if !self.ships.contains_key(&id) {
+            return Err(SimError::UnknownPlayer(id));
+        }
+        let flags = self.mode.player(id).map_or(0, |p| p.flags);
+        if spectate {
+            if let Some(p) = self.mode.player_mut(id) {
+                p.flags |= player_flags::SPECTATOR;
+            }
+            self.retire(id);
+            return Ok(());
+        }
+        if flags & player_flags::SPECTATOR == 0 {
+            return Ok(());
+        }
+        let late = cfg.mode_module.late_join_spectates(&self.mode_ref(&cfg));
+        if flags & player_flags::ELIMINATED != 0 || late {
+            return Err(SimError::InvalidRuleSet(
+                "the match is in progress: spectating until the next match".into(),
+            ));
+        }
+        if let Some(p) = self.mode.player_mut(id) {
+            p.flags &= !player_flags::SPECTATOR;
+        }
+        if let Some(s) = self.ships.get_mut(&id) {
+            s.respawn_tick = self.tick + 1;
+        }
+        Ok(())
+    }
+
+    /// Takes a ship out of play without a death (spectating, eliminated).
+    fn retire(&mut self, id: PlayerId) {
+        if let Some(s) = self.ships.get_mut(&id) {
+            s.alive = false;
+            s.hull = 0.0;
+            s.vel = Vec3::ZERO;
+            s.gadget_active = false;
+            s.charge = None;
+            s.respawn_tick = u64::MAX;
+        }
+        self.trails.remove(&id);
+    }
+
+    fn mode_ref<'a>(&'a self, cfg: &'a SimConfig) -> ModeRef<'a> {
+        ModeRef {
+            state: &self.mode,
+            rules: &cfg.rules.mode,
+            mutators: &cfg.rules.mutators,
+            ships: &self.ships,
+            now: self.tick,
+        }
     }
 
     /// Adds a scrap pile (level junk placed by the generator, tests).
@@ -635,16 +785,24 @@ impl World {
         if !self.config.resolved.allowed_ship_types.contains(&ship_type) {
             return Err(SimError::ShipTypeNotAllowed(ship_type));
         }
-        let team = match team {
-            Some(t) if t >= TEAMS => return Err(SimError::InvalidTeam(t)),
-            Some(t) => t,
-            None => {
-                let on_team = |t: u8| self.ships.values().filter(|s| s.team == t).count();
-                if on_team(1) < on_team(0) {
-                    1
-                } else {
-                    0
-                }
+        let teams = self.mode.teams;
+        let team = if teams == 0 {
+            // Free-for-all: every ship is its own side (lowest free side id).
+            if let Some(t) = team {
+                return Err(SimError::InvalidTeam(t));
+            }
+            let used: BTreeSet<u8> = self.ships.values().map(|s| s.team).collect();
+            (0..=MAX_FFA_SIDE)
+                .find(|t| !used.contains(t))
+                .ok_or(SimError::TooManyPlayers)?
+        } else {
+            match team {
+                Some(t) if t >= teams => return Err(SimError::InvalidTeam(t)),
+                Some(t) => t,
+                // The smallest team (the lowest index on a tie).
+                None => (0..teams)
+                    .min_by_key(|&t| self.ships.values().filter(|s| s.team == t).count())
+                    .unwrap_or(0),
             }
         };
         if self.next_player == u16::MAX {
@@ -661,14 +819,38 @@ impl World {
             Quat::IDENTITY,
         );
         self.ships.insert(id, ship);
-        self.respawn(id);
+        let cfg = Arc::clone(&self.config);
+        self.mode
+            .players
+            .insert(id, crate::modes::initial_player(&cfg.rules.mode));
+        let module = cfg.mode_module;
+        module.on_join(&mut self.mode_mut_ctx(&cfg), id);
+        if module.late_join_spectates(&self.mode_ref(&cfg)) {
+            if let Some(p) = self.mode.player_mut(id) {
+                p.flags |= player_flags::SPECTATOR;
+            }
+            self.retire(id);
+        } else {
+            self.respawn(id);
+        }
         Ok(id)
     }
 
     /// Removes a player. Their projectiles stay in flight.
     pub fn remove_player(&mut self, id: PlayerId) -> bool {
         self.trails.remove(&id);
+        self.mode.players.remove(&id);
         self.ships.remove(&id).is_some()
+    }
+
+    fn mode_mut_ctx<'a>(&'a mut self, cfg: &'a SimConfig) -> ModeMut<'a> {
+        ModeMut {
+            state: &mut self.mode,
+            rules: &cfg.rules.mode,
+            mutators: &cfg.rules.mutators,
+            ships: &self.ships,
+            now: self.tick,
+        }
     }
 
     /// Ship choice: the type `id` flies from its next respawn on (the rule
@@ -738,23 +920,13 @@ impl World {
         let old = self.ships.get(&id)?;
         let team = old.team;
         let ship_type = old.next_ship_type.unwrap_or(old.ship_type);
-        let candidates: Vec<&SpawnPoint> =
-            cfg.setup.spawns.iter().filter(|s| s.team == team).collect();
-        // `World::new` guarantees every team has a spawn point; the fallback only
-        // guards against a hand-built config.
-        let (pos, orientation) = if candidates.is_empty() {
-            (Vec3::ZERO, Quat::IDENTITY)
-        } else {
-            let cursor = &mut self.spawn_cursor[team as usize];
-            let sp = candidates[*cursor as usize % candidates.len()];
-            *cursor = cursor.wrapping_add(1);
-            (sp.pos, sp.orientation)
-        };
+        let (kills, deaths, horizon_assist) = (old.kills, old.deaths, old.horizon_assist);
+        let (pos, orientation) = self.pick_spawn(&cfg, id, team);
         let tuning = cfg.tuning(ship_type);
         let mut ship = ShipState::new(id, team, ship_type, tuning, pos, orientation);
-        ship.kills = old.kills;
-        ship.deaths = old.deaths;
-        ship.horizon_assist = old.horizon_assist;
+        ship.kills = kills;
+        ship.deaths = deaths;
+        ship.horizon_assist = horizon_assist;
         for &w in &cfg.resolved.loadout_primaries {
             ship.add_weapon(WeaponState {
                 weapon: w,
@@ -775,9 +947,61 @@ impl World {
             ship.secondary.get_or_insert(w);
         }
         ship.gadget = cfg.resolved.loadout_gadget;
+        let mut m = ModeMut {
+            state: &mut self.mode,
+            rules: &cfg.rules.mode,
+            mutators: &cfg.rules.mutators,
+            ships: &self.ships,
+            now: self.tick,
+        };
+        cfg.mode_module.on_spawn(&mut m, &mut ship);
+        let pos = ship.pos;
         self.ships.insert(id, ship);
         self.trails.remove(&id);
         Some(pos)
+    }
+
+    /// The spawn point for a ship of side `team`: team modes cycle through
+    /// the team's spawn points (all of them if it has none); free-for-all
+    /// takes the spawn point farthest from the nearest other living ship,
+    /// scanning from a rotating start (ties keep the first).
+    fn pick_spawn(&mut self, cfg: &SimConfig, id: PlayerId, team: u8) -> (Vec3, Quat) {
+        let spawns = &cfg.setup.spawns;
+        if spawns.is_empty() {
+            return (Vec3::ZERO, Quat::IDENTITY);
+        }
+        if self.mode.teams == 0 {
+            let others: Vec<Vec3> = self
+                .ships
+                .values()
+                .filter(|s| s.alive && s.player != id)
+                .map(|s| s.pos)
+                .collect();
+            let cursor = &mut self.spawn_cursor[0];
+            let start = *cursor as usize % spawns.len();
+            *cursor = cursor.wrapping_add(1);
+            let mut best: Option<(f32, &SpawnPoint)> = None;
+            for k in 0..spawns.len() {
+                let sp = &spawns[(start + k) % spawns.len()];
+                let d = others
+                    .iter()
+                    .map(|p| p.distance_squared(sp.pos))
+                    .fold(f32::INFINITY, f32::min);
+                if best.is_none_or(|(bd, _)| d > bd) {
+                    best = Some((d, sp));
+                }
+            }
+            let sp = best.map_or(&spawns[start], |(_, sp)| sp);
+            return (sp.pos, sp.orientation);
+        }
+        let mut candidates: Vec<&SpawnPoint> = spawns.iter().filter(|s| s.team == team).collect();
+        if candidates.is_empty() {
+            candidates = spawns.iter().collect();
+        }
+        let cursor = &mut self.spawn_cursor[(team % MAX_TEAMS) as usize];
+        let sp = candidates[*cursor as usize % candidates.len()];
+        *cursor = cursor.wrapping_add(1);
+        (sp.pos, sp.orientation)
     }
 
     // ----- simulation ------------------------------------------------------
@@ -805,12 +1029,20 @@ impl World {
         self.inputs = cmds;
         let ids: Vec<PlayerId> = self.ships.keys().copied().collect();
 
+        // 0. The mode starts; terrain edits deferred to this tick.
+        if now == 1 {
+            self.run_mode_hook(&cfg, terrain, &mut events, |module, m| module.on_start(m));
+        }
+        self.apply_deferred_edits(&cfg, terrain, now, &mut events);
+
         // 1. Respawns.
         for &id in &ids {
             let due = self
                 .ships
                 .get(&id)
-                .is_some_and(|s| !s.alive && now >= s.respawn_tick);
+                .is_some_and(|s| !s.alive && now >= s.respawn_tick)
+                && !self.mode.player(id).is_some_and(|p| p.is_out())
+                && cfg.mode_module.allow_respawn(&self.mode_ref(&cfg), id);
             if due {
                 if let Some(pos) = self.respawn(id) {
                     events.push(Event::Respawned { player: id, pos });
@@ -914,19 +1146,28 @@ impl World {
             }
         }
 
-        // 7. Mode: scores and timer.
-        if now % SCORE_INTERVAL_TICKS == 0 || now >= self.mode.end_tick {
-            let cov = terrain.paint_coverage().unwrap_or_default();
-            if cov != self.mode.coverage {
-                self.mode.coverage = cov;
-                events.push(Event::ScoreChanged {
-                    team_cells: cov.team_cells,
-                    surface_cells: cov.surface_cells,
-                });
+        // 7. Mode: its tick, newly eliminated players leave play, then the
+        //    end check.
+        self.run_mode_hook(&cfg, terrain, &mut events, |module, m| module.on_tick(m));
+        let out: Vec<PlayerId> = self
+            .ships
+            .values()
+            .filter(|s| {
+                s.respawn_tick != u64::MAX && self.mode.player(s.player).is_some_and(|p| p.is_out())
+            })
+            .map(|s| s.player)
+            .collect();
+        for id in out {
+            self.retire(id);
+            let eliminated = self
+                .mode
+                .player(id)
+                .is_some_and(|p| p.flags & player_flags::ELIMINATED != 0);
+            if eliminated {
+                events.push(Event::Eliminated { player: id });
             }
         }
-        if now >= self.mode.end_tick {
-            let winner = self.mode.leader();
+        if let Some(winner) = cfg.mode_module.end_check(&self.mode_ref(&cfg)) {
             self.mode.phase = MatchPhase::Ended { winner };
             events.push(Event::MatchEnded {
                 winner,
@@ -934,6 +1175,55 @@ impl World {
             });
         }
         events
+    }
+
+    /// Runs a mode hook with a full [`ModeCtx`] and applies its commands.
+    fn run_mode_hook<T, R>(
+        &mut self,
+        cfg: &SimConfig,
+        terrain: &mut T,
+        events: &mut Vec<Event>,
+        f: impl FnOnce(&dyn ModeModule, &mut ModeCtx) -> R,
+    ) -> R
+    where
+        T: SimTerrain + ?Sized,
+    {
+        let placeholder = ModeState::new(self.mode.kind, self.mode.teams, 0);
+        let mut state = std::mem::replace(&mut self.mode, placeholder);
+        let coverage = || terrain.paint_coverage();
+        let (r, cmds) = self.collect_hook(cfg, &*terrain, |ctx| {
+            let mut m = ModeCtx {
+                ctx,
+                state: &mut state,
+                rules: &cfg.rules.mode,
+                mutators: &cfg.rules.mutators,
+                setup: &cfg.setup,
+                coverage: &coverage,
+            };
+            f(cfg.mode_module, &mut m)
+        });
+        self.mode = state;
+        self.apply_commands(cfg, terrain, cmds, events);
+        r
+    }
+
+    /// Applies the deferred terrain edits due at `now` (in queue order).
+    fn apply_deferred_edits<T: SimTerrain + ?Sized>(
+        &mut self,
+        cfg: &SimConfig,
+        terrain: &mut T,
+        now: u64,
+        events: &mut Vec<Event>,
+    ) {
+        if self.deferred_edits.is_empty() {
+            return;
+        }
+        let (due, later): (Vec<_>, Vec<_>) = std::mem::take(&mut self.deferred_edits)
+            .into_iter()
+            .partition(|(t, _)| *t <= now);
+        self.deferred_edits = later;
+        let cmds = due.into_iter().map(|(_, e)| Command::Edit(e)).collect();
+        self.apply_commands(cfg, terrain, cmds, events);
     }
 
     /// Runs `f` as a hook of the current tick and applies its commands
@@ -1919,6 +2209,7 @@ impl World {
                     }
                 }
                 Command::Emit(e) => events.push(e),
+                Command::EditLater { tick, edit } => self.deferred_edits.push((tick, edit)),
             }
         }
     }
@@ -1970,7 +2261,37 @@ impl World {
         };
         let mut kb = knockback * scale;
         let mut amount = damage * scale;
-        if let Some(g) = ship.gadget.filter(|_| ship.gadget_active) {
+        let mut hit = ModeHit {
+            target,
+            attacker: source.attacker,
+            weapon: source.weapon,
+            amount,
+            direct,
+            self_inflicted: source.attacker == Some(target),
+            same_side: ship.team == source.team && Some(ship.player) != source.attacker,
+            ignore_gadget: false,
+        };
+        {
+            let m = ModeRef {
+                state: &self.mode,
+                rules: &cfg.rules.mode,
+                mutators: &cfg.rules.mutators,
+                ships: &self.ships,
+                now,
+            };
+            cfg.mode_module.on_damage(&m, &mut hit);
+            for mm in &cfg.mutator_modules {
+                mm.on_damage(&m, &mut hit);
+            }
+        }
+        amount = hit.amount;
+        let Some(ship) = self.ships.get_mut(&target) else {
+            return;
+        };
+        if let Some(g) = ship
+            .gadget
+            .filter(|_| ship.gadget_active && !hit.ignore_gadget)
+        {
             let mut hit = IncomingHit {
                 amount,
                 knockback: kb,
@@ -2027,8 +2348,10 @@ impl World {
         let team = ship.team;
         let wreck_pos = ship.pos;
         let wreck_amount = cfg.tuning(ship.ship_type).wreck_scrap + ship.scrap * 0.5;
+        let mut killer_side = None;
         if let Some(k) = killer.filter(|k| *k != victim) {
             if let Some(ks) = self.ships.get_mut(&k) {
+                killer_side = Some(ks.team);
                 if ks.team != team {
                     ks.kills += 1;
                 }
@@ -2040,6 +2363,21 @@ impl World {
             killer,
             weapon,
         });
+        let kill = Kill {
+            victim,
+            victim_side: team,
+            killer,
+            killer_side,
+            weapon,
+        };
+        let mut m = ModeMut {
+            state: &mut self.mode,
+            rules: &cfg.rules.mode,
+            mutators: &cfg.rules.mutators,
+            ships: &self.ships,
+            now,
+        };
+        cfg.mode_module.on_kill(&mut m, &kill);
         if wreck_amount > 0.0 {
             let id = self.alloc_entity_id();
             self.scrap.push(ScrapPile {
@@ -2125,6 +2463,8 @@ impl World {
 
     /// Ships touching pickups collect them (lowest player id first).
     fn collect_pickups(&mut self, cfg: &SimConfig, now: u64, events: &mut Vec<Event>) {
+        let mode = &self.mode;
+        let module = cfg.mode_module;
         for (i, sp) in self.pickups.iter_mut().enumerate() {
             let Some((entry, kind)) = sp.content else {
                 continue;
@@ -2135,6 +2475,9 @@ impl World {
             for ship in self.ships.values_mut() {
                 let reach = PICKUP_RADIUS + cfg.tuning(ship.ship_type).radius;
                 if !ship.alive || ship.pos.distance_squared(sp.content_pos()) > reach * reach {
+                    continue;
+                }
+                if !module.on_pickup(mode, &cfg.rules.mode, ship, &kind) {
                     continue;
                 }
                 let taken = match kind {
@@ -2444,6 +2787,10 @@ impl World {
         h.write_u32(self.next_entity);
         h.write_u32(self.spawn_cursor[0]);
         h.write_u32(self.spawn_cursor[1]);
+        if self.spawn_cursor[2..].iter().any(|&c| c != 0) {
+            h.write_u32(self.spawn_cursor[2]);
+            h.write_u32(self.spawn_cursor[3]);
+        }
 
         h.write_u32(self.ships.len() as u32);
         for s in self.ships.values() {
@@ -2519,7 +2866,117 @@ impl World {
                 h.write_u8(winner.map_or(u8::MAX, |w| w));
             }
         }
+        // Everything else of the mode state and the deferred edits, only
+        // when present (a two-team Paint the Void match without deferred
+        // edits keeps its M2 hash).
+        hash_mode_extras(&mut h, &self.mode);
+        if !self.deferred_edits.is_empty() {
+            h.write_u8(0xde);
+            h.write_u32(self.deferred_edits.len() as u32);
+            for (t, e) in &self.deferred_edits {
+                h.write_u64(*t);
+                hash_edit(&mut h, e);
+            }
+        }
         h.finish()
+    }
+}
+
+/// Hashes the mode state beyond the M2 Paint the Void fields, if any of it
+/// differs from a fresh two-team Paint the Void state.
+fn hash_mode_extras(h: &mut StateHasher, m: &ModeState) {
+    use crate::mode::{ModeKind, PlayerMode};
+    let default_players = m.players.values().all(|p| *p == PlayerMode::default());
+    let plain = m.kind == ModeKind::PaintTheVoid
+        && m.teams == 2
+        && m.stage == 0
+        && m.stage_end_tick == 0
+        && m.coverage.team_cells[2..].iter().all(|&c| c == 0)
+        && m.team_scores.iter().all(|&s| s == 0)
+        && m.score_target == 0
+        && default_players
+        && m.objectives.is_empty()
+        && m.vars.iter().all(|&v| v == 0)
+        && m.flags == 0;
+    if plain {
+        return;
+    }
+    h.write_u8(0xa1);
+    h.write_u8(m.kind.index());
+    h.write_u8(m.teams);
+    h.write_u8(m.stage);
+    h.write_u64(m.stage_end_tick);
+    h.write_u64(m.coverage.team_cells[2]);
+    h.write_u64(m.coverage.team_cells[3]);
+    for s in m.team_scores {
+        h.write_u64(s as u64);
+    }
+    h.write_u32(m.score_target);
+    h.write_u32(m.players.len() as u32);
+    for (id, p) in &m.players {
+        h.write_u16(id.0);
+        h.write_u32(p.score as u32);
+        h.write_u8(p.lives);
+        h.write_u8(p.meter);
+        h.write_u8(p.flags);
+    }
+    h.write_u32(m.objectives.len() as u32);
+    for o in &m.objectives {
+        h.write_u8(o.id);
+        h.write_u8(o.kind);
+        h.write_vec3(o.pos);
+        h.write_vec3(o.vel);
+        h.write_f32(o.radius);
+        h.write_u16(o.holder.map_or(u16::MAX, |p| p.0));
+        h.write_u64(o.timer_end);
+        h.write_u8(o.team);
+        h.write_u8(o.state);
+        for v in o.vars {
+            h.write_f32(v);
+        }
+    }
+    for v in m.vars {
+        h.write_u64(v as u64);
+    }
+    h.write_u16(m.flags);
+}
+
+fn hash_edit(h: &mut StateHasher, e: &TerrainEdit) {
+    match *e {
+        TerrainEdit::SubtractSphere { center, radius } => {
+            h.write_u8(0);
+            h.write_vec3(center);
+            h.write_f32(radius);
+        }
+        TerrainEdit::AddSphere { center, radius } => {
+            h.write_u8(1);
+            h.write_vec3(center);
+            h.write_f32(radius);
+        }
+        TerrainEdit::Paint {
+            center,
+            radius,
+            team,
+            color,
+        } => {
+            h.write_u8(2);
+            h.write_vec3(center);
+            h.write_f32(radius);
+            h.write_u8(team);
+            h.write_u8(color);
+        }
+        TerrainEdit::Surface {
+            center,
+            radius,
+            states,
+            until,
+        } => {
+            h.write_u8(3);
+            h.write_vec3(center);
+            h.write_f32(radius);
+            h.write_u8(states);
+            h.write_u32(until);
+        }
     }
 }
 

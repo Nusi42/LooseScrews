@@ -23,6 +23,7 @@ use std::path::Path;
 use ls_math::Tick;
 use serde::{Deserialize, Serialize};
 
+use crate::mode::ModeKind;
 use crate::{
     GadgetId, GadgetTable, ShieldInteraction, ShipType, SimError, WeaponCost, WeaponId, WeaponSlot,
     WeaponTable,
@@ -139,48 +140,299 @@ impl Default for WeaponTuning {
     }
 }
 
-/// Match mutators (design doc). None is implemented yet.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// Match mutators (design doc). Each one is a module in
+/// `crate::mutators` (hooks applied after the mode's).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum Mutator {
+    /// Railspike only, any hit kills (`mutators/instagib.rs`).
     Instagib,
 }
 
-fn default_teams() -> u8 {
-    2
-}
-fn default_match_secs() -> f32 {
-    300.0
-}
-fn default_respawn_secs() -> f32 {
-    3.0
-}
+impl Mutator {
+    /// Every mutator, in rule set code bit order (bit `i` = `ALL[i]`).
+    pub const ALL: [Mutator; 1] = [Mutator::Instagib];
 
-/// Paint the Void settings.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-pub struct PaintTheVoidRules {
-    #[serde(default = "default_teams")]
-    pub teams: u8,
-    /// Match length (default 5 minutes).
-    #[serde(default = "default_match_secs")]
-    pub match_secs: f32,
-    #[serde(default = "default_respawn_secs")]
-    pub respawn_secs: f32,
-}
-
-impl Default for PaintTheVoidRules {
-    fn default() -> Self {
-        PaintTheVoidRules {
-            teams: default_teams(),
-            match_secs: default_match_secs(),
-            respawn_secs: default_respawn_secs(),
+    /// Bit index in the rule set code's mutator mask.
+    pub fn index(self) -> u8 {
+        match self {
+            Mutator::Instagib => 0,
         }
     }
 }
 
-/// Game mode and its settings.
+/// One numeric mode setting as rule set codes carry it: the value is an
+/// exact multiple of `1 / steps` in `0..2^bits` steps.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ModeField {
+    /// Field name (the RON field and the web editor's key).
+    pub name: &'static str,
+    pub value: f32,
+    /// Steps per unit (1 = whole numbers, 10 = tenths).
+    pub steps: f32,
+    pub bits: u32,
+}
+
+/// Defines a mode settings struct: fields with their default value and
+/// their rule set code precision, `Default`, serde defaults for missing
+/// fields and the generic field list ([`ModeField`]) the rule set codes and
+/// the web editor use. Every settings struct starts with `teams`,
+/// `match_secs` and `respawn_secs`.
+macro_rules! mode_settings {
+    (
+        $(#[$meta:meta])*
+        $name:ident {
+            $( $(#[$fmeta:meta])* $field:ident : $ty:ty = $default:expr, steps $steps:expr, bits $bits:expr; )*
+        }
+    ) => {
+        $(#[$meta])*
+        #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+        #[serde(default)]
+        pub struct $name {
+            $( $(#[$fmeta])* pub $field: $ty, )*
+        }
+
+        impl Default for $name {
+            fn default() -> Self {
+                $name { $( $field: $default, )* }
+            }
+        }
+
+        impl $name {
+            /// The settings as generic fields (rule set codes, web editor).
+            pub fn fields(&self) -> Vec<ModeField> {
+                vec![$( ModeField {
+                    name: stringify!($field),
+                    value: self.$field as f32,
+                    steps: $steps as f32,
+                    bits: $bits,
+                }, )*]
+            }
+
+            /// Sets the field called `name` (unknown names are ignored).
+            pub fn set_field(&mut self, name: &str, value: f32) {
+                $( if name == stringify!($field) {
+                    self.$field = value as $ty;
+                } )*
+            }
+        }
+    };
+}
+
+mode_settings! {
+    /// Paint the Void: teams paint the level; the most painted surface wins.
+    PaintTheVoidRules {
+        /// 2 to 4 teams.
+        teams: u8 = 2, steps 1, bits 3;
+        /// Match length (default 5 minutes).
+        match_secs: f32 = 300.0, steps 1, bits 16;
+        respawn_secs: f32 = 3.0, steps 10, bits 8;
+    }
+}
+
+mode_settings! {
+    /// Team Brawl: team deathmatch with respawns (`teams: 0` = free-for-all
+    /// deathmatch, the duel mode).
+    TeamBrawlRules {
+        /// 0 (free-for-all) or 2 to 4 teams.
+        teams: u8 = 2, steps 1, bits 3;
+        /// Time limit; the most kills win on time (draw if equal).
+        match_secs: f32 = 600.0, steps 1, bits 16;
+        respawn_secs: f32 = 3.0, steps 10, bits 8;
+        /// Kills to win; 0 = scale with players: `max(15, 5 x players / sides)`,
+        /// capped at 50.
+        kill_target: u16 = 0, steps 1, bits 8;
+        /// Points a suicide or team kill costs the team (or player).
+        team_kill_penalty: u8 = 1, steps 1, bits 4;
+    }
+}
+
+mode_settings! {
+    /// The Squeeze: free-for-all, one life; walls close in from the level
+    /// boundary in phases; last ship flying wins.
+    TheSqueezeRules {
+        /// 0 (free-for-all).
+        teams: u8 = 0, steps 1, bits 3;
+        /// Hard time limit (the shell normally ends the match first).
+        match_secs: f32 = 900.0, steps 1, bits 16;
+        /// Unused (no respawns); kept for the common layout.
+        respawn_secs: f32 = 0.0, steps 10, bits 8;
+        /// Phase 1 starts this long after the match start.
+        first_phase_secs: f32 = 60.0, steps 1, bits 10;
+        phases: u8 = 5, steps 1, bits 4;
+        /// Warning before each phase closes.
+        warn_secs: f32 = 20.0, steps 1, bits 8;
+        /// How long the walls take to close.
+        close_secs: f32 = 30.0, steps 1, bits 8;
+        /// Hull per second of contact with a moving wall (ignores shields).
+        crush_per_sec: f32 = 25.0, steps 1, bits 8;
+        /// Scrap debris pieces per phase per 100 u^2 of closed opening.
+        scrap_per_100u2: f32 = 3.0, steps 4, bits 8;
+    }
+}
+
+mode_settings! {
+    /// Heist: mine the core out of its vein and carry it to an extraction zone.
+    HeistRules {
+        /// 2 teams, or 0 (free-for-all variant for fewer than 4 players).
+        teams: u8 = 2, steps 1, bits 3;
+        match_secs: f32 = 720.0, steps 1, bits 16;
+        respawn_secs: f32 = 3.0, steps 10, bits 8;
+        deliveries_to_win: u8 = 3, steps 1, bits 5;
+        /// Carrier top speed in percent (the carrier cannot boost).
+        carrier_speed_percent: u8 = 75, steps 1, bits 7;
+        /// A dropped core returns to the vein after this long.
+        drop_return_secs: f32 = 20.0, steps 1, bits 8;
+        /// A delivered core respawns in the vein after this long.
+        core_respawn_secs: f32 = 15.0, steps 1, bits 8;
+        /// The freed chamber sheds debris this long ("collapsing mine").
+        collapse_secs: f32 = 30.0, steps 1, bits 8;
+    }
+}
+
+mode_settings! {
+    /// Hot Reactor: pass the reactor; whoever holds it at detonation loses
+    /// a life; the last player with lives wins.
+    HotReactorRules {
+        /// 0 (free-for-all).
+        teams: u8 = 0, steps 1, bits 3;
+        match_secs: f32 = 900.0, steps 1, bits 16;
+        respawn_secs: f32 = 3.0, steps 10, bits 8;
+        lives: u8 = 3, steps 1, bits 4;
+        fuse_secs: f32 = 20.0, steps 1, bits 8;
+        /// Ships within this distance of the holder speed the fuse up...
+        fuse_radius: f32 = 15.0, steps 1, bits 8;
+        /// ...by this much each (0.5 = half speed extra per ship).
+        fuse_speed_per_ship: f32 = 0.5, steps 20, bits 8;
+        blast_radius: f32 = 10.0, steps 1, bits 8;
+        blast_damage: f32 = 60.0, steps 1, bits 10;
+        /// A new holder cannot pass it back for this long.
+        pass_immunity_secs: f32 = 1.0, steps 10, bits 8;
+        /// A new reactor appears this long after a detonation.
+        next_reactor_secs: f32 = 3.0, steps 10, bits 8;
+    }
+}
+
+mode_settings! {
+    /// Last Color Standing: kills drain the victim's colour; the last
+    /// player with any colour wins.
+    LastColorStandingRules {
+        /// 0 (free-for-all only).
+        teams: u8 = 0, steps 1, bits 3;
+        match_secs: f32 = 900.0, steps 1, bits 16;
+        respawn_secs: f32 = 3.0, steps 10, bits 8;
+        /// Colour meter at the start.
+        colour: u8 = 100, steps 1, bits 7;
+        /// Colour a death drains.
+        drain_per_kill: u8 = 34, steps 1, bits 7;
+        /// After this long every remaining player loses colour...
+        stalemate_secs: f32 = 480.0, steps 1, bits 12;
+        /// ...one point every this many seconds.
+        stalemate_drain_secs: f32 = 2.0, steps 10, bits 8;
+    }
+}
+
+/// Game mode and its settings (one variant per mode module in
+/// `crate::modes`). The variant order is the mode index of rule set codes
+/// ([`ModeKind`]); append new modes at the end.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum ModeRules {
     PaintTheVoid(PaintTheVoidRules),
+    TeamBrawl(TeamBrawlRules),
+    TheSqueeze(TheSqueezeRules),
+    Heist(HeistRules),
+    HotReactor(HotReactorRules),
+    LastColorStanding(LastColorStandingRules),
+}
+
+impl Default for ModeRules {
+    fn default() -> Self {
+        ModeRules::PaintTheVoid(PaintTheVoidRules::default())
+    }
+}
+
+impl ModeRules {
+    /// The default settings of a mode.
+    pub fn default_for(kind: ModeKind) -> ModeRules {
+        match kind {
+            ModeKind::PaintTheVoid => ModeRules::PaintTheVoid(Default::default()),
+            ModeKind::TeamBrawl => ModeRules::TeamBrawl(Default::default()),
+            ModeKind::TheSqueeze => ModeRules::TheSqueeze(Default::default()),
+            ModeKind::Heist => ModeRules::Heist(Default::default()),
+            ModeKind::HotReactor => ModeRules::HotReactor(Default::default()),
+            ModeKind::LastColorStanding => ModeRules::LastColorStanding(Default::default()),
+        }
+    }
+
+    pub fn kind(&self) -> ModeKind {
+        match self {
+            ModeRules::PaintTheVoid(_) => ModeKind::PaintTheVoid,
+            ModeRules::TeamBrawl(_) => ModeKind::TeamBrawl,
+            ModeRules::TheSqueeze(_) => ModeKind::TheSqueeze,
+            ModeRules::Heist(_) => ModeKind::Heist,
+            ModeRules::HotReactor(_) => ModeKind::HotReactor,
+            ModeRules::LastColorStanding(_) => ModeKind::LastColorStanding,
+        }
+    }
+
+    /// The settings as generic fields, in code order.
+    pub fn fields(&self) -> Vec<ModeField> {
+        match self {
+            ModeRules::PaintTheVoid(m) => m.fields(),
+            ModeRules::TeamBrawl(m) => m.fields(),
+            ModeRules::TheSqueeze(m) => m.fields(),
+            ModeRules::Heist(m) => m.fields(),
+            ModeRules::HotReactor(m) => m.fields(),
+            ModeRules::LastColorStanding(m) => m.fields(),
+        }
+    }
+
+    /// Sets a field by name (unknown names are ignored).
+    pub fn set_field(&mut self, name: &str, value: f32) {
+        match self {
+            ModeRules::PaintTheVoid(m) => m.set_field(name, value),
+            ModeRules::TeamBrawl(m) => m.set_field(name, value),
+            ModeRules::TheSqueeze(m) => m.set_field(name, value),
+            ModeRules::Heist(m) => m.set_field(name, value),
+            ModeRules::HotReactor(m) => m.set_field(name, value),
+            ModeRules::LastColorStanding(m) => m.set_field(name, value),
+        }
+    }
+
+    fn common(&self) -> (u8, f32, f32) {
+        match self {
+            ModeRules::PaintTheVoid(m) => (m.teams, m.match_secs, m.respawn_secs),
+            ModeRules::TeamBrawl(m) => (m.teams, m.match_secs, m.respawn_secs),
+            ModeRules::TheSqueeze(m) => (m.teams, m.match_secs, m.respawn_secs),
+            ModeRules::Heist(m) => (m.teams, m.match_secs, m.respawn_secs),
+            ModeRules::HotReactor(m) => (m.teams, m.match_secs, m.respawn_secs),
+            ModeRules::LastColorStanding(m) => (m.teams, m.match_secs, m.respawn_secs),
+        }
+    }
+
+    /// Number of teams: 0 = free-for-all (every ship its own side), else 2-4.
+    pub fn teams(&self) -> u8 {
+        self.common().0
+    }
+
+    /// Match time limit in seconds.
+    pub fn match_secs(&self) -> f32 {
+        self.common().1
+    }
+
+    /// Respawn delay in seconds.
+    pub fn respawn_secs(&self) -> f32 {
+        self.common().2
+    }
+
+    /// Lives per player (0 = unlimited): The Squeeze 1, Hot Reactor its
+    /// `lives` (lost only at detonation, by the mode), others unlimited.
+    pub fn lives(&self) -> u8 {
+        match self {
+            ModeRules::TheSqueeze(_) => 1,
+            ModeRules::HotReactor(m) => m.lives,
+            _ => 0,
+        }
+    }
 }
 
 /// A complete rule set. Weapons and gadgets missing from `weapons` /
@@ -267,6 +519,23 @@ impl RuleSet {
             .expect("built-in rule set is valid RON")
     }
 
+    /// The default rule set of a mode (the base of its rule set codes):
+    /// its embedded file ([`ModeKind::ruleset_file`] in [`BUILTIN_RULESETS`])
+    /// or, until the mode has one, Paint the Void's with the mode's default
+    /// settings and name, and without the Paint Thrower (Paint the Void's
+    /// tool).
+    pub fn default_for(kind: ModeKind) -> RuleSet {
+        let file = kind.ruleset_file();
+        if let Some((name, text)) = BUILTIN_RULESETS.iter().find(|(f, _)| *f == file) {
+            return RuleSet::from_ron(name, text).expect("built-in rule set is valid RON");
+        }
+        let mut r = RuleSet::paint_the_void();
+        r.name = kind.name().to_string();
+        r.mode = ModeRules::default_for(kind);
+        r.ban_weapon("paint_thrower");
+        r
+    }
+
     /// Availability of a weapon by string id (unlisted = banned).
     pub fn availability(&self, weapon: &str) -> Availability {
         self.weapons
@@ -283,9 +552,17 @@ impl RuleSet {
             .unwrap_or(Availability::Banned)
     }
 
+    /// Paint the Void settings, or for another mode its common settings
+    /// (teams, match and respawn time) in the same shape (callers that only
+    /// need those; prefer [`ModeRules::teams`] and friends).
     pub fn paint_the_void_rules(&self) -> PaintTheVoidRules {
         match self.mode {
             ModeRules::PaintTheVoid(r) => r,
+            m => PaintTheVoidRules {
+                teams: m.teams(),
+                match_secs: m.match_secs(),
+                respawn_secs: m.respawn_secs(),
+            },
         }
     }
 
@@ -295,8 +572,31 @@ impl RuleSet {
     }
 
     /// Validates the rule set against the loaded weapons and gadgets and
-    /// precomputes index-based tables for the simulation.
+    /// precomputes index-based tables for the simulation. Mutators rewrite
+    /// the rule set first ([`RuleSet::effective`]).
     pub fn resolve_with(
+        &self,
+        weapons: &WeaponTable,
+        gadgets: &GadgetTable,
+    ) -> Result<ResolvedRules, SimError> {
+        if self.mutators.is_empty() {
+            self.resolve_effective(weapons, gadgets)
+        } else {
+            self.effective().resolve_effective(weapons, gadgets)
+        }
+    }
+
+    /// The rule set the match actually runs: the mutators' rewrites applied
+    /// in order (`MutatorModule::rewrite_rules`).
+    pub fn effective(&self) -> RuleSet {
+        let mut out = self.clone();
+        for m in &self.mutators {
+            crate::mutators::module(*m).rewrite_rules(&mut out);
+        }
+        out
+    }
+
+    fn resolve_effective(
         &self,
         weapons: &WeaponTable,
         gadgets: &GadgetTable,
@@ -312,24 +612,37 @@ impl RuleSet {
         if self.absurdity > 100 {
             return Err(bad(format!("absurdity {} > 100", self.absurdity)));
         }
-        if let Some(m) = self.mutators.first() {
-            return Err(bad(format!("mutator {m:?} is not supported yet")));
+        for (i, m) in self.mutators.iter().enumerate() {
+            if self.mutators[..i].contains(m) {
+                return Err(bad(format!("mutator {m:?} listed twice")));
+            }
         }
         if self.allowed_ship_types.is_empty() {
             return Err(bad("allowed_ship_types is empty".into()));
         }
-        let mode = self.paint_the_void_rules();
-        if mode.teams != 2 {
+        let mode = &self.mode;
+        let module = crate::modes::module(mode.kind());
+        if !module.team_counts().contains(&mode.teams()) {
             return Err(bad(format!(
-                "Paint the Void supports 2 teams, got {}",
-                mode.teams
+                "{} supports teams {:?} (0 = free-for-all), got {}",
+                mode.kind().name(),
+                module.team_counts(),
+                mode.teams()
             )));
         }
-        if !(mode.match_secs.is_finite() && mode.match_secs > 0.0)
-            || !finite_non_neg(mode.respawn_secs)
+        if !(mode.match_secs().is_finite() && mode.match_secs() > 0.0)
+            || !finite_non_neg(mode.respawn_secs())
         {
             return Err(bad("match_secs must be > 0 and respawn_secs >= 0".into()));
         }
+        for f in mode.fields() {
+            if !finite_non_neg(f.value) {
+                return Err(bad(format!("mode setting {} must be >= 0", f.name)));
+            }
+        }
+        module
+            .validate(mode)
+            .map_err(|e| bad(format!("{}: {e}", mode.kind().name())))?;
         for id in self.weapons.keys() {
             weapons.require(id)?;
         }
@@ -516,8 +829,14 @@ impl RuleSet {
             weapon_tuning,
             max_ammo,
             friendly_fire_percent: self.friendly_fire_percent,
-            match_ticks: Tick::ticks_for_secs(mode.match_secs).max(1),
-            respawn_ticks: Tick::ticks_for_secs(mode.respawn_secs),
+            match_ticks: Tick::ticks_for_secs(mode.match_secs()).max(1),
+            respawn_ticks: self
+                .mutators
+                .iter()
+                .fold(Tick::ticks_for_secs(mode.respawn_secs()), |t, m| {
+                    crate::mutators::module(*m).respawn_ticks(t)
+                }),
+            teams: mode.teams(),
             allowed_ship_types: self.allowed_ship_types.clone(),
         })
     }
@@ -700,7 +1019,10 @@ pub struct ResolvedRules {
     pub max_ammo: Vec<u32>,
     pub friendly_fire_percent: u8,
     pub match_ticks: u64,
+    /// Respawn delay (mutators applied).
     pub respawn_ticks: u64,
+    /// Number of teams (0 = free-for-all).
+    pub teams: u8,
     pub allowed_ship_types: Vec<ShipType>,
 }
 
@@ -842,9 +1164,11 @@ mod tests {
         bad.shield_overrides
             .insert("rivet_gun".into(), ShieldInteraction::PassThrough(2.0));
         assert!(bad.resolve(&weapons).is_err());
-        let mut bad = r;
-        bad.mutators.push(Mutator::Instagib);
-        assert!(bad.resolve(&weapons).is_err());
+        let mut with_mutator = r;
+        with_mutator.mutators.push(Mutator::Instagib);
+        assert!(with_mutator.resolve(&weapons).is_ok());
+        with_mutator.mutators.push(Mutator::Instagib);
+        assert!(with_mutator.resolve(&weapons).is_err(), "listed twice");
     }
 
     #[test]

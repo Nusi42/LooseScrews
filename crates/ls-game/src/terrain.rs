@@ -459,7 +459,7 @@ impl SimTerrain for GameTerrain {
         let full = self.full_paint_coverage();
         let cells = |t: u8| full.team_cells.get(&t).copied().unwrap_or(0);
         let c = ls_sim::PaintCoverage {
-            team_cells: [cells(0), cells(1)],
+            team_cells: [cells(0), cells(1), cells(2), cells(3)],
             surface_cells: full.surface_cells,
         };
         self.coverage.set(Some(c));
@@ -828,7 +828,7 @@ mod tests {
         let p = rock_point(&t);
         let before = SimTerrain::paint_coverage(&t).unwrap();
         assert!(before.surface_cells > 0);
-        assert_eq!(before.team_cells, [0, 0]);
+        assert_eq!(before.team_cells, [0; 4]);
         t.apply_edit(&TerrainEdit::Paint {
             center: p,
             radius: 2.0,

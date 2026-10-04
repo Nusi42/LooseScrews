@@ -38,11 +38,42 @@ export interface WeaponTuning {
   ammo: number;
 }
 
+/** `ls_sim::ModeKind` names, in mode index order (rule set codes). */
+export type ModeKindName = "PaintTheVoid" | "TeamBrawl" | "TheSqueeze" | "Heist" | "HotReactor" | "LastColorStanding";
+
+/**
+ * A mode and its settings: `kind` plus one number per field of the mode's settings
+ * struct (`ModeRules::fields`; every mode has `teams`, `match_secs`, `respawn_secs`).
+ */
 export interface ModeRules {
-  kind: "PaintTheVoid";
+  kind: ModeKindName;
+  /** 0 = free-for-all, else 2-4 (see `ModeInfo.teams`). */
   teams: number;
   match_secs: number;
   respawn_secs: number;
+  [field: string]: number | string;
+}
+
+/** One mode setting as rule set codes carry it (`ls_sim::ModeField`). */
+export interface ModeFieldInfo {
+  name: string;
+  /** Steps per unit (1 = whole numbers, 10 = tenths). */
+  steps: number;
+  bits: number;
+}
+
+/** A mode as the editor and the codes see it. */
+export interface ModeInfo {
+  kind: ModeKindName;
+  /** Mode index in rule set codes. */
+  index: number;
+  name: string;
+  /** Supported team counts (0 = free-for-all). */
+  teams: number[];
+  /** Lives per player (0 = unlimited). */
+  lives: number;
+  /** Settings in code order. */
+  fields: ModeFieldInfo[];
 }
 
 export interface Loadout {
@@ -107,7 +138,11 @@ export interface Catalog {
   gadgets: GadgetInfo[];
   /** `ShipType::index` order. */
   shipTypes: ShipTypeName[];
+  /** Every mode, in mode index order. */
+  modes: ModeInfo[];
+  /** Mutator names in mask bit order. */
+  mutators: string[];
   /** Canonical default rule set per mode (the base of diff codes). */
-  defaults: { PaintTheVoid: RuleSetData };
+  defaults: Record<ModeKindName, RuleSetData>;
   vectors: CodeVector[];
 }

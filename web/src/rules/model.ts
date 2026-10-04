@@ -5,16 +5,21 @@
 // `RuleSet::ban_weapon`), making it a pickup again restores its default pickup.
 
 import { asPickup, availabilityOf, cloneRules, eqRule, gadgetAvailabilityOf, inLoadout, normalizeRuleCode } from "./code.ts";
-import type { Availability, Catalog, PickupRule, RuleSetData, ShipTypeName, WeaponTuning } from "./types.ts";
+import type { Availability, Catalog, ModeKindName, PickupRule, RuleSetData, ShipTypeName, WeaponTuning } from "./types.ts";
 
-/** A fresh copy of the mode's default rules. */
-export function defaultRules(catalog: Catalog): RuleSetData {
-  return cloneRules(catalog.defaults.PaintTheVoid);
+/** A fresh copy of a mode's default rules (Paint the Void by default). */
+export function defaultRules(catalog: Catalog, kind: ModeKindName = "PaintTheVoid"): RuleSetData {
+  return cloneRules(catalog.defaults[kind]);
+}
+
+/** The default rules of the rule set's mode. */
+function modeDefaults(r: RuleSetData, catalog: Catalog): RuleSetData {
+  return catalog.defaults[r.mode.kind] ?? catalog.defaults.PaintTheVoid;
 }
 
 /** The pickup a weapon gets when it becomes a pickup again: the default one, else a plain rule. */
-function defaultPickup(catalog: Catalog, id: string): PickupRule {
-  const d = catalog.defaults.PaintTheVoid.pickups[id];
+function defaultPickup(r: RuleSetData, catalog: Catalog, id: string): PickupRule {
+  const d = modeDefaults(r, catalog).pickups[id];
   if (d) return { ...d };
   const w = catalog.weapons.find((x) => x.id === id);
   return { weight: 1, respawn_secs: 30, ammo: w?.count ? 2 : 0, max_on_map: 0 };
@@ -24,8 +29,8 @@ export function setWeaponAvailability(r: RuleSetData, catalog: Catalog, id: stri
   if (a === "Banned") delete r.weapons[id];
   else r.weapons[id] = a;
   if (asPickup(a)) {
-    r.pickups[id] ??= defaultPickup(catalog, id);
-    const up = catalog.defaults.PaintTheVoid.upgrade_pickups[id];
+    r.pickups[id] ??= defaultPickup(r, catalog, id);
+    const up = modeDefaults(r, catalog).upgrade_pickups[id];
     if (up && !r.upgrade_pickups[id]) r.upgrade_pickups[id] = { ...up };
   } else {
     delete r.pickups[id];
@@ -42,7 +47,7 @@ export function setGadgetAvailability(r: RuleSetData, catalog: Catalog, id: stri
   if (a === "Banned") delete r.gadgets[id];
   else r.gadgets[id] = a;
   if (asPickup(a)) {
-    const d = catalog.defaults.PaintTheVoid.gadget_pickups[id];
+    const d = modeDefaults(r, catalog).gadget_pickups[id];
     r.gadget_pickups[id] ??= d ? { ...d } : { weight: 0.5, respawn_secs: 45, ammo: 0, max_on_map: 0 };
   } else {
     delete r.gadget_pickups[id];
@@ -122,7 +127,7 @@ export function setShipTypeAllowed(r: RuleSetData, catalog: Catalog, t: ShipType
 
 /** Whether the weapon's pickup rule differs from the mode default (editor highlight). */
 export function pickupChanged(r: RuleSetData, catalog: Catalog, id: string): boolean {
-  return !eqRule(r.pickups[id], catalog.defaults.PaintTheVoid.pickups[id]);
+  return !eqRule(r.pickups[id], modeDefaults(r, catalog).pickups[id]);
 }
 
 /** Weapons banned by the rule set, by name. */

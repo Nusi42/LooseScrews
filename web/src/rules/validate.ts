@@ -32,10 +32,26 @@ export function validateRules(r: RuleSetData, catalog: Catalog): RuleProblem[] {
   if (!Number.isInteger(r.absurdity) || r.absurdity < 0 || r.absurdity > 100) {
     add("general", `Absurdity ${r.absurdity} must be 0-100.`);
   }
-  for (const m of r.mutators) add("general", `Mutator ${m} is not supported yet.`);
+  const mutators = new Set<string>();
+  for (const m of r.mutators) {
+    if (!catalog.mutators.includes(m)) add("general", `Unknown mutator ${m}.`);
+    else if (mutators.has(m)) add("general", `Mutator ${m} is listed twice.`);
+    mutators.add(m);
+  }
   if (r.allowed_ship_types.length === 0) add("ships", "Allow at least one ship type.");
   for (const t of r.allowed_ship_types) if (!catalog.shipTypes.includes(t)) add("ships", `Unknown ship type ${t}.`);
-  if (r.mode.teams !== 2) add("general", `Paint the Void supports 2 teams, got ${r.mode.teams}.`);
+  const mode = catalog.modes.find((m) => m.kind === r.mode.kind);
+  if (!mode) add("general", `Unknown mode ${r.mode.kind}.`);
+  else {
+    if (!mode.teams.includes(r.mode.teams)) {
+      const counts = mode.teams.map((t) => (t === 0 ? "free-for-all" : `${t}`)).join(", ");
+      add("general", `${mode.name} supports teams ${counts}, got ${r.mode.teams}.`);
+    }
+    for (const f of mode.fields) {
+      const v = r.mode[f.name];
+      if (typeof v !== "number" || !finiteNonNeg(v)) add("general", `Mode setting ${f.name} must be >= 0.`);
+    }
+  }
   if (!(Number.isFinite(r.mode.match_secs) && r.mode.match_secs > 0) || !finiteNonNeg(r.mode.respawn_secs)) {
     add("general", "Match length must be > 0 and respawn time >= 0.");
   }

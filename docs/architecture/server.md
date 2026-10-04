@@ -88,7 +88,7 @@ is logged at shutdown.
 ls-server --bind 0.0.0.0:7777 [--wt-bind <addr> | --no-webtransport] --code <share code> \
     --ruleset data/rulesets/paint_the_void.ron --max-players 8 --web-root web/dist \
     --stats-interval 10 --intermission 10 [--exit-when-empty]
-ls-server --ruleset LR6V-69CM-G006-58R --ban tectonic_charge --balance-list balance.ron
+ls-server --ruleset LR8V-6097-G000-TMBG --ban tectonic_charge --balance-list balance.ron
 ```
 
 Rules (`crates/ls-server/src/rules.rs`): `--ruleset` takes a file or an `LR...` rule set code

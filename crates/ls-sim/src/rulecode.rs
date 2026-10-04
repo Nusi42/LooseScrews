@@ -5,42 +5,54 @@
 //! The printed code is `LR` followed by Crockford base32 symbols grouped in
 //! fours (`LRab-cdef-...`). Decoding ignores case, dashes and whitespace and
 //! reads `O` as `0` and `I`/`L` as `1` (after the `LR` prefix). The payload
-//! bits (most significant bit first) start with a 4-bit format version:
+//! bits (most significant bit first) start with a 4-bit format version.
 //!
-//! - **Version 3, diff** (what [`RuleSet::to_code`] normally prints): only
+//! This build prints **format 4** (every mode, mutators) and still reads
+//! the Paint the Void-only formats 2 (full) and 3 (diff) of M2 builds.
+//!
+//! - **Format 4, diff** (what [`RuleSet::to_code`] normally prints): only
 //!   the settings that differ from the mode's default rule set
-//!   (`data/rulesets/`). The default Paint the Void rules are 13 symbols
-//!   (`LR` + 13 symbols + 3 dashes = 18 characters); banning a weapon adds
-//!   3 symbols (its pickups leave with it).
-//! - **Version 2, full** ([`RuleSet::to_full_code`], the fallback): every
+//!   ([`RuleSet::default_for`]). The default Paint the Void rules are 14
+//!   symbols; banning a weapon adds 3 symbols (its pickups leave with it).
+//! - **Format 4, full** ([`RuleSet::to_full_code`], the fallback): every
 //!   setting; about 210 symbols for the default rules. `to_code` prints it
 //!   only when it is shorter than the diff (almost everything changed).
 //!
-//! Both end with a CRC-16/CCITT-FALSE over the payload bits (packed MSB first,
-//! zero padded) and are zero padded to whole symbols.
+//! Every format ends with a CRC-16/CCITT-FALSE over the payload bits
+//! (packed MSB first, zero padded) and is zero padded to whole symbols.
 //!
 //! # Common header
 //!
 //! | Bits | Field |
 //! | --- | --- |
-//! | 4 | format version (2 or 3) |
+//! | 4 | format version (2, 3 or 4) |
 //! | 6, 4 | number of weapons and gadgets the code covers (the registry lengths of the build that made it) |
+//! | 1, 4 | format 4 only: 1 = full, 0 = diff; mode index ([`ModeKind`]) |
 //!
 //! "Per weapon" and "per gadget" fields cover the counts from the header, in
 //! registry order (`weapons::MODULES`, `gadgets::MODULES`; append-only). A
 //! code from an older build (fewer weapons) decodes with the missing weapons
 //! banned and without rules; a code from a newer build (more weapons than
-//! this build knows) is rejected with a clear error instead of misparsing.
+//! this build knows, or an unknown mode or mutator) is rejected with a clear
+//! error instead of misparsing.
 //!
-//! # Version 2 (full)
+//! # Mode settings (format 4)
+//!
+//! Every field of the mode's settings struct, in declaration order
+//! ([`ModeRules::fields`]): `bits` bits holding the value in steps of
+//! `1 / steps` (for example `teams` 3 bits, `match_secs` 16 bits of whole
+//! seconds, `respawn_secs` 8 bits of tenths). The field lists are part of
+//! the format: append fields at the end of a mode, never reorder.
+//!
+//! # Format 4 full
 //!
 //! | Bits | Field |
 //! | --- | --- |
 //! | 5 + 6 each | name: length (0..=31), characters from `" A-Za-z0-9-"` |
-//! | 2, 3, 16, 8 | mode (0 = Paint the Void), teams, match seconds (whole), respawn (tenths of a second) |
+//! | mode settings | see above |
 //! | 7, 7 | friendly fire percent, absurdity |
 //! | 4 | allowed ship types (bit = `ShipType::index`) |
-//! | 4 | mutators (bit 0 = Instagib) |
+//! | 4 | mutators (bit = `Mutator::index`: bit 0 = Instagib) |
 //! | 2 per weapon | availability |
 //! | 2 per gadget | availability |
 //! | 5 + 6 each | loadout primaries (registry index) |
@@ -58,23 +70,22 @@
 //! bits, whole seconds), then 1 bit + 6 bits ammo if non-zero and 1 bit + 4
 //! bits `max_on_map` if non-zero.
 //!
-//! # Version 3 (diff against the mode default)
+//! # Format 4 diff (against the mode default)
 //!
 //! | Bits | Field |
 //! | --- | --- |
-//! | 2 | mode (0 = Paint the Void; its default rule set is the base) |
-//! | 16 | base fingerprint: CRC-16 of the base's version 2 payload over the covered weapons and gadgets |
-//! | 1 [+ name] | name (as in version 2) |
-//! | 1 [+ 3 + 16 + 8] | mode settings: teams, match seconds, respawn tenths |
+//! | 16 | base fingerprint: CRC-16 of the base's format 4 full payload over the covered weapons and gadgets |
+//! | 1 [+ name] | name (as in the full format) |
+//! | 1 [+ mode settings] | the mode settings (all fields) |
 //! | 1 [+ 7], 1 [+ 7] | friendly fire percent, absurdity |
 //! | 1 [+ 4], 1 [+ 4] | allowed ship types, mutators |
 //! | changes (2) | weapon availability |
 //! | changes (2), 4-bit indices | gadget availability |
 //! | | (the base now takes the new availability; pickups and loadout entries it no longer allows leave the base) |
-//! | 1 [+ loadout] | the whole starting loadout (as in version 2) |
+//! | 1 [+ loadout] | the whole starting loadout (as in the full format) |
 //! | changes (1 [+ rule]) | weapon pickups, then upgrade pickups |
 //! | changes (1 [+ rule]), 4-bit indices | gadget pickups |
-//! | 1 [+ 1 [+ 26]] | scrap pickup (present, then as in version 2) |
+//! | 1 [+ 1 [+ 26]] | scrap pickup (present, then as in the full format) |
 //! | changes (1 [+ 2 + 8]) | shield overrides |
 //! | changes (1 [+ 24]) | tuning |
 //! | 16 | CRC-16 |
@@ -87,15 +98,24 @@
 //! a different default rule set (another build's data): they are rejected
 //! with a clear message instead of decoding to different rules.
 //!
+//! # Formats 2 and 3 (read only)
+//!
+//! The M2 formats carry only Paint the Void: no full/diff bit, and instead
+//! of the mode settings a 2-bit mode (0) plus teams (3 bits), match seconds
+//! (16) and respawn tenths (8); format 2 puts them after the name, format 3
+//! has the 2-bit mode before its fingerprint (a CRC-16 of the base's format
+//! 2 payload). Everything else is laid out as in format 4.
+//!
 //! Values that the format cannot carry exactly (a weight of 0.3, a respawn of
 //! 2.5 s, an unknown weapon id, a name with other characters) make
 //! [`RuleSet::to_code`] fail, so every code decodes to exactly the rule set
 //! it was made from (canonical form: banned weapons and gadgets left out of
-//! the availability maps, ship types in index order).
+//! the availability maps, ship types and mutators in index order).
 
 use std::collections::BTreeMap;
 
 use crate::gadgets::MODULES as GADGETS;
+use crate::mode::ModeKind;
 use crate::ruleset::{
     Availability, Loadout, ModeRules, Mutator, PaintTheVoidRules, PickupRule, RuleSet,
     ScrapPickupRule, WeaponTuning,
@@ -105,12 +125,14 @@ use crate::{ShieldInteraction, ShipType, SimError};
 
 /// Prefix of every printed rule set code.
 pub const PREFIX: &str = "LR";
-/// Version of the full format ([`RuleSet::to_full_code`]).
-pub const FULL_VERSION: u8 = 2;
-/// Version of the diff format (what [`RuleSet::to_code`] prints).
-pub const DIFF_VERSION: u8 = 3;
-/// Newest format version this build writes.
-pub const CODE_VERSION: u8 = DIFF_VERSION;
+/// The format this build prints (full and diff, every mode).
+pub const CODE_VERSION: u8 = 4;
+/// The M2 full format (Paint the Void only; read only).
+pub const LEGACY_FULL_VERSION: u8 = 2;
+/// The M2 diff format (Paint the Void only; read only).
+pub const LEGACY_DIFF_VERSION: u8 = 3;
+/// Bits of the mode index in format 4.
+const MODE_BITS: u32 = 4;
 const ALPHABET: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 const NAME_CHARS: &[u8; 64] = b" ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-";
 /// Longest rule set name a code carries.
@@ -279,7 +301,8 @@ fn read_name(r: &mut Reader) -> Result<String, SimError> {
     Ok(name)
 }
 
-fn write_mode(b: &mut Bits, m: &PaintTheVoidRules) -> Result<(), SimError> {
+/// Paint the Void settings in formats 2 and 3.
+fn legacy_write_mode(b: &mut Bits, m: &PaintTheVoidRules) -> Result<(), SimError> {
     if m.teams > 7 {
         return Err(err("teams must be <= 7"));
     }
@@ -289,12 +312,31 @@ fn write_mode(b: &mut Bits, m: &PaintTheVoidRules) -> Result<(), SimError> {
     Ok(())
 }
 
-fn read_mode(r: &mut Reader) -> Result<PaintTheVoidRules, SimError> {
+fn legacy_read_mode(r: &mut Reader) -> Result<PaintTheVoidRules, SimError> {
     Ok(PaintTheVoidRules {
         teams: r.read(3)? as u8,
         match_secs: r.read(16)? as f32,
         respawn_secs: r.read(8)? as f32 / 10.0,
     })
+}
+
+/// Format 4 mode settings: every field of the mode, in order.
+fn write_mode_fields(b: &mut Bits, m: &ModeRules) -> Result<(), SimError> {
+    for f in m.fields() {
+        b.push(
+            fixed(f.value, f.steps, (1u64 << f.bits) - 1, f.name)?,
+            f.bits,
+        );
+    }
+    Ok(())
+}
+
+fn read_mode_fields(r: &mut Reader, kind: ModeKind) -> Result<ModeRules, SimError> {
+    let mut m = ModeRules::default_for(kind);
+    for f in ModeRules::default_for(kind).fields() {
+        m.set_field(f.name, r.read(f.bits)? as f32 / f.steps);
+    }
+    Ok(m)
 }
 
 fn percent(v: u8, what: &str) -> Result<u64, SimError> {
@@ -317,17 +359,20 @@ fn ships_from_mask(mask: u64) -> Vec<ShipType> {
 }
 
 fn mutator_mask(mutators: &[Mutator]) -> u64 {
-    mutators.iter().fold(0, |m, x| match x {
-        Mutator::Instagib => m | 1,
-    })
+    mutators.iter().fold(0, |m, x| m | 1 << x.index())
 }
 
 fn mutators_from_mask(mask: u64) -> Vec<Mutator> {
-    let mut out = Vec::new();
-    if mask & 1 != 0 {
-        out.push(Mutator::Instagib);
-    }
-    out
+    Mutator::ALL
+        .iter()
+        .copied()
+        .filter(|m| mask & (1 << m.index()) != 0)
+        .collect()
+}
+
+/// Mutator mask bits this build knows.
+fn known_mutators() -> u64 {
+    mutator_mask(&Mutator::ALL)
 }
 
 fn write_loadout(
@@ -468,7 +513,8 @@ fn check_ids(r: &RuleSet, weapons: &[&str], gadgets: &[&str]) -> Result<(), SimE
 }
 
 /// The form every decoded rule set has: banned weapons and gadgets left out
-/// of the availability maps, ship types in index order without duplicates.
+/// of the availability maps, ship types in index order without duplicates,
+/// mutators in [`Mutator::ALL`] order without duplicates.
 pub fn canonical(r: &RuleSet) -> RuleSet {
     let mut c = r.clone();
     c.weapons.retain(|_, a| *a != Availability::Banned);
@@ -478,13 +524,11 @@ pub fn canonical(r: &RuleSet) -> RuleSet {
     c
 }
 
-/// The mode's default rule set (the base of diff codes), restricted to the
-/// weapons and gadgets a code covers, in canonical form.
-fn base_for(mode: u64, weapons: &[&str], gadgets: &[&str]) -> Result<RuleSet, SimError> {
-    let mut base = match mode {
-        0 => RuleSet::paint_the_void(),
-        _ => return Err(err("unknown mode")),
-    };
+/// The mode's default rule set ([`RuleSet::default_for`], the base of diff
+/// codes), restricted to the weapons and gadgets a code covers, in
+/// canonical form.
+fn base_for(kind: ModeKind, weapons: &[&str], gadgets: &[&str]) -> RuleSet {
+    let mut base = RuleSet::default_for(kind);
     let w = |id: &String| weapons.contains(&id.as_str());
     let g = |id: &String| gadgets.contains(&id.as_str());
     base.weapons.retain(|k, _| w(k));
@@ -500,24 +544,17 @@ fn base_for(mode: u64, weapons: &[&str], gadgets: &[&str]) -> Result<RuleSet, Si
     if lo.gadget.as_ref().is_some_and(|id| !g(id)) {
         lo.gadget = None;
     }
-    Ok(canonical(&base))
+    canonical(&base)
 }
 
-fn mode_index(m: &ModeRules) -> u64 {
-    match m {
-        ModeRules::PaintTheVoid(_) => 0,
-    }
-}
-
-/// Version 2 payload (header included, checksum excluded).
-fn full_payload(r: &RuleSet, weapons: &[&str], gadgets: &[&str]) -> Result<Bits, SimError> {
-    let mut b = Bits::default();
-    b.push(FULL_VERSION as u64, 4);
-    header_counts(&mut b, weapons, gadgets)?;
-    write_name(&mut b, &r.name)?;
-    let ModeRules::PaintTheVoid(m) = &r.mode;
-    b.push(mode_index(&r.mode), 2);
-    write_mode(&mut b, m)?;
+/// Everything after the mode settings in the full formats (2 and 4):
+/// friendly fire to tuning.
+fn write_full_tail(
+    b: &mut Bits,
+    r: &RuleSet,
+    weapons: &[&str],
+    gadgets: &[&str],
+) -> Result<(), SimError> {
     b.push(percent(r.friendly_fire_percent, "friendly fire")?, 7);
     b.push(percent(r.absurdity, "absurdity")?, 7);
     b.push(ship_mask(&r.allowed_ship_types), 4);
@@ -529,19 +566,49 @@ fn full_payload(r: &RuleSet, weapons: &[&str], gadgets: &[&str]) -> Result<Bits,
     for &g in gadgets {
         b.push(r.gadget_availability(g).index() as u64, 2);
     }
-    write_loadout(&mut b, &r.starting_loadout, weapons, gadgets)?;
-    write_all(&mut b, weapons, &r.pickups, write_rule)?;
-    write_all(&mut b, weapons, &r.upgrade_pickups, write_rule)?;
-    write_all(&mut b, gadgets, &r.gadget_pickups, write_rule)?;
+    write_loadout(b, &r.starting_loadout, weapons, gadgets)?;
+    write_all(b, weapons, &r.pickups, write_rule)?;
+    write_all(b, weapons, &r.upgrade_pickups, write_rule)?;
+    write_all(b, gadgets, &r.gadget_pickups, write_rule)?;
     match &r.scrap_pickup {
         None => b.flag(false),
         Some(s) => {
             b.flag(true);
-            write_scrap(&mut b, s)?;
+            write_scrap(b, s)?;
         }
     }
-    write_all(&mut b, weapons, &r.shield_overrides, write_shield)?;
-    write_all(&mut b, weapons, &r.tuning, write_tuning)?;
+    write_all(b, weapons, &r.shield_overrides, write_shield)?;
+    write_all(b, weapons, &r.tuning, write_tuning)?;
+    Ok(())
+}
+
+/// Format 2 payload (Paint the Void only; header included, checksum
+/// excluded). This build no longer prints it: it only computes the base
+/// fingerprints of format 3 codes.
+fn legacy_full_payload(r: &RuleSet, weapons: &[&str], gadgets: &[&str]) -> Result<Bits, SimError> {
+    let ModeRules::PaintTheVoid(m) = &r.mode else {
+        return Err(err("format 2 carries only Paint the Void"));
+    };
+    let mut b = Bits::default();
+    b.push(LEGACY_FULL_VERSION as u64, 4);
+    header_counts(&mut b, weapons, gadgets)?;
+    write_name(&mut b, &r.name)?;
+    b.push(0, 2);
+    legacy_write_mode(&mut b, m)?;
+    write_full_tail(&mut b, r, weapons, gadgets)?;
+    Ok(b)
+}
+
+/// Format 4 full payload (header included, checksum excluded).
+fn full_payload(r: &RuleSet, weapons: &[&str], gadgets: &[&str]) -> Result<Bits, SimError> {
+    let mut b = Bits::default();
+    b.push(CODE_VERSION as u64, 4);
+    header_counts(&mut b, weapons, gadgets)?;
+    b.flag(true);
+    b.push(r.mode.kind().index() as u64, MODE_BITS);
+    write_name(&mut b, &r.name)?;
+    write_mode_fields(&mut b, &r.mode)?;
+    write_full_tail(&mut b, r, weapons, gadgets)?;
     Ok(b)
 }
 
@@ -740,34 +807,54 @@ fn implied_by_availability(r: &mut RuleSet) {
     }
 }
 
-/// Fingerprint of a (restricted, canonical) base rule set.
+/// Fingerprint of a (restricted, canonical) base rule set: CRC-16 of its
+/// format 4 full payload.
 fn fingerprint(base: &RuleSet, weapons: &[&str], gadgets: &[&str]) -> Result<u16, SimError> {
     let b = full_payload(base, weapons, gadgets)
         .map_err(|e| err(format!("the default rule set cannot be encoded: {e}")))?;
     Ok(crc16(&b.bytes(b.bits.len())))
 }
 
-/// Version 3 payload (header included, checksum excluded).
+/// The fingerprint of format 3 codes: CRC-16 of the base's format 2 payload.
+fn legacy_fingerprint(base: &RuleSet, weapons: &[&str], gadgets: &[&str]) -> Result<u16, SimError> {
+    let b = legacy_full_payload(base, weapons, gadgets)
+        .map_err(|e| err(format!("the default rule set cannot be encoded: {e}")))?;
+    Ok(crc16(&b.bytes(b.bits.len())))
+}
+
+/// Format 4 diff payload (header included, checksum excluded).
 fn diff_payload(r: &RuleSet, weapons: &[&str], gadgets: &[&str]) -> Result<Bits, SimError> {
     check_ids(r, weapons, gadgets)?;
     let r = canonical(r);
-    let mode = mode_index(&r.mode);
-    let base = base_for(mode, weapons, gadgets)?;
+    let kind = r.mode.kind();
+    let base = base_for(kind, weapons, gadgets);
     let mut b = Bits::default();
-    b.push(DIFF_VERSION as u64, 4);
+    b.push(CODE_VERSION as u64, 4);
     header_counts(&mut b, weapons, gadgets)?;
-    b.push(mode, 2);
+    b.flag(false);
+    b.push(kind.index() as u64, MODE_BITS);
     b.push(fingerprint(&base, weapons, gadgets)? as u64, 16);
 
     b.flag(r.name != base.name);
     if r.name != base.name {
         write_name(&mut b, &r.name)?;
     }
-    let (m, bm) = (r.paint_the_void_rules(), base.paint_the_void_rules());
-    b.flag(m != bm);
-    if m != bm {
-        write_mode(&mut b, &m)?;
+    b.flag(r.mode != base.mode);
+    if r.mode != base.mode {
+        write_mode_fields(&mut b, &r.mode)?;
     }
+    write_diff_tail(&mut b, &r, base, weapons, gadgets)?;
+    Ok(b)
+}
+
+/// Everything after the mode settings in the diff formats (3 and 4).
+fn write_diff_tail(
+    b: &mut Bits,
+    r: &RuleSet,
+    base: RuleSet,
+    weapons: &[&str],
+    gadgets: &[&str],
+) -> Result<(), SimError> {
     for (v, bv, what) in [
         (
             r.friendly_fire_percent,
@@ -794,14 +881,14 @@ fn diff_payload(r: &RuleSet, weapons: &[&str], gadgets: &[&str]) -> Result<Bits,
         }
     }
     write_availability_diff(
-        &mut b,
+        b,
         weapons,
         WEAPON_BITS,
         |id| r.availability(id),
         |id| base.availability(id),
     )?;
     write_availability_diff(
-        &mut b,
+        b,
         gadgets,
         GADGET_BITS,
         |id| r.gadget_availability(id),
@@ -816,10 +903,10 @@ fn diff_payload(r: &RuleSet, weapons: &[&str], gadgets: &[&str]) -> Result<Bits,
     let lo_changed = r.starting_loadout != base.starting_loadout;
     b.flag(lo_changed);
     if lo_changed {
-        write_loadout(&mut b, &r.starting_loadout, weapons, gadgets)?;
+        write_loadout(b, &r.starting_loadout, weapons, gadgets)?;
     }
     write_map_diff(
-        &mut b,
+        b,
         weapons,
         WEAPON_BITS,
         &r.pickups,
@@ -827,7 +914,7 @@ fn diff_payload(r: &RuleSet, weapons: &[&str], gadgets: &[&str]) -> Result<Bits,
         write_rule,
     )?;
     write_map_diff(
-        &mut b,
+        b,
         weapons,
         WEAPON_BITS,
         &r.upgrade_pickups,
@@ -835,7 +922,7 @@ fn diff_payload(r: &RuleSet, weapons: &[&str], gadgets: &[&str]) -> Result<Bits,
         write_rule,
     )?;
     write_map_diff(
-        &mut b,
+        b,
         gadgets,
         GADGET_BITS,
         &r.gadget_pickups,
@@ -846,11 +933,11 @@ fn diff_payload(r: &RuleSet, weapons: &[&str], gadgets: &[&str]) -> Result<Bits,
     if r.scrap_pickup != base.scrap_pickup {
         b.flag(r.scrap_pickup.is_some());
         if let Some(s) = &r.scrap_pickup {
-            write_scrap(&mut b, s)?;
+            write_scrap(b, s)?;
         }
     }
     write_map_diff(
-        &mut b,
+        b,
         weapons,
         WEAPON_BITS,
         &r.shield_overrides,
@@ -858,14 +945,14 @@ fn diff_payload(r: &RuleSet, weapons: &[&str], gadgets: &[&str]) -> Result<Bits,
         write_shield,
     )?;
     write_map_diff(
-        &mut b,
+        b,
         weapons,
         WEAPON_BITS,
         &r.tuning,
         &base.tuning,
         write_tuning,
     )?;
-    Ok(b)
+    Ok(())
 }
 
 /// Appends the checksum and prints the symbols.
@@ -930,14 +1017,14 @@ pub fn looks_like_code(text: &str) -> bool {
 }
 
 impl RuleSet {
-    /// Encodes the rule set as a code (see the module docs): the diff
-    /// against the mode's default rule set, or the full encoding when that
-    /// is shorter. Fails for values the format cannot carry exactly.
+    /// Encodes the rule set as a format 4 code (see the module docs): the
+    /// diff against the mode's default rule set, or the full encoding when
+    /// that is shorter. Fails for values the format cannot carry exactly.
     pub fn to_code(&self) -> Result<String, SimError> {
         self.to_code_with(&weapon_ids(), &gadget_ids())
     }
 
-    /// The full (version 2) code: independent of the default rule set, and
+    /// The full format 4 code: independent of the default rule sets, and
     /// much longer.
     pub fn to_full_code(&self) -> Result<String, SimError> {
         Ok(finish(full_payload(self, &weapon_ids(), &gadget_ids())?))
@@ -955,9 +1042,9 @@ impl RuleSet {
         }))
     }
 
-    /// Decodes a rule set code of either format (see the module docs). The
-    /// result is canonical and still has to be validated with
-    /// [`RuleSet::resolve`].
+    /// Decodes a rule set code of any format this build reads (2, 3 and
+    /// 4; see the module docs). The result is canonical and still has to
+    /// be validated with [`RuleSet::resolve`].
     pub fn from_code(code: &str) -> Result<RuleSet, SimError> {
         Self::from_code_with(code, &weapon_ids(), &gadget_ids())
     }
@@ -974,9 +1061,9 @@ impl RuleSet {
             pos: 0,
         };
         let version = r.read(4)?;
-        if version != FULL_VERSION as u64 && version != DIFF_VERSION as u64 {
+        if !(LEGACY_FULL_VERSION as u64..=CODE_VERSION as u64).contains(&version) {
             return Err(err(format!(
-                "code version {version}, this build reads versions {FULL_VERSION} and {DIFF_VERSION}"
+                "code version {version}, this build reads versions {LEGACY_FULL_VERSION} to {CODE_VERSION}"
             )));
         }
         let (nw, ng) = (r.read(6)? as usize, r.read(4)? as usize);
@@ -989,10 +1076,23 @@ impl RuleSet {
         }
         // Weapons and gadgets the code does not cover stay banned, without rules.
         let (weapons, gadgets) = (&all_weapons[..nw], &all_gadgets[..ng]);
-        let rules = if version == FULL_VERSION as u64 {
-            read_full(&mut r, weapons, gadgets)?
-        } else {
-            read_diff(&mut r, weapons, gadgets)?
+        let rules = match version as u8 {
+            LEGACY_FULL_VERSION => read_full_v2(&mut r, weapons, gadgets)?,
+            LEGACY_DIFF_VERSION => read_diff_v3(&mut r, weapons, gadgets)?,
+            _ => {
+                let full = r.flag()?;
+                let index = r.read(MODE_BITS)? as u8;
+                let Some(kind) = ModeKind::from_index(index) else {
+                    return Err(err(format!(
+                        "unknown mode {index} (code from a newer build?)"
+                    )));
+                };
+                if full {
+                    read_full_v4(&mut r, kind, weapons, gadgets)?
+                } else {
+                    read_diff_v4(&mut r, kind, weapons, gadgets)?
+                }
+            }
         };
         let payload = r.pos;
         let crc = r.read(16)? as u16;
@@ -1007,21 +1107,25 @@ impl RuleSet {
     }
 }
 
-/// Reads a version 2 body. The outer result is a parse failure; the inner
-/// one a value error reported only if the checksum matches (a typo is
-/// reported as a typo).
-fn read_full(
+/// A decoded rule set, or a value error that is reported only if the
+/// checksum matches (a typo is reported as a typo). The outer result of the
+/// readers is a parse failure.
+type Parsed = Result<RuleSet, SimError>;
+
+/// Reads the full formats' fields after the mode settings (friendly fire
+/// to tuning) into a rule set with `name` and `mode`.
+fn read_full_tail(
     r: &mut Reader,
     weapons: &[&str],
     gadgets: &[&str],
-) -> Result<Result<RuleSet, SimError>, SimError> {
-    let name = read_name(r)?;
-    let mode = r.read(2)?;
-    let m = read_mode(r)?;
+    name: String,
+    mode: ModeRules,
+) -> Result<Parsed, SimError> {
     let friendly_fire_percent = r.read(7)? as u8;
     let absurdity = r.read(7)? as u8;
     let allowed_ship_types = ships_from_mask(r.read(4)?);
-    let mutators = mutators_from_mask(r.read(4)?);
+    let mutator_bits = r.read(4)?;
+    let mutators = mutators_from_mask(mutator_bits);
     let mut wmap = BTreeMap::new();
     for &w in weapons {
         let a = Availability::from_index(r.read(2)? as u8);
@@ -1047,12 +1151,12 @@ fn read_full(
     };
     let shield_overrides = read_all(r, weapons, read_shield)?;
     let tuning = read_all(r, weapons, read_tuning)?;
-    if mode != 0 {
-        return Ok(Err(err("unknown mode")));
+    if mutator_bits & !known_mutators() != 0 {
+        return Ok(Err(err("unknown mutator (code from a newer build?)")));
     }
     Ok(Ok(RuleSet {
         name,
-        mode: ModeRules::PaintTheVoid(m),
+        mode,
         weapons: wmap,
         gadgets: gmap,
         starting_loadout,
@@ -1069,29 +1173,38 @@ fn read_full(
     }))
 }
 
-/// Reads a version 3 body (see [`read_full`] for the nested result).
-fn read_diff(
+/// Reads a format 2 body (Paint the Void only).
+fn read_full_v2(r: &mut Reader, weapons: &[&str], gadgets: &[&str]) -> Result<Parsed, SimError> {
+    let name = read_name(r)?;
+    let mode = r.read(2)?;
+    let m = legacy_read_mode(r)?;
+    let rules = read_full_tail(r, weapons, gadgets, name, ModeRules::PaintTheVoid(m))?;
+    if mode != 0 {
+        return Ok(Err(err("unknown mode")));
+    }
+    Ok(rules)
+}
+
+/// Reads a format 4 full body (after the mode index).
+fn read_full_v4(
     r: &mut Reader,
+    kind: ModeKind,
     weapons: &[&str],
     gadgets: &[&str],
-) -> Result<Result<RuleSet, SimError>, SimError> {
-    let mode = r.read(2)?;
-    let fp = r.read(16)? as u16;
-    let mut out = match base_for(mode, weapons, gadgets) {
-        Ok(b) => b,
-        // Checked after the checksum, so a typo is reported as a typo.
-        Err(e) => return Ok(Err(e)),
-    };
-    let base_fp = fingerprint(&out, weapons, gadgets);
-    if r.flag()? {
-        out.name = read_name(r)?;
-    }
-    if r.flag()? {
-        let m = read_mode(r)?;
-        match &mut out.mode {
-            ModeRules::PaintTheVoid(x) => *x = m,
-        }
-    }
+) -> Result<Parsed, SimError> {
+    let name = read_name(r)?;
+    let mode = read_mode_fields(r, kind)?;
+    read_full_tail(r, weapons, gadgets, name, mode)
+}
+
+/// Reads the diff formats' fields after the mode settings into `out`;
+/// returns whether an unknown mutator bit was set.
+fn read_diff_tail(
+    r: &mut Reader,
+    out: &mut RuleSet,
+    weapons: &[&str],
+    gadgets: &[&str],
+) -> Result<bool, SimError> {
     if r.flag()? {
         out.friendly_fire_percent = r.read(7)? as u8;
     }
@@ -1104,12 +1217,12 @@ fn read_diff(
     let mut unknown_mutator = false;
     if r.flag()? {
         let mask = r.read(4)?;
-        unknown_mutator = mask & !1 != 0;
+        unknown_mutator = mask & !known_mutators() != 0;
         out.mutators = mutators_from_mask(mask);
     }
     read_availability_diff(r, weapons, WEAPON_BITS, &mut out.weapons)?;
     read_availability_diff(r, gadgets, GADGET_BITS, &mut out.gadgets)?;
-    implied_by_availability(&mut out);
+    implied_by_availability(out);
     if r.flag()? {
         let lo = read_loadout(r, weapons, gadgets)?;
         if lo == out.starting_loadout {
@@ -1139,20 +1252,75 @@ fn read_diff(
         read_shield,
     )?;
     read_map_diff(r, weapons, WEAPON_BITS, &mut out.tuning, read_tuning)?;
+    Ok(unknown_mutator)
+}
+
+/// The checks after a diff body: the base fingerprint and unknown mutators.
+fn diff_checks(
+    out: RuleSet,
+    fp: u16,
+    base_fp: Result<u16, SimError>,
+    unknown_mutator: bool,
+) -> Parsed {
     match base_fp {
         Ok(f) if f == fp => {}
         Ok(_) => {
-            return Ok(Err(err(
+            return Err(err(
                 "code made against different default rules (another game version); \
                  ask for the full code",
-            )))
+            ))
         }
-        Err(e) => return Ok(Err(e)),
+        Err(e) => return Err(e),
     }
     if unknown_mutator {
-        return Ok(Err(err("unknown mutator (code from a newer build?)")));
+        return Err(err("unknown mutator (code from a newer build?)"));
     }
-    Ok(Ok(out))
+    Ok(out)
+}
+
+/// Reads a format 3 body (Paint the Void only, base fingerprint over the
+/// base's format 2 payload).
+fn read_diff_v3(r: &mut Reader, weapons: &[&str], gadgets: &[&str]) -> Result<Parsed, SimError> {
+    let mode = r.read(2)?;
+    let fp = r.read(16)? as u16;
+    if mode != 0 {
+        // Checked after the checksum, so a typo is reported as a typo.
+        return Ok(Err(err("unknown mode")));
+    }
+    let mut out = base_for(ModeKind::PaintTheVoid, weapons, gadgets);
+    let base_fp = legacy_fingerprint(&out, weapons, gadgets);
+    if r.flag()? {
+        out.name = read_name(r)?;
+    }
+    if r.flag()? {
+        out.mode = ModeRules::PaintTheVoid(legacy_read_mode(r)?);
+    }
+    let unknown_mutator = read_diff_tail(r, &mut out, weapons, gadgets)?;
+    Ok(diff_checks(out, fp, base_fp, unknown_mutator))
+}
+
+/// Reads a format 4 diff body (after the mode index).
+fn read_diff_v4(
+    r: &mut Reader,
+    kind: ModeKind,
+    weapons: &[&str],
+    gadgets: &[&str],
+) -> Result<Parsed, SimError> {
+    let fp = r.read(16)? as u16;
+    let mut out = base_for(kind, weapons, gadgets);
+    let base_fp = fingerprint(&out, weapons, gadgets);
+    if r.flag()? {
+        out.name = read_name(r)?;
+    }
+    if r.flag()? {
+        let m = read_mode_fields(r, kind)?;
+        if m == out.mode {
+            return Err(err("corrupt code (an entry equals the default)"));
+        }
+        out.mode = m;
+    }
+    let unknown_mutator = read_diff_tail(r, &mut out, weapons, gadgets)?;
+    Ok(diff_checks(out, fp, base_fp, unknown_mutator))
 }
 
 #[cfg(test)]

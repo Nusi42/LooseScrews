@@ -93,7 +93,7 @@ or run the built program directly (`target/release/ls-server`, on Windows
 Void rules and prints:
 
 ```
-INFO ls_server::sim: rules: Paint the Void LR6V-69CM-G006-58R (banned weapons: none)
+INFO ls_server::sim: rules: Paint the Void LR8V-6097-G000-TMBG (banned weapons: none)
 INFO ls_server: share code LS0B-143C-ZQW8-CCHA-V4M6-8001-8FAA - open http://localhost:7777 to play
 ```
 
@@ -145,7 +145,7 @@ ls-server --code LS0B-143C-ZQW8-CCHA-V4M6-8001-8FAA
 ls-server --ruleset data/rulesets/sandbox_all_weapons.ron
 
 # Rules from the rule set editor, without the Tectonic Charge
-ls-server --ruleset LR6V-69CM-G006-58R --ban tectonic_charge
+ls-server --ruleset LR8V-6097-G000-TMBG --ban tectonic_charge
 
 # Your own rule set file, a server-wide balance list and a longer break between matches
 ls-server --ruleset my_rules.ron --balance-list balance.ron --intermission 20
@@ -193,7 +193,7 @@ You can give the server its rules three ways:
 
 1. **Nothing:** the built-in default, `data/rulesets/paint_the_void.ron`.
 2. **A rule set code** made in the [rule set editor](#rule-set-codes-the-editor-and-invite-links):
-   `--ruleset LR6V-69CM-G006-58R`. Easiest, and nothing to copy around.
+   `--ruleset LR8V-6097-G000-TMBG`. Easiest, and nothing to copy around.
 3. **A rule set file** (RON): `--ruleset my_rules.ron`. Copy one of the built-in files, edit
    the copy and pass its path.
 
@@ -322,8 +322,9 @@ the rule set or a balance list instead.
 ### Rule set codes
 
 Every rule set fits into a **rule set code**: `LR` plus letters and digits in groups of four.
-Codes store only what differs from the default Paint the Void rules, so they stay short: the
-default rules are `LR6V-69CM-G006-58R`, and a ban adds about three symbols. Codes are
+Codes store only what differs from the default rules of their mode, so they stay short: the
+default Paint the Void rules are `LR8V-6097-G000-TMBG`, and a ban adds about three symbols.
+Codes made by older versions (they start with `LR6`) still work. Codes are
 case-insensitive, and dashes and spaces are optional. `--ruleset` accepts a code wherever it
 accepts a file.
 
@@ -331,7 +332,7 @@ The server logs the code of the rules it actually plays (the rule set with the b
 bans applied) at startup, and again whenever a changed balance list changes them:
 
 ```
-INFO ls_server::sim: rules: Paint the Void LR6V-69CM-G216-X7G0-SAQ (banned weapons: eyeball, tectonic_charge)
+INFO ls_server::sim: rules: Paint the Void LR8V-6097-G084-VMY0-6DXC (banned weapons: eyeball, tectonic_charge)
 ```
 
 Paste that code into `--ruleset` on another server, or into the editor, to get the same rules.
@@ -352,7 +353,7 @@ server would refuse in red, and, once the rules are valid, shows:
 - the **rule set code**,
 - a **World** field (an optional share code),
 - an **invite link** (`http://<server>/?world=LS…&rules=LR…`),
-- the **host command**, for example `ls-server --code LS0B-143C-ZQW8-CCHA-V4M6-8001-8FAA --ruleset LR6V-…`.
+- the **host command**, for example `ls-server --code LS0B-143C-ZQW8-CCHA-V4M6-8001-8FAA --ruleset LR8V-…`.
 
 Copy the host command, add your other flags, and start the server. The editor needs no GPU
 and no game connection, and it remembers the last code it made. `?editor=rules&rules=LR…`

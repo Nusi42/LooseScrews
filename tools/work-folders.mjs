@@ -40,7 +40,8 @@ function create(n) {
   git(dir, remote ? ["checkout", "-b", branch, "--track", `origin/${branch}`] : ["checkout", "-b", branch]);
   fs.writeFileSync(path.join(dir, ".claude", "settings.local.json"), claudeLocalSettings(dir));
   console.log("> npm ci (web/; its prepare installs the Git hooks)");
-  const npm = spawnSync("npm", ["ci"], { cwd: path.join(dir, "web"), stdio: "inherit", shell: true });
+  // One command string: npm is a .cmd on Windows and needs a shell.
+  const npm = spawnSync("npm ci", { cwd: path.join(dir, "web"), stdio: "inherit", shell: true });
   if (npm.status !== 0) throw new Error("npm ci failed");
   console.log(`\n${dir} is ready on ${branch}. Next: cd web && npm run build (WASM package + client).`);
 }

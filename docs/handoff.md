@@ -11,11 +11,17 @@ Status: current
 | Folder | Branch | Package | State |
 | --- | --- | --- | --- |
 | loosescrews.win1 | WIN1 | Work-folder setup (docs/adr/0001) | done: merged to main |
-| loosescrews.win2 | WIN2 | none (used to verify a fresh clone passes pre-push) | idle, at main |
+| loosescrews.win2 | WIN2 | none (verified a fresh clone passes pre-push) | idle, at main |
 
 ## Open questions
 
 - None.
+
+## Maintainer to-dos
+
+- Move the master's untracked `.codegraph/` to `<work root>\colent.master-backup`
+  once no Claude session runs in the master (its CodeGraph MCP server holds it open). The index
+  now lives in loosescrews.win1.
 
 ## Next action
 

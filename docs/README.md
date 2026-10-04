@@ -25,6 +25,7 @@ working on the repo are in [`CLAUDE.md`](../CLAUDE.md).
 | [architecture/contracts.md](architecture/contracts.md) | Cross-crate contracts: axes, units, time, RNG streams, `TerrainEdit` / `TerrainQuery`, surface states and paint colours, rock strength, chunk meshes and layers, share codes, quantization |
 | [architecture/game-glue.md](architecture/game-glue.md) | `ls-game` in detail: `GameTerrain`, match setup, wire conventions, `ClientSession`, `Room`, lag compensation, tests |
 | [architecture/arsenal-framework.md](architecture/arsenal-framework.md) | M2 arsenal framework: weapon and gadget modules, their hooks and `Ctx` commands, terrain layers for weapons, hook order per tick, gadgets, ship types and paint effects, entities and debris, replication (protocol 4 wire items), data hash, rule set v2, codes and balance lists, and the arsenal as built (every weapon's bonus, malus and lasting effect) |
+| [architecture/directory.md](architecture/directory.md) | `ls-directory`: the optional server list service (flags, JSON API, heartbeat and secret rules, invite relay, the client library `ls-server` uses) |
 | [architecture/server.md](architecture/server.md) | `ls-server` internals (endpoints, links, WebTransport mapping, sim thread policies, CLI incl. rule sets, bans and balance lists), browser client lifecycle and data-driven drawing, `ls-bots` (navigation, arsenal use), the e2e run |
 
 ## Crate and folder map
@@ -37,6 +38,7 @@ working on the repo are in [`CLAUDE.md`](../CLAUDE.md).
 | `crates/ls-net` | [netcode.md](architecture/netcode.md), [arsenal-framework.md](architecture/arsenal-framework.md#replication-ls-net-protocol-4), plan section 4.4 |
 | `crates/ls-game` | [game-glue.md](architecture/game-glue.md), [netcode.md](architecture/netcode.md) |
 | `crates/ls-server`, `crates/ls-bots`, `tools/` | [server.md](architecture/server.md), [dev-guide.md](dev-guide.md) (CI, e2e, [browser smoke test](dev-guide.md#12-browser-smoke-test)) |
+| `crates/ls-directory` | [directory.md](architecture/directory.md) |
 | `crates/ls-wasm`, `web/` | [overview.md](architecture/overview.md), [game-glue.md](architecture/game-glue.md#browser-core-extras-ls-wasm), [server.md](architecture/server.md#browser-client-lifecycle-websrcmaints), rule set editor in [dev-guide.md](dev-guide.md#rule-set-codes-and-the-editor) |
 
 Crate-level rustdoc (`//!` at the top of each `lib.rs`) summarises every crate's modules;

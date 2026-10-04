@@ -191,6 +191,17 @@ desyncs). Exit codes: 0 OK, 1 protocol error or desync, 2 a bot never joined, 3 
 connection (`--allow-disconnects` ignores that). Other flags: `--stagger-ms`, `--seed`,
 `--name-prefix`, `--no-reconnect`, `--verbose`.
 
+### Directory service (server list)
+
+```sh
+cargo run -p ls-directory --release -- --bind 127.0.0.1:7780
+curl http://127.0.0.1:7780/servers
+```
+
+Optional: game servers register with heartbeats and the browser lists them. API, flags and the
+client library: [architecture/directory.md](architecture/directory.md). Tests:
+`cargo test -p ls-directory` (HTTP tests on `127.0.0.1:0`).
+
 ## 4. Tests
 
 | What | Command | Notes |

@@ -741,6 +741,12 @@ impl Brain {
         &self.nav
     }
 
+    /// Replaces the navigator (e.g. by one that adopts a shared grid, see
+    /// [`Navigator::shared`]).
+    pub fn set_navigator(&mut self, nav: Navigator) {
+        self.nav = nav;
+    }
+
     /// A terrain edit arrived: craters (and added rock) update the
     /// navigation grid.
     pub fn on_terrain_edit(&mut self, edit: &TerrainEdit) {

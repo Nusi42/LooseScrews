@@ -278,6 +278,17 @@ Global navigation (`src/nav.rs`, M1 issue A):
   256 x 128 x 256 u level takes 2-3 s of CPU in release builds, 5-10 s of play). Geometry edits
   queue their region; updates are resumable cell by cell within the same budget (a 35 u
   collapse or a merged barrage box spreads over ticks, the old data stays in use meanwhile).
+- Grid cache (`src/nav_cache.rs`, M3 A5): bots on a share-code world don't build their own
+  grid. The first bot of a world (key: share code, generator version, `NavConfig`) starts one
+  build on a `nav-build` worker thread from the pristine level; every bot of the process
+  attaches to it (`SharedNav`), steers locally until it is done, then copies it
+  (`Navigator::shared`) and re-samples the regions of the edits it has seen (the `Welcome`'s
+  edit log and later ones), so edits and blocked links stay per bot. Worlds with a live handle
+  stay cached, plus the 4 most recent; a failed build falls back to the incremental per-bot
+  build. `nav_cache::builds()` counts builds. Measured (`tests/nav_cache.rs`, release, 8 bots
+  on one world): 3.7-5.7 s of navigation time per bot before, 0.44-0.63 s after (8.4-9.1x).
+  In-process tests step faster than real time, so they call `BotCore::wait_for_nav` after
+  `from_welcome` (a real bot never blocks; it steers locally until the grid arrives).
   Connected components are labelled after the build and at most once a second after changes;
   a goal in another component gets only a short search (20k expansions) for the closest node.
 - `NavGrid::find_path`: weighted A* (narrow links cost extra), partial route to the closest

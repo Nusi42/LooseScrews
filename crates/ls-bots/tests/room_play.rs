@@ -1,7 +1,8 @@
 //! Bots playing a real match in-process: an authoritative `ls_game` `Room`
 //! and a full room of [`BotCore`]s (8, `RoomConfig::max_players`) exchange
 //! encoded packets with a fixed latency, stepped tick by tick
-//! (deterministic, no sockets, no wall clock). The match is shortened to
+//! (no sockets, no wall clock; only the tick a bot adopts the shared
+//! navigation grid depends on the `nav-build` worker thread). The match is shortened to
 //! 60 s so it ends inside the test and the post-match phase is covered.
 //!
 //! Needs whole-level generation (the room pregenerates, scoring covers every
@@ -112,7 +113,11 @@ fn bots_play_a_full_match_without_desync() {
                     None => {
                         let w = ls_game::ls_net::check_welcome(Message::decode(&bytes).unwrap())
                             .expect("welcome");
-                        c.core = Some(BotCore::from_welcome(&w, 100 + i as u64).unwrap());
+                        let core = BotCore::from_welcome(&w, 100 + i as u64).unwrap();
+                        // The loop runs faster than real time: wait for the
+                        // shared nav grid as a real-time bot would have.
+                        assert!(core.wait_for_nav(std::time::Duration::from_secs(120)));
+                        c.core = Some(core);
                         c.stats.joins += 1;
                     }
                     Some(core) => match core.handle_packet(&bytes, &mut c.stats) {

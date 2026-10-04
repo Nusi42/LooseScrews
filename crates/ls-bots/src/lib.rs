@@ -13,6 +13,8 @@
 //!   distance bands the bots use it in.
 //! - [`nav`]: global navigation: coarse open-space grid from the terrain SDF,
 //!   A* and a route follower (hunting enemies across cave levels).
+//! - [`nav_cache`]: one grid build per world per process, on a worker
+//!   thread, shared by the bots of a match.
 //! - [`brain`]: the behavior (guide / flee / scavenge / combat / collect /
 //!   hunt / paint and wander) with weapon, gadget and threat handling.
 //! - [`bot`]: [`BotCore`], one bot's session + brain + desync checks, no I/O.
@@ -27,6 +29,7 @@ pub mod arsenal;
 pub mod bot;
 pub mod brain;
 pub mod nav;
+pub mod nav_cache;
 pub mod net;
 pub mod stats;
 pub mod steering;

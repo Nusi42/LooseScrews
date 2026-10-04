@@ -248,7 +248,7 @@ milestone plan copies its items into its own scope table when it starts.
 - **Own Leech Arc beam drawn locally** instead of one round trip late. *From M2.*
 - **Bot navigation cost.** Building the nav grid costs about 2–3 s of CPU per bot per match;
   share one grid per match between bots in the same process, or cache it per share code.
-  *From M2.*
+  *From M2.* Done in M3 A5: `ls-bots` `nav_cache.rs` (one build per world per process).
 
 **M4 The level has moods**
 - **Dual contouring in play.** The sharp-edged mesher is golden-hashed and seam-free but costs

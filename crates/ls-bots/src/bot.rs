@@ -4,6 +4,8 @@
 //! the messages to send each 60 Hz tick. The WebSocket runner
 //! ([`crate::net`]) and the in-process tests drive it the same way.
 
+use std::time::Duration;
+
 use ls_game::client::{ClientSession, Incoming, Reconcile};
 use ls_game::ls_math::terrain::TerrainQuery;
 use ls_game::ls_math::{Pcg32, Vec3};
@@ -14,6 +16,8 @@ use ls_game::{match_setup, GameError, GameTerrain};
 use thiserror::Error;
 
 use crate::brain::{Arsenal, Brain, BrainConfig, Perception};
+use crate::nav::Navigator;
+use crate::nav_cache;
 use crate::stats::BotStats;
 
 /// Server ticks around an own death or respawn event in which a
@@ -99,9 +103,12 @@ impl BotCore {
         let session =
             ClientSession::from_welcome(welcome, WeaponTable::builtin(), ShipTuning::tinker())?;
         let code = ShareCode::decode(&welcome.share_code)?;
-        let setup = match_setup(&code, session.rules(), &GameTerrain::from_code(&code)?)?;
+        let pristine = GameTerrain::from_code(&code)?;
+        let setup = match_setup(&code, session.rules(), &pristine)?;
+        let cfg = BrainConfig::default();
+        let nav_cfg = cfg.nav;
         let mut brain = Brain::new(
-            BrainConfig::default(),
+            cfg,
             Arsenal::from_table(session.weapons()),
             session.conv().tuning().clone(),
             session.terrain().bounds(),
@@ -109,6 +116,20 @@ impl BotCore {
             seed,
         );
         brain.set_spawn_points(setup.spawns.iter().map(|s| (s.team, s.pos)).collect());
+        // The navigation grid is shared by every bot of this world in the
+        // process (built once, off the bot loop, from the pristine level);
+        // the edits the `Welcome` already holds are re-sampled on top.
+        let mut nav = Navigator::shared(
+            session.terrain().bounds(),
+            nav_cfg,
+            nav_cache::for_level(&code, nav_cfg, pristine),
+        );
+        for e in session.terrain().edit_log() {
+            if e.changes_geometry() {
+                nav.on_edit(e);
+            }
+        }
+        brain.set_navigator(nav);
         // A random allowed ship type: the one asked for in the `Hello` if
         // the rule set allows it, else another allowed one.
         let allowed = &session.rules().allowed_ship_types;
@@ -120,8 +141,6 @@ impl BotCore {
             allowed[rng.below(allowed.len() as u32) as usize]
         };
         let pending_ship = (ship != session.ship_type()).then_some(ship);
-        // The grid is built from the session's terrain, which already holds
-        // the edits from the `Welcome`.
         let edits_seen = session.terrain().edit_log().len();
         Ok(BotCore {
             session,
@@ -136,6 +155,13 @@ impl BotCore {
             own_projectiles: Vec::new(),
             was_alive: false,
         })
+    }
+
+    /// Blocks until the shared navigation grid is built (see
+    /// [`Navigator::wait_shared`]); in-process tests call it after
+    /// [`BotCore::from_welcome`] because they step faster than real time.
+    pub fn wait_for_nav(&self, timeout: Duration) -> bool {
+        self.brain.navigator().wait_shared(timeout)
     }
 
     pub fn session(&self) -> &ClientSession {

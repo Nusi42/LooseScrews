@@ -112,7 +112,11 @@ fn bots_fire_the_whole_arsenal() {
                     None => {
                         let w = ls_game::ls_net::check_welcome(Message::decode(&bytes).unwrap())
                             .expect("welcome");
-                        c.core = Some(BotCore::from_welcome(&w, 500 + i as u64).unwrap());
+                        let core = BotCore::from_welcome(&w, 500 + i as u64).unwrap();
+                        // The loop runs faster than real time: wait for the
+                        // shared nav grid as a real-time bot would have.
+                        assert!(core.wait_for_nav(std::time::Duration::from_secs(120)));
+                        c.core = Some(core);
                         c.stats.joins += 1;
                     }
                     Some(core) => match core.handle_packet(&bytes, &mut c.stats) {

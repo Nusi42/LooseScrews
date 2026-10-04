@@ -29,6 +29,12 @@
 //! edits (craters now, added rock later) re-sample only the cells they touch
 //! ([`NavGrid::on_edit`]).
 //!
+//! Bots on a share-code world don't build their own grid: the first bot of
+//! a world builds it once on a worker thread from the pristine level and
+//! every bot of the process copies it ([`crate::nav_cache`],
+//! [`Navigator::shared`]), then re-samples the regions of the edits it has
+//! seen. Edits and blocked links stay per bot.
+//!
 //! # Search and following
 //!
 //! [`NavGrid::find_path`] is a weighted A* (narrow links cost extra) with an
@@ -41,15 +47,19 @@
 //! distance left along the route stops shrinking, the link the ship could
 //! not pass is removed from the grid and the route re-planned.
 //!
-//! Bots are not part of the deterministic simulation; still, nothing here
-//! uses randomness or wall-clock time, so bot tests stay reproducible.
+//! Bots are not part of the deterministic simulation. Nothing here uses
+//! randomness or wall-clock time; only the tick a bot adopts a shared grid
+//! depends on when the worker thread finishes.
 
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap, VecDeque};
 use std::fmt;
+use std::time::Duration;
 
 use ls_game::ls_math::terrain::{TerrainEdit, TerrainQuery};
 use ls_game::ls_math::{Aabb, Pcg32, Vec3};
+
+use crate::nav_cache::{NavStatus, SharedNav};
 
 /// Tuning of the navigation grid and search.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -1082,10 +1092,23 @@ const SIGHT_TICKS: u64 = 4;
 /// have other causes too (a ship in the way, a push).
 const BLOCK_TICKS: u64 = 30 * 60;
 
+/// A shared grid build a [`Navigator`] waits for.
+#[derive(Debug, Clone)]
+struct Waiting {
+    shared: SharedNav,
+    bounds: Aabb,
+    cfg: NavConfig,
+    /// Edits seen while waiting (applied after adoption).
+    edits: Vec<TerrainEdit>,
+}
+
 /// A [`NavGrid`] plus the route the bot is following.
 #[derive(Debug, Clone)]
 pub struct Navigator {
+    /// The bot's own grid (a placeholder while `waiting`).
     grid: NavGrid,
+    /// A shared build to adopt when it finishes (see [`crate::nav_cache`]).
+    waiting: Option<Waiting>,
     route: Option<Route>,
     failures: u32,
     retry_at: u64,
@@ -1099,6 +1122,7 @@ impl Navigator {
     pub fn new(bounds: Aabb, cfg: NavConfig) -> Navigator {
         Navigator {
             grid: NavGrid::new(bounds, cfg),
+            waiting: None,
             route: None,
             failures: 0,
             retry_at: 0,
@@ -1107,22 +1131,74 @@ impl Navigator {
         }
     }
 
+    /// A navigator that adopts the shared grid `shared` (built from the
+    /// pristine level covering `bounds`) instead of building its own. Edits
+    /// that arrive before the build finishes are queued and re-sampled
+    /// after adoption, so pass every edit the bot's terrain already holds
+    /// to [`Navigator::on_edit`] too. If the shared build fails, the
+    /// navigator builds its own grid incrementally as [`Navigator::new`].
+    pub fn shared(bounds: Aabb, cfg: NavConfig, shared: SharedNav) -> Navigator {
+        let mut nav = Navigator::new(Aabb::new(bounds.min, bounds.min), cfg);
+        nav.waiting = Some(Waiting {
+            shared,
+            bounds,
+            cfg,
+            edits: Vec::new(),
+        });
+        nav
+    }
+
+    /// The grid (an empty placeholder while waiting for a shared build).
     pub fn grid(&self) -> &NavGrid {
         &self.grid
     }
 
     pub fn is_ready(&self) -> bool {
-        self.grid.is_ready()
+        self.waiting.is_none() && self.grid.is_ready()
     }
 
-    /// Advances the grid build and edit updates (call every tick).
+    /// Whether the navigator is still waiting for a shared grid build.
+    pub fn is_waiting(&self) -> bool {
+        self.waiting.is_some()
+    }
+
+    /// Blocks until the shared grid build is done (or `timeout` passed);
+    /// the next [`Navigator::update`] adopts it. True if nothing is left to
+    /// wait for. For in-process tests that step faster than real time (a
+    /// real bot never blocks: it steers locally meanwhile).
+    pub fn wait_shared(&self, timeout: Duration) -> bool {
+        match &self.waiting {
+            None => true,
+            Some(w) => !matches!(w.shared.wait(timeout), NavStatus::Building),
+        }
+    }
+
+    /// Advances the grid build and edit updates (call every tick). While
+    /// waiting for a shared build, checks whether it has finished and
+    /// adopts a copy of it.
     pub fn update<T: TerrainQuery + ?Sized>(&mut self, terrain: &T) {
+        if let Some(w) = &self.waiting {
+            let base = match w.shared.status() {
+                NavStatus::Building => return,
+                NavStatus::Ready(g) => (*g).clone(),
+                // Unsampled cells pick the edits up anyway.
+                NavStatus::Failed => NavGrid::new(w.bounds, w.cfg),
+            };
+            let w = self.waiting.take().expect("waiting");
+            self.grid = base;
+            for e in &w.edits {
+                self.grid.on_edit(e);
+            }
+        }
         self.grid.step(terrain);
     }
 
     /// See [`NavGrid::on_edit`].
     pub fn on_edit(&mut self, edit: &TerrainEdit) {
-        self.grid.on_edit(edit);
+        match &mut self.waiting {
+            Some(w) => w.edits.push(*edit),
+            None => self.grid.on_edit(edit),
+        }
     }
 
     /// The current route's goal, whether it reaches it, and the index of
@@ -1158,7 +1234,7 @@ impl Navigator {
             }
         }
         self.last_steer = Some(now);
-        if !self.grid.is_ready() {
+        if !self.is_ready() {
             return None;
         }
         self.restore_blocked(terrain, now);
@@ -1451,6 +1527,71 @@ mod tests {
         let p = g.find_path(&t, from, to).unwrap();
         assert!(p.complete);
         assert!(p.points.len() < 25, "{:?}", p.points);
+    }
+
+    #[test]
+    fn shared_grid_is_adopted_with_the_edits_seen_while_waiting() {
+        use crate::nav_cache::{acquire, NavKey, NavStatus};
+        use std::time::Duration;
+        let cfg = NavConfig::default();
+        // The cached grid comes from the pristine level (hole too narrow).
+        let shared = acquire(NavKey::new("nav-test-adopt", &cfg), move || {
+            built(&WallRoom {
+                hole: 0.3,
+                craters: vec![],
+            })
+        });
+        // The bot's level already has a crater through the wall.
+        let crater = TerrainEdit::SubtractSphere {
+            center: Vec3::new(0.0, 0.0, 0.0),
+            radius: 3.0,
+        };
+        let t = WallRoom {
+            hole: 0.3,
+            craters: vec![(crater.center(), crater.radius())],
+        };
+        let mut nav = Navigator::shared(t.bounds(), cfg, shared.clone());
+        nav.on_edit(&crater);
+        assert!(nav.is_waiting() && !nav.is_ready());
+        let NavStatus::Ready(base) = shared.wait(Duration::from_secs(30)) else {
+            panic!("shared build did not finish");
+        };
+        nav.update(&t);
+        assert!(!nav.is_waiting());
+        while !nav.is_ready() {
+            nav.update(&t);
+        }
+        let from = Vec3::new(-20.0, 0.0, 0.0);
+        let to = Vec3::new(20.0, 0.0, 0.0);
+        assert!(nav.grid().find_path(&t, from, to).unwrap().complete);
+        // The bot's copy changed, the shared grid did not.
+        assert_ne!(nav.grid().version(), base.version());
+        let pristine = &*base;
+        assert!(!pristine.find_path(&t, from, to).unwrap().complete);
+    }
+
+    #[test]
+    fn failed_shared_build_falls_back_to_a_local_build() {
+        use crate::nav_cache::{acquire, NavKey};
+        use std::time::Duration;
+        let cfg = NavConfig::default();
+        let shared = acquire(NavKey::new("nav-test-fail", &cfg), || {
+            panic!("expected test panic")
+        });
+        let _ = shared.wait(Duration::from_secs(30));
+        let t = WallRoom {
+            hole: 2.0,
+            craters: vec![],
+        };
+        let mut nav = Navigator::shared(t.bounds(), cfg, shared);
+        for _ in 0..10_000 {
+            if nav.is_ready() {
+                break;
+            }
+            nav.update(&t);
+        }
+        assert!(nav.is_ready());
+        assert_eq!(nav.grid().node_count(), built(&t).node_count());
     }
 
     #[test]

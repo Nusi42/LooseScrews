@@ -23,6 +23,7 @@ fn room() -> Room {
 
 fn input_msg(ticks: &[u64], thrust: Vec3, ack: Option<u32>) -> Message {
     Message::Input(InputMsg {
+        epoch: 0,
         ack_snapshot: ack,
         cmds: ticks
             .iter()
@@ -365,6 +366,7 @@ fn snapshots_carry_players_entities_and_hide_cloaked_enemies() {
             cmd = cmd.with_buttons(ls_sim::Buttons::GADGET);
         }
         Message::Input(InputMsg {
+            epoch: 0,
             ack_snapshot: None,
             cmds: vec![input_to_net(&cmd)],
         })
@@ -521,6 +523,7 @@ fn session_with(
         extra(tick, &mut snap);
         let packed = s.conv().quantizer().pack_snapshot(&snap);
         s.handle_message(Message::Snapshot(Box::new(SnapshotMsg {
+            epoch: 0,
             baseline: None,
             snapshot: packed,
         })))
@@ -617,6 +620,7 @@ fn banned_weapons_are_enforced_by_the_room() {
     }
     let fire = |t: u64| {
         Message::Input(InputMsg {
+            epoch: 0,
             ack_snapshot: None,
             cmds: vec![input_to_net(
                 &InputCmd::idle(t).with_buttons(ls_sim::Buttons::FIRE_SECONDARY),

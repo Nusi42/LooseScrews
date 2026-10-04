@@ -640,6 +640,7 @@ mod tests {
             .collect();
         let msg = |snapshot: PackedSnapshot, base: u32| {
             Message::Snapshot(Box::new(SnapshotMsg {
+                epoch: 0,
                 baseline: Some(base),
                 snapshot,
             }))

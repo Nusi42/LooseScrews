@@ -386,22 +386,30 @@ mod tests {
             tick: 10,
             weapons: vec![
                 ls_net::NetWeapon {
+                    shots: 0,
+                    state: 0,
                     weapon: laser.0,
                     ammo: 0,
                     level: 2,
                 },
                 ls_net::NetWeapon {
+                    shots: 0,
+                    state: 0,
                     weapon: rivet.0,
                     ammo: 0,
                     level: 1,
                 },
                 ls_net::NetWeapon {
+                    shots: 0,
+                    state: 0,
                     weapon: seeker.0,
                     ammo: 2,
                     level: 1,
                 },
                 // Unknown to this client's table: dropped.
                 ls_net::NetWeapon {
+                    shots: 0,
+                    state: 0,
                     weapon: 200,
                     ammo: 1,
                     level: 1,

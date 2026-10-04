@@ -349,6 +349,8 @@ mod tests {
         let hello = crate::message::accept_hello(&p.data).unwrap();
         assert_eq!(hello.name, "pilot");
         let welcome = Welcome {
+            epoch: 0,
+            room_code: String::new(),
             protocol_version: PROTOCOL_VERSION,
             player_id: 0,
             team: 0,
@@ -373,6 +375,7 @@ mod tests {
         assert_eq!(check_welcome(msg).unwrap(), welcome);
 
         let input = Message::Input(InputMsg {
+            epoch: 0,
             ack_snapshot: None,
             cmds: vec![NetInput {
                 tick: 5,
@@ -395,6 +398,7 @@ mod tests {
             ..Default::default()
         });
         let msg = Message::Snapshot(Box::new(crate::message::SnapshotMsg {
+            epoch: 0,
             baseline: None,
             snapshot: PackedSnapshot {
                 scores: vec![1_000_000; 8],

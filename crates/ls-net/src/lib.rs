@@ -22,6 +22,7 @@
 pub mod bits;
 pub mod error;
 pub mod message;
+pub mod mode;
 pub mod quant;
 pub mod snapshot;
 pub mod transport;
@@ -34,6 +35,11 @@ pub use message::{
     accept_hello, check_data_hash, check_hello, check_welcome, peek_hello_version, Channel, Hello,
     InputMsg, InventoryMsg, Message, NetWeapon, Reject, RejectReason, SnapshotMsg, Welcome, MAGIC,
     PROTOCOL_VERSION,
+};
+pub use mode::{
+    mode_phase, mode_player_flags, winner_kind, LobbyPhase, LobbyPlayer, LobbyStateMsg,
+    MatchResultsMsg, NetModePlayer, NetModeState, NetObjective, PackedModeState, PackedObjective,
+    ResultRow, MAX_MODE_TEAMS, MAX_OBJECTIVES,
 };
 pub use quant::{
     pack_quat, unpack_quat, PackedVec3, QuantConfig, Quantizer, ENTITY_POS_MAX, ENTITY_POS_SHIFT,

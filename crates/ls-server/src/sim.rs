@@ -721,6 +721,7 @@ mod tests {
     fn idle_input(tick: u64) -> Vec<u8> {
         let cmd = ls_game::ls_sim::InputCmd::idle(tick);
         Message::Input(ls_net::InputMsg {
+            epoch: 0,
             ack_snapshot: None,
             cmds: vec![ls_game::convert::input_to_net(&cmd)],
         })

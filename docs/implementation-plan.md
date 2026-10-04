@@ -225,7 +225,7 @@ Commands and details: [dev-guide.md](dev-guide.md#4-tests) and [architecture/det
 | --- | --- | --- |
 | M1 Vertical slice | Done | See sections 1–5 |
 | M2 Arsenal and physics | Done | All weapons from the design doc, Tectonic Charge, debris physics, surface states, ship types, gadgets (Shield, Cloak, Decoy), rule set editor — see [milestone-2-plan.md](milestone-2-plan.md) |
-| M3 Modes and lobby | Next | Team Brawl, The Squeeze, Instagib, Heist, Hot Reactor, Last Color Standing, duels; lobby service, server list, invites, party codes |
+| M3 Modes and lobby | Next — planned in [milestone-3-plan.md](milestone-3-plan.md) | Team Brawl, The Squeeze, Instagib, Heist, Hot Reactor, Last Color Standing, duels; lobby in `ls-server` with match rotation, optional directory service for the server list, invites, party codes |
 | M4 The level has moods | Planned | Comedy director and events, remaining sliders (verticality, gravity chaos, palette, instability), monochrome pigment, The Architect |
 | M5 Platforms and ops | Planned | Tauri app with UDP, WebRTC fallback, WebGL2 fallback, regional deployment with Agones or Nomad, bandwidth optimization |
 | M6 Coop and business | Planned | Deep Dig, Tethered, Escort the Intern; cosmetics store, creator economy |

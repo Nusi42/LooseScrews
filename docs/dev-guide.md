@@ -143,14 +143,17 @@ hash at `/cert-hash`. Useful flags (`ls-server --help` lists all):
 | --- | --- | --- |
 | `--bind` | `0.0.0.0:7777` | HTTP + WebSocket address |
 | `--code` | random world | Share code of the level |
-| `--ruleset` | built-in Paint the Void | Rule set file (e.g. `data/rulesets/sandbox_all_weapons.ron`) or an `LR...` rule set code |
+| `--ruleset` | default rotation | Rule set file (e.g. `data/rulesets/sandbox_all_weapons.ron`), built-in id (`sandbox_all_weapons`) or an `LR...` rule set code, played every match |
+| `--playlist <file>` | default rotation | Match rotation (rule set, world, player range per entry; [server.md](architecture/server.md#rooms-lobby-and-rotation-roomsrs-lobbyrs-playlistrs-m3)) |
+| `--warmup` / `--countdown` | 30 / 10 | Lobby: longest warm-up (weapons off) and countdown in seconds; `--warmup 0 --countdown 0` turns the lobby off |
+| `--private-rooms` | 4 | Most private rooms (duels, parties) next to the public room |
 | `--ban <weapon>` | none | Bans a weapon on top of the rule set (repeatable) |
 | `--balance-list <file>` | none | Server-wide bans and tuning on top of the rule set, re-read before every match ([section 9](#balance-lists)) |
 | `--web-root` | `web/dist` if it exists | Built web client to serve |
 | `--max-players` | 8 | 1..=32 |
 | `--wt-bind` / `--no-webtransport` | same port as `--bind` over UDP | WebTransport endpoint |
 | `--stats-interval` | 10 | Seconds between `tick stats` log lines |
-| `--intermission` | 10 | Seconds the result shows before everyone rejoins the next match |
+| `--intermission` | 10 | Seconds the result shows before everyone moves to the next match (same connection) |
 | `--exit-when-empty` | off | Exit 2 s after the last player leaves (scripts) |
 
 Logging follows `RUST_LOG` (default `info`), e.g. `RUST_LOG=ls_server=debug`.

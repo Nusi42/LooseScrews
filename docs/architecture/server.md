@@ -8,10 +8,12 @@
 ## ls-server
 
 ```
-tokio I/O tasks                                  ls-sim thread (60 Hz)
+tokio I/O tasks                                  one sim thread per room (60 Hz)
   HttpEndpoint (TCP): static files, /ws, /cert-hash
-  WebTransportEndpoint (UDP): /wt  ---Join{hello, SimLink}-->  Sim: Room + clients
-  ws / wt task per connection  <--PeerLink | SimLink-->          receive -> step -> dispatch
+  WebTransportEndpoint (UDP): /wt  --Hub: route by Hello.room-->  public room: Sim (Room + lobby + rotation)
+  ws / wt task per connection  <--PeerLink | SimLink-->           private rooms R-XXXXXX: Sim each
+                                                                  receive -> step -> dispatch -> lobby
+                                         ls-build worker threads: next Room built, swapped in
 ```
 
 Endpoints on the `--bind` address (TCP) and the `--wt-bind` address (UDP, same port by default):
@@ -31,7 +33,9 @@ Endpoints on the `--bind` address (TCP) and the `--wt-bind` address (UDP, same p
   socket.
 - `timing.rs`: deadline scheduler, bursts of up to 4 ticks to catch up, at most 250 ms backlog.
 - `endpoint.rs`: the transport seam (`Endpoint`, `Hub`, `CertHash`); `ws.rs` (WebSocket) and
-  `wt.rs` (WebTransport) plug in here. Handshake and idle timeouts (`ConnSettings`, 10 s idle),
+  `wt.rs` (WebTransport) plug in here. `Hub::open` routes each connection by the room code in
+  its `Hello` (`rooms.rs`; none = the public room, an unknown code gets a `Reject` "unknown
+  room"). Handshake and idle timeouts (`ConnSettings`, 10 s idle),
   shutdown grace and the timeout counters are the same for both. Incoming packets are tagged
   with the channel they arrived on; `PeerLink::try_push_datagram` drops a datagram instead of
   waiting when the sim's queue is full.
@@ -59,6 +63,53 @@ Endpoints on the `--bind` address (TCP) and the `--wt-bind` address (UDP, same p
 - `ls-server` and `ls-bots` need Rust 1.88 (`wtransport`); the rest of the workspace keeps
   `rust-version = "1.85"` (which also sets clippy's MSRV).
 
+### Rooms, lobby and rotation (`rooms.rs`, `lobby.rs`, `playlist.rs`, M3)
+
+- **Rooms** (`rooms.rs`): one public room plus up to `--private-rooms N` (default 4, capped at
+  one per CPU core beyond the public room's) private rooms, each a `Sim` on its own thread with
+  its own `SharedStats` (the public room's carry the server-wide connection counters).
+  Private rooms are created with `ServerHandle::create_private_room(PrivateRoomSpec)` (duels,
+  parties and custom matches in wave B call it) and get a code `R-XXXXXX` (6 Crockford base32
+  characters; parsing accepts lower case, a missing `R-` and O/I/L look-alikes). Clients join
+  with `Hello::room`. A private room closes when its last player has left, or 60 s after its
+  creation if nobody joined; joins that raced the close get `Reject { "room closed" }`.
+  `ServerHandle::rooms()` lists every room's `RoomStatus` (phase, playlist entry, share code,
+  rules, players) and counters; `total_players()` sums them.
+- **Lobby** (`lobby.rs`, pure state machine on sim-thread ticks): `Warmup -> Countdown -> Match
+  -> Results -> Warmup`. Warm-up flies the next match's level in a *warm-up room*: the same
+  world and mode with every weapon and gadget banned (empty loadout, no pickups) and a one-hour
+  clock (`warmup_rules`). The countdown starts once the player count fits the playlist entry
+  and everyone is ready (`Ready`) or `--warmup` seconds (default 30) passed since players
+  arrived; it is cancelled when the count stops fitting. If the warm-up passes with a count
+  the entry does not fit, the room picks another entry (a new warm-up room); if the rotation
+  has nothing better, the entry is played anyway. After `--countdown` (default 10 s) the match
+  room (built meanwhile) is swapped in. When the mode ends, the result shows for
+  `--intermission` seconds while the next entry's warm-up room is built. `--warmup 0
+  --countdown 0` (and the library default `ServerConfig::new`) turn the lobby off: no warm-up
+  rooms, Results swaps the next match room in directly.
+- **Rotation** (`playlist.rs`): `--playlist <file>` (RON: `Playlist(entries: [(rules: "team_brawl",
+  world: Random | RandomSliders(enclosure: (lo, hi), density: (lo, hi)) | Code("LS.."),
+  min_players: 4, max_players: 32), ...])`; `rules` is a built-in rule set id (file name in
+  `data/rulesets/` without `.ron`), a file (relative to the playlist) or an `LR` code; bans and
+  the balance list apply to every entry). `Rotation::pick(players)` takes the next entry in
+  order whose player range fits, else the first `team_brawl` entry (2 teams from 4 players,
+  free-for-all below), else the next entry. Without `--playlist`: `--ruleset` plays that rule
+  set on every match (one entry, one world), neither flag plays the default rotation (Team
+  Brawl, The Squeeze, Paint the Void, Hot Reactor, Heist, Last Color Standing: the built-in
+  rule sets that exist; random worlds, or `--code`'s world).
+- **Swaps**: the next room is built on an `ls-build` worker thread (`Room::new`, 0.6-1.6 s in
+  release) while the current room keeps running, so joins never wait for a build: they join the
+  current room (also during Results) and move with everyone else. At the swap every connected
+  player joins the new room with its stored `Hello` (`PickTeam` updates its team) and gets the
+  new room's `Welcome` on the same connection, no `Disconnect`; the old room is dropped on an
+  `ls-drop` thread. `ServerConfig::build_delay` stretches builds for tests.
+- **Lobby messages**: the sim thread handles `Ready`, `PickTeam` and `Spectate` itself (the
+  room never sees them) and sends `LobbyState` (phase, ticks left, room code, next mode / rule
+  set / share code, player range, teams, players with team pick, ready and spectate flags) to
+  everyone whenever it changes (the countdown alone is no change), always after the room's own
+  packets of the tick, so a new `Welcome` arrives before its lobby state. `Spectate` is stored
+  and announced; joining the next room as a spectator needs the room's spectator support.
+
 ### Sim thread policies (`sim.rs`)
 
 | Situation | Behaviour |
@@ -68,8 +119,9 @@ Endpoints on the `--bind` address (TCP) and the `--wt-bind` address (UDP, same p
 | Client sends `Disconnect` | removed; its remaining packets are ignored (not counted as errors) |
 | Reliable queue overflow | removed as too slow, `kicked` counted |
 | Unreliable packet over the transport's datagram limit | sent on the reliable channel instead |
-| Match over, players connected | result shown for `--intermission` seconds (default 10), then every client gets `Disconnect { ls_game::MATCH_RESTART_REASON }` and is removed (not a kick); clients rejoin |
-| First join after a finished match | the room is rebuilt (same share code and rules; under a second in release builds, on the sim thread while nobody plays); the scheduler restarts instead of counting skipped ticks. An idle or exiting server never rebuilds |
+| Match over | Results for `--intermission` seconds (default 10) while the next room is built on a worker thread; then everyone moves to it on the same connection (new `Welcome`, see above). Nobody is disconnected |
+| Join at any time (also during a build) | joins the current room at once (`Welcome` on the next tick) |
+| Next room would not take a player | `Disconnect` with the reason, removed |
 | Stats window with starvation | more than `10 + 2 %` of the player ticks without input: `input starvation` warning, `desync_warnings` counted (missing inputs count only after a client's first input) |
 
 Counters (`StatsSnapshot`) keep growing across matches: `total_ticks`, `total_edits`, snapshots,
@@ -79,8 +131,11 @@ inputs; `tick` and `edit_count` are the current match's. The `tick stats` log li
 dispatch and the rest; a slow tick whose time sits in the receive or send phase is the host
 descheduling the sim thread, not game work), input counters, bandwidth, edits, craters,
 networked debris now and at its peak in the window (`debris`, `debris_peak`; cap 64), paint
-cells per team, match time left, `match_over`, `matches` and `encode_errors`; `final stats`
-is logged at shutdown.
+cells per team, match time left, `match_over`, `matches` and `encode_errors`, plus the
+room (`room`: `public` or the code), its lobby `phase` and whether it is a warm-up room;
+every room logs its own line (the tick budget, p99 < 4 ms, holds per room). `matches`
+counts match rooms started (warm-up rooms do not count). `final stats` is logged at
+shutdown.
 
 ### CLI
 
@@ -89,15 +144,17 @@ ls-server --bind 0.0.0.0:7777 [--wt-bind <addr> | --no-webtransport] --code <sha
     --ruleset data/rulesets/paint_the_void.ron --max-players 8 --web-root web/dist \
     --stats-interval 10 --intermission 10 [--exit-when-empty]
 ls-server --ruleset LR8V-6097-G000-TMBG --ban tectonic_charge --balance-list balance.ron
+ls-server --playlist playlist.ron --warmup 30 --countdown 10 --intermission 10 --private-rooms 4
 ```
 
-Rules (`crates/ls-server/src/rules.rs`): `--ruleset` takes a file or an `LR...` rule set code
-(an existing file wins; text that looks like a code is decoded). `--ban <weapon_id>`
+Rules (`crates/ls-server/src/rules.rs`): `--ruleset` takes a file, a built-in rule set id
+(`paint_the_void`, `sandbox_all_weapons`, ...) or an `LR...` rule set code (an existing file
+wins, then built-in ids; text that looks like a code is decoded). `--ban <weapon_id>`
 (repeatable) and `--balance-list <file>` (`ls_sim::ruleset::BalanceList`: `bans`,
 `gadget_bans`, `tuning` multipliers applied on top of the rule set's (rounded to twentieths),
 `shield_overrides` that replace the rule set's) apply on top: effective rules = rule set, then
 balance list, then bans, validated at startup. The balance list is re-read before every match;
-if it fails to load, the server warns and keeps the previous rules. The effective rules are
+if it fails to load, the server warns and keeps that playlist entry's previous rules. The effective rules are
 what the `Welcome` carries and the simulation enforces, logged with their code at each match
 start (`ServerHandle::rules_code` keeps the first match's code). Built-in rule sets:
 `data/rulesets/paint_the_void.ron` (default) and `data/rulesets/sandbox_all_weapons.ron`

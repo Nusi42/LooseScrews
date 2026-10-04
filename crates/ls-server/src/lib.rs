@@ -2,7 +2,10 @@
 //!
 //! The game logic is `ls_game::server::Room`; this crate hosts it:
 //!
-//! - [`sim`]: a dedicated thread that owns the room and steps it at a fixed
+//! - [`rooms`]: the room registry: one public room (the playlist
+//!   rotation) and up to `--private-rooms` private rooms, addressed by room
+//!   code, each on its own sim thread.
+//! - [`sim`]: a room's dedicated thread that owns it and steps it at a fixed
 //!   60 Hz ([`timing::TickScheduler`]: deadline based, bursts of up to 4
 //!   ticks to catch up, at most 250 ms of backlog), 30 Hz snapshots, and
 //!   logs p50/p99/max tick time plus input counters every 10 s.
@@ -14,6 +17,10 @@
 //!   `GET /cert-hash` and upgrades `/ws` to a WebSocket ([`ws`]);
 //!   [`wt::WebTransportEndpoint`] accepts WebTransport sessions on a UDP port
 //!   (datagrams for unreliable packets, a framed stream for reliable ones).
+//! - [`lobby`]: the lobby state machine (warm-up, countdown, match,
+//!   results) and [`playlist`]: the rotation (`--playlist`). The next room
+//!   is built on a worker thread and swapped in; players stay connected and
+//!   get the new `Welcome`.
 //! - [`rules`]: match rules from the command line (rule set file or code,
 //!   bans, a balance list re-read before every match).
 //! - [`server`]: [`ServerConfig`], [`Server::start`] and [`ServerHandle`]
@@ -24,6 +31,9 @@
 pub mod endpoint;
 pub mod http;
 pub mod link;
+pub mod lobby;
+pub mod playlist;
+pub mod rooms;
 pub mod rules;
 pub mod server;
 pub mod sim;
@@ -33,9 +43,13 @@ pub mod ws;
 pub mod wt;
 
 pub use endpoint::{CertHashInfo, ConnSettings, Endpoint, EndpointContext, Hub};
+pub use lobby::LobbyTiming;
+pub use playlist::{Playlist, PlaylistEntry, Rotation, WorldChoice};
+pub use rooms::{RoomCode, RoomStatus};
 pub use rules::{load_rule_set, ServerRules};
 pub use server::{
-    match_config, match_config_with, Server, ServerConfig, ServerError, ServerHandle,
+    match_config, match_config_with, PrivateRoomSpec, Server, ServerConfig, ServerError,
+    ServerHandle,
 };
 pub use stats::StatsSnapshot;
 

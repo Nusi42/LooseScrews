@@ -17,7 +17,7 @@
 
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{mpsc, Arc, RwLock};
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use ls_net::{Message, Reject, RejectReason, PROTOCOL_VERSION};
@@ -25,6 +25,7 @@ use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
 use crate::link::{link_pair, ConnInfo, LinkConfig, PeerLink};
+use crate::rooms::{requested_room, Rooms, RouteError};
 use crate::sim::SimCommand;
 use crate::stats::{inc, SharedStats};
 
@@ -89,31 +90,52 @@ impl CertHashInfo {
 /// `GET /cert-hash`; 404 while `None`). Replaced when the certificate rotates.
 pub type CertHash = Arc<RwLock<Option<CertHashInfo>>>;
 
-/// Entry point for new connections of any transport; cheap to clone.
+/// Entry point for new connections of any transport; cheap to clone. Routes
+/// each connection to the room its `Hello` names (the public room without
+/// one, see [`crate::rooms`]).
 #[derive(Debug, Clone)]
 pub struct Hub {
-    commands: mpsc::Sender<SimCommand>,
+    rooms: Arc<Rooms>,
     next_id: Arc<AtomicU64>,
     stats: Arc<SharedStats>,
     settings: ConnSettings,
 }
 
 impl Hub {
+    /// A hub with only a public room reachable through `commands`.
+    #[cfg(test)]
     pub(crate) fn new(
-        commands: mpsc::Sender<SimCommand>,
+        commands: std::sync::mpsc::Sender<SimCommand>,
+        stats: Arc<SharedStats>,
+        settings: ConnSettings,
+    ) -> Self {
+        let rooms = Arc::new(Rooms::public_only(commands, stats.clone()));
+        Hub::with_rooms(rooms, stats, settings)
+    }
+
+    /// A hub routing to `rooms`; `stats` are the server-wide connection
+    /// counters (the public room's).
+    pub(crate) fn with_rooms(
+        rooms: Arc<Rooms>,
         stats: Arc<SharedStats>,
         settings: ConnSettings,
     ) -> Self {
         Hub {
-            commands,
+            rooms,
             next_id: Arc::new(AtomicU64::new(1)),
             stats,
             settings,
         }
     }
 
+    /// Sends a command to the public room.
     pub(crate) fn send_command(&self, cmd: SimCommand) -> Result<(), ServerGone> {
-        self.commands.send(cmd).map_err(|_| ServerGone)
+        self.rooms.send(None, cmd).map_err(|_| ServerGone)
+    }
+
+    /// The room registry.
+    pub fn rooms(&self) -> &Arc<Rooms> {
+        &self.rooms
     }
 
     pub fn settings(&self) -> &ConnSettings {
@@ -125,9 +147,10 @@ impl Hub {
     }
 
     /// Checks the first packet of a connection. On success the player is
-    /// queued for the sim thread (which sends `Welcome`, or `Reject` if the
-    /// room is full) and the socket side of the link is returned. On failure
-    /// returns the encoded `Reject` to send before closing.
+    /// queued for the sim thread of the room its `Hello` asks for (which
+    /// sends `Welcome`, or `Reject` if the room is full) and the socket side
+    /// of the link is returned. On failure returns the encoded `Reject` to
+    /// send before closing (also for an unknown room code).
     ///
     /// `max_unreliable_size` is the transport's datagram limit.
     pub fn open(
@@ -137,11 +160,33 @@ impl Hub {
         first_packet: &[u8],
         max_unreliable_size: usize,
     ) -> Result<PeerLink, Vec<u8>> {
-        let reject = |r: Reject| {
-            inc(&self.stats.rejected);
-            Message::Reject(r).encode().unwrap_or_default()
-        };
-        let hello = ls_net::accept_hello(first_packet).map_err(reject)?;
+        let hello = ls_net::accept_hello(first_packet).map_err(|r| self.reject(r))?;
+        let room = requested_room(&hello);
+        self.open_in(
+            room.as_deref(),
+            transport,
+            remote,
+            hello,
+            max_unreliable_size,
+        )
+    }
+
+    fn reject(&self, r: Reject) -> Vec<u8> {
+        inc(&self.stats.rejected);
+        Message::Reject(r).encode().unwrap_or_default()
+    }
+
+    /// [`Hub::open`] with an accepted `Hello` for the room `room` (a room
+    /// code; `None` is the public room).
+    pub fn open_in(
+        &self,
+        room: Option<&str>,
+        transport: &'static str,
+        remote: SocketAddr,
+        hello: ls_net::Hello,
+        max_unreliable_size: usize,
+    ) -> Result<PeerLink, Vec<u8>> {
+        let reject = |r: Reject| self.reject(r);
         let info = ConnInfo {
             id: self.next_id.fetch_add(1, Ordering::Relaxed),
             transport,
@@ -152,13 +197,17 @@ impl Hub {
             ..self.settings.link
         };
         let (sim, peer) = link_pair(info, cfg, self.stats.links.clone());
-        self.commands
-            .send(SimCommand::Join { hello, link: sim })
-            .map_err(|_| {
+        self.rooms
+            .send(room, SimCommand::Join { hello, link: sim })
+            .map_err(|e| {
+                let message = match e {
+                    RouteError::UnknownRoom(code) => format!("unknown room {code}"),
+                    RouteError::Gone => "server is shutting down".into(),
+                };
                 reject(Reject {
                     reason: RejectReason::Other,
                     server_version: PROTOCOL_VERSION,
-                    message: "server is shutting down".into(),
+                    message,
                 })
             })?;
         inc(&self.stats.connections);

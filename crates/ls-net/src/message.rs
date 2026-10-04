@@ -639,6 +639,18 @@ impl Message {
         Ok(w.finish())
     }
 
+    /// The match epoch of an encoded `Snapshot` (`None` for other
+    /// messages), read without decoding it: a client drops snapshots of
+    /// another epoch before it looks for their baseline, which belongs to
+    /// the previous match.
+    pub fn peek_snapshot_epoch(bytes: &[u8]) -> Option<u8> {
+        let mut r = BitReader::new(bytes);
+        if r.read_u8().ok()? != tag::SNAPSHOT {
+            return None;
+        }
+        r.read_u8().ok()
+    }
+
     /// Decodes a message; delta snapshots fail with `MissingBaseline`.
     pub fn decode(bytes: &[u8]) -> Result<Message, DecodeError> {
         Self::decode_with(bytes, &NoBaselines)
@@ -1163,11 +1175,19 @@ mod tests {
             cmds: vec![input(5, 1)],
         }));
         let quant = Quantizer::default();
-        round_trip(&Message::Snapshot(Box::new(SnapshotMsg {
+        let snap = round_trip(&Message::Snapshot(Box::new(SnapshotMsg {
             epoch: 9,
             baseline: None,
             snapshot: quant.pack_snapshot(&game_snapshot(100, 0.0)),
         })));
+        assert_eq!(Message::peek_snapshot_epoch(&snap), Some(9));
+        let input = Message::Input(InputMsg {
+            epoch: 9,
+            ack_snapshot: None,
+            cmds: vec![input(5, 1)],
+        });
+        assert_eq!(Message::peek_snapshot_epoch(&input.encode().unwrap()), None);
+        assert_eq!(Message::peek_snapshot_epoch(&[]), None);
         // Every new message is reliable.
         for m in [
             Message::LobbyState(Box::default()),

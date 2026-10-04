@@ -11,7 +11,7 @@
 //!         // A rule set file (relative to the playlist file) on a fixed world.
 //!         (rules: "my_rules.ron", world: Code("LS08-0000-0000-0000-8006-8001-8F9G")),
 //!         // An LR rule set code on a random world with slider ranges.
-//!         (rules: "LR6V-69CM-G006-58R", world: RandomSliders(enclosure: (20, 60), density: (30, 70))),
+//!         (rules: "LR8V-6097-G000-TMBG", world: RandomSliders(enclosure: (20, 60), density: (30, 70))),
 //!     ],
 //! )
 //! ```

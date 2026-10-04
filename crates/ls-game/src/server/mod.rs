@@ -22,7 +22,7 @@ use ls_sim::{Event, InputCmd, PlayerId, ReplicatedKind, ShipState, ShipType, Wor
 
 use crate::client::INTERP_DELAY_TICKS;
 use crate::convert::{entity_to_net, events_to_net, net_to_input, projectile_to_net};
-use crate::mode::{legacy_scores, match_results, mode_view_to_net, results_to_net, Tally};
+use crate::mode::{legacy_scores, mode_view_to_net, results_to_net};
 use crate::setup::{build_match, MatchConfig};
 use crate::{GameError, GameTerrain, NetConv};
 pub use lagcomp::{Displacement, HistoryFrame, ShipHistory};
@@ -193,8 +193,6 @@ pub struct Room {
     stats: RoomStats,
     /// Room code sent in `Welcome` (empty for the public room).
     room_code: String,
-    /// Kills and deaths of this match (for the results table).
-    tally: Tally,
     /// The results, once the mode ended (sent once, and to late joiners).
     results: Option<MatchResultsMsg>,
     lobby_requests: Vec<(u8, LobbyRequest)>,
@@ -234,7 +232,6 @@ impl Room {
             outgoing: Vec::new(),
             stats: RoomStats::default(),
             room_code: String::new(),
-            tally: Tally::default(),
             results: None,
             lobby_requests: Vec::new(),
         })
@@ -297,15 +294,11 @@ impl Room {
     /// The replicated mode state (`ls_sim::ModeView`) of the match: the
     /// scoreboard of every mode.
     pub fn mode_view(&self) -> ls_sim::ModeView {
-        crate::mode::mode_view(&self.world)
+        self.world.mode_view()
     }
     /// The mode state as snapshots carry it (wire ids).
     pub fn net_mode_state(&self) -> ls_net::NetModeState {
         mode_view_to_net(&self.mode_view(), |p| wire_id(&self.clients, p))
-    }
-    /// Kills and deaths so far.
-    pub fn tally(&self) -> &Tally {
-        &self.tally
     }
     /// The match results once the mode ended (also sent to every client as
     /// `Message::MatchResults`, once, and to clients joining afterwards).
@@ -705,7 +698,6 @@ impl Room {
                 self.world.projectiles().iter().map(|p| p.id).collect();
             self.rewinds.retain(|id, _| live.contains(id));
         }
-        self.tally.record(&report.events);
         self.history.record(k, &self.world);
         let net_events = events_to_net(&report.events, k, |p| wire_id(&self.clients, p));
         self.pending_events.extend(net_events);
@@ -723,7 +715,7 @@ impl Room {
     }
 
     fn build_results(&self) -> MatchResultsMsg {
-        let results = match_results(&self.world, &self.tally);
+        let results = self.world.results();
         results_to_net(
             &results,
             self.world.tick(),

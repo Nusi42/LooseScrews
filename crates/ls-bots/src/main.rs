@@ -10,9 +10,9 @@
 //! Prints a per-bot summary at exit. Exit code 0: all good; 1: a bot saw a
 //! protocol error or desync; 2: a bot never managed to join; 3: a bot lost
 //! its connection (server crash, kick, timeout; not with
-//! `--allow-disconnects`). A server that restarts the match after it ended
-//! (`Disconnect` with `ls_game::MATCH_RESTART_REASON`) is not a failure: the
-//! bots rejoin.
+//! `--allow-disconnects`). The next match is not a failure: bots follow a
+//! new `Welcome` on the open connection in place, and rejoin after a
+//! `Disconnect` with `ls_game::MATCH_RESTART_REASON` (older hosts).
 
 use std::process::ExitCode;
 use std::thread;

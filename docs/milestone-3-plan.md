@@ -123,11 +123,36 @@ Acceptance (wave A):
 - A4: register, heartbeat, expiry and list over HTTP in tests; mismatched version/data hash filtered out; server runs unchanged without `--directory`.
 - A5: second bot in the same match does not rebuild the grid (counter in a test); CPU per bot per match at least 5× lower for 8 bots on one world.
 
+#### As built (wave A)
+
+Integrated on WIN1 in package order A1-A5; the notes per package record what differs from the table above and what stays open.
+
 A1 as built (notes for the integrator and wave B):
 - `REPLAY_GOLDEN_HASH` is **unchanged** (`0x8321_c0ab_902b_8ee5`, native and wasm32): the scripted replay uses no Tectonic Charge, so Paint the Void runs bit-identically through the framework and nothing needed a re-bless. The crack change is pinned instead by `tectonic_charge::tests::cracks_spread_over_six_ticks_and_match_the_m2_set` (the crack edits after 6 ticks hash to the M2 collapse-tick set at Instability 50 and 100). `SIM_BEHAVIOR_VERSION` is 5; the data hash also changes through the new `crack_spread_ticks` parameter.
 - Collapse tick: the cracks (16 per tick at Instability 100) now cost about 0.5 ms per tick on a generated level, but the collapse tick itself stays at about 3.5-5 ms in release (`cargo test -p ls-game --release --test tectonic_tick`): the single exact 35 u collapse crater's sample bake in `ls_worldgen::ChunkStore::apply_geometry` / `bake_edit` (every corner of the crater's reach box, with a `room_open` generator call each) is that cost by itself. The "< 2 ms" criterion is therefore not met; it needs a cheaper bake in `ls-worldgen` (for example skipping `room_open` for corners the edit leaves unchanged, or baking big craters lazily per chunk), a worldgen package's job. The test asserts < 2 ms for the crack ticks and < 8 ms for the collapse tick.
 - Rule set codes: format 4 (`CODE_VERSION`), full/diff bit and 4-bit mode index in the header, mode settings as the mode's generic field list; formats 2 and 3 still decode (tested with M2 codes). The default Paint the Void code is now `LR8V-6097-G000-TMBG`. Each mode's diff base is `RuleSet::default_for(kind)`: its own file once a B package adds `data/rulesets/<file>.ron` to `BUILTIN_RULESETS` (`ModeKind::ruleset_file`; The Squeeze's is `squeeze.ron`), else Paint the Void's rules with the mode's settings and without the Paint Thrower. Adding a mode's file or a settings field changes that mode's codes (re-bless the web catalog). The web editor encodes and validates every mode; picking a mode in the editor UI is not built yet.
-- Free-for-all ships carry their own side id in `ShipState::team` (0-253): the wire's 2-bit team field in `ship_flags` (A2) must grow to carry it.
+- Free-for-all ships carry their own side id in `ShipState::team` (0-253). Resolved at integration without a wire change: `NetPlayer::team`, `NetModePlayer::side`, `ResultRow::side` and `Welcome::team` are full bytes; `ship_flags` keeps its 2 team bits (the low bits of the side). Readers take the side from the players list (`ClientSession::side_of`, the own `team()`, bots' contacts, the wasm scoreboard and ship views), and `NetConv::apply_net_ship` keeps a full side id that agrees with the flag bits.
+- Open: the collapse tick (3.5-5 ms against the < 2 ms target, see above) waits for an `ls-worldgen` bake optimisation.
+
+A2 as built (protocol 5 and client glue):
+- As planned: `NetModeState` mirrors `ls_sim::ModeView`; results carry kind, teams, winner side and kills/deaths; `LobbyState::next_mode` is a `ModeKind` index (A3 had coded against a string; fixed at integration). `Room` is mode-agnostic, keeps `RoomConfig::epoch`, drops inputs of another epoch and sends `MatchResults` once when the mode stops running (and to clients joining a finished match). `ClientSession` rebuilds in place on a new `Welcome` and drops snapshots of another epoch.
+- Deviation: A2 first built its own mode view, kill/death `Tally` and results in `ls_game::mode` because A1's `World::mode_view()`/`World::results()` were not on its branch. At integration the room switched to A1's (`World` counts kills and deaths per ship); `ls_game::mode` keeps only the wire conversions (`mode_view_to_net`, `results_to_net`, `legacy_scores`).
+- Integration fix: a delta snapshot of the previous match arriving after the new `Welcome` failed to decode (its baseline is gone) and ended the session; `ClientSession::handle_packet` now drops other-epoch snapshots by `Message::peek_snapshot_epoch` before decoding (found by `ls-bots` `tests/match_transition.rs`).
+- Bots: A2's interim "rejoin on a match transition" is replaced at integration by an in-place transition (`BotCore::next_match` rebuilds the brain, navigation grid and spawn points for the new level on the same connection; counted as `match_restarts`). The `MATCH_RESTART_REASON` rejoin path stays for older hosts.
+
+A3 as built (server lobby, rotation, rooms):
+- As planned: lobby state machine, `--playlist`, default rotation of the built-in mode rule sets with player-range skipping and the Team Brawl fallback, next room built on an `ls-build` worker thread and swapped in without a disconnect, one public room plus `--private-rooms N`, routing by `Hello::room`, rooms closing when empty.
+- Deviation: the warm-up is a separate room (the next match's level with every weapon, gadget and pickup removed and a 1 h timer), built and swapped in like a match room, rather than flying in the finished match's level. A warm-up of a mode that can end early (kill target, last side standing) would stop and send results; the warm-up rules should also clear the mode's early-end conditions once wave B fills in those modes.
+- Integration fix: every room built by the sim thread gets the next match epoch (`RoomConfig::epoch` = current room's + 1, wrapping; A3 built every room with epoch 0), so inputs and snapshots of the previous room still in flight are dropped (test: `finished_match_moves_everyone_to_the_next_match_on_the_same_connection` checks the epochs, exactly one `MatchResults` per match, and a stale input counted in `stale_epoch_inputs`). `MatchResults` comes from `Room` alone; `ls-server` does not send its own.
+- `tools/e2e.mjs` and the browser smoke run the server with `--warmup 0 --countdown 0`.
+
+A4 as built (directory):
+- As planned: `crates/ls-directory` (binary + library), register/heartbeat/expiry/list, CORS, protocol and data-hash filters, invite relay, rate limit; `DirectoryClient` and `spawn_heartbeats` for B7.
+- Deviation: plain HTTP only (no TLS in the binary); a public directory belongs behind a TLS-terminating reverse proxy (hosting guide). The browser on an HTTPS page cannot fetch a plain-HTTP directory (mixed content), which B7 must account for.
+- Integration: the branch had committed ~560 MB of build output under `crates/ls-directory/target`; WIN1 merged a rewritten copy of the commit without it, and `.gitignore` now also ignores `crates/*/target/`.
+
+A5 as built (bot navigation cache):
+- As planned: process-wide nav grid cache per share code, generator version and `NavConfig`, built once on a `nav-build` worker thread; `nav_cache::builds()` counter; measured 8.4-9.1x less navigation CPU per bot for 8 bots of one world (criterion: at least 5x). A failed build falls back to the per-bot incremental build.
 
 ### Wave B — modes and lobby features
 

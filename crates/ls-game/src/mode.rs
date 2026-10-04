@@ -1,81 +1,14 @@
-//! Mode state and results on the wire (protocol 5): `ls_sim::ModeView` <->
-//! [`ls_net::NetModeState`], `ls_sim::MatchResults` ->
-//! [`ls_net::MatchResultsMsg`], and the kill/death tally the room keeps for
-//! the results table. Everything here is mode-agnostic: the room and the
-//! client only see the generic view (`docs/milestone-3-plan.md` §3.1).
-
-use std::collections::BTreeMap;
+//! Mode state and results on the wire (protocol 5): `ls_sim::ModeView`
+//! (`World::mode_view`) -> [`ls_net::NetModeState`] and
+//! `ls_sim::MatchResults` (`World::results`) -> [`ls_net::MatchResultsMsg`].
+//! Everything here is mode-agnostic: the room and the client only see the
+//! generic view (`docs/milestone-3-plan.md` §3.1).
 
 use ls_net::mode::NONE;
 use ls_net::{
     mode_phase, MatchResultsMsg, NetModePlayer, NetModeState, NetObjective, ResultRow, MAX_SHIPS,
 };
-use ls_sim::mode::{view_flags, MAX_OBJECTIVES, MAX_VIEW_PLAYERS};
-use ls_sim::{
-    Event, MatchPhase, MatchResults, ModeKind, ModeView, ObjectiveView, PlayerId, PlayerModeView,
-    World,
-};
-
-/// The replicated mode state of `world`.
-///
-/// Built from `World::mode()` (the generic `ModeState`) the way
-/// `ls_sim`'s `ModeView` documents it: players by score (highest first,
-/// then by id, at most 32), the first 8 objectives, Paint the Void scores
-/// as painted cells with the surface as `score_total`.
-pub fn mode_view(world: &World) -> ModeView {
-    let m = world.mode();
-    let teams = m.teams;
-    let paint = m.kind == ModeKind::PaintTheVoid;
-    let n_teams = if paint {
-        teams.clamp(2, ls_sim::mode::MAX_TEAMS)
-    } else {
-        teams.min(ls_sim::mode::MAX_TEAMS)
-    } as usize;
-    let team_scores: Vec<i64> = if paint {
-        m.coverage.team_cells[..n_teams]
-            .iter()
-            .map(|&c| c.min(i64::MAX as u64) as i64)
-            .collect()
-    } else {
-        m.team_scores[..n_teams].to_vec()
-    };
-    let mut players: Vec<PlayerModeView> = world
-        .ships()
-        .map(|s| {
-            let pm = m.player(s.player).copied().unwrap_or_default();
-            PlayerModeView {
-                player: s.player,
-                side: s.team,
-                score: pm.score,
-                lives: pm.lives,
-                meter: pm.meter,
-                flags: pm.flags,
-            }
-        })
-        .collect();
-    players.sort_by(|a, b| b.score.cmp(&a.score).then(a.player.cmp(&b.player)));
-    players.truncate(MAX_VIEW_PLAYERS);
-    let objectives: Vec<ObjectiveView> = m
-        .objectives
-        .iter()
-        .take(MAX_OBJECTIVES)
-        .map(|o| o.view())
-        .collect();
-    ModeView {
-        kind: m.kind,
-        teams,
-        phase: m.phase,
-        end_tick: m.end_tick,
-        stage: m.stage,
-        stage_end_tick: m.stage_end_tick,
-        team_scores,
-        score_total: if paint { m.coverage.surface_cells } else { 0 },
-        score_target: m.score_target,
-        players,
-        objectives,
-        flags: m.flags | if paint { view_flags::PAINT_SCORES } else { 0 },
-    }
-}
+use ls_sim::{MatchPhase, MatchResults, ModeView, PlayerId};
 
 fn tick32(t: u64) -> u32 {
     t.min(u32::MAX as u64) as u32
@@ -156,72 +89,6 @@ pub fn legacy_scores(view: &ModeView) -> Vec<u32> {
         .collect()
 }
 
-/// Kills and deaths per player over a match, counted from the simulation's
-/// `Killed` events (mode-agnostic; the room keeps one).
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Tally {
-    entries: BTreeMap<PlayerId, (u32, u32)>,
-}
-
-impl Tally {
-    /// Counts the kills and deaths among `events`. A suicide counts as a
-    /// death, not a kill.
-    pub fn record(&mut self, events: &[Event]) {
-        for e in events {
-            if let Event::Killed { victim, killer, .. } = e {
-                self.entries.entry(*victim).or_default().1 += 1;
-                if let Some(k) = killer.filter(|k| k != victim) {
-                    self.entries.entry(k).or_default().0 += 1;
-                }
-            }
-        }
-    }
-
-    pub fn kills(&self, p: PlayerId) -> u32 {
-        self.entries.get(&p).map_or(0, |e| e.0)
-    }
-
-    pub fn deaths(&self, p: PlayerId) -> u32 {
-        self.entries.get(&p).map_or(0, |e| e.1)
-    }
-}
-
-/// The result of the match in `world`: winner and team scores from the
-/// mode view, one row per player (best first: score, then kills, then
-/// fewer deaths, then id) with kills and deaths from `tally`.
-pub fn match_results(world: &World, tally: &Tally) -> MatchResults {
-    let view = mode_view(world);
-    let mut rows: Vec<ls_sim::ResultRow> = world
-        .ships()
-        .map(|s| ls_sim::ResultRow {
-            player: s.player,
-            side: s.team,
-            kills: tally.kills(s.player),
-            deaths: tally.deaths(s.player),
-            score: world.mode().player(s.player).map_or(0, |p| p.score),
-        })
-        .collect();
-    rows.sort_by(|a, b| {
-        b.score
-            .cmp(&a.score)
-            .then(b.kills.cmp(&a.kills))
-            .then(a.deaths.cmp(&b.deaths))
-            .then(a.player.cmp(&b.player))
-    });
-    let (ended, winner) = match view.phase {
-        MatchPhase::Running => (false, None),
-        MatchPhase::Ended { winner } => (true, winner),
-    };
-    MatchResults {
-        kind: view.kind,
-        teams: view.teams,
-        ended,
-        winner,
-        team_scores: view.team_scores,
-        rows,
-    }
-}
-
 /// The wire form of match results at `tick`. `wire` maps players to wire
 /// ids and `name` gives a wire id's name; rows of players without a wire id
 /// (left the match) are left out.
@@ -277,7 +144,9 @@ fn truncate_utf8(s: &mut String, max: usize) {
 mod tests {
     use super::*;
     use ls_math::Vec3;
+    use ls_sim::mode::view_flags;
     use ls_sim::mode::{objective_kind, player_flags, NO_SIDE};
+    use ls_sim::{ModeKind, ObjectiveView, PlayerModeView};
     #[cfg(target_arch = "wasm32")]
     use wasm_bindgen_test::wasm_bindgen_test as test;
 
@@ -362,22 +231,6 @@ mod tests {
         let net = mode_view_to_net(&v, wire);
         assert_eq!((net.phase, net.winner), (mode_phase::RUNNING, NONE));
         assert_eq!(net.objectives[0].holder, NONE);
-    }
-
-    #[test]
-    fn tally_counts_kills_and_deaths() {
-        let mut t = Tally::default();
-        let kill = |victim: u16, killer: Option<u16>| Event::Killed {
-            victim: PlayerId(victim),
-            killer: killer.map(PlayerId),
-            weapon: None,
-        };
-        t.record(&[kill(1, Some(2)), kill(2, Some(2)), kill(3, None)]);
-        t.record(&[kill(1, Some(2))]);
-        assert_eq!((t.kills(PlayerId(2)), t.deaths(PlayerId(2))), (2, 1));
-        assert_eq!((t.kills(PlayerId(1)), t.deaths(PlayerId(1))), (0, 2));
-        assert_eq!(t.deaths(PlayerId(3)), 1);
-        assert_eq!(t.kills(PlayerId(9)), 0);
     }
 
     #[test]

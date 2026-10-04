@@ -32,9 +32,10 @@ pub struct BotStats {
     /// Sessions that ended while the bot still wanted to play (socket
     /// closed, server `Disconnect`, error, write timeout, silence).
     pub disconnects: u32,
-    /// Sessions the server ended because the match was over and a new one
-    /// started (`ls_game::MATCH_RESTART_REASON`); the bot rejoins. Not a
-    /// failure.
+    /// Matches the bot moved on from: a new `Welcome` on the open
+    /// connection (handled in place), or a `Disconnect` with
+    /// `ls_game::MATCH_RESTART_REASON` from older hosts (the bot rejoins).
+    /// Not a failure.
     pub match_restarts: u32,
     pub inputs_sent: u64,
     pub pings_sent: u64,

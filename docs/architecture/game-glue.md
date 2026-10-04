@@ -18,7 +18,7 @@ ls-math <- ls-worldgen --+
 | `terrain` | `GameTerrain`: `ChunkStore` + edit log + dirty chunks; `TerrainQuery` + `SimTerrain` |
 | `setup` | `MatchConfig`, `match_setup` (spawn and pickup points), `build_match` (world + terrain) |
 | `convert` | `NetConv` (ships, status, quantization), inputs, projectiles, events |
-| `mode` | `mode_view` (the replicated `ls_sim::ModeView` of a world), `mode_view_to_net`, `Tally` (kills/deaths), `match_results`, `results_to_net` (protocol 5) |
+| `mode` | `mode_view_to_net` (`World::mode_view`, the replicated `ls_sim::ModeView`, to wire ids), `results_to_net` (`World::results` to `MatchResultsMsg`), `legacy_scores` (protocol 5) |
 | `client` | `InputSequencer`, `Predictor`, `InterpolationBuffer`, `ClientClock`, `ClientSession` |
 | `server` | `Room` (feature `server`, on by default), `ShipHistory`, lag compensation |
 
@@ -116,15 +116,15 @@ implement them.
 | Handshake | `Hello` carries `ls_sim::data_hash()` (build it with `ls_game::client_hello(name, team, ship)`) and an optional ship type; a different hash gets `Reject { reason: DataMismatch }`; optional room and party codes (`Hello::with_room` / `with_party`). `Welcome` carries the ship type, the data hash, the match epoch (`RoomConfig::epoch`) and the room code (`Room::set_room_code`) |
 | Ship choice | `Message::SelectShip { ship_type }` (reliable, `ClientSession::select_ship`) sets the type for the next respawn; types the rule set does not allow are ignored |
 | Scores | `Snapshot::scores` = the mode view's team scores, then `score_total` (`ls_game::mode::legacy_scores`): Paint the Void with 2 teams gives `[team 0 cells, team 1 cells, surface cells]` (raw counts; percent = cells / surface) |
-| Mode state | `Snapshot::mode` = `ls_game::mode::mode_view_to_net(&mode_view(world))` (ids are wire ids; players without one are left out); once ended, `end_tick` is the last simulated tick |
-| Results | `Message::MatchResults` once when the mode stops running (`ls_game::mode::match_results`: winner and team scores from the view, kills and deaths from the room's `Tally` of kill events, rows best first), and after the `Welcome` to clients joining a finished match |
+| Mode state | `Snapshot::mode` = `ls_game::mode::mode_view_to_net(&world.mode_view())` (ids are wire ids; players without one are left out); once ended, `end_tick` is the last simulated tick |
+| Results | `Message::MatchResults` once when the mode stops running (`World::results` through `ls_game::mode::results_to_net`: winner and team scores from the mode view, kills and deaths counted by the simulation per ship, rows best first), and after the `Welcome` to clients joining a finished match |
 | Lobby | `Ready`, `PickTeam`, `Spectate` are queued as `LobbyRequest`s (`Room::take_lobby_requests`); hosts send `LobbyState` with `Room::send` / `Room::broadcast` |
 | Edits | Each snapshot carries up to 64 edits starting at the client's acknowledged edit count (`edit_end` of its newest acked snapshot); resent until acked |
 | Events | `Damaged` -> `Hit` (pos = impact point), `Killed` -> `Kill` (255 = none), `Respawned`, `MatchEnded`, `Cue` -> `Cue` (kind byte, source, target, pos, value); batched per snapshot, reliable |
 | Ping | Send right after the input for tick `c`; `Pong::server_tick - c` measures input slack |
 | Match end | Once the mode stops running (timer, or early: kill target, last ship) the server stops stepping the world: ships freeze at the end tick, snapshots continue with `match_ticks_left == 0` and the mode's `end_tick` = the last simulated tick |
-| Match transition | A host that starts the next match builds a new `Room` with the next `RoomConfig::epoch` (wrapping) and `join`s every connected client again: each gets the new `Welcome` on its open connection; `ClientSession` rebuilds in place (`Incoming::MatchTransition`). Inputs and snapshots of another epoch are dropped (`RoomStats::stale_epoch_inputs`, `SessionStats::stale_epoch_snapshots`) |
-| Match restart | (Protocol 4 hosts, and bots until they handle transitions in place) a host that replaces a finished match may still send `Disconnect { reason: ls_game::MATCH_RESTART_REASON }`; clients rejoin instead of reporting an error |
+| Match transition | A host that starts the next match builds a new `Room` with the next `RoomConfig::epoch` (wrapping) and `join`s every connected client again: each gets the new `Welcome` on its open connection; `ClientSession` rebuilds in place (`Incoming::MatchTransition`; bots then rebuild their brain for the new level, `BotCore::next_match`). Inputs and snapshots of another epoch are dropped (`RoomStats::stale_epoch_inputs`, `SessionStats::stale_epoch_snapshots`; the client checks a snapshot's epoch with `Message::peek_snapshot_epoch` before decoding, since an old delta snapshot's baseline is gone) |
+| Match restart | (Older hosts) a host that replaces a finished match may still send `Disconnect { reason: ls_game::MATCH_RESTART_REASON }`; clients rejoin instead of reporting an error |
 
 ## Client core
 

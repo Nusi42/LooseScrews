@@ -1326,7 +1326,7 @@ impl GameCore {
                         ScoreRow {
                             id: s.id,
                             name: online_name(&o.session, s.id),
-                            team: ship_flags::team(s.flags),
+                            team: o.session.side_of(s.id).unwrap_or(ship_flags::team(s.flags)),
                             alive: s.flags & ship_flags::ALIVE != 0,
                             kills,
                             deaths,
@@ -1785,7 +1785,7 @@ impl GameCore {
         match &self.mode {
             Mode::Online(o) => o.session.mode().clone(),
             Mode::Practice(p) => {
-                let view = ls_game::mode::mode_view(&p.world);
+                let view = p.world.mode_view();
                 ls_game::mode::mode_view_to_net(&view, |pl| u8::try_from(pl.0).ok())
             }
         }
@@ -1943,7 +1943,12 @@ fn net_ship_view(s: &NetShip, players: &[NetPlayer], ships: &ShipTable) -> ShipV
         .unwrap_or(ShipType::Tinker);
     ShipView {
         id: s.id,
-        team: ship_flags::team(s.flags),
+        // Full side id from the players list (free-for-all sides exceed the
+        // two team bits of the flags).
+        team: players
+            .iter()
+            .find(|p| p.id == s.id)
+            .map_or(ship_flags::team(s.flags), |p| p.team),
         alive: s.flags & ship_flags::ALIVE != 0,
         boosting: s.flags & ship_flags::BOOSTING != 0,
         pos: s.pos,

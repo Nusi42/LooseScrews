@@ -89,6 +89,8 @@ pub struct BotCore {
     own_projectiles: Vec<u16>,
     /// Alive in the previous tick (lives per ship type).
     was_alive: bool,
+    /// Behavior seed (kept for the next match on the same connection).
+    seed: u64,
 }
 
 impl BotCore {
@@ -102,7 +104,32 @@ impl BotCore {
     pub fn from_welcome(welcome: &Welcome, seed: u64) -> Result<BotCore, GameError> {
         let session =
             ClientSession::from_welcome(welcome, WeaponTable::builtin(), ShipTuning::tinker())?;
-        let code = ShareCode::decode(&welcome.share_code)?;
+        let (brain, pending_ship) = Self::brain_for(&session, seed)?;
+        let edits_seen = session.terrain().edit_log().len();
+        Ok(BotCore {
+            session,
+            brain,
+            prev_alive: None,
+            last_life_event: None,
+            pending_snap: None,
+            prev_starved: 0,
+            last_starved_tick: None,
+            edits_seen,
+            pending_ship,
+            own_projectiles: Vec::new(),
+            was_alive: false,
+            seed,
+        })
+    }
+
+    /// The brain for the match `session` just started (its first
+    /// `Welcome`, or the next one on the same connection) and the ship type
+    /// to ask for, if the server gave another one.
+    fn brain_for(
+        session: &ClientSession,
+        seed: u64,
+    ) -> Result<(Brain, Option<ShipType>), GameError> {
+        let code = ShareCode::decode(session.share_code())?;
         let pristine = GameTerrain::from_code(&code)?;
         let setup = match_setup(&code, session.rules(), &pristine)?;
         let cfg = BrainConfig::default();
@@ -141,20 +168,7 @@ impl BotCore {
             allowed[rng.below(allowed.len() as u32) as usize]
         };
         let pending_ship = (ship != session.ship_type()).then_some(ship);
-        let edits_seen = session.terrain().edit_log().len();
-        Ok(BotCore {
-            session,
-            brain,
-            prev_alive: None,
-            last_life_event: None,
-            pending_snap: None,
-            prev_starved: 0,
-            last_starved_tick: None,
-            edits_seen,
-            pending_ship,
-            own_projectiles: Vec::new(),
-            was_alive: false,
-        })
+        Ok((brain, pending_ship))
     }
 
     /// Blocks until the shared navigation grid is built (see
@@ -256,13 +270,41 @@ impl BotCore {
             Ok(Incoming::Inventory | Incoming::Ignored | Incoming::Lobby | Incoming::Results) => {
                 Ok(Flow::Continue)
             }
-            // The session rebuilt itself for the next match, but the brain
-            // (navigation grid, spawn points) belongs to the old level: until
-            // bots handle transitions in place (M3 wave C), rejoin as after a
-            // match restart.
-            Ok(Incoming::MatchTransition { .. }) => Ok(Flow::Disconnected(
-                ls_game::MATCH_RESTART_REASON.to_string(),
-            )),
+            // The session rebuilt itself for the next match on the same
+            // connection: rebuild the brain (navigation grid, spawn points,
+            // arsenal) for the new level in place.
+            Ok(Incoming::MatchTransition { .. }) => {
+                self.next_match(stats)?;
+                Ok(Flow::Continue)
+            }
+        }
+    }
+
+    /// Moves the bot to the match its session just transitioned to.
+    fn next_match(&mut self, stats: &mut BotStats) -> Result<(), BotError> {
+        if let Some((tick, error)) = self.pending_snap.take() {
+            self.judge_snap(tick, error, stats);
+        }
+        match BotCore::brain_for(&self.session, self.seed) {
+            Ok((brain, pending_ship)) => {
+                self.brain = brain;
+                self.pending_ship = pending_ship;
+                self.prev_alive = None;
+                self.last_life_event = None;
+                self.prev_starved = 0;
+                self.last_starved_tick = None;
+                self.edits_seen = self.session.terrain().edit_log().len();
+                self.own_projectiles.clear();
+                self.was_alive = false;
+                stats.match_restarts += 1;
+                Ok(())
+            }
+            Err(e) => {
+                let msg = format!("next match: {e}");
+                stats.protocol_errors += 1;
+                stats.note_error(msg.clone());
+                Err(BotError::Protocol(msg))
+            }
         }
     }
 

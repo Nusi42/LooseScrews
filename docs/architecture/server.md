@@ -306,7 +306,7 @@ prints positions, modes and routes.
 
 | Exit code | Meaning |
 | --- | --- |
-| 0 | all good (match restarts are fine: bots rejoin after 0.5 s and count `match_restarts`) |
+| 0 | all good (the next match is fine: bots follow a new `Welcome` in place, or rejoin after 0.5 s on a `MATCH_RESTART_REASON` disconnect; both count `match_restarts`) |
 | 1 | a protocol error or desync |
 | 2 | a bot never joined |
 | 3 | a bot lost its connection (crash, kick, timeout); `--allow-disconnects` turns this off |

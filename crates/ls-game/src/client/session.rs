@@ -128,6 +128,8 @@ pub struct ClientSession {
     epoch: u8,
     /// Room code of the `Welcome` (empty for the public room).
     room_code: String,
+    /// Share code of the match's level (from the `Welcome`).
+    share_code: String,
     /// Newest lobby state (`Message::LobbyState`), kept across matches.
     lobby: Option<LobbyStateMsg>,
     /// Results of this match, once it ended.
@@ -221,6 +223,7 @@ impl ClientSession {
             inventory: None,
             epoch: welcome.epoch,
             room_code: welcome.room_code.clone(),
+            share_code: welcome.share_code.clone(),
             lobby: None,
             results: None,
             conv,
@@ -285,7 +288,11 @@ impl ClientSession {
     pub fn epoch(&self) -> u8 {
         self.epoch
     }
-    /// Room code of the current match (empty for the public room).
+    /// Share code of the current match's level.
+    pub fn share_code(&self) -> &str {
+        &self.share_code
+    }
+    /// Room code of the current `Welcome` (empty for the public room).
     pub fn room_code(&self) -> &str {
         &self.room_code
     }
@@ -328,6 +335,23 @@ impl ClientSession {
     /// Players of the newest snapshot (names, teams, ship types, gadgets).
     pub fn players(&self) -> &[NetPlayer] {
         self.latest.as_ref().map_or(&[], |s| &s.players)
+    }
+
+    /// Side of a ship id: its team index, or its own side id in
+    /// free-for-all (up to `ls_sim::mode::MAX_FFA_SIDE`). Read from the
+    /// players list (a full byte); the ship flags only carry the two low
+    /// bits (`ship_flags::team`), which they fall back to for ships not in
+    /// the list yet.
+    pub fn side_of(&self, id: u8) -> Option<u8> {
+        if let Some(p) = self.players().iter().find(|p| p.id == id) {
+            return Some(p.team);
+        }
+        self.latest
+            .as_ref()?
+            .ships
+            .iter()
+            .find(|s| s.id == id)
+            .map(|s| ls_net::ship_flags::team(s.flags))
     }
 
     /// Name of a ship id, if known.
@@ -580,6 +604,13 @@ impl ClientSession {
 
     /// Decodes and handles one packet from the server.
     pub fn handle_packet(&mut self, bytes: &[u8]) -> Result<Incoming, GameError> {
+        // A delta snapshot of the previous match (still in flight after a
+        // new `Welcome`) refers to a baseline this session never had: drop
+        // it by its epoch before decoding.
+        if Message::peek_snapshot_epoch(bytes).is_some_and(|e| e != self.epoch) {
+            self.stats.stale_epoch_snapshots += 1;
+            return Ok(Incoming::Ignored);
+        }
         let msg = Message::decode_with(bytes, &self.received)?;
         self.handle_message(msg)
     }
@@ -706,7 +737,13 @@ impl ClientSession {
             }
         }
         let reconcile = snap.ships.iter().find(|s| s.id == self.player).map(|own| {
-            self.team = ls_net::ship_flags::team(own.flags);
+            // The players list carries the full side id (free-for-all
+            // sides exceed the two team bits of the flags).
+            self.team = snap
+                .players
+                .iter()
+                .find(|p| p.id == self.player)
+                .map_or(ls_net::ship_flags::team(own.flags), |p| p.team);
             self.predictor
                 .reconcile(tick as u64, own, &self.conv, &self.terrain)
         });

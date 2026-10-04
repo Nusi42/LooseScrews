@@ -163,7 +163,13 @@ impl NetConv {
         ship.orientation = net.rot;
         ship.alive = net.flags & ship_flags::ALIVE != 0;
         ship.boosting = net.flags & ship_flags::BOOSTING != 0;
-        ship.team = ship_flags::team(net.flags);
+        // The flags carry only the two low bits of the side: keep a full
+        // free-for-all side id (from `Welcome` or `NetPlayer::team`) that
+        // agrees with them.
+        let team = ship_flags::team(net.flags);
+        if ship.team & 0b11 != team {
+            ship.team = team;
+        }
         if let Some(s) = &net.status {
             let (hull, energy, boost, scrap) = self.status_values_for(ship.ship_type, s);
             ship.hull = hull;
@@ -462,6 +468,30 @@ mod tests {
         assert!((back.energy - s.energy).abs() <= t.energy_max / 255.0 + 1e-4);
         assert_eq!(ship_flags::weapon(net.flags), 2);
         assert!(c.ship_to_net(3, &s, false).status.is_none());
+    }
+
+    #[test]
+    fn free_for_all_side_survives_the_two_team_bits() {
+        // Side 13 (free-for-all) travels as 13 & 3 = 1 in the flags; the
+        // full id comes from `NetPlayer::team` and is kept on apply.
+        let c = conv();
+        let t = ShipTuning::tinker();
+        let mut s = ShipState::new(
+            PlayerId(13),
+            13,
+            ShipType::Tinker,
+            &t,
+            Vec3::new(10.0, 10.0, 10.0),
+            Quat::IDENTITY,
+        );
+        let net = c.quantize_ship(&c.ship_to_net(5, &s, false));
+        assert_eq!(ship_flags::team(net.flags), 1);
+        assert_eq!(NetConv::player_to_net(5, "p", &s).team, 13);
+        c.apply_net_ship(&mut s, &net);
+        assert_eq!(s.team, 13, "agreeing low bits keep the full side id");
+        s.team = 14;
+        c.apply_net_ship(&mut s, &net);
+        assert_eq!(s.team, 1, "a different side is taken from the flags");
     }
 
     #[test]

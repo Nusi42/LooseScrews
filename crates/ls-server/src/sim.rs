@@ -603,9 +603,15 @@ impl Sim {
 
     /// Starts building the `kind` room of `planned` on a worker thread
     /// (replacing any build in progress).
+    /// The room gets the next match epoch (wrapping), so packets of the
+    /// current room still in flight are dropped once it is swapped in.
     fn build_next(&mut self, kind: RoomKind, planned: Planned) {
         let cfg = planned.room_config(kind);
-        let state = build_room(cfg, self.params.room_cfg, self.params.build_delay);
+        let room_cfg = RoomConfig {
+            epoch: self.room.epoch().wrapping_add(1),
+            ..self.params.room_cfg
+        };
+        let state = build_room(cfg, room_cfg, self.params.build_delay);
         self.next = Some(NextRoom {
             kind,
             planned,
@@ -941,7 +947,7 @@ impl Sim {
             } else {
                 String::new()
             },
-            next_mode: mode.kind().id().to_string(),
+            next_mode: mode.kind().index(),
             next_ruleset: up.cfg.rules.name.clone(),
             next_share_code: up.share_code.clone(),
             min_players: entry.min_players,
@@ -1321,9 +1327,14 @@ mod tests {
 
     /// An encoded `Input` with one idle command for `tick`.
     fn idle_input(tick: u64) -> Vec<u8> {
+        idle_input_epoch(tick, 0)
+    }
+
+    /// An encoded `Input` of match `epoch` with one idle command for `tick`.
+    fn idle_input_epoch(tick: u64, epoch: u8) -> Vec<u8> {
         let cmd = ls_game::ls_sim::InputCmd::idle(tick);
         Message::Input(ls_net::InputMsg {
-            epoch: 0,
+            epoch,
             ack_snapshot: None,
             cmds: vec![ls_game::convert::input_to_net(&cmd)],
         })
@@ -1498,8 +1509,10 @@ mod tests {
         let a = join(&mut s, 1, LinkConfig::default());
         let b = join(&mut s, 2, LinkConfig::default());
         s.tick();
+        let first_epoch = s.room.epoch();
         for p in [&a, &b] {
-            assert_eq!(welcomes(&frames(p)).len(), 1);
+            let msgs = frames(p);
+            assert_eq!(welcomes(&msgs)[0].epoch, first_epoch);
         }
         let ticks_before = s.stats.snapshot().total_ticks;
         end_match(&mut s);
@@ -1512,12 +1525,30 @@ mod tests {
         assert_eq!(s.clients.len(), 2, "both players moved");
         assert!(s.room.world().mode().is_running());
         s.tick();
+        assert_ne!(
+            s.room.epoch(),
+            first_epoch,
+            "the next match has a new epoch"
+        );
         for p in [&a, &b] {
             let msgs = frames(p);
             assert_eq!(welcomes(&msgs).len(), 1, "one new Welcome: {msgs:?}");
+            assert_eq!(welcomes(&msgs)[0].epoch, s.room.epoch());
+            let results = msgs
+                .iter()
+                .filter(|m| matches!(m, Message::MatchResults(_)))
+                .count();
+            assert_eq!(results, 1, "results sent exactly once");
             assert_eq!(disconnect_reason(&msgs), None);
             assert!(p.close_reason().is_none(), "connection stays open");
         }
+        // Inputs of the old match still in flight are dropped.
+        let stale_before = s.room.stats().stale_epoch_inputs;
+        a.push_incoming(idle_input_epoch(s.room.tick() + 2, first_epoch))
+            .await
+            .unwrap();
+        s.tick();
+        assert_eq!(s.room.stats().stale_epoch_inputs, stale_before + 1);
         let st = s.stats.snapshot();
         assert_eq!(st.kicked, 0);
         assert_eq!(st.matches, 2);
@@ -1782,7 +1813,7 @@ mod tests {
         assert_eq!(l.len(), 1);
         let l = &l[0];
         assert_eq!(l.phase, ls_net::LobbyPhase::Lobby);
-        assert_eq!(l.next_mode, "paint_the_void");
+        assert_eq!(l.next_mode, ls_sim::ModeKind::PaintTheVoid.index());
         assert_eq!(l.next_ruleset, "Paint the Void");
         assert_eq!(l.next_share_code, code().encode().unwrap());
         assert_eq!((l.min_players, l.max_players, l.teams), (2, 8, 2));

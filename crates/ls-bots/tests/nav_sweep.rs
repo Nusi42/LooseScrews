@@ -159,7 +159,7 @@ fn trace_bots(now: u64, clients: &[Client]) {
         let nearest = s
             .remote_ships()
             .iter()
-            .filter(|n| ls_game::ls_net::ship_flags::team(n.flags) != s.team())
+            .filter(|n| s.side_of(n.id) != Some(s.team()))
             .map(|n| n.pos.distance(me.pos))
             .fold(f32::MAX, f32::min);
         eprintln!(

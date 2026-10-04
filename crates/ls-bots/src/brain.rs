@@ -180,7 +180,7 @@ impl Perception {
             .filter(|n| n.flags & ship_flags::ALIVE != 0)
             .map(|n| Contact {
                 id: n.id,
-                team: ship_flags::team(n.flags),
+                team: s.side_of(n.id).unwrap_or(ship_flags::team(n.flags)),
                 pos: n.pos,
                 vel: n.vel,
             })

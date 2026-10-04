@@ -268,7 +268,9 @@ clusters, Borrowed Time when hurt, Swap Harpoon out of a Tectonic zone, otherwis
 fitting one. Gadgets: Shield while splash threatens, Cloak while approaching, Decoy when
 chased (`GadgetKind::from_id`; unknown gadgets are never used). Each bot picks a random
 allowed ship type (`bot::preferred_ship`). A prediction snap waits 1 s for a Swap Harpoon or
-Borrowed Time cue before it counts as a desync. The summary lists shots and hits per weapon.
+Borrowed Time cue before it counts as a desync; a correction (a teleport shorter than the snap
+distance) waits the same 1 s and, if such a cue explains it, counts as `teleport_corrections`
+instead of toward the largest reconciliation error. The summary lists shots and hits per weapon.
 
 Global navigation (`src/nav.rs`, M1 issue A):
 

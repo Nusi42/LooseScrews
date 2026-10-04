@@ -79,6 +79,14 @@ pub struct BotCore {
     /// An unexplained snap (server tick, error) waiting [`TELEPORT_GRACE`]
     /// for a teleport cue before it counts as a desync.
     pending_snap: Option<(u64, f32)>,
+    /// Server tick of the newest own teleport cue (Swap Harpoon swap,
+    /// Borrowed Time rewind).
+    last_teleport: Option<u64>,
+    /// Corrections (server tick, error) larger than the bot's largest so
+    /// far, waiting [`TELEPORT_GRACE`] for a teleport cue: a short rewind or
+    /// swap moves the ship less than the snap distance, so the prediction
+    /// smooths it like a correction, but it is no misprediction.
+    pending_corrections: Vec<(u64, f32)>,
     prev_starved: u64,
     last_starved_tick: Option<u64>,
     /// Terrain edits already passed to the brain's navigation grid.
@@ -112,6 +120,8 @@ impl BotCore {
             prev_alive: None,
             last_life_event: None,
             pending_snap: None,
+            last_teleport: None,
+            pending_corrections: Vec::new(),
             prev_starved: 0,
             last_starved_tick: None,
             edits_seen,
@@ -285,12 +295,16 @@ impl BotCore {
         if let Some((tick, error)) = self.pending_snap.take() {
             self.judge_snap(tick, error, stats);
         }
+        for (tick, error) in std::mem::take(&mut self.pending_corrections) {
+            self.judge_correction(tick, error, stats);
+        }
         match BotCore::brain_for(&self.session, self.seed) {
             Ok((brain, pending_ship)) => {
                 self.brain = brain;
                 self.pending_ship = pending_ship;
                 self.prev_alive = None;
                 self.last_life_event = None;
+                self.last_teleport = None;
                 self.prev_starved = 0;
                 self.last_starved_tick = None;
                 self.edits_seen = self.session.terrain().edit_log().len();
@@ -313,6 +327,9 @@ impl BotCore {
     pub fn finish(&self, stats: &mut BotStats) {
         if let Some((tick, error)) = self.pending_snap {
             self.judge_snap(tick, error, stats);
+        }
+        for &(tick, error) in &self.pending_corrections {
+            self.judge_correction(tick, error, stats);
         }
         let s = self.session.stats();
         stats.full_snapshots += s.full_snapshots;
@@ -337,6 +354,15 @@ impl BotCore {
                 self.judge_snap(t, e, stats);
             }
         }
+        let mut pending = std::mem::take(&mut self.pending_corrections);
+        pending.retain(|&(t, e)| {
+            let due = tick > t + TELEPORT_GRACE;
+            if due {
+                self.judge_correction(t, e, stats);
+            }
+            !due
+        });
+        self.pending_corrections = pending;
         let starved = self.session.clock().starved;
         if starved > self.prev_starved {
             stats.starved_snapshots += starved - self.prev_starved;
@@ -354,7 +380,13 @@ impl BotCore {
             Some(Reconcile::Accepted) => stats.accepted += 1,
             Some(Reconcile::Corrected { error }) => {
                 stats.corrections += 1;
-                stats.max_reconcile_error = stats.max_reconcile_error.max(error);
+                let pending_max = self
+                    .pending_corrections
+                    .iter()
+                    .fold(stats.max_reconcile_error, |m, &(_, e)| m.max(e));
+                if error > pending_max {
+                    self.pending_corrections.push((tick, error));
+                }
             }
             Some(Reconcile::Snapped) => {
                 stats.snaps += 1;
@@ -408,6 +440,19 @@ impl BotCore {
         let msg = format!("prediction snapped by {error:.2} u at tick {tick} without a respawn");
         tracing::warn!(bot = %stats.name, "{msg}");
         stats.note_error(msg);
+    }
+
+    /// A correction by `error` u at server tick `tick`: counts toward the
+    /// largest reconciliation error unless an own teleport cue explains it.
+    fn judge_correction(&self, tick: u64, error: f32, stats: &mut BotStats) {
+        if self
+            .last_teleport
+            .is_some_and(|t| tick.abs_diff(t) <= TELEPORT_GRACE)
+        {
+            stats.teleport_corrections += 1;
+            return;
+        }
+        stats.max_reconcile_error = stats.max_reconcile_error.max(error);
     }
 
     /// Data id of weapon `w`, if it is one.
@@ -509,6 +554,7 @@ impl BotCore {
                     };
                     if teleported {
                         self.last_life_event = Some(tick as u64);
+                        self.last_teleport = Some(tick as u64);
                     }
                     if source == me {
                         // A beam cue covers `value` ticks of Leech Arc arcs

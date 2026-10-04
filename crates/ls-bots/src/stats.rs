@@ -54,6 +54,10 @@ pub struct BotStats {
     pub snaps: u64,
     /// Snaps explained by lag (starvation) rather than a desync.
     pub lag_snaps: u64,
+    /// Corrections explained by an own teleport cue (a Swap Harpoon swap or
+    /// Borrowed Time rewind shorter than the snap distance); they do not
+    /// count toward `max_reconcile_error`.
+    pub teleport_corrections: u64,
     /// Largest position error (u) of a correction or unexplained snap.
     pub max_reconcile_error: f32,
 
@@ -197,6 +201,7 @@ pub fn summary(stats: &[BotStats], elapsed_secs: f64, policy: DisconnectPolicy) 
         total.corrections += s.corrections;
         total.snaps += s.snaps;
         total.lag_snaps += s.lag_snaps;
+        total.teleport_corrections += s.teleport_corrections;
         total.max_reconcile_error = total.max_reconcile_error.max(s.max_reconcile_error);
         total.kills += s.kills;
         total.deaths += s.deaths;
@@ -231,8 +236,12 @@ pub fn summary(stats: &[BotStats], elapsed_secs: f64, policy: DisconnectPolicy) 
     );
     let _ = writeln!(
         out,
-        "        reconciliation: {} corrections, {} snaps ({} from lag), max error {:.3} u",
-        total.corrections, total.snaps, total.lag_snaps, total.max_reconcile_error
+        "        reconciliation: {} corrections ({} from own teleports), {} snaps ({} from lag), max error {:.3} u",
+        total.corrections,
+        total.teleport_corrections,
+        total.snaps,
+        total.lag_snaps,
+        total.max_reconcile_error
     );
     let _ = writeln!(
         out,

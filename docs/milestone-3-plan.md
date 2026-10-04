@@ -154,6 +154,8 @@ A4 as built (directory):
 A5 as built (bot navigation cache):
 - As planned: process-wide nav grid cache per share code, generator version and `NavConfig`, built once on a `nav-build` worker thread; `nav_cache::builds()` counter; measured 8.4-9.1x less navigation CPU per bot for 8 bots of one world (criterion: at least 5x). A failed build falls back to the per-bot incremental build.
 
+VQ0 (contact distance) merged after wave A: `REPLAY_GOLDEN_HASH` stays `0x8321_c0ab_902b_8ee5` (native and wasm32). With wave A and VQ0 together the `ls-bots` arsenal match (seed `..._0002`) had a bot fire Borrowed Time and rewind 3.3 u, less than the snap distance, so the prediction smoothed it as a correction and the test's 1 u reconciliation limit failed. Bots now judge large corrections like snaps: one that an own Swap Harpoon or Borrowed Time cue explains within 1 s counts as `teleport_corrections`, not toward `max_reconcile_error`.
+
 ### Wave B — modes and lobby features
 
 | Package | Work | Owner areas | Depends on |

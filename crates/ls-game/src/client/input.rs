@@ -52,6 +52,7 @@ impl InputSequencer {
             return None;
         }
         Some(InputMsg {
+            epoch: 0,
             ack_snapshot,
             cmds: self.recent.iter().copied().collect(),
         })

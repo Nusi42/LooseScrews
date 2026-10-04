@@ -52,6 +52,12 @@ pub struct WeaponEntry {
     pub selected: bool,
     /// Number key (1-10, 10 = the `0` key) for primaries; 0 for none.
     pub key: u8,
+    /// Paid shots fired with it (`WeaponState::shots`, the pattern phase).
+    pub shots: u32,
+    /// Low byte of its module state (`ShipState::weapon_state`, e.g. the
+    /// Paint Thrower colour; 0 = unset). Filled by
+    /// [`LoadoutView::set_weapon_states`].
+    pub state: u8,
 }
 
 /// Carried weapons and the gadget, for the weapon HUD.
@@ -97,6 +103,8 @@ impl LoadoutView {
                 max_level: def.max_level,
                 selected: false,
                 key: 0,
+                shots: st.map_or(0, |s| s.shots),
+                state: 0,
             };
             match def.slot {
                 WeaponSlot::Primary => {
@@ -112,6 +120,13 @@ impl LoadoutView {
             }
         }
         view
+    }
+
+    /// Fills every entry's module state byte.
+    pub fn set_weapon_states(&mut self, state: impl Fn(WeaponId) -> u8) {
+        for e in self.primaries.iter_mut().chain(&mut self.secondaries) {
+            e.state = state(e.weapon);
+        }
     }
 
     pub fn primary_ids(&self) -> Vec<WeaponId> {
@@ -174,6 +189,8 @@ pub fn resolve_select(
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Inventory {
     weapons: BTreeMap<WeaponId, WeaponState>,
+    /// Module state bytes from the server (`NetWeapon::state`).
+    states: BTreeMap<WeaponId, u8>,
     pub primary: Option<WeaponId>,
     pub secondary: Option<WeaponId>,
     pub gadget: Option<GadgetId>,
@@ -225,6 +242,17 @@ impl Inventory {
         self.weapons.get(&w).map_or(0, |s| s.ammo)
     }
 
+    /// Module state byte of a carried weapon as the server sent it (0 =
+    /// unset or unknown).
+    pub fn weapon_state(&self, w: WeaponId) -> u8 {
+        self.states.get(&w).copied().unwrap_or(0)
+    }
+
+    /// Server shot counts per carried weapon (the shot predictor's phases).
+    pub fn shot_counts(&self) -> Vec<(WeaponId, u32)> {
+        self.weapons.values().map(|s| (s.weapon, s.shots)).collect()
+    }
+
     /// The inventory the server sent. Weapons outside the table are dropped.
     pub fn from_server(msg: &InventoryMsg, weapons: &WeaponTable) -> Inventory {
         let known = |w: u8| ((w as usize) < weapons.len()).then_some(WeaponId(w));
@@ -237,9 +265,10 @@ impl Inventory {
                         weapon: w,
                         ammo: x.ammo as u32,
                         level: x.level.max(1),
-                        shots: 0,
+                        shots: x.shots,
                     },
                 );
+                inv.states.insert(w, x.state);
             }
         }
         inv.primary = known(msg.primary).filter(|w| inv.carries(*w));
@@ -386,22 +415,30 @@ mod tests {
             tick: 10,
             weapons: vec![
                 ls_net::NetWeapon {
+                    shots: 0,
+                    state: 0,
                     weapon: laser.0,
                     ammo: 0,
                     level: 2,
                 },
                 ls_net::NetWeapon {
+                    shots: 0,
+                    state: 0,
                     weapon: rivet.0,
                     ammo: 0,
                     level: 1,
                 },
                 ls_net::NetWeapon {
+                    shots: 0,
+                    state: 0,
                     weapon: seeker.0,
                     ammo: 2,
                     level: 1,
                 },
                 // Unknown to this client's table: dropped.
                 ls_net::NetWeapon {
+                    shots: 0,
+                    state: 0,
                     weapon: 200,
                     ammo: 1,
                     level: 1,

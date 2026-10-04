@@ -1,14 +1,21 @@
 //! [`ClientSession`]: everything a client (browser via `ls-wasm`, or a bot)
 //! needs after the handshake, as pure logic. The host feeds it received
 //! packets and a fixed-step clock and sends the messages it returns.
+//!
+//! **Match transitions (protocol 5).** A `Welcome` on the open connection
+//! starts the next match: the session rebuilds itself in place (new level,
+//! rule set, terrain, predictor, clock, snapshot history) and reports
+//! [`Incoming::MatchTransition`]; counters, ping nonces and the lobby state
+//! carry over. Inputs are stamped with the `Welcome`'s epoch, and snapshots
+//! of another epoch (the old match's, still in flight) are dropped.
 
 use std::collections::VecDeque;
 
 use ls_math::terrain::TerrainEdit;
 use ls_math::{Quat, Vec3};
 use ls_net::{
-    InventoryMsg, Message, NetEntity, NetEvent, NetPlayer, NetProjectile, NetShip, Snapshot,
-    SnapshotHistory, Welcome,
+    mode_phase, InventoryMsg, LobbyStateMsg, MatchResultsMsg, Message, NetEntity, NetEvent,
+    NetModeState, NetPlayer, NetProjectile, NetShip, Snapshot, SnapshotHistory, Welcome,
 };
 use ls_sim::{
     GadgetTable, GameData, InputCmd, RuleSet, ShipState, ShipTable, ShipTuning, ShipType,
@@ -56,6 +63,14 @@ pub enum Incoming {
     Disconnected(String),
     /// The own inventory changed ([`ClientSession::inventory`]).
     Inventory,
+    /// A new `Welcome` on the open connection: the session now plays the
+    /// next match (new level and terrain: hosts drop their meshes and
+    /// rebuild everything derived from the old match).
+    MatchTransition { epoch: u8 },
+    /// The lobby state changed ([`ClientSession::lobby`]).
+    Lobby,
+    /// The match results arrived ([`ClientSession::results`]).
+    Results,
     /// Anything else (ignored).
     Ignored,
 }
@@ -68,6 +83,10 @@ pub struct SessionStats {
     pub full_snapshots: u64,
     pub delta_snapshots: u64,
     pub edits_applied: u64,
+    /// Match transitions (`Welcome`s on the open connection) handled.
+    pub transitions: u64,
+    /// Snapshots of another match epoch, dropped.
+    pub stale_epoch_snapshots: u64,
 }
 
 /// Client state after `Welcome`: local terrain, predicted local ship,
@@ -105,6 +124,14 @@ pub struct ClientSession {
     entity_history: VecDeque<(u32, Vec<NetEntity>)>,
     /// The own ship's inventory as the server last sent it.
     inventory: Option<InventoryMsg>,
+    /// Match epoch of the `Welcome` (stamped on inputs; snapshots must match).
+    epoch: u8,
+    /// Room code of the `Welcome` (empty for the public room).
+    room_code: String,
+    /// Newest lobby state (`Message::LobbyState`), kept across matches.
+    lobby: Option<LobbyStateMsg>,
+    /// Results of this match, once it ended.
+    results: Option<MatchResultsMsg>,
 }
 
 /// Snapshots of entities kept for interpolation.
@@ -192,8 +219,34 @@ impl ClientSession {
             match_end_tick: None,
             entity_history: VecDeque::new(),
             inventory: None,
+            epoch: welcome.epoch,
+            room_code: welcome.room_code.clone(),
+            lobby: None,
+            results: None,
             conv,
         })
+    }
+
+    /// Starts the next match from a `Welcome` received on the open
+    /// connection (see the module docs): rebuilds everything from it with
+    /// the same game data, keeping the counters (plus one transition), the
+    /// ping nonce sequence and the lobby state. On error the session is
+    /// unchanged.
+    pub fn transition(&mut self, welcome: &Welcome) -> Result<(), GameError> {
+        let data = GameData {
+            weapons: self.weapons.clone(),
+            ships: self.conv.ships().clone(),
+            gadgets: self.gadgets.clone(),
+        };
+        let mut next = Self::from_welcome_with(welcome, data)?;
+        next.stats = SessionStats {
+            transitions: self.stats.transitions + 1,
+            ..self.stats
+        };
+        next.next_nonce = self.next_nonce;
+        next.lobby = self.lobby.take();
+        *self = next;
+        Ok(())
     }
 
     // ----- accessors -------------------------------------------------------
@@ -227,6 +280,49 @@ impl ClientSession {
     /// Ship type of the local ship.
     pub fn ship_type(&self) -> ShipType {
         self.ship_type
+    }
+    /// Match epoch of the current `Welcome`.
+    pub fn epoch(&self) -> u8 {
+        self.epoch
+    }
+    /// Room code of the current match (empty for the public room).
+    pub fn room_code(&self) -> &str {
+        &self.room_code
+    }
+
+    /// Mode state of the newest snapshot (phase, scores, lives, objectives;
+    /// the default before the first snapshot).
+    pub fn mode(&self) -> &NetModeState {
+        static EMPTY: std::sync::OnceLock<NetModeState> = std::sync::OnceLock::new();
+        match &self.latest {
+            Some(s) => &s.mode,
+            None => EMPTY.get_or_init(NetModeState::default),
+        }
+    }
+
+    /// Newest lobby state from the server, if any.
+    pub fn lobby(&self) -> Option<&LobbyStateMsg> {
+        self.lobby.as_ref()
+    }
+
+    /// Results of this match, once the server sent them.
+    pub fn results(&self) -> Option<&MatchResultsMsg> {
+        self.results.as_ref()
+    }
+
+    /// The message that marks the player ready (or not) for the next match.
+    pub fn ready(&self, ready: bool) -> Message {
+        Message::Ready { ready }
+    }
+
+    /// The message that picks a team for the next match (`None` = auto).
+    pub fn pick_team(&self, team: Option<u8>) -> Message {
+        Message::PickTeam { team }
+    }
+
+    /// The message that asks to spectate (or to play again).
+    pub fn spectate(&self, spectate: bool) -> Message {
+        Message::Spectate { spectate }
     }
 
     /// Players of the newest snapshot (names, teams, ship types, gadgets).
@@ -466,7 +562,9 @@ impl ClientSession {
         };
         self.predictor.predict(predicted, &self.terrain);
         let ack = self.newest_tick();
-        Message::Input(self.inputs.message(ack).expect("a command was just added"))
+        let mut msg = self.inputs.message(ack).expect("a command was just added");
+        msg.epoch = self.epoch;
+        Message::Input(msg)
     }
 
     /// True once the server receives our inputs in time (see [`ClientSession::tick`]).
@@ -489,6 +587,12 @@ impl ClientSession {
     /// Handles one decoded message from the server.
     pub fn handle_message(&mut self, msg: Message) -> Result<Incoming, GameError> {
         match msg {
+            Message::Snapshot(sm) if sm.epoch != self.epoch => {
+                // The previous match's, still in flight: its baselines and
+                // edits belong to another world.
+                self.stats.stale_epoch_snapshots += 1;
+                Ok(Incoming::Ignored)
+            }
             Message::Snapshot(sm) => {
                 if sm.baseline.is_some() {
                     self.stats.delta_snapshots += 1;
@@ -529,6 +633,20 @@ impl ClientSession {
                 }
                 Ok(Incoming::Inventory)
             }
+            Message::Welcome(w) => {
+                let w = ls_net::check_welcome(Message::Welcome(w))
+                    .map_err(|e| GameError::Protocol(e.to_string()))?;
+                self.transition(&w)?;
+                Ok(Incoming::MatchTransition { epoch: w.epoch })
+            }
+            Message::LobbyState(l) => {
+                self.lobby = Some(*l);
+                Ok(Incoming::Lobby)
+            }
+            Message::MatchResults(r) => {
+                self.results = Some(*r);
+                Ok(Incoming::Results)
+            }
             Message::Disconnect { reason } => Ok(Incoming::Disconnected(reason)),
             Message::Reject(r) => Ok(Incoming::Disconnected(r.message)),
             _ => Ok(Incoming::Ignored),
@@ -558,11 +676,19 @@ impl ClientSession {
         if snap.match_ticks_left > 0 {
             self.match_end_tick = Some(tick as u64 + snap.match_ticks_left as u64);
         }
-        let end = match self.match_end_tick {
-            Some(end) if snap.match_ticks_left == 0 => Some(end.min(tick as u64)),
-            Some(end) => Some(end),
-            None if snap.match_ticks_left == 0 => Some(tick as u64),
-            None => None,
+        let end = if snap.mode.phase == mode_phase::ENDED && snap.mode != NetModeState::default() {
+            // A mode that ended early (kill target, last ship standing):
+            // the room sends the last simulated tick as `end_tick`.
+            let e = (snap.mode.end_tick as u64).min(tick as u64);
+            self.match_end_tick = Some(self.match_end_tick.map_or(e, |m| m.min(e)));
+            self.match_end_tick
+        } else {
+            match self.match_end_tick {
+                Some(end) if snap.match_ticks_left == 0 => Some(end.min(tick as u64)),
+                Some(end) => Some(end),
+                None if snap.match_ticks_left == 0 => Some(tick as u64),
+                None => None,
+            }
         };
         if let Some(end) = end {
             self.predictor.freeze_after(end, &self.terrain);

@@ -17,6 +17,7 @@ use ls_math::{Quat, TerrainEdit, Vec3};
 
 use crate::bits::{BitReader, BitWriter};
 use crate::error::{DecodeError, EncodeError};
+use crate::mode::{NetModeState, PackedModeState};
 use crate::quant::{pack_quat, unpack_quat, PackedVec3, Quantizer};
 
 /// Ship ids are `0..MAX_SHIPS`; a snapshot carries them as a 32-bit mask.
@@ -239,6 +240,8 @@ pub struct Snapshot {
     pub scores: Vec<u32>,
     /// Ticks until the match ends.
     pub match_ticks_left: u32,
+    /// Generic mode state (protocol 5): phase, scores, lives, objectives.
+    pub mode: NetModeState,
 }
 
 impl Snapshot {
@@ -264,6 +267,8 @@ pub struct PackedSnapshot {
     pub players: Vec<NetPlayer>,
     pub scores: Vec<u32>,
     pub match_ticks_left: u32,
+    /// Generic mode state with quantized objective positions.
+    pub mode: PackedModeState,
     /// Per-axis ship motion scale for delta prediction (see
     /// [`Quantizer::ship_motion_scale`](crate::Quantizer::ship_motion_scale)):
     /// packed position steps one packed ship velocity step moves per tick, in
@@ -539,6 +544,7 @@ impl Quantizer {
             players,
             scores: s.scores.clone(),
             match_ticks_left: s.match_ticks_left,
+            mode: self.pack_mode(&s.mode),
             ship_motion: self.ship_motion_scale(),
             // Only snapshots with projectiles pay for the scale (a delta
             // sends it again when it changes against its baseline).
@@ -566,6 +572,7 @@ impl Quantizer {
             players: s.players.clone(),
             scores: s.scores.clone(),
             match_ticks_left: s.match_ticks_left,
+            mode: self.unpack_mode(&s.mode),
         }
     }
 }

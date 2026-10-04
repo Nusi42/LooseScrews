@@ -15,7 +15,11 @@ end-to-end picture; the exact rules and numbers live next to the code:
 The wire format is versioned by `ls_net::PROTOCOL_VERSION` (checked in `Hello`): 1 was M1;
 2 added the M2 entities, players, cues, data hash and ship choice; 3 predictive ship deltas;
 4 paint colours in paint edits, `Welcome::edit_count` (pruned edit logs) and predictive
-projectile deltas. This page describes version 4.
+projectile deltas; 5 (M3) the generic mode state in snapshots, match transitions on an open
+connection (`Welcome` with a match epoch, carried by `Input` and `Snapshot`), the lobby and
+results messages, room and party codes in `Hello` and weapon shot counts and state bytes in
+`Inventory` (see [Match transitions, lobby and mode state](#match-transitions-lobby-and-mode-state-protocol-5)).
+This page describes version 5.
 
 ## Tick model
 
@@ -101,7 +105,7 @@ Shots: the browser also predicts its own projectiles (`crates/ls-wasm/src/shots.
 server's projectile when a snapshot shows a match (the difference fades as a render offset).
 Unmatched predictions disappear after 4 ticks. Each weapon has a `ShotModel` mirroring its
 module's `fire`: the generic pattern, the Scatter Laser's alternating fan and the Corkscrew's
-helix (their phase inferred from the server's projectiles), the Scrap Shotgun's centre pellet
+helix (their phase from the server's shot counts in the inventory, protocol 5), the Scrap Shotgun's centre pellet
 only (its cone is random), and nothing for the Leech Arc (instant), Borrowed Time and the Prox
 Mine (the cost is still predicted). Charge weapons are predicted on release; Borrowed Time
 takes the weapons offline locally as it fires. Bots do not predict shots.
@@ -129,7 +133,8 @@ Wire layout (`crates/ls-net/src/snapshot.rs`): `tick`, optional baseline (as a `
 (a 32-bit presence mask, then each ship), projectiles (17 bytes full: id, kind, owner, state
 byte, position, velocity), generic entities (debris, pickups, scrap, wrecks, decoys, ghosts,
 dust: kind, visual, owner, team, position, velocity and rotation with presence bits, 4 state
-bytes) and the players list (names, teams, ship types, gadgets). Projectiles and entities are
+bytes), the players list (names, teams, ship types, gadgets) and (protocol 5) the mode state
+(below). Projectiles and entities are
 **id lists**: in a full snapshot a count, then per item its id as a varint gap from the
 previous one and its full state; in a delta one bit per item of the baseline's list ("present
 and unchanged", so resting debris, pickups and wrecks cost 1 bit), then for the others 1 bit
@@ -138,7 +143,7 @@ as an id list (new projectiles predicted from their owner, see below). Players i
 bit "changed", then a 32-bit presence mask and a
 change bit per known player; only changed or new players are sent. Entity positions are
 `ENTITY_POS_SHIFT` (3) bits coarser than ship positions (about 0.03 u), so drifting debris
-moves few steps between snapshots. Protocol version 4; what the entity and player fields mean
+moves few steps between snapshots. The entity and player sections are unchanged since protocol 4; what their fields mean
 is in [arsenal-framework.md](arsenal-framework.md#replication-ls-net-protocol-4). The server
 filters each client's snapshot through `ls_net::Relevance` first (a cloaked enemy is left
 out; moving debris farther than 100 u from the viewer's ship too, `DEBRIS_RELEVANCE_RADIUS`)
@@ -261,8 +266,39 @@ client's cooldown estimate only for a key-press off or an instant use. Bots use 
 | `Events` | reliable | server to client | events and cues of one snapshot interval |
 | `Ping` / `Pong` | unreliable | both | clock sync and round trip |
 | `SelectShip` | reliable | client to server | ship type for the next respawn |
-| `Inventory` | reliable | server to client | the own ship's weapons, ammo, levels, selection and gadget, when they change |
+| `Inventory` | reliable | server to client | the own ship's weapons, ammo, levels, shot counts, module state bytes, selection and gadget, when they change |
+| `LobbyState` | reliable | server to client | lobby phase and its ticks left, room code, next mode, rule set and world, player range, teams, players (team pick, ready, spectator) |
+| `MatchResults` | reliable | server to client | once when the mode ends (and to players joining afterwards): winner side, team scores, rows (kills, deaths, score, name) |
+| `Ready` / `PickTeam` / `Spectate` | reliable | client to server | lobby requests, queued for the host's lobby (`Room::take_lobby_requests`) |
 | `Disconnect` | reliable | both | reason |
+
+## Match transitions, lobby and mode state (protocol 5)
+
+- **Mode state.** The last section of every snapshot is the generic mode state
+  (`ls_net::NetModeState`, the wire form of `ls_sim::ModeView`): mode kind, teams, phase and
+  winner, timer end, stage and its end, team scores, the paintable surface, the score target,
+  view flags, per-player rows (wire id, side, score, lives, meter, flags; the top 32 scores)
+  and up to 8 objective markers (id, kind, team, holder, state byte, timer end tick, radius,
+  position). A full snapshot sends it in full (1 bit when empty), a delta 1 bit "unchanged" or
+  per section (header, team scores, players with a presence mask and per-player change bits,
+  objectives with meta and position diffs); see `crates/ls-net/src/mode.rs`. Once the mode
+  ended, `end_tick` is the last simulated tick and `match_ticks_left` is 0, so clients freeze
+  their prediction exactly where the server stopped (also for modes that end early).
+- **Match transition.** A host that starts the next match sends every connected client a new
+  `Welcome` on the open connection (a new `Room` per match, `RoomConfig::epoch` incremented).
+  `ClientSession` rebuilds itself in place (level, rule set, terrain, predictor, clock,
+  snapshot history; counters, ping nonces and the lobby state carry over) and reports
+  `Incoming::MatchTransition`. Inputs carry the `Welcome`'s epoch and snapshots the room's;
+  both ends drop packets of another epoch (unreliable packets of the old match still in
+  flight). The new room sends snapshots only after the client's first input of the new
+  epoch, so a transition costs one full snapshot like a join
+  (`crates/ls-game/tests/transition.rs`).
+- **Lobby and results.** The room queues `Ready`, `PickTeam` and `Spectate` for its host
+  (`Room::take_lobby_requests`); the host sends `LobbyState` (`Room::send` /
+  `Room::broadcast`). `MatchResults` goes out once when the mode ends (kills and deaths are
+  tallied from the simulation's kill events) and to clients joining a finished match.
+- **Hello.** Optional room code (private rooms) and party code (`P-XXXXXX`); the `Welcome`
+  echoes the room code.
 
 ## Terrain edit replication
 
@@ -315,7 +351,8 @@ rules, then moved back. The view-tick estimate, guards and caveats are in
 `ls_net::Transport` is poll-based and has two channels: `send_unreliable` (may be lost,
 duplicated or reordered; at most `max_unreliable_size`, default 1200 B) and `send_reliable`
 (exactly once, in order). `Message::channel()` picks the channel: `Input`, `Snapshot`, `Ping`,
-`Pong` are unreliable; `Hello`, `Welcome`, `Reject`, `Events`, `Disconnect` are reliable. An
+`Pong` are unreliable; `Hello`, `Welcome`, `Reject`, `Events`, `Disconnect` and the lobby
+messages are reliable. An
 unreliable message larger than the limit (for example a big full snapshot) is sent reliably.
 Every connection starts with `Hello` (magic `LSCR`, `PROTOCOL_VERSION`, data hash); the
 server answers `Welcome` or `Reject` (whose layout is frozen across versions so old clients

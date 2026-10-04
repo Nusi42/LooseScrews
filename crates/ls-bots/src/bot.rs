@@ -227,7 +227,16 @@ impl BotCore {
                 Ok(Flow::Continue)
             }
             Ok(Incoming::Disconnected(reason)) => Ok(Flow::Disconnected(reason)),
-            Ok(Incoming::Inventory | Incoming::Ignored) => Ok(Flow::Continue),
+            Ok(Incoming::Inventory | Incoming::Ignored | Incoming::Lobby | Incoming::Results) => {
+                Ok(Flow::Continue)
+            }
+            // The session rebuilt itself for the next match, but the brain
+            // (navigation grid, spawn points) belongs to the old level: until
+            // bots handle transitions in place (M3 wave C), rejoin as after a
+            // match restart.
+            Ok(Incoming::MatchTransition { .. }) => Ok(Flow::Disconnected(
+                ls_game::MATCH_RESTART_REASON.to_string(),
+            )),
         }
     }
 

@@ -20,6 +20,7 @@
 pub mod client;
 pub mod convert;
 pub mod error;
+pub mod mode;
 #[cfg(feature = "server")]
 pub mod server;
 pub mod setup;

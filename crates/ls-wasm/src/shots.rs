@@ -21,10 +21,12 @@
 //! progress is exposed for the HUD's charge meter ([`ShotPredictor::charge`]).
 //!
 //! **Shot phase.** Alternating and rotating patterns depend on how many
-//! shots the weapon fired before (`ls_sim::WeaponState::shots`), which the
-//! server does not send. The predictor counts its own shots per weapon and,
-//! when a snapshot shows a projectile that another phase explains better,
-//! re-phases that volley and the ones after it and corrects its counter.
+//! shots the weapon fired before (`ls_sim::WeaponState::shots`). The server
+//! sends that count with the inventory (`ls_net::NetWeapon::shots`, protocol
+//! 5) whenever it changes; the predictor counts its own shots per weapon on
+//! top of it and, when an inventory shows another count, rebuilds the
+//! volleys it predicted after the inventory's tick with the server's phase
+//! ([`ShotPredictor::on_inventory`]).
 //!
 //! Resources come from the newest snapshot's own-ship status minus the cost
 //! of predicted shots after that snapshot (regeneration since then is
@@ -69,8 +71,8 @@ const MATCH_MIN_COS: f32 = 0.98;
 /// At most this many unconfirmed shots are kept (a stuck trigger with no
 /// snapshots arriving must not grow without bound).
 const MAX_PENDING: usize = 256;
-/// A re-phase must explain a server projectile at least this much better (u).
-const REPHASE_MARGIN: f32 = 1e-3;
+/// Predicted volleys remembered for phase sync ([`ShotPredictor::on_inventory`]).
+const MAX_FIRED_LOG: usize = 256;
 
 /// How the client predicts a weapon's shot (mirrors its module's `fire`).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -257,7 +259,7 @@ pub struct ShotStats {
     pub dropped: u64,
     /// Own server projectiles that matched no prediction.
     pub unpredicted: u64,
-    /// Volleys re-phased after a snapshot showed another shot phase.
+    /// Volleys rebuilt after an inventory showed another shot count.
     pub rephased: u64,
 }
 
@@ -342,6 +344,9 @@ pub struct ShotPredictor {
     stats: ShotStats,
     /// Shots fired per weapon (the next volley's phase).
     shot_count: BTreeMap<WeaponId, u32>,
+    /// Paid shots predicted so far (tick, weapon), oldest first: the shots
+    /// an inventory of an earlier tick does not count yet.
+    fired: std::collections::VecDeque<(u64, WeaponId)>,
     specs: BTreeMap<WeaponId, WeaponSpec>,
     charge: Option<ChargeMirror>,
     /// No shots before this tick (Borrowed Time takes the weapons offline).
@@ -641,6 +646,10 @@ impl ShotPredictor {
         }
         let phase = self.shot_count(w);
         self.shot_count.insert(w, phase.wrapping_add(1));
+        if self.fired.len() >= MAX_FIRED_LOG {
+            self.fired.pop_front();
+        }
+        self.fired.push_back((tick, w));
         let volley = build_volley(
             &spec,
             VolleyStart {
@@ -702,28 +711,7 @@ impl ShotPredictor {
 
     /// Matches the own projectiles of the newest snapshot (tick `snap_tick`)
     /// with predicted shots and drops predictions the server never showed.
-    /// Re-phased volleys are not clipped at terrain (see
-    /// [`ShotPredictor::reconcile_in`]).
     pub fn reconcile(&mut self, snap_tick: u64, own: &[NetProjectile]) {
-        self.reconcile_impl(snap_tick, own, None);
-    }
-
-    /// [`ShotPredictor::reconcile`] with the terrain for re-phased volleys.
-    pub fn reconcile_in<T: TerrainQuery + ?Sized>(
-        &mut self,
-        snap_tick: u64,
-        own: &[NetProjectile],
-        terrain: &T,
-    ) {
-        self.reconcile_impl(snap_tick, own, Some(&TerrainRef(terrain)));
-    }
-
-    fn reconcile_impl(
-        &mut self,
-        snap_tick: u64,
-        own: &[NetProjectile],
-        terrain: Option<&dyn TerrainQuery>,
-    ) {
         let t = snap_tick as f64;
         let mut next_own = BTreeMap::new();
         for p in own {
@@ -735,7 +723,6 @@ impl ShotPredictor {
                 next_own.insert(p.id, *off);
                 continue;
             }
-            self.infer_phase(snap_tick, p, terrain);
             let tolerance = match_tolerance(p);
             let best = self
                 .pending
@@ -780,102 +767,70 @@ impl ShotPredictor {
         self.stats.dropped += dropped;
     }
 
-    /// If another shot phase explains the new server projectile `p` better
-    /// than the predicted one, re-phases that volley and every later volley
-    /// of the weapon, and corrects the weapon's shot counter.
-    fn infer_phase(
+    /// Takes the server's shot counts (`ls_net::NetWeapon::shots` of an
+    /// inventory for server tick `tick`): each weapon's counter becomes the
+    /// server's count plus the shots predicted after `tick`, and volleys
+    /// predicted after `tick` with another phase are rebuilt with the
+    /// server's (not clipped at terrain without one).
+    pub fn on_inventory<T: TerrainQuery + ?Sized>(
         &mut self,
-        snap_tick: u64,
-        p: &NetProjectile,
-        terrain: Option<&dyn TerrainQuery>,
+        tick: u64,
+        shots: &[(WeaponId, u32)],
+        terrain: Option<&T>,
     ) {
-        let w = WeaponId(p.kind);
-        let Some(spec) = self.specs.get(&w).copied() else {
-            return;
-        };
-        let period = spec.model.period();
-        if period <= 1 {
-            return;
-        }
-        let t = snap_tick as f64;
-        let tolerance = match_tolerance(p);
-        let fit = |s: &PredictedShot| -> Option<f32> {
-            same_direction(s.vel_at(t), p.vel)
-                .then(|| s.pos_at(t).distance(p.pos))
-                .filter(|d| *d <= tolerance)
-        };
-        let volleys: BTreeSet<u64> = self
-            .pending
-            .iter()
-            .filter(|s| s.weapon == w && s.tick <= snap_tick && s.index != u8::MAX)
-            .map(|s| s.tick)
-            .collect();
-        // Best fit with the predicted phases, and with any other phase.
-        let current = self
-            .pending
-            .iter()
-            .filter(|s| s.weapon == w && volleys.contains(&s.tick) && s.index != u8::MAX)
-            .filter_map(fit)
-            .fold(f32::INFINITY, f32::min);
-        let mut best: Option<(f32, u64, u32, u32)> = None;
-        for &vt in &volleys {
-            let Some(first) = self
-                .pending
+        for &(w, server) in shots {
+            let later: Vec<u64> = self
+                .fired
                 .iter()
-                .find(|s| s.weapon == w && s.tick == vt && s.index != u8::MAX)
-                .copied()
-            else {
-                continue;
-            };
-            let base = first.phase - first.phase % period;
-            for k in 0..period {
-                let phase = base.wrapping_add(k);
-                if phase == first.phase {
+                .filter(|(t, x)| *x == w && *t > tick)
+                .map(|(t, _)| *t)
+                .collect();
+            for (j, &vt) in later.iter().enumerate() {
+                let phase = server.wrapping_add(j as u32);
+                let shots: Vec<PredictedShot> = self
+                    .pending
+                    .iter()
+                    .filter(|s| s.weapon == w && s.tick == vt && s.index != u8::MAX)
+                    .copied()
+                    .collect();
+                let Some(first) = shots.first().copied() else {
+                    continue;
+                };
+                let Some(spec) = self.specs.get(&w).copied() else {
+                    continue;
+                };
+                if first.phase == phase || spec.model.period() <= 1 {
+                    // Same pattern: only the counter needs the new phase.
+                    for s in self
+                        .pending
+                        .iter_mut()
+                        .filter(|s| s.weapon == w && s.tick == vt)
+                    {
+                        s.phase = phase;
+                    }
                     continue;
                 }
-                let d =
-                    build_volley::<dyn TerrainQuery>(&spec, VolleyStart::of(&first, phase), None)
-                        .iter()
-                        .filter_map(fit)
-                        .fold(f32::INFINITY, f32::min);
-                if d + REPHASE_MARGIN < current && best.is_none_or(|b| d < b.0) {
-                    best = Some((d, vt, first.phase, phase));
+                let start = VolleyStart::of(&first, phase);
+                let rebuilt = match terrain {
+                    Some(t) => build_volley(&spec, start, Some(&TerrainRef(t))),
+                    None => build_volley::<dyn TerrainQuery>(&spec, start, None),
+                };
+                self.pending
+                    .retain(|s| !(s.weapon == w && s.tick == vt && s.index != u8::MAX));
+                for (mut s, old) in rebuilt.into_iter().zip(shots.iter()) {
+                    s.cost = old.cost;
+                    s.hull_cost = old.hull_cost;
+                    self.pending.push(s);
                 }
+                self.stats.rephased += 1;
             }
+            self.shot_count
+                .insert(w, server.wrapping_add(later.len() as u32));
         }
-        let Some((_, vt, old, new)) = best else {
-            return;
-        };
-        let delta = new.wrapping_sub(old);
-        let later: BTreeSet<u64> = self
-            .pending
-            .iter()
-            .filter(|s| s.weapon == w && s.tick >= vt && s.index != u8::MAX)
-            .map(|s| s.tick)
-            .collect();
-        for tick in later {
-            let shots: Vec<PredictedShot> = self
-                .pending
-                .iter()
-                .filter(|s| s.weapon == w && s.tick == tick && s.index != u8::MAX)
-                .copied()
-                .collect();
-            let Some(first) = shots.first().copied() else {
-                continue;
-            };
-            let phase = first.phase.wrapping_add(delta);
-            let rebuilt = build_volley(&spec, VolleyStart::of(&first, phase), terrain);
-            self.pending
-                .retain(|s| !(s.weapon == w && s.tick == tick && s.index != u8::MAX));
-            for (mut s, old) in rebuilt.into_iter().zip(shots.iter()) {
-                s.cost = old.cost;
-                s.hull_cost = old.hull_cost;
-                self.pending.push(s);
-            }
-            self.stats.rephased += 1;
+        // Inventories come in order: older shots are counted from now on.
+        while self.fired.front().is_some_and(|(t, _)| *t <= tick) {
+            self.fired.pop_front();
         }
-        let count = self.shot_count(w);
-        self.shot_count.insert(w, count.wrapping_add(delta));
     }
 
     /// Fades reconciliation offsets by `ticks` simulation ticks.

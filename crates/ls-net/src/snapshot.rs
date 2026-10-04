@@ -34,6 +34,8 @@
 //!                     present player in id order [in baseline: 1 bit
 //!                     "changed"] and, if changed or new, team, ship type,
 //!                     gadget, name
+//! mode                full: the mode state; delta: 1 bit "changed" + the
+//!                     changed sections (see [`crate::mode`])
 //! ```
 //!
 //! An **id list** (projectiles, entities) in a full snapshot is a varint
@@ -117,6 +119,7 @@ use std::collections::VecDeque;
 
 use crate::bits::{unzigzag16, zigzag16, BitReader, BitWriter};
 use crate::error::{DecodeError, EncodeError};
+use crate::mode::{check_mode, read_mode_delta, read_mode_full, write_mode_delta, write_mode_full};
 use crate::quant::pack_quat;
 use crate::quant::{PackedVec3, MOTION_SCALE_SHIFT};
 use crate::wire::{
@@ -292,6 +295,7 @@ fn check_lists(s: &PackedSnapshot) -> Result<(), EncodeError> {
     for e in &s.edits {
         check_edit(e)?;
     }
+    check_mode(&s.mode)?;
     Ok(())
 }
 
@@ -1775,6 +1779,10 @@ pub fn write_snapshot(
             }
         }
     }
+    match baseline {
+        None => write_mode_full(w, &snap.mode),
+        Some(b) => write_mode_delta(w, &snap.mode, &b.mode),
+    }
     Ok(())
 }
 
@@ -1908,6 +1916,10 @@ pub fn read_snapshot(
         Some(b) if r.read_bool()? => read_players_delta(r, &b.players)?,
         Some(b) => b.players.clone(),
     };
+    let mode = match baseline {
+        None => read_mode_full(r)?,
+        Some(b) => read_mode_delta(r, &b.mode)?,
+    };
 
     Ok((
         PackedSnapshot {
@@ -1921,6 +1933,7 @@ pub fn read_snapshot(
             players,
             scores,
             match_ticks_left,
+            mode,
             ship_motion,
             projectile_motion,
         },
@@ -2066,6 +2079,7 @@ mod tests {
             id += 1 + rng.below(9) as u16;
         }
         PackedSnapshot {
+            mode: Default::default(),
             tick,
             ack_input: tick.wrapping_add(rng.range_i32(-20, 20) as u32),
             edit_base: rng.below(10_000),

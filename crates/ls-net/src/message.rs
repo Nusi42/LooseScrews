@@ -20,11 +20,23 @@
 //!    picks its ship type for the next respawn with [`Message::SelectShip`].
 //!    The server sends a client its own ship's carried weapons, ammo, levels
 //!    and gadget with [`Message::Inventory`] (reliable) whenever they change.
+//! 4. Match transition (protocol 5): when the next match starts, the server
+//!    sends a new [`Welcome`] on the open connection. Its `epoch` differs
+//!    from the previous match's; the client rebuilds its world and stamps
+//!    its inputs with the new epoch, and both ends drop inputs and snapshots
+//!    of another epoch (unreliable packets may still be in flight).
+//!    Between matches the server sends [`Message::LobbyState`] and
+//!    [`Message::MatchResults`]; clients answer with [`Message::Ready`],
+//!    [`Message::PickTeam`] and [`Message::Spectate`].
 
 use ls_math::{Aabb, TerrainEdit, Vec3};
 
 use crate::bits::{BitReader, BitWriter};
 use crate::error::{DecodeError, EncodeError, HandshakeError};
+use crate::mode::{
+    read_lobby, read_results, write_lobby, write_results, LobbyStateMsg, MatchResultsMsg,
+    MAX_CODE_LEN,
+};
 use crate::quant::QuantConfig;
 use crate::snapshot::{check_edit, read_snapshot, write_snapshot, Baselines, NoBaselines};
 use crate::wire::{
@@ -36,8 +48,11 @@ use crate::wire::{
 /// players, cues, data hash, ship choice; 3: predictive ship deltas with
 /// the snapshot's ship motion scale; 4: paint colours in paint edits,
 /// `Welcome::edit_count` (pruned edit logs), predictive projectile deltas
-/// with the snapshot's projectile motion scale).
-pub const PROTOCOL_VERSION: u16 = 4;
+/// with the snapshot's projectile motion scale; 5: M3 modes and lobby:
+/// mode state in snapshots, `Welcome` on an open connection with a match
+/// epoch on inputs and snapshots, lobby and results messages, room and
+/// party codes in `Hello`, weapon shots and state in `Inventory`).
+pub const PROTOCOL_VERSION: u16 = 5;
 /// First bytes of a [`Hello`] body: ASCII `LSCR` when read as little-endian.
 pub const MAGIC: u32 = u32::from_le_bytes(*b"LSCR");
 
@@ -80,6 +95,10 @@ pub struct Hello {
     pub data_hash: u64,
     /// Ship type index the player would like (`None` = server default).
     pub ship_type: Option<u8>,
+    /// Private room to join (`None` = the public room).
+    pub room: Option<String>,
+    /// Party code (`P-XXXXXX`) to join with.
+    pub party: Option<String>,
 }
 
 impl Hello {
@@ -92,6 +111,8 @@ impl Hello {
             preferred_team,
             data_hash: 0,
             ship_type: None,
+            room: None,
+            party: None,
         }
     }
 
@@ -102,6 +123,18 @@ impl Hello {
 
     pub fn with_ship_type(mut self, ship_type: Option<u8>) -> Self {
         self.ship_type = ship_type;
+        self
+    }
+
+    /// Asks for a private room by code.
+    pub fn with_room(mut self, room: Option<String>) -> Self {
+        self.room = room;
+        self
+    }
+
+    /// Joins with a party code.
+    pub fn with_party(mut self, party: Option<String>) -> Self {
+        self.party = party;
         self
     }
 }
@@ -137,6 +170,12 @@ pub struct Welcome {
     /// Number of edits so far (`>= edit_log.len()`): the sequence number of
     /// the next edit. Travels as the number of left-out edits.
     pub edit_count: u32,
+    /// Match epoch: changes with every match on a connection. Inputs and
+    /// snapshots carry it, so packets of the previous match still in
+    /// flight are dropped after a transition.
+    pub epoch: u8,
+    /// Code of the room this match runs in (empty for the public room).
+    pub room_code: String,
 }
 
 /// Why the server refused or dropped a client.
@@ -188,6 +227,8 @@ pub struct Reject {
 /// lost datagram rarely costs a command.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InputMsg {
+    /// Match epoch of the `Welcome` the commands belong to.
+    pub epoch: u8,
     /// Tick of the newest snapshot the client has received and stored; the
     /// server uses it as the delta baseline.
     pub ack_snapshot: Option<u32>,
@@ -199,6 +240,8 @@ pub struct InputMsg {
 /// A snapshot, optionally delta-encoded against an earlier one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SnapshotMsg {
+    /// Match epoch (see [`Welcome::epoch`]).
+    pub epoch: u8,
     /// Tick of the baseline this snapshot is (or should be) encoded against.
     /// When encoding, the baseline must be available from the `Baselines`
     /// passed in; after decoding it tells which baseline was used.
@@ -233,6 +276,22 @@ pub enum Message {
     },
     /// Server: the receiving client's own inventory (sent when it changes).
     Inventory(InventoryMsg),
+    /// Server: lobby state (on every change and on join).
+    LobbyState(Box<LobbyStateMsg>),
+    /// Server: the result of the match that just ended.
+    MatchResults(Box<MatchResultsMsg>),
+    /// Client: ready (or no longer ready) for the next match.
+    Ready {
+        ready: bool,
+    },
+    /// Client: team for the next match (`None` = auto-balance).
+    PickTeam {
+        team: Option<u8>,
+    },
+    /// Client: spectate (or play again) from the next match on.
+    Spectate {
+        spectate: bool,
+    },
 }
 
 /// Most weapons an [`InventoryMsg`] lists.
@@ -247,6 +306,12 @@ pub struct NetWeapon {
     pub ammo: u16,
     /// Upgrade level (1..).
     pub level: u8,
+    /// Paid shots fired with this weapon (`ls_sim::WeaponState::shots`,
+    /// wrapping): the phase of alternating and rotating patterns.
+    pub shots: u32,
+    /// Low byte of the weapon module's state (`ShipState::weapon_state`,
+    /// e.g. the Paint Thrower colour).
+    pub state: u8,
 }
 
 /// The own ship's inventory as the simulation has it at `tick` (dead ships
@@ -274,6 +339,26 @@ mod tag {
     pub const DISCONNECT: u8 = 9;
     pub const SELECT_SHIP: u8 = 10;
     pub const INVENTORY: u8 = 11;
+    pub const LOBBY_STATE: u8 = 12;
+    pub const MATCH_RESULTS: u8 = 13;
+    pub const READY: u8 = 14;
+    pub const PICK_TEAM: u8 = 15;
+    pub const SPECTATE: u8 = 16;
+}
+
+fn write_opt_str(w: &mut BitWriter, s: &Option<String>) {
+    w.write_bool(s.is_some());
+    if let Some(s) = s {
+        w.write_str(s);
+    }
+}
+
+fn read_opt_str(r: &mut BitReader, max: usize) -> Result<Option<String>, DecodeError> {
+    Ok(if r.read_bool()? {
+        Some(r.read_string(max)?)
+    } else {
+        None
+    })
 }
 
 fn check_len(s: &str, max: usize, what: &'static str) -> Result<(), EncodeError> {
@@ -312,6 +397,28 @@ fn read_quant(r: &mut BitReader) -> Result<QuantConfig, DecodeError> {
 }
 
 impl Message {
+    /// The message's name (for logs and error messages).
+    pub fn name(&self) -> &'static str {
+        match self {
+            Message::Hello(_) => "Hello",
+            Message::Welcome(_) => "Welcome",
+            Message::Reject(_) => "Reject",
+            Message::Input(_) => "Input",
+            Message::Snapshot(_) => "Snapshot",
+            Message::Events(_) => "Events",
+            Message::Ping { .. } => "Ping",
+            Message::Pong { .. } => "Pong",
+            Message::Disconnect { .. } => "Disconnect",
+            Message::SelectShip { .. } => "SelectShip",
+            Message::Inventory(_) => "Inventory",
+            Message::LobbyState(_) => "LobbyState",
+            Message::MatchResults(_) => "MatchResults",
+            Message::Ready { .. } => "Ready",
+            Message::PickTeam { .. } => "PickTeam",
+            Message::Spectate { .. } => "Spectate",
+        }
+    }
+
     /// The channel this message is meant for.
     pub fn channel(&self) -> Channel {
         match self {
@@ -334,6 +441,9 @@ impl Message {
         match self {
             Message::Hello(h) => {
                 check_len(&h.name, MAX_NAME_LEN, "name too long")?;
+                for code in h.room.iter().chain(&h.party) {
+                    check_len(code, MAX_CODE_LEN, "room or party code too long")?;
+                }
                 w.write_u8(tag::HELLO);
                 w.write_u32(MAGIC);
                 w.write_u16(h.protocol_version);
@@ -347,6 +457,8 @@ impl Message {
                 if let Some(t) = h.ship_type {
                     w.write_u8(t);
                 }
+                write_opt_str(&mut w, &h.room);
+                write_opt_str(&mut w, &h.party);
             }
             Message::Welcome(wl) => {
                 check_len(&wl.share_code, MAX_SHARE_CODE_LEN, "share code too long")?;
@@ -367,6 +479,7 @@ impl Message {
                 if wl.player_id >= MAX_SHIPS {
                     return Err(EncodeError::OutOfRange("player id"));
                 }
+                check_len(&wl.room_code, MAX_CODE_LEN, "room code too long")?;
                 wl.quant.validate().map_err(EncodeError::OutOfRange)?;
                 w.write_u8(tag::WELCOME);
                 w.write_u16(wl.protocol_version);
@@ -386,6 +499,8 @@ impl Message {
                     write_edit(&mut w, &bits);
                 }
                 w.write_varint(pruned as u64);
+                w.write_u8(wl.epoch);
+                w.write_str(&wl.room_code);
             }
             Message::Reject(rj) => {
                 check_len(&rj.message, MAX_REASON_LEN, "reject message too long")?;
@@ -406,6 +521,7 @@ impl Message {
                     }
                 }
                 w.write_u8(tag::INPUT);
+                w.write_u8(inp.epoch);
                 w.write_bool(inp.ack_snapshot.is_some());
                 if let Some(t) = inp.ack_snapshot {
                     w.write_u32(t);
@@ -435,6 +551,7 @@ impl Message {
                     None => None,
                 };
                 w.write_u8(tag::SNAPSHOT);
+                w.write_u8(sm.epoch);
                 write_snapshot(&mut w, &sm.snapshot, baseline)?;
             }
             Message::Events(events) => {
@@ -485,10 +602,38 @@ impl Message {
                     w.write_u8(x.weapon);
                     w.write_u16(x.ammo);
                     w.write_u8(x.level);
+                    w.write_varint(x.shots as u64);
+                    w.write_u8(x.state);
                 }
                 w.write_u8(inv.primary);
                 w.write_u8(inv.secondary);
                 w.write_u8(inv.gadget);
+            }
+            Message::LobbyState(l) => {
+                // Validate before the tag so an error leaves nothing behind.
+                write_lobby(&mut BitWriter::new(), l)?;
+                w.write_u8(tag::LOBBY_STATE);
+                write_lobby(&mut w, l)?;
+            }
+            Message::MatchResults(m) => {
+                write_results(&mut BitWriter::new(), m)?;
+                w.write_u8(tag::MATCH_RESULTS);
+                write_results(&mut w, m)?;
+            }
+            Message::Ready { ready } => {
+                w.write_u8(tag::READY);
+                w.write_bool(*ready);
+            }
+            Message::PickTeam { team } => {
+                w.write_u8(tag::PICK_TEAM);
+                w.write_bool(team.is_some());
+                if let Some(t) = team {
+                    w.write_u8(*t);
+                }
+            }
+            Message::Spectate { spectate } => {
+                w.write_u8(tag::SPECTATE);
+                w.write_bool(*spectate);
             }
         }
         Ok(w.finish())
@@ -523,12 +668,16 @@ impl Message {
                 } else {
                     None
                 };
+                let room = read_opt_str(&mut r, MAX_CODE_LEN)?;
+                let party = read_opt_str(&mut r, MAX_CODE_LEN)?;
                 Message::Hello(Hello {
                     protocol_version: version,
                     name,
                     preferred_team,
                     data_hash,
                     ship_type,
+                    room,
+                    party,
                 })
             }
             tag::WELCOME => {
@@ -554,6 +703,8 @@ impl Message {
                 let edit_count = (n as u32)
                     .checked_add(r.read_varint_u32()?)
                     .ok_or(DecodeError::Invalid("edit count overflows"))?;
+                let epoch = r.read_u8()?;
+                let room_code = r.read_string(MAX_CODE_LEN)?;
                 Message::Welcome(Box::new(Welcome {
                     protocol_version: version,
                     player_id,
@@ -567,6 +718,8 @@ impl Message {
                     server_tick,
                     edit_log,
                     edit_count,
+                    epoch,
+                    room_code,
                 }))
             }
             tag::REJECT => Message::Reject(Reject {
@@ -575,6 +728,7 @@ impl Message {
                 message: r.read_string(MAX_REASON_LEN)?,
             }),
             tag::INPUT => {
+                let epoch = r.read_u8()?;
                 let ack_snapshot = if r.read_bool()? {
                     Some(r.read_u32()?)
                 } else {
@@ -603,11 +757,20 @@ impl Message {
                     };
                     cmds.push(cmd);
                 }
-                Message::Input(InputMsg { ack_snapshot, cmds })
+                Message::Input(InputMsg {
+                    epoch,
+                    ack_snapshot,
+                    cmds,
+                })
             }
             tag::SNAPSHOT => {
+                let epoch = r.read_u8()?;
                 let (snapshot, baseline) = read_snapshot(&mut r, baselines)?;
-                Message::Snapshot(Box::new(SnapshotMsg { baseline, snapshot }))
+                Message::Snapshot(Box::new(SnapshotMsg {
+                    epoch,
+                    baseline,
+                    snapshot,
+                }))
             }
             tag::EVENTS => {
                 let n = r.read_len(MAX_EVENTS, EVENT_MIN_BITS)?;
@@ -634,13 +797,15 @@ impl Message {
             },
             tag::INVENTORY => {
                 let tick = r.read_u32()?;
-                let n = r.read_len(MAX_INVENTORY_WEAPONS, 32)?;
+                let n = r.read_len(MAX_INVENTORY_WEAPONS, 48)?;
                 let mut weapons = Vec::with_capacity(n);
                 for _ in 0..n {
                     weapons.push(NetWeapon {
                         weapon: r.read_u8()?,
                         ammo: r.read_u16()?,
                         level: r.read_u8()?,
+                        shots: r.read_varint_u32()?,
+                        state: r.read_u8()?,
                     });
                 }
                 Message::Inventory(InventoryMsg {
@@ -651,6 +816,21 @@ impl Message {
                     gadget: r.read_u8()?,
                 })
             }
+            tag::LOBBY_STATE => Message::LobbyState(Box::new(read_lobby(&mut r)?)),
+            tag::MATCH_RESULTS => Message::MatchResults(Box::new(read_results(&mut r)?)),
+            tag::READY => Message::Ready {
+                ready: r.read_bool()?,
+            },
+            tag::PICK_TEAM => Message::PickTeam {
+                team: if r.read_bool()? {
+                    Some(r.read_u8()?)
+                } else {
+                    None
+                },
+            },
+            tag::SPECTATE => Message::Spectate {
+                spectate: r.read_bool()?,
+            },
             other => return Err(DecodeError::UnknownTag(other)),
         };
         r.finish()?;
@@ -785,6 +965,8 @@ mod tests {
 
     fn welcome() -> Welcome {
         Welcome {
+            epoch: 0,
+            room_code: String::new(),
             protocol_version: PROTOCOL_VERSION,
             player_id: 3,
             team: 1,
@@ -845,11 +1027,15 @@ mod tests {
             tick: 1234,
             weapons: vec![
                 NetWeapon {
+                    shots: 0,
+                    state: 0,
                     weapon: 0,
                     ammo: 0,
                     level: 3,
                 },
                 NetWeapon {
+                    shots: 70_001,
+                    state: 2,
                     weapon: 14,
                     ammo: 7,
                     level: 1,
@@ -881,6 +1067,117 @@ mod tests {
         round_trip(&Message::Disconnect {
             reason: "bye".into(),
         });
+    }
+
+    #[test]
+    fn protocol_5_messages_round_trip() {
+        use crate::mode::{LobbyPhase, LobbyPlayer, LobbyStateMsg, MatchResultsMsg, ResultRow};
+        // Hello with room and party codes.
+        let h = Hello::new("Rivet Rita", None)
+            .with_room(Some("R-7K2M".into()))
+            .with_party(Some("P-ABC123".into()));
+        round_trip(&Message::Hello(h.clone()));
+        round_trip(&Message::Hello(h.with_room(None)));
+        let long = Hello::new("x", None).with_party(Some("P".repeat(MAX_CODE_LEN + 1)));
+        assert!(Message::Hello(long).encode().is_err());
+        // Welcome with epoch and room code.
+        let mut w = welcome();
+        w.epoch = 250;
+        w.room_code = "R-7K2M".into();
+        round_trip(&Message::Welcome(Box::new(w)));
+        // Inventory with shots and state.
+        round_trip(&Message::Inventory(InventoryMsg {
+            tick: 9,
+            weapons: vec![NetWeapon {
+                weapon: 20,
+                ammo: 0,
+                level: 1,
+                shots: u32::MAX,
+                state: 3,
+            }],
+            primary: 20,
+            secondary: 255,
+            gadget: 1,
+        }));
+        // Lobby messages.
+        for phase in [
+            LobbyPhase::Lobby,
+            LobbyPhase::Countdown,
+            LobbyPhase::Match,
+            LobbyPhase::Results,
+        ] {
+            round_trip(&Message::LobbyState(Box::new(LobbyStateMsg {
+                phase,
+                phase_ticks_left: 600,
+                room_code: String::new(),
+                next_mode: 1,
+                next_ruleset: "team_brawl".into(),
+                next_share_code: "LS-7K2M-9QXA-04RT-ZZ1C".into(),
+                min_players: 4,
+                max_players: 32,
+                teams: 2,
+                players: (0..32u8)
+                    .map(|id| LobbyPlayer {
+                        id,
+                        team: if id % 5 == 0 { 255 } else { id % 2 },
+                        ready: id % 3 == 0,
+                        spectator: id == 7,
+                    })
+                    .collect(),
+            })));
+        }
+        round_trip(&Message::LobbyState(Box::default()));
+        let bad = LobbyStateMsg {
+            next_ruleset: "m".repeat(65),
+            ..Default::default()
+        };
+        assert!(Message::LobbyState(Box::new(bad)).encode().is_err());
+        round_trip(&Message::MatchResults(Box::new(MatchResultsMsg {
+            tick: 36_000,
+            kind: 1,
+            teams: 2,
+            winner: 1,
+            team_scores: vec![14, 15],
+            rows: (0..8u8)
+                .map(|id| ResultRow {
+                    id,
+                    side: id % 2,
+                    kills: id as u32 * 3,
+                    deaths: 2,
+                    score: -(id as i32),
+                    name: format!("pilot {id}"),
+                })
+                .collect(),
+        })));
+        round_trip(&Message::MatchResults(Box::default()));
+        for ready in [false, true] {
+            round_trip(&Message::Ready { ready });
+            round_trip(&Message::Spectate { spectate: ready });
+        }
+        round_trip(&Message::PickTeam { team: None });
+        round_trip(&Message::PickTeam { team: Some(3) });
+        // Epochs on inputs and snapshots.
+        round_trip(&Message::Input(InputMsg {
+            epoch: 7,
+            ack_snapshot: None,
+            cmds: vec![input(5, 1)],
+        }));
+        let quant = Quantizer::default();
+        round_trip(&Message::Snapshot(Box::new(SnapshotMsg {
+            epoch: 9,
+            baseline: None,
+            snapshot: quant.pack_snapshot(&game_snapshot(100, 0.0)),
+        })));
+        // Every new message is reliable.
+        for m in [
+            Message::LobbyState(Box::default()),
+            Message::MatchResults(Box::default()),
+            Message::Ready { ready: true },
+            Message::PickTeam { team: None },
+            Message::Spectate { spectate: true },
+        ] {
+            assert_eq!(m.channel(), Channel::Reliable);
+        }
     }
 
     #[test]
@@ -926,18 +1223,20 @@ mod tests {
             // Distinct bodies.
             let cmds: Vec<NetInput> = (0..n).map(|i| input(1000 - i, i as u64)).collect();
             let msg = Message::Input(InputMsg {
+                epoch: 0,
                 ack_snapshot: Some(998),
                 cmds,
             });
             let bytes = round_trip(&msg);
             assert_eq!(
                 bytes.len(),
-                (8 + 1 + 32 + 2 + 32 + 88 + (n as usize - 1) * (8 + 1 + 88)).div_ceil(8)
+                (8 + 8 + 1 + 32 + 2 + 32 + 88 + (n as usize - 1) * (8 + 1 + 88)).div_ceil(8)
             );
         }
         // Held controls: older commands cost 9 bits each.
         let held = input(50, 1);
         let msg = Message::Input(InputMsg {
+            epoch: 0,
             ack_snapshot: None,
             cmds: vec![
                 held,
@@ -946,9 +1245,13 @@ mod tests {
             ],
         });
         let bytes = round_trip(&msg);
-        assert_eq!(bytes.len(), (8 + 1 + 2 + 32 + 88 + 2 * 9_usize).div_ceil(8));
+        assert_eq!(
+            bytes.len(),
+            (8 + 8 + 1 + 2 + 32 + 88 + 2 * 9_usize).div_ceil(8)
+        );
         // Ticks may wrap around.
         round_trip(&Message::Input(InputMsg {
+            epoch: 0,
             ack_snapshot: Some(0),
             cmds: vec![input(1, 3), input(0, 4), input(u32::MAX, 5)],
         }));
@@ -965,6 +1268,7 @@ mod tests {
         ];
         for cmds in bad {
             let msg = Message::Input(InputMsg {
+                epoch: 0,
                 ack_snapshot: None,
                 cmds,
             });
@@ -1032,6 +1336,37 @@ mod tests {
             })
             .collect();
         Snapshot {
+            // Scores change every 5th snapshot, the carried objective moves.
+            mode: crate::mode::NetModeState {
+                kind: 1,
+                teams: 2,
+                phase: crate::mode::mode_phase::RUNNING,
+                winner: 255,
+                end_tick: 9000,
+                score_target: 50,
+                team_scores: vec![(tick / 10) as i64, 2],
+                players: (0..8u8)
+                    .map(|id| crate::mode::NetModePlayer {
+                        id,
+                        side: id % 2,
+                        score: (tick / 10) as i32 * (id as i32 % 3),
+                        lives: 3,
+                        meter: 100,
+                        flags: 0,
+                    })
+                    .collect(),
+                objectives: vec![crate::mode::NetObjective {
+                    id: 0,
+                    kind: 1,
+                    team: 255,
+                    holder: 3,
+                    state: 0,
+                    timer_end: 0,
+                    radius: 1.0,
+                    pos: Vec3::new(20.0 + t, 5.0, 100.0 - t * 2.0),
+                }],
+                ..Default::default()
+            },
             tick,
             ack_input: tick + 4,
             edit_base: 3,
@@ -1099,6 +1434,7 @@ mod tests {
             let packed = quant.pack_snapshot(&game_snapshot(tick, step as f32 * 0.4));
             server.push(packed.clone());
             let msg = Message::Snapshot(Box::new(SnapshotMsg {
+                epoch: 0,
                 baseline: server.choose_baseline(tick, acked),
                 snapshot: packed.clone(),
             }));
@@ -1228,9 +1564,26 @@ mod tests {
     fn garbage_never_panics() {
         let mut rng = Pcg32::new(99, 0);
         let valid = [
-            Message::Hello(Hello::new("x", None)).encode().unwrap(),
+            Message::Hello(Hello::new("x", None).with_room(Some("R-1".into())))
+                .encode()
+                .unwrap(),
+            Message::LobbyState(Box::new(crate::mode::LobbyStateMsg {
+                next_mode: 3,
+                players: vec![crate::mode::LobbyPlayer::default(); 3],
+                ..Default::default()
+            }))
+            .encode()
+            .unwrap(),
+            Message::MatchResults(Box::new(crate::mode::MatchResultsMsg {
+                team_scores: vec![1, 2, 3],
+                rows: vec![crate::mode::ResultRow::default(); 2],
+                ..Default::default()
+            }))
+            .encode()
+            .unwrap(),
             Message::Welcome(Box::new(welcome())).encode().unwrap(),
             Message::Input(InputMsg {
+                epoch: 0,
                 ack_snapshot: Some(1),
                 cmds: vec![input(9, 1), input(8, 2)],
             })

@@ -328,6 +328,7 @@ fn online_edits_from_snapshots_dirty_loaded_chunks() {
         radius: 4.0,
     };
     let packet = Message::Snapshot(Box::new(ls_net::SnapshotMsg {
+        epoch: 0,
         baseline: None,
         snapshot: ls_net::PackedSnapshot {
             tick: newest + 2,
@@ -725,6 +726,7 @@ fn online_scoreboard_counts_kills_and_match_info_reports_the_end() {
     };
     let newest = o.session.latest_snapshot().unwrap().tick;
     let end = Message::Snapshot(Box::new(ls_net::SnapshotMsg {
+        epoch: 0,
         baseline: None,
         snapshot: ls_net::PackedSnapshot {
             tick: newest + 2,
@@ -1248,4 +1250,122 @@ fn online_decoy_cooldown_and_paint_colour_follow_the_server() {
         ls_math::terrain::PAINT_BLUE,
         "the server switched too"
     );
+}
+
+/// A client that never saw the Paint Thrower's colour cues (it joined or
+/// rejoined after the colour was picked, or came through a match
+/// transition) shows the server's colour: it travels in the inventory's
+/// weapon state byte (protocol 5).
+#[test]
+fn paint_colour_comes_from_the_inventory_after_a_rejoin() {
+    let mut l = connect();
+    for _ in 0..4 {
+        l.tick(Controls::default());
+    }
+    let pt = l.core.weapons().find("paint_thrower").unwrap();
+    // A second client joins a ship whose Paint Thrower is already yellow
+    // (picked before this session existed: no cue will ever tell it).
+    let hello = Message::Hello(ls_game::client_hello("rejoiner", None, None))
+        .encode()
+        .unwrap();
+    let id2 = l.room.join_packet(&hello).unwrap();
+    let out = l.room.take_outgoing();
+    let welcome = out.iter().find(|o| o.client == id2).unwrap();
+    let mut core2 = GameCore::online(&welcome.bytes).unwrap();
+    let p2 = l.room.player_of(id2).unwrap();
+    {
+        let ship = l.room.world_mut().ship_mut(p2).unwrap();
+        ship.primary = Some(pt);
+        ship.weapon_state
+            .insert(pt, ls_math::terrain::PAINT_YELLOW as u32);
+    }
+    assert_eq!(core2.paint_color(), 0, "no inventory yet");
+    for _ in 0..8 {
+        for bytes in core2.frame(DT, Controls::default()) {
+            l.room.handle_packet(id2, &bytes).unwrap();
+        }
+        l.room.step();
+        for o in l.room.take_outgoing() {
+            if o.client == id2 {
+                core2.handle_packet(&o.bytes).unwrap();
+            }
+        }
+    }
+    assert!(core2
+        .take_cues()
+        .iter()
+        .all(|c| c.kind() != ls_sim::CueKind::PaintColor));
+    assert_eq!(core2.paint_color(), ls_math::terrain::PAINT_YELLOW);
+    let hud = core2.loadout();
+    let entry = hud.primaries.iter().find(|e| e.weapon == pt).unwrap();
+    assert_eq!(entry.state, ls_math::terrain::PAINT_YELLOW);
+}
+
+/// A new `Welcome` on the open connection rebuilds the online core for
+/// the next match: the old level's chunks are unloaded, the new mode state
+/// arrives with the snapshots, the results of the old match are cleared.
+#[test]
+fn online_match_transition_rebuilds_the_core_in_place() {
+    let mut l = connect();
+    for _ in 0..6 {
+        l.tick(Controls::default());
+    }
+    let cam = l.core.local_pose().unwrap().pos;
+    let mut loaded = Vec::new();
+    for _ in 0..5 {
+        loaded.push(l.core.mesh_next(cam).expect("a chunk").coord);
+    }
+    let old_code = l.core.share_code();
+    assert_eq!(
+        l.core.mode_state().kind,
+        ls_sim::ModeKind::PaintTheVoid.index()
+    );
+    // The match ends: results arrive.
+    l.room.world_mut().mode_mut().phase = ls_sim::MatchPhase::Ended { winner: None };
+    l.tick(Controls::default());
+    l.tick(Controls::default());
+    assert!(l.core.results().is_some());
+    assert!(!l.core.mode_state().is_running());
+
+    // The next match on the same connection.
+    let code = ShareCode::new(777, Sliders::new(20, 60));
+    let cfg = RoomConfig {
+        pregenerate: false,
+        epoch: 1,
+        ..RoomConfig::default()
+    };
+    let mut room = Room::new(MatchConfig::paint_the_void(code), cfg).unwrap();
+    room.set_room_code("R-2");
+    let id = room
+        .join(&ls_game::client_hello("tester", None, None))
+        .unwrap();
+    for o in room.take_outgoing() {
+        assert_eq!(l.core.handle_packet(&o.bytes).unwrap(), None);
+    }
+    assert!(l.core.take_match_transition());
+    assert!(!l.core.take_match_transition(), "reported once");
+    assert_eq!(l.core.transitions(), 1);
+    assert_ne!(l.core.share_code(), old_code);
+    assert_eq!(l.core.room_code(), "R-2");
+    assert!(l.core.results().is_none());
+    let mut unloads = l.core.take_unloads(cam);
+    unloads.sort();
+    loaded.sort();
+    assert_eq!(unloads, loaded, "the old level's chunks go away");
+    l.room = room;
+    l.id = id;
+    for _ in 0..30 {
+        l.tick(Controls::default());
+    }
+    let m = l.core.mode_state();
+    assert!(m.is_running());
+    assert!(m.player(l.core.player()).is_some());
+    assert!(l.core.debug_stats().synced);
+    assert!(l.core.local_pose().is_some());
+    // Lobby requests go out as packets the room queues for its host.
+    let ready = l.core.ready_packet(true).unwrap();
+    l.room.handle_packet(l.id, &ready).unwrap();
+    let team = l.core.pick_team_packet(None).unwrap();
+    l.room.handle_packet(l.id, &team).unwrap();
+    assert_eq!(l.room.take_lobby_requests().len(), 2);
 }

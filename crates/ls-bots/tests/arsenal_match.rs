@@ -71,7 +71,9 @@ fn bots_fire_the_whole_arsenal() {
     let code = ShareCode::new(0x5a4d_b0c5_a115_0001, Sliders::default());
     let mut mc = MatchConfig::paint_the_void(code);
     mc.rules = RuleSet::sandbox_all_weapons();
-    let ModeRules::PaintTheVoid(rules) = &mut mc.rules.mode;
+    let ModeRules::PaintTheVoid(rules) = &mut mc.rules.mode else {
+        unreachable!("a Paint the Void rule set")
+    };
     rules.match_secs = rules.match_secs.max(SECS as f32 + 30.0);
     let mut room = Room::new(mc, RoomConfig::default()).unwrap();
     let bots = RoomConfig::default().max_players as usize;

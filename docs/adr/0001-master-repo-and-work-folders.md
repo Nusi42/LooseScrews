@@ -77,7 +77,8 @@ works the same way.
   master through `main`. Claude Code's memory directory for the master session is a junction to
   `loosescrews.win1\.claude\memory`. The master's gitignored `.claude/settings.local.json` also sets
   `autoMemoryDirectory` to it. `codegraph init` runs in win1.
-- **Handoff:** `docs/handoff.md` is the committed state of every work package, the open questions
+- **Handoff:** the project memory `.claude/memory/next-steps.md` (first line of `MEMORY.md`, so every
+  new session loads it) is the committed state of every work package, the open questions
   and the next action. It is updated after every step and reaches the master through `main`.
 - **Tooling:** `node tools/work-folders.mjs create <n> | guard-master [path] | status | guard <what>`.
   `status` answers "can I close this session?": uncommitted and unpushed work per winN, and

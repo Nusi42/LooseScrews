@@ -16,12 +16,12 @@
 - The master repo `<master>` holds `main` and only receives pushes and `git merge --ff-only WIN1`. Never edit, build, test, npm or commit there (the guards refuse). The maintainer's session runs in it and drives the clones by absolute path (`cd <clone> && ...` per command)
 - Work folders (clones, `origin` = the master): `<work root>/loosescrews.win1` (branch `WIN1`, the lead: integration, full CI, memory, CodeGraph index); `loosescrews.win2`+ (`WIN2`+, one per parallel work package: on a clean tree `git fetch && git reset --hard origin/main`, commit, `git push --force-with-lease origin WINn`). New one: `node tools/work-folders.mjs create <n>` from a work folder. Decision: `docs/adr/0001-master-repo-and-work-folders.md`; how-to: `docs/dev-guide.md` "Work folders"
 - Hooks: pre-commit = per-file checks on staged files, pre-push = fast CI subset (`node tools/hooks/pre-push.mjs --list`); installed by `npm ci` in `web/`. Claude's post-edit hook runs the edited file's clone's checks and reports findings (exit 2)
-- Read `docs/handoff.md` first: state of every work package, open questions, next action
+- Read `.claude/memory/next-steps.md` first (project memory, first line of `MEMORY.md`): state of every work package, open questions, next steps
 
 ## If you are the lead
-- Start: read `docs/handoff.md`; `git -C <win1> fetch`; check the `WINn` branches (`node tools/work-folders.mjs status`)
+- Start: read `.claude/memory/next-steps.md`; `git -C <win1> fetch`; check the `WINn` branches (`node tools/work-folders.mjs status`)
 - Integrate in win1: merge `origin/WINn` into `WIN1`, run `pwsh tools/ci.ps1` there; only when green: `git push origin WIN1`, then `git -C <master> merge --ff-only WIN1`. `main` is always green
-- Update `docs/handoff.md` after every step, commit it in win1 and fast-forward `main` so the master's copy is current
+- Update `.claude/memory/next-steps.md` after every finished step and before the maintainer closes a session, commit it on WIN1 and fast-forward `main` so the master's copy is current
 - Agents belong to the session that started them; a new session can't see or stop an older session's agents
 - "Can I close this session?": report running background tasks, uncommitted/unpushed work per winN and `main` vs `WIN1` (`node tools/work-folders.mjs status`)
 

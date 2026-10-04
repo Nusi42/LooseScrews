@@ -9,7 +9,6 @@ working on the repo are in [`CLAUDE.md`](../CLAUDE.md).
 | Document | Read it for |
 | --- | --- |
 | [dev-guide.md](dev-guide.md) | Toolchain, building, running server + client + bots, tests, CI, e2e, profiling; adding a [weapon](dev-guide.md#8-adding-a-weapon) (data, hooks, commands, registry, tests, client, bots), a [rule set](dev-guide.md#9-adding-a-rule-set) ([codes and the editor](dev-guide.md#rule-set-codes-and-the-editor), [balance lists](dev-guide.md#balance-lists)), a [gadget](dev-guide.md#10-adding-a-gadget); [ship types](dev-guide.md#11-ship-types); the [browser smoke test](dev-guide.md#12-browser-smoke-test); the [generated player reference](dev-guide.md#generated-player-reference); [work folders](dev-guide.md#work-folders) (master repo, clones, hooks, guards) |
-| [handoff.md](handoff.md) | Read first as the lead: state of every work package, open questions, next action |
 | [adr/](adr/) | Architecture decision records: [0001 master repo and work folders](adr/0001-master-repo-and-work-folders.md) |
 | [implementation-plan.md](implementation-plan.md) | Milestone 1 scope, module specs with acceptance criteria, work waves and current status, later milestones |
 | [milestone-2-plan.md](milestone-2-plan.md) | Milestone 2 (arsenal and physics): scope, design decisions (numbers the design doc leaves open), waves and their status, acceptance criteria with evidence |

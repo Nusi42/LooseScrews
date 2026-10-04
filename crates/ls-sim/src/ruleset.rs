@@ -519,6 +519,23 @@ impl RuleSet {
             .expect("built-in rule set is valid RON")
     }
 
+    /// The default rule set of a mode (the base of its rule set codes):
+    /// its embedded file ([`ModeKind::ruleset_file`] in [`BUILTIN_RULESETS`])
+    /// or, until the mode has one, Paint the Void's with the mode's default
+    /// settings and name, and without the Paint Thrower (Paint the Void's
+    /// tool).
+    pub fn default_for(kind: ModeKind) -> RuleSet {
+        let file = kind.ruleset_file();
+        if let Some((name, text)) = BUILTIN_RULESETS.iter().find(|(f, _)| *f == file) {
+            return RuleSet::from_ron(name, text).expect("built-in rule set is valid RON");
+        }
+        let mut r = RuleSet::paint_the_void();
+        r.name = kind.name().to_string();
+        r.mode = ModeRules::default_for(kind);
+        r.ban_weapon("paint_thrower");
+        r
+    }
+
     /// Availability of a weapon by string id (unlisted = banned).
     pub fn availability(&self, weapon: &str) -> Availability {
         self.weapons
@@ -555,8 +572,31 @@ impl RuleSet {
     }
 
     /// Validates the rule set against the loaded weapons and gadgets and
-    /// precomputes index-based tables for the simulation.
+    /// precomputes index-based tables for the simulation. Mutators rewrite
+    /// the rule set first ([`RuleSet::effective`]).
     pub fn resolve_with(
+        &self,
+        weapons: &WeaponTable,
+        gadgets: &GadgetTable,
+    ) -> Result<ResolvedRules, SimError> {
+        if self.mutators.is_empty() {
+            self.resolve_effective(weapons, gadgets)
+        } else {
+            self.effective().resolve_effective(weapons, gadgets)
+        }
+    }
+
+    /// The rule set the match actually runs: the mutators' rewrites applied
+    /// in order (`MutatorModule::rewrite_rules`).
+    pub fn effective(&self) -> RuleSet {
+        let mut out = self.clone();
+        for m in &self.mutators {
+            crate::mutators::module(*m).rewrite_rules(&mut out);
+        }
+        out
+    }
+
+    fn resolve_effective(
         &self,
         weapons: &WeaponTable,
         gadgets: &GadgetTable,
@@ -572,30 +612,37 @@ impl RuleSet {
         if self.absurdity > 100 {
             return Err(bad(format!("absurdity {} > 100", self.absurdity)));
         }
-        if let Some(m) = self.mutators.first() {
-            return Err(bad(format!("mutator {m:?} is not supported yet")));
+        for (i, m) in self.mutators.iter().enumerate() {
+            if self.mutators[..i].contains(m) {
+                return Err(bad(format!("mutator {m:?} listed twice")));
+            }
         }
         if self.allowed_ship_types.is_empty() {
             return Err(bad("allowed_ship_types is empty".into()));
         }
-        if self.mode.kind() != ModeKind::PaintTheVoid {
+        let mode = &self.mode;
+        let module = crate::modes::module(mode.kind());
+        if !module.team_counts().contains(&mode.teams()) {
             return Err(bad(format!(
-                "mode {:?} is not supported yet",
-                self.mode.kind()
+                "{} supports teams {:?} (0 = free-for-all), got {}",
+                mode.kind().name(),
+                module.team_counts(),
+                mode.teams()
             )));
         }
-        let mode = self.paint_the_void_rules();
-        if mode.teams != 2 {
-            return Err(bad(format!(
-                "Paint the Void supports 2 teams, got {}",
-                mode.teams
-            )));
-        }
-        if !(mode.match_secs.is_finite() && mode.match_secs > 0.0)
-            || !finite_non_neg(mode.respawn_secs)
+        if !(mode.match_secs().is_finite() && mode.match_secs() > 0.0)
+            || !finite_non_neg(mode.respawn_secs())
         {
             return Err(bad("match_secs must be > 0 and respawn_secs >= 0".into()));
         }
+        for f in mode.fields() {
+            if !finite_non_neg(f.value) {
+                return Err(bad(format!("mode setting {} must be >= 0", f.name)));
+            }
+        }
+        module
+            .validate(mode)
+            .map_err(|e| bad(format!("{}: {e}", mode.kind().name())))?;
         for id in self.weapons.keys() {
             weapons.require(id)?;
         }
@@ -782,8 +829,14 @@ impl RuleSet {
             weapon_tuning,
             max_ammo,
             friendly_fire_percent: self.friendly_fire_percent,
-            match_ticks: Tick::ticks_for_secs(mode.match_secs).max(1),
-            respawn_ticks: Tick::ticks_for_secs(mode.respawn_secs),
+            match_ticks: Tick::ticks_for_secs(mode.match_secs()).max(1),
+            respawn_ticks: self
+                .mutators
+                .iter()
+                .fold(Tick::ticks_for_secs(mode.respawn_secs()), |t, m| {
+                    crate::mutators::module(*m).respawn_ticks(t)
+                }),
+            teams: mode.teams(),
             allowed_ship_types: self.allowed_ship_types.clone(),
         })
     }
@@ -966,7 +1019,10 @@ pub struct ResolvedRules {
     pub max_ammo: Vec<u32>,
     pub friendly_fire_percent: u8,
     pub match_ticks: u64,
+    /// Respawn delay (mutators applied).
     pub respawn_ticks: u64,
+    /// Number of teams (0 = free-for-all).
+    pub teams: u8,
     pub allowed_ship_types: Vec<ShipType>,
 }
 
@@ -1108,9 +1164,11 @@ mod tests {
         bad.shield_overrides
             .insert("rivet_gun".into(), ShieldInteraction::PassThrough(2.0));
         assert!(bad.resolve(&weapons).is_err());
-        let mut bad = r;
-        bad.mutators.push(Mutator::Instagib);
-        assert!(bad.resolve(&weapons).is_err());
+        let mut with_mutator = r;
+        with_mutator.mutators.push(Mutator::Instagib);
+        assert!(with_mutator.resolve(&weapons).is_ok());
+        with_mutator.mutators.push(Mutator::Instagib);
+        assert!(with_mutator.resolve(&weapons).is_err(), "listed twice");
     }
 
     #[test]

@@ -4,13 +4,15 @@ import { CATALOG } from "./catalog.ts";
 import {
   availabilityOf,
   canonical,
+  CODE_VERSION,
+  codeForm,
   codeVersion,
   decodeRules,
-  DIFF_VERSION,
   encodeFullRules,
   encodeRules,
   formatRuleCode,
-  FULL_VERSION,
+  LEGACY_DIFF_VERSION,
+  LEGACY_FULL_VERSION,
   normalizeRuleCode,
   RuleCodeError,
   rulesEqual,
@@ -71,14 +73,15 @@ test("validation agrees with the server for every vector", () => {
 
 test("default rules are a short diff code; the full code is the long fallback", () => {
   const code = roundTrip(defaultRules(CATALOG));
-  assert.equal(codeVersion(code), DIFF_VERSION);
-  assert.ok(code.length <= 20, code);
+  assert.equal(codeVersion(code), CODE_VERSION);
+  assert.equal(codeForm(code), "diff");
+  assert.ok(code.length <= 21, code);
   const full = encodeFullRules(defaultRules(CATALOG), CATALOG);
-  assert.equal(codeVersion(full), FULL_VERSION);
+  assert.equal(codeForm(full), "full");
   assert.ok(full.length > 200, `${full.length}`);
   const fallback = CATALOG.vectors.find((v) => v.label === "full fallback");
   assert.ok(fallback?.code);
-  assert.equal(codeVersion(fallback.code), FULL_VERSION, "picked when shorter");
+  assert.equal(codeForm(fallback.code), "full", "picked when shorter");
 });
 
 test("codes decode leniently and are formatted in groups", () => {
@@ -212,4 +215,35 @@ test("the catalog lists every weapon and gadget in registry order", () => {
   );
   assert.deepEqual(CATALOG.shipTypes, ["Skitter", "Tinker", "Hauler", "Tug"]);
   for (const id of Object.keys(CATALOG.defaults.PaintTheVoid.weapons)) assert.ok(ids.includes(id), id);
+});
+
+test("every mode's default is a short diff code, and mode settings round-trip", () => {
+  for (const mode of CATALOG.modes) {
+    const r = defaultRules(CATALOG, mode.kind);
+    assert.equal(r.mode.kind, mode.kind);
+    assert.deepEqual(validateRules(r, CATALOG), [], mode.kind);
+    const code = roundTrip(r);
+    assert.equal(codeForm(code), "diff");
+    assert.ok(code.length <= 21, `${mode.kind}: ${code}`);
+    for (const f of mode.fields) {
+      const e = defaultRules(CATALOG, mode.kind);
+      e.mode[f.name] = (2 ** f.bits - 1) / f.steps;
+      const back = decodeRules(roundTrip(e), CATALOG);
+      assert.equal(back.mode[f.name], e.mode[f.name], `${mode.kind}.${f.name}`);
+    }
+  }
+});
+
+test("M2 codes (formats 3 and 2) still decode", () => {
+  const def = defaultRules(CATALOG);
+  const v3 = "LR6V-69CM-G006-58R";
+  assert.equal(codeVersion(v3), LEGACY_DIFF_VERSION);
+  assert.ok(rulesEqual(decodeRules(v3, CATALOG), def));
+  const v2 =
+    "LR4V-6WGD-RX2W-0Q8K-W0PM-RVR8-0JR7-K4AF-05AN-A5AN-APAM-A40B-1506-A107-H0G3-RG61-W840-Y420-F20R-7H10-2GG8-1W86-0S44-0A8D-0G3T-2840-YGT0-GA42-G61X-1410-PR50-C3T2-840Y-GT0R-7M4G-25N0-RR21-D410-PR8G-42V0-M10P-R908-5MG4-2V14-30F0-0000-1085-MG42-T821-D4R0-7HW0-0000-0000-02B5-4";
+  assert.equal(codeVersion(v2), LEGACY_FULL_VERSION);
+  assert.ok(rulesEqual(decodeRules(v2, CATALOG), def));
+  const banned = decodeRules("LR6V-69CM-G214-D7G1-P6B", CATALOG);
+  assert.equal(availabilityOf(banned, "railspike"), "Banned");
+  assert.equal(availabilityOf(banned, "tectonic_charge"), "Banned");
 });

@@ -252,6 +252,9 @@ pub enum Command {
     },
     /// Emits an event as is (impacts, cues).
     Emit(Event),
+    /// A terrain edit applied at the start of tick `tick` instead of now
+    /// (queued by [`Ctx::later`]; spreads big edit bursts over ticks).
+    EditLater { tick: u64, edit: TerrainEdit },
 }
 
 /// Read-only world view for hooks.
@@ -334,6 +337,22 @@ impl<'a> Ctx<'a> {
     pub fn push(&mut self, c: Command) {
         if self.out.len() < MAX_COMMANDS_PER_HOOK {
             self.out.push(c);
+        }
+    }
+
+    /// Runs `f` and defers the terrain edits it queues by `delay` ticks
+    /// (at least 1): they are applied at the start of tick `now + delay`,
+    /// in queue order, before respawns (`Command::EditLater`). Other
+    /// commands `f` queues apply as usual. Use it to spread a burst of
+    /// edits (Tectonic Charge cracks) over several ticks.
+    pub fn later(&mut self, delay: u64, f: impl FnOnce(&mut Ctx<'a>)) {
+        let start = self.out.len();
+        f(self);
+        let tick = self.now() + delay.max(1);
+        for c in &mut self.out[start..] {
+            if let Command::Edit(edit) = c {
+                *c = Command::EditLater { tick, edit: *edit };
+            }
         }
     }
 

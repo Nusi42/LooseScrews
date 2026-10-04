@@ -900,7 +900,9 @@ fn replay_same_inputs_same_state_hash() {
 /// Golden hash of the scripted replay. Must be identical on native and wasm32
 /// (run the crate tests under `wasm-bindgen-test-runner`, see `CLAUDE.md`).
 /// Changing simulation behavior or tuning changes it: update the constant in
-/// the same change and say so in the commit.
+/// the same change and say so in the commit. (M3 wave A kept it: Paint the
+/// Void runs bit-identically through the mode framework, and the replay
+/// fires no Tectonic Charge, whose cracks now spread over 6 ticks.)
 const REPLAY_GOLDEN_HASH: u64 = 0x8321_c0ab_902b_8ee5;
 
 #[test]
@@ -946,11 +948,22 @@ fn state_hash_is_sensitive_to_ship_state() {
 
 #[test]
 fn world_new_rejects_bad_setup_and_loadout() {
-    // A team without a spawn point.
+    // No spawn points at all.
     let mut s = setup();
-    s.spawns.retain(|sp| sp.team == 0);
+    s.spawns.clear();
     let cfg = WorldConfig::paint_the_void(1, s);
     assert!(matches!(World::new(cfg), Err(SimError::InvalidRuleSet(_))));
+    // A spawn point for a team the format does not have.
+    let mut s = setup();
+    s.spawns[0].team = 4;
+    let cfg = WorldConfig::paint_the_void(1, s);
+    assert!(matches!(World::new(cfg), Err(SimError::InvalidTeam(4))));
+    // A team without spawn points of its own spawns at the others'.
+    let mut s = setup();
+    s.spawns.retain(|sp| sp.team == 0);
+    let mut w = World::new(WorldConfig::paint_the_void(1, s)).unwrap();
+    let a = w.add_player(Some(1), ShipType::Tinker).unwrap();
+    assert_eq!(w.ship(a).unwrap().pos, Vec3::new(-20.0, 0.0, 0.0));
 
     // More loadout secondaries than the ship has slots.
     let mut cfg = WorldConfig::paint_the_void(1, setup());

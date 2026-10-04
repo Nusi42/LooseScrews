@@ -125,7 +125,7 @@ pilots; the [player manual](../player-manual.md#weapons) explains what they do.
 | Flash Pod | `blind_radius` 15, `blind_secs` 2, `blind_needs_sight` 1, `glow_secs` 30, `glow_radius` 8 |
 | Prox Mine | `arm_secs` 1, `trigger_radius` 2, `drop_behind` 1, `drift_drag` 1, `full_friendly_fire` 1 |
 | Stalker Mine | `arm_secs` 1, `detect_radius` 10, `creep_speed` 4, `trigger_radius` 1.5, `launch_drag` 1.5, `scorch_spacing` 1.5, `scorch_radius` 1.5, `scorch_hot_secs` 10 |
-| Tectonic Charge | `core_radius` 4, `core_damage` 10000, `damage_radius` 25, `collapse_radius` 35, `crack_count` 8, `crack_max` 30, `crack_radius` 1.5, `crack_spacing` 2.5, `shockwave_radius` 60, `shockwave_strength` 40, `fuse_secs` 1.5, `sub_charges` 6, `sub_scatter` 20, `sub_min_scatter` 8, `sub_delay_secs` 0.5, `sub_damage` 35, `sub_radius` 6, `sub_crater` 2.5, `dust_secs` 20, `dust_radius` 35, `debris_count` 24, `debris_scrap` 6, `jostle_speed` 3 |
+| Tectonic Charge | `core_radius` 4, `core_damage` 10000, `damage_radius` 25, `collapse_radius` 35, `crack_count` 8, `crack_max` 30, `crack_radius` 1.5, `crack_spacing` 2.5, `crack_spread_ticks` 6, `shockwave_radius` 60, `shockwave_strength` 40, `fuse_secs` 1.5, `sub_charges` 6, `sub_scatter` 20, `sub_min_scatter` 8, `sub_delay_secs` 0.5, `sub_damage` 35, `sub_radius` 6, `sub_crater` 2.5, `dust_secs` 20, `dust_radius` 35, `debris_count` 24, `debris_scrap` 6, `jostle_speed` 3 |
 | Echo Cannon | `return_after_secs` 2, `record_ticks` 4, `scorch_reach` 1.5, `scorch_radius` 1.5, `scorch_hot_secs` 10, `scorch_every` 2, `max_scorch_edits` 6 |
 | Swap Harpoon | `spike_radius` 0.3, `max_spikes` 6, `grab_reach` 1, `grab_hold` 0.25 |
 | Borrowed Time | `rewind_secs` 3, `offline_secs` 3, `ghost_secs` 3 |

@@ -73,6 +73,18 @@ impl ModeKind {
         }
     }
 
+    /// The mode's default rule set file in `data/` (`BUILTIN_RULESETS` key).
+    pub fn ruleset_file(self) -> &'static str {
+        match self {
+            ModeKind::PaintTheVoid => "rulesets/paint_the_void.ron",
+            ModeKind::TeamBrawl => "rulesets/team_brawl.ron",
+            ModeKind::TheSqueeze => "rulesets/squeeze.ron",
+            ModeKind::Heist => "rulesets/heist.ron",
+            ModeKind::HotReactor => "rulesets/hot_reactor.ron",
+            ModeKind::LastColorStanding => "rulesets/last_color_standing.ron",
+        }
+    }
+
     /// Display name.
     pub fn name(self) -> &'static str {
         match self {

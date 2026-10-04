@@ -11,7 +11,7 @@
 // - damage zone: the splash damage below, falling off linearly to 0 at `damage_radius`;
 // - collapse: one exact `collapse_radius` crater; `crack_count` cracks run `crack_max` x
 //   Instability / 100 u further into the rock, craters of up to `crack_radius` every
-//   `crack_spacing` u;
+//   `crack_spacing` u, carved over the `crack_spread_ticks` ticks after the collapse;
 // - shockwave: `shockwave_strength` u/s outward at the centre, 0 at `shockwave_radius`;
 // - `sub_charges` scatter `sub_min_scatter`..`sub_scatter` u and explode `sub_delay_secs`
 //   later (`sub_damage` splash over `sub_radius`, `sub_crater` crater);
@@ -39,6 +39,7 @@ WeaponDef(
         "core_radius": 4.0, "core_damage": 10000.0,
         "damage_radius": 25.0,
         "collapse_radius": 35.0, "crack_count": 8.0, "crack_max": 30.0, "crack_radius": 1.5, "crack_spacing": 2.5,
+        "crack_spread_ticks": 6.0,
         "shockwave_radius": 60.0, "shockwave_strength": 40.0,
         "fuse_secs": 1.5,
         "sub_charges": 6.0, "sub_scatter": 20.0, "sub_min_scatter": 8.0, "sub_delay_secs": 0.5,

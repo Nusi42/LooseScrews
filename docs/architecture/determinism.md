@@ -120,12 +120,12 @@ that one changed input diverges the hash from that tick on.
 | --- | --- | --- |
 | `material_field_hash_is_pinned` constant | `cargo test -p ls-worldgen --lib material` | the rock material field changes |
 | `web/src/rules/catalog.ts` (generated) | `rulecode::tests::web_catalog_is_current` | weapon or gadget ids, names, slots, costs, levels, the registries or the default rule set change: `LS_BLESS_RULES_CATALOG=1 cargo test -p ls-sim --lib rulecode` |
-| Rule set codes quoted in docs and examples (the default is `LR6V-69CM-G006-58R`; the catalog holds the current one) | `rulecode::tests::web_catalog_is_current` | the code format, the default rule set, or the registries change: a new weapon or gadget changes every code, the default included (codes made by older builds still decode) |
+| Rule set codes quoted in docs and examples (the default is `LR8V-6097-G000-TMBG`; the catalog holds the current one) | `rulecode::tests::web_catalog_is_current` | the code format, the default rule set, or the registries change: a new weapon or gadget changes every code, the default included (codes made by older builds still decode) |
 
 ### Data hash and behaviour version
 
 `ls_sim::data_hash()` hashes every embedded `data/` file by path and content (weapons,
-gadgets, ships, the built-in rule sets) plus `ls_sim::SIM_BEHAVIOR_VERSION` (currently 4).
+gadgets, ships, the built-in rule sets) plus `ls_sim::SIM_BEHAVIOR_VERSION` (currently 5).
 `Hello` carries it and the server rejects a different hash with `DataMismatch`, so a browser
 that cached an old build, or a bot built from other data, is refused with a clear message
 instead of predicting with other numbers. Consequences:

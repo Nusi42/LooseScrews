@@ -1,6 +1,7 @@
 // Rule set codes (`LR...`) in TypeScript: a bit-exact mirror of
-// crates/ls-sim/src/rulecode.rs (format versions 2 = full and 3 = diff against the
-// mode's default rule set; see the module docs there). The Node tests check this
+// crates/ls-sim/src/rulecode.rs (format 4, full or diff against the mode's default rule
+// set, every mode; the Paint the Void-only M2 formats 2 = full and 3 = diff still decode;
+// see the module docs there). The Node tests check this
 // file against the vectors the Rust side generates into catalog.ts, so a code made
 // in the browser is exactly the code the server decodes.
 
@@ -9,6 +10,8 @@ import {
   type Availability,
   type Catalog,
   type Loadout,
+  type ModeInfo,
+  type ModeKindName,
   type ModeRules,
   type PickupRule,
   type RuleSetData,
@@ -19,8 +22,12 @@ import {
 } from "./types.ts";
 
 export const RULE_CODE_PREFIX = "LR";
-export const FULL_VERSION = 2;
-export const DIFF_VERSION = 3;
+/** The format this build prints (full and diff, every mode). */
+export const CODE_VERSION = 4;
+/** The M2 formats (Paint the Void only), read only. */
+export const LEGACY_FULL_VERSION = 2;
+export const LEGACY_DIFF_VERSION = 3;
+const MODE_BITS = 4;
 export const MAX_NAME = 31;
 const ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 const NAME_CHARS = " ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-";
@@ -141,18 +148,43 @@ function readName(r: Reader): string {
   return name;
 }
 
-function writeMode(b: Bits, m: ModeRules): void {
+/** Paint the Void settings in formats 2 and 3. */
+function legacyWriteMode(b: Bits, m: ModeRules): void {
+  if (m.kind !== "PaintTheVoid") fail("format 2 carries only Paint the Void");
   if (!Number.isInteger(m.teams) || m.teams < 0 || m.teams > 7) fail("teams must be <= 7");
   b.push(m.teams, 3);
   b.push(fixed(m.match_secs, 1, 65535, "match_secs"), 16);
   b.push(fixed(m.respawn_secs, 10, 255, "respawn_secs"), 8);
 }
 
-function readMode(r: Reader): ModeRules {
+function legacyReadMode(r: Reader, catalog: Catalog): ModeRules {
   const teams = r.read(3);
   const match_secs = r.read(16);
   const respawn_secs = r.read(8) / 10;
-  return { kind: "PaintTheVoid", teams, match_secs, respawn_secs };
+  return { ...catalog.defaults.PaintTheVoid.mode, teams, match_secs, respawn_secs };
+}
+
+/** The catalog entry of a mode. */
+export function modeInfo(kind: string, catalog: Catalog): ModeInfo {
+  return catalog.modes.find((m) => m.kind === kind) ?? fail(`unknown mode ${kind}`);
+}
+
+function modeField(m: ModeRules, name: string): number {
+  const v = m[name];
+  return typeof v === "number" ? v : NaN;
+}
+
+/** Format 4 mode settings: every field of the mode, in order (Rust `write_mode_fields`). */
+function writeModeFields(b: Bits, m: ModeRules, catalog: Catalog): void {
+  for (const f of modeInfo(m.kind, catalog).fields) {
+    b.push(fixed(modeField(m, f.name), f.steps, 2 ** f.bits - 1, f.name), f.bits);
+  }
+}
+
+function readModeFields(r: Reader, info: ModeInfo, catalog: Catalog): ModeRules {
+  const m: ModeRules = { ...catalog.defaults[info.kind].mode };
+  for (const f of info.fields) m[f.name] = r.read(f.bits) / f.steps;
+  return m;
 }
 
 function percent(v: number, what: string): number {
@@ -174,17 +206,22 @@ function shipsFromMask(mask: number, catalog: Catalog): ShipTypeName[] {
   return catalog.shipTypes.filter((_, i) => mask & (1 << i));
 }
 
-function mutatorMask(mutators: readonly string[]): number {
+function mutatorMask(mutators: readonly string[], catalog: Catalog): number {
   let m = 0;
   for (const x of mutators) {
-    if (x === "Instagib") m |= 1;
-    else fail(`unknown mutator ${x}`);
+    const i = catalog.mutators.indexOf(x);
+    if (i < 0) fail(`unknown mutator ${x}`);
+    m |= 1 << i;
   }
   return m;
 }
 
-function mutatorsFromMask(mask: number): string[] {
-  return mask & 1 ? ["Instagib"] : [];
+function mutatorsFromMask(mask: number, catalog: Catalog): string[] {
+  return catalog.mutators.filter((_, i) => mask & (1 << i));
+}
+
+function knownMutators(catalog: Catalog): number {
+  return (1 << catalog.mutators.length) - 1;
 }
 
 function writeLoadout(b: Bits, lo: Loadout, weapons: readonly string[], gadgets: readonly string[]): void {
@@ -284,8 +321,11 @@ function eqTuning(a: WeaponTuning | undefined, b: WeaponTuning | undefined): boo
   return a.damage === b.damage && a.fire_rate === b.fire_rate && a.ammo === b.ammo;
 }
 
-function eqMode(a: ModeRules, b: ModeRules): boolean {
-  return a.kind === b.kind && a.teams === b.teams && a.match_secs === b.match_secs && a.respawn_secs === b.respawn_secs;
+/** Same mode with the same settings (every key of either side). */
+export function eqMode(a: ModeRules, b: ModeRules): boolean {
+  const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
+  for (const k of keys) if (a[k] !== b[k]) return false;
+  return true;
 }
 
 export function eqLoadout(a: Loadout, b: Loadout): boolean {
@@ -354,7 +394,7 @@ export function canonical(r: RuleSetData, catalog: Catalog): RuleSetData {
   for (const [k, a] of Object.entries(c.weapons)) if (a === "Banned") delete c.weapons[k];
   for (const [k, a] of Object.entries(c.gadgets)) if (a === "Banned") delete c.gadgets[k];
   c.allowed_ship_types = shipsFromMask(shipMask(r.allowed_ship_types, catalog), catalog);
-  c.mutators = mutatorsFromMask(mutatorMask(r.mutators));
+  c.mutators = mutatorsFromMask(mutatorMask(r.mutators, catalog), catalog);
   return c;
 }
 
@@ -383,9 +423,8 @@ function pick<T>(map: Record<string, T>, keep: (id: string) => boolean): Record<
 }
 
 /** The mode default restricted to the covered weapons and gadgets (Rust `base_for`). */
-function baseFor(mode: number, weapons: readonly string[], gadgets: readonly string[], catalog: Catalog): RuleSetData {
-  if (mode !== 0) fail("unknown mode");
-  const base = cloneRules(catalog.defaults.PaintTheVoid);
+function baseFor(kind: ModeKindName, weapons: readonly string[], gadgets: readonly string[], catalog: Catalog): RuleSetData {
+  const base = cloneRules(catalog.defaults[kind]);
   const w = (id: string): boolean => weapons.includes(id);
   const g = (id: string): boolean => gadgets.includes(id);
   base.weapons = pick(base.weapons, w);
@@ -432,17 +471,37 @@ function writeAll<T>(b: Bits, ids: readonly string[], map: Record<string, T>, wr
   }
 }
 
-function fullPayload(r: RuleSetData, weapons: readonly string[], gadgets: readonly string[], catalog: Catalog): Bits {
+/** Format 2 payload (legacy; only the fingerprints of format 3 codes use it). */
+function legacyFullPayload(r: RuleSetData, weapons: readonly string[], gadgets: readonly string[], catalog: Catalog): Bits {
   const b = new Bits();
-  b.push(FULL_VERSION, 4);
+  b.push(LEGACY_FULL_VERSION, 4);
   headerCounts(b, weapons, gadgets);
   writeName(b, r.name);
   b.push(0, 2);
-  writeMode(b, r.mode);
+  legacyWriteMode(b, r.mode);
+  writeFullTail(b, r, weapons, gadgets, catalog);
+  return b;
+}
+
+/** Format 4 full payload. */
+function fullPayload(r: RuleSetData, weapons: readonly string[], gadgets: readonly string[], catalog: Catalog): Bits {
+  const b = new Bits();
+  b.push(CODE_VERSION, 4);
+  headerCounts(b, weapons, gadgets);
+  b.flag(true);
+  b.push(modeInfo(r.mode.kind, catalog).index, MODE_BITS);
+  writeName(b, r.name);
+  writeModeFields(b, r.mode, catalog);
+  writeFullTail(b, r, weapons, gadgets, catalog);
+  return b;
+}
+
+/** The full formats' fields after the mode settings (Rust `write_full_tail`). */
+function writeFullTail(b: Bits, r: RuleSetData, weapons: readonly string[], gadgets: readonly string[], catalog: Catalog): void {
   b.push(percent(r.friendly_fire_percent, "friendly fire"), 7);
   b.push(percent(r.absurdity, "absurdity"), 7);
   b.push(shipMask(r.allowed_ship_types, catalog), 4);
-  b.push(mutatorMask(r.mutators), 4);
+  b.push(mutatorMask(r.mutators, catalog), 4);
   checkIds(r, weapons, gadgets);
   for (const w of weapons) b.push(AVAILABILITIES.indexOf(availabilityOf(r, w)), 2);
   for (const g of gadgets) b.push(AVAILABILITIES.indexOf(gadgetAvailabilityOf(r, g)), 2);
@@ -454,7 +513,6 @@ function fullPayload(r: RuleSetData, weapons: readonly string[], gadgets: readon
   if (r.scrap_pickup !== null) writeScrap(b, r.scrap_pickup);
   writeAll(b, weapons, r.shield_overrides, writeShield);
   writeAll(b, weapons, r.tuning, writeTuning);
-  return b;
 }
 
 function writeChanges(b: Bits, ids: readonly string[], idxBits: number, changed: (id: string) => boolean, write: (id: string) => void): void {
@@ -495,21 +553,42 @@ function fingerprint(base: RuleSetData, weapons: readonly string[], gadgets: rea
   return crc16(pack(b.bits));
 }
 
+function legacyFingerprint(base: RuleSetData, weapons: readonly string[], gadgets: readonly string[], catalog: Catalog): number {
+  const b = legacyFullPayload(base, weapons, gadgets, catalog);
+  return crc16(pack(b.bits));
+}
+
+/** Format 4 diff payload. */
 function diffPayload(rules: RuleSetData, weapons: readonly string[], gadgets: readonly string[], catalog: Catalog): Bits {
   checkIds(rules, weapons, gadgets);
   const r = canonical(rules, catalog);
-  let base = baseFor(0, weapons, gadgets, catalog);
+  const info = modeInfo(r.mode.kind, catalog);
+  const base = baseFor(info.kind, weapons, gadgets, catalog);
   const b = new Bits();
-  b.push(DIFF_VERSION, 4);
+  b.push(CODE_VERSION, 4);
   headerCounts(b, weapons, gadgets);
-  b.push(0, 2);
+  b.flag(false);
+  b.push(info.index, MODE_BITS);
   b.push(fingerprint(base, weapons, gadgets, catalog), 16);
 
   b.flag(r.name !== base.name);
   if (r.name !== base.name) writeName(b, r.name);
   const modeChanged = !eqMode(r.mode, base.mode);
   b.flag(modeChanged);
-  if (modeChanged) writeMode(b, r.mode);
+  if (modeChanged) writeModeFields(b, r.mode, catalog);
+  writeDiffTail(b, r, base, weapons, gadgets, catalog);
+  return b;
+}
+
+/** The diff formats' fields after the mode settings (Rust `write_diff_tail`). */
+function writeDiffTail(
+  b: Bits,
+  r: RuleSetData,
+  base: RuleSetData,
+  weapons: readonly string[],
+  gadgets: readonly string[],
+  catalog: Catalog,
+): void {
   for (const [v, bv, what] of [
     [r.friendly_fire_percent, base.friendly_fire_percent, "friendly fire"],
     [r.absurdity, base.absurdity, "absurdity"],
@@ -519,7 +598,7 @@ function diffPayload(rules: RuleSetData, weapons: readonly string[], gadgets: re
   }
   for (const [v, bv] of [
     [shipMask(r.allowed_ship_types, catalog), shipMask(base.allowed_ship_types, catalog)],
-    [mutatorMask(r.mutators), mutatorMask(base.mutators)],
+    [mutatorMask(r.mutators, catalog), mutatorMask(base.mutators, catalog)],
   ] as const) {
     b.flag(v !== bv);
     if (v !== bv) b.push(v, 4);
@@ -552,7 +631,6 @@ function diffPayload(rules: RuleSetData, weapons: readonly string[], gadgets: re
   }
   writeMapDiff(b, weapons, WEAPON_BITS, r.shield_overrides, base.shield_overrides, eqShield, writeShield);
   writeMapDiff(b, weapons, WEAPON_BITS, r.tuning, base.tuning, eqTuning, writeTuning);
-  return b;
 }
 
 function finish(b: Bits): string {
@@ -581,7 +659,7 @@ export function encodeRules(r: RuleSetData, catalog: Catalog): string {
   return finish(diff.bits.length <= full.bits.length ? diff : full);
 }
 
-/** The full (version 2) code. Throws `RuleCodeError`. */
+/** The full (format 4) code. Throws `RuleCodeError`. */
 export function encodeFullRules(r: RuleSetData, catalog: Catalog): string {
   const { weapons, gadgets } = ids(catalog);
   return finish(fullPayload(r, weapons, gadgets, catalog));
@@ -667,14 +745,13 @@ function readAvailabilityDiff(r: Reader, ids: readonly string[], idxBits: number
 /** A value error found while parsing; reported only if the checksum matches. */
 type Parsed = { rules: RuleSetData } | { error: string };
 
-function readFull(r: Reader, weapons: readonly string[], gadgets: readonly string[], catalog: Catalog): Parsed {
-  const name = readName(r);
-  const mode = r.read(2);
-  const m = readMode(r);
+/** The full formats' fields after the mode settings (Rust `read_full_tail`). */
+function readFullTail(r: Reader, weapons: readonly string[], gadgets: readonly string[], catalog: Catalog, name: string, mode: ModeRules): Parsed {
   const friendly_fire_percent = r.read(7);
   const absurdity = r.read(7);
   const allowed_ship_types = shipsFromMask(r.read(4), catalog);
-  const mutators = mutatorsFromMask(r.read(4));
+  const mutatorBits = r.read(4);
+  const mutators = mutatorsFromMask(mutatorBits, catalog);
   const wmap: Record<string, Availability> = {};
   for (const w of weapons) {
     const a = AVAILABILITIES[r.read(2)] as Availability;
@@ -692,11 +769,11 @@ function readFull(r: Reader, weapons: readonly string[], gadgets: readonly strin
   const scrap_pickup = r.flag() ? readScrap(r) : null;
   const shield_overrides = readAll(r, weapons, readShield);
   const tuning = readAll(r, weapons, readTuning);
-  if (mode !== 0) return { error: "unknown mode" };
+  if ((mutatorBits & ~knownMutators(catalog)) !== 0) return { error: "unknown mutator (code from a newer build?)" };
   return {
     rules: {
       name,
-      mode: m,
+      mode,
       weapons: wmap,
       gadgets: gmap,
       starting_loadout,
@@ -714,22 +791,31 @@ function readFull(r: Reader, weapons: readonly string[], gadgets: readonly strin
   };
 }
 
-function readDiff(r: Reader, weapons: readonly string[], gadgets: readonly string[], catalog: Catalog): Parsed {
+function readFullV2(r: Reader, weapons: readonly string[], gadgets: readonly string[], catalog: Catalog): Parsed {
+  const name = readName(r);
   const mode = r.read(2);
-  const fp = r.read(16);
+  const m = legacyReadMode(r, catalog);
+  const parsed = readFullTail(r, weapons, gadgets, catalog, name, m);
   if (mode !== 0) return { error: "unknown mode" };
-  const out = baseFor(mode, weapons, gadgets, catalog);
-  const baseFp = fingerprint(out, weapons, gadgets, catalog);
-  if (r.flag()) out.name = readName(r);
-  if (r.flag()) out.mode = readMode(r);
+  return parsed;
+}
+
+function readFullV4(r: Reader, info: ModeInfo, weapons: readonly string[], gadgets: readonly string[], catalog: Catalog): Parsed {
+  const name = readName(r);
+  const mode = readModeFields(r, info, catalog);
+  return readFullTail(r, weapons, gadgets, catalog, name, mode);
+}
+
+/** The diff formats' fields after the mode settings; returns whether an unknown mutator bit was set. */
+function readDiffTail(r: Reader, out: RuleSetData, weapons: readonly string[], gadgets: readonly string[], catalog: Catalog): boolean {
   if (r.flag()) out.friendly_fire_percent = r.read(7);
   if (r.flag()) out.absurdity = r.read(7);
   if (r.flag()) out.allowed_ship_types = shipsFromMask(r.read(4), catalog);
   let unknownMutator = false;
   if (r.flag()) {
     const mask = r.read(4);
-    unknownMutator = (mask & ~1) !== 0;
-    out.mutators = mutatorsFromMask(mask);
+    unknownMutator = (mask & ~knownMutators(catalog)) !== 0;
+    out.mutators = mutatorsFromMask(mask, catalog);
   }
   readAvailabilityDiff(r, weapons, WEAPON_BITS, out.weapons);
   readAvailabilityDiff(r, gadgets, GADGET_BITS, out.gadgets);
@@ -749,18 +835,48 @@ function readDiff(r: Reader, weapons: readonly string[], gadgets: readonly strin
   }
   readMapDiff(r, weapons, WEAPON_BITS, out.shield_overrides, eqShield, readShield);
   readMapDiff(r, weapons, WEAPON_BITS, out.tuning, eqTuning, readTuning);
+  return unknownMutator;
+}
+
+function diffChecks(out: RuleSetData, fp: number, baseFp: number, unknownMutator: boolean): Parsed {
   if (fp !== baseFp) return { error: "code made against different default rules (another game version); ask for the full code" };
   if (unknownMutator) return { error: "unknown mutator (code from a newer build?)" };
   return { rules: out };
 }
 
-/** Decodes a code of either format into canonical rules. Throws `RuleCodeError`. */
+function readDiffV3(r: Reader, weapons: readonly string[], gadgets: readonly string[], catalog: Catalog): Parsed {
+  const mode = r.read(2);
+  const fp = r.read(16);
+  if (mode !== 0) return { error: "unknown mode" };
+  const out = baseFor("PaintTheVoid", weapons, gadgets, catalog);
+  const baseFp = legacyFingerprint(out, weapons, gadgets, catalog);
+  if (r.flag()) out.name = readName(r);
+  if (r.flag()) out.mode = legacyReadMode(r, catalog);
+  const unknownMutator = readDiffTail(r, out, weapons, gadgets, catalog);
+  return diffChecks(out, fp, baseFp, unknownMutator);
+}
+
+function readDiffV4(r: Reader, info: ModeInfo, weapons: readonly string[], gadgets: readonly string[], catalog: Catalog): Parsed {
+  const fp = r.read(16);
+  const out = baseFor(info.kind, weapons, gadgets, catalog);
+  const baseFp = fingerprint(out, weapons, gadgets, catalog);
+  if (r.flag()) out.name = readName(r);
+  if (r.flag()) {
+    const m = readModeFields(r, info, catalog);
+    if (eqMode(m, out.mode)) fail("corrupt code (an entry equals the default)");
+    out.mode = m;
+  }
+  const unknownMutator = readDiffTail(r, out, weapons, gadgets, catalog);
+  return diffChecks(out, fp, baseFp, unknownMutator);
+}
+
+/** Decodes a code of any format this build reads (2, 3, 4) into canonical rules. Throws `RuleCodeError`. */
 export function decodeRules(code: string, catalog: Catalog): RuleSetData {
   const bits = symbols(code);
   const r = new Reader(bits);
   const version = r.read(4);
-  if (version !== FULL_VERSION && version !== DIFF_VERSION) {
-    fail(`code version ${version}, this build reads versions ${FULL_VERSION} and ${DIFF_VERSION}`);
+  if (version < LEGACY_FULL_VERSION || version > CODE_VERSION) {
+    fail(`code version ${version}, this build reads versions ${LEGACY_FULL_VERSION} to ${CODE_VERSION}`);
   }
   const nw = r.read(6);
   const ng = r.read(4);
@@ -772,7 +888,15 @@ export function decodeRules(code: string, catalog: Catalog): RuleSetData {
   }
   const weapons = all.weapons.slice(0, nw);
   const gadgets = all.gadgets.slice(0, ng);
-  const parsed = version === FULL_VERSION ? readFull(r, weapons, gadgets, catalog) : readDiff(r, weapons, gadgets, catalog);
+  let parsed: Parsed;
+  if (version === LEGACY_FULL_VERSION) parsed = readFullV2(r, weapons, gadgets, catalog);
+  else if (version === LEGACY_DIFF_VERSION) parsed = readDiffV3(r, weapons, gadgets, catalog);
+  else {
+    const full = r.flag();
+    const index = r.read(MODE_BITS);
+    const info = catalog.modes.find((m) => m.index === index) ?? fail(`unknown mode ${index} (code from a newer build?)`);
+    parsed = full ? readFullV4(r, info, weapons, gadgets, catalog) : readDiffV4(r, info, weapons, gadgets, catalog);
+  }
   const payload = r.pos;
   const crc = r.read(16);
   const rest = bits.slice(r.pos);
@@ -782,10 +906,25 @@ export function decodeRules(code: string, catalog: Catalog): RuleSetData {
   return parsed.rules;
 }
 
-/** The format version of a code (2 full, 3 diff), or null if it has none. */
+/** The format version of a code (4; 2 and 3 for M2 codes), or null if it has none. */
 export function codeVersion(code: string): number | null {
   try {
     return new Reader(symbols(code)).read(4);
+  } catch {
+    return null;
+  }
+}
+
+/** Whether a code is a full code (format 4 full or format 2), a diff, or unreadable (null). */
+export function codeForm(code: string): "full" | "diff" | null {
+  try {
+    const r = new Reader(symbols(code));
+    const version = r.read(4);
+    if (version === LEGACY_FULL_VERSION) return "full";
+    if (version === LEGACY_DIFF_VERSION) return "diff";
+    if (version !== CODE_VERSION) return null;
+    r.read(10);
+    return r.flag() ? "full" : "diff";
   } catch {
     return null;
   }

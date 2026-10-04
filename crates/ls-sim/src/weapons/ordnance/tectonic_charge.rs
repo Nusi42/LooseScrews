@@ -7,7 +7,7 @@
 //!
 //! Numbers: `data/weapons/tectonic_charge.ron` (`params`: `core_radius`, `core_damage`,
 //! `damage_radius`, `collapse_radius`, `crack_count`, `crack_max`, `crack_radius`,
-//! `crack_spacing`, `shockwave_radius`, `shockwave_strength`, `fuse_secs`, `sub_charges`,
+//! `crack_spacing`, `crack_spread_ticks`, `shockwave_radius`, `shockwave_strength`, `fuse_secs`, `sub_charges`,
 //! `sub_scatter`, `sub_min_scatter`, `sub_delay_secs`, `sub_damage`, `sub_radius`,
 //! `sub_crater`, `dust_secs`, `dust_radius`, `debris_count`, `debris_scrap`, `jostle_speed`).
 //! The limits are data too: `max_ammo: 1` here, `max_on_map: 1` and `respawn_secs: 90` in the
@@ -30,7 +30,9 @@
 //! 4. **Aftermath**: the collapse zone caves in whatever the Instability slider says: one
 //!    exact (not rock-strength scaled) `collapse_radius` crater. Instability sets how far
 //!    `crack_count` cracks run into the rock beyond it: `crack_max x instability / 100` u of
-//!    strength-scaled craters every `crack_spacing` u, narrowing towards the tip. A dust
+//!    strength-scaled craters every `crack_spacing` u, narrowing towards the tip, decided in
+//!    the collapse tick and carved over the next `crack_spread_ticks` ticks in equal shares
+//!    (deferred edits, `Ctx::later`; keeps the collapse tick cheap). A dust
 //!    cloud of `dust_radius` lasts `dust_secs`; `debris_count` scrap-filled debris pieces
 //!    spread through the collapse zone (the debris cap removes the oldest); every loose
 //!    debris piece in the level is jostled by `jostle_speed`.
@@ -211,12 +213,17 @@ impl TectonicCharge {
         }
         // Cracks beyond the collapse zone, as far as the Instability says (into the rock
         // behind the surface it stuck to).
+        // The crack set is decided now (against the rock as it is before
+        // the collapse) and carved over the next `crack_spread_ticks` ticks
+        // in equal shares, in the same order, so the collapse tick stays
+        // cheap.
         let reach = prm("crack_max", 30.0) * ctx.view.instability.min(100) as f32 / 100.0;
         let spacing = prm("crack_spacing", 2.5);
         let crack_radius = prm("crack_radius", 1.5);
         if reach > 0.0 && spacing > 0.0 && crack_radius > 0.0 {
             let steps = ls_math::det::ceil(reach / spacing) as usize;
             let mut rng = ctx.rng(p.id as u64 ^ KEY_CRACKS);
+            let mut cracks = Vec::new();
             for _ in 0..prm("crack_count", 8.0).max(0.0) as usize {
                 let mut dir = random_dir(&mut rng);
                 if dir.dot(normal) > 0.0 {
@@ -228,9 +235,16 @@ impl TectonicCharge {
                     let at = center + dir * (collapse + along) + jitter;
                     let r = crack_radius * (1.0 - 0.5 * k as f32 / steps as f32);
                     if ctx.view.terrain.sdf(at) < r {
-                        ctx.crater(at, r);
+                        cracks.push((at, r));
                     }
                 }
+            }
+            let spread = prm("crack_spread_ticks", 6.0).max(1.0) as usize;
+            let n = cracks.len();
+            for (i, (at, r)) in cracks.into_iter().enumerate() {
+                // Share `i * spread / n`: tick 1 .. `spread` after the collapse.
+                let delay = 1 + (i * spread / n.max(1)) as u64;
+                ctx.later(delay, |ctx| ctx.crater(at, r));
             }
         }
     }
@@ -582,8 +596,9 @@ mod tests {
             let (mut w, mut t, _a, c) = floor_charge(instability);
             let ev = run_until(&mut w, &mut t, 120, blast);
             let edits = geometry(&ev);
-            assert_eq!(edits[0], (c, 35.0), "exact 35 u collapse");
-            let cracks = &edits[1..];
+            assert_eq!(edits, vec![(c, 35.0)], "exact 35 u collapse, cracks later");
+            let later = geometry(&run(&mut w, &mut t, &[], 6));
+            let cracks = &later[..];
             let extent = 30.0 * instability as f32 / 100.0;
             let max = cracks
                 .iter()
@@ -715,5 +730,54 @@ mod tests {
         let ev = run_until(&mut w, &mut t, 100, blast);
         assert_eq!(w.tick() - fired, 599 + 90);
         assert_eq!(impacts(&ev)[0].1, pos);
+    }
+
+    /// The cracks come in equal shares over the 6 ticks after the collapse
+    /// and are exactly the M2 crack set (positions, radii, order): hashes of
+    /// the edits the M2 code made in the collapse tick.
+    #[test]
+    fn cracks_spread_over_six_ticks_and_match_the_m2_set() {
+        for (instability, n, m2_hash) in [
+            (50u8, 48usize, 0xae42_a054_8754_610f_u64),
+            (100, 96, 0x6461_78c8_a807_2ca5),
+        ] {
+            let (mut w, mut t, _a, c) = floor_charge(instability);
+            let ev = run_until(&mut w, &mut t, 120, blast);
+            assert_eq!(geometry(&ev), vec![(c, 35.0)]);
+            let mut all = Vec::new();
+            for _ in 0..6 {
+                let tick = geometry(&w.step(&mut t, &[]));
+                assert!(
+                    tick.len() <= n.div_ceil(6),
+                    "{} edits in one tick",
+                    tick.len()
+                );
+                assert!(!tick.is_empty());
+                all.extend(tick);
+            }
+            assert!(geometry(&w.step(&mut t, &[])).is_empty(), "nothing left");
+            assert_eq!(all.len(), n);
+            let mut h = crate::StateHasher::new();
+            for (p, r) in &all {
+                h.write_vec3(*p);
+                h.write_f32(*r);
+            }
+            assert_eq!(h.finish(), m2_hash, "instability {instability}");
+        }
+    }
+
+    /// While cracks are pending the world state (hash) includes them, and a
+    /// clone carves the same cracks.
+    #[test]
+    fn pending_cracks_are_part_of_the_state() {
+        let (mut w, mut t, _a, _c) = floor_charge(100);
+        run_until(&mut w, &mut t, 120, blast);
+        let mut w2 = w.clone();
+        let mut t2 = t.clone();
+        assert_eq!(w.state_hash(), w2.state_hash());
+        let a = geometry(&run(&mut w, &mut t, &[], 6));
+        let b = geometry(&run(&mut w2, &mut t2, &[], 6));
+        assert_eq!(a, b);
+        assert_eq!(w.state_hash(), w2.state_hash());
     }
 }

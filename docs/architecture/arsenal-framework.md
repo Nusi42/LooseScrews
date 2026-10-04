@@ -141,8 +141,14 @@ content off its spawn point, by a delta: Magnet Sneeze), `remove_projectile`, `d
 `swap`, `rewind`, `disable_weapons`, `adjust_hull`, `cue`, `emit`, and `detonate` (the default
 impact).
 
-Damage goes through one pipeline: friendly-fire scaling between teammates, then the target's
-active gadget (`GadgetBehavior::on_damage`, the Shield), then hull, `Damaged` event and kill.
+`ctx.later(delay, |ctx| ...)` defers the terrain edits the closure queues by `delay` ticks
+(`Command::EditLater`, applied at the start of that tick before respawns, part of the state
+hash while pending); the Tectonic Charge spreads its cracks with it.
+
+Damage goes through one pipeline: friendly-fire scaling between teammates, then the mode's and
+the mutators' `on_damage` hooks, then the target's active gadget (`GadgetBehavior::on_damage`,
+the Shield; a mode hook may skip it), then hull, `Damaged` event and kill (the mode's
+`on_kill`).
 Every hit pushes: the projectile's `knockback` scales with its damage (level, ship type, rule
 set tuning and charge multipliers), splash knockback scales with the falloff, and
 `damage_proportional` uses `WeaponDef::knockback_per_damage`.
@@ -182,7 +188,9 @@ set tuning and charge multipliers), splash knockback scales with the falloff, an
 
 `World::step`:
 
-1. Respawns (with the ship type picked for the next life).
+0. On the first tick the mode's `on_start`; then the deferred terrain edits due this tick.
+1. Respawns (with the ship type picked for the next life; never for eliminated or spectating
+   players, and only if the mode's `allow_respawn` agrees).
 2. Per ship in id order: weapon selection; movement (`simulate_movement` with the paint
    effects of the surface it touches, frozen for ships guiding a projectile); charged-rock
    drain; scavenging (scrap piles, then debris) and Tug scrap passing; gadget
@@ -199,7 +207,8 @@ set tuning and charge multipliers), splash knockback scales with the falloff, an
    written back, then its commands), expiry.
 5. Scrap piles, pickup collection, pickup respawns.
 6. Ship trails (3 s of position, velocity, hull per ship for Borrowed Time).
-7. Mode scores and timer.
+7. Mode: `on_tick` (Paint the Void refreshes its coverage every 30 ticks), newly eliminated
+   players leave play (`Event::Eliminated`), then `end_check` (`Event::MatchEnded`).
 
 ## Gadgets
 
@@ -299,7 +308,8 @@ than 100 u from the viewer's ship. The viewer's own ship is always kept.
 `ls_sim::data_hash()` hashes every embedded `data/` file (weapons, ships, gadgets, rule sets)
 by path and content (CR bytes ignored; comment edits count), plus
 `ls_sim::SIM_BEHAVIOR_VERSION` (bumped with behaviour changes that change no data, together
-with `REPLAY_GOLDEN_HASH`). Clients send it in `Hello`
+with `REPLAY_GOLDEN_HASH`; 5 since M3 wave A: mode framework, per-match teams, Tectonic cracks
+spread over 6 ticks). Clients send it in `Hello`
 (`ls_game::client_hello`); `Room::join` rejects a mismatch with `DataMismatch`, and
 `ClientSession::from_welcome_with` refuses a `Welcome` whose hash differs from its own
 built-in data. Custom tables (`MatchConfig` with non-built-in data) hash their serialized form.
@@ -308,21 +318,26 @@ built-in data. Custom tables (`MatchConfig` with non-built-in data) hash their s
 
 `RuleSet` adds `gadgets` (availability), `upgrade_pickups`, `gadget_pickups`, `max_on_map` per
 pickup (Tectonic Charge: 1), `shield_overrides` and `tuning` (damage, fire rate and ammo
-multipliers) per weapon, `mutators` (none supported yet), and the loadout `gadget`.
+multipliers) per weapon, `mutators` (see the mode framework below), and the loadout `gadget`.
 `RuleSet::resolve_with` validates everything and precomputes per-weapon tables
 (`ResolvedRules::shield_interaction`, `tuning`, `max_ammo`). Enforcement in the world: banned
 weapons never fire (`can_fire`), are never granted (`give_weapon`, pickups) and never spawn
 (`update_pickup_spawns` zeroes their weight); tests in `tests_arsenal.rs` and the room tests.
 
 Rule set codes (`RuleSet::to_code` / `from_code`, format in `rulecode.rs`): `LR` + Crockford
-base32 in groups of four. Version 3 (what `to_code` prints) stores only the differences from
-the mode's default rule set (`data/rulesets/paint_the_void.ron`) plus a 16-bit fingerprint of
-that default: the default rules are `LR6V-69CM-G006-58R` (18 characters), a ban adds about 3
-symbols. A diff code made against a different default is rejected ("ask for the full code").
-Version 2 (`to_full_code`, about 270 characters) stores every setting; `to_code` uses it when
-it is shorter. Both carry the weapon and gadget counts (the registry is append-only: codes
-from an older build decode with the missing weapons banned, codes from a newer build are
-rejected) and a CRC-16. Encoding fails for values the format cannot carry exactly (tuning in
+base32 in groups of four. Format 4 (M3) carries every mode: a full/diff bit and a 4-bit mode
+index after the header, and the mode's settings as its generic field list
+(`ModeRules::fields`: each field `bits` bits in steps of `1 / steps`). The diff form (what
+`to_code` prints) stores only the differences from the mode's default rule set
+(`RuleSet::default_for`: `data/rulesets/<mode>.ron`, or Paint the Void's rules with the
+mode's settings and without the Paint Thrower until the mode has its own file) plus a 16-bit
+fingerprint of that default: the default Paint the Void rules are `LR8V-6097-G000-TMBG` (19
+characters), a ban adds about 3 symbols. A diff code made against a different default is
+rejected ("ask for the full code"). The full form (`to_full_code`, about 270 characters)
+stores every setting; `to_code` uses it when it is shorter. The M2 formats 2 (full) and 3
+(diff), Paint the Void only, still decode. All carry the weapon and gadget counts (the
+registry is append-only: codes from an older build decode with the missing weapons banned,
+codes from a newer build, or with an unknown mode or mutator, are rejected) and a CRC-16. Encoding fails for values the format cannot carry exactly (tuning in
 twentieths, shield fractions in hundredths), so a code always decodes to the rule set it was
 made from. `RuleSet::ban_weapon` / `ban_gadget` remove the item from availability, pickups and
 the loadout at once.
@@ -338,6 +353,53 @@ twentieths, shield overrides that replace the rule set's), re-read before every 
 Built-in rule sets: `paint_the_void.ron` (default) and `sandbox_all_weapons.ron` (every weapon
 and gadget as a pickup with even weights and short respawns, every ship type; the arsenal e2e
 run uses it).
+
+## Mode framework (M3)
+
+Every mode is a module (`crates/ls-sim/src/modes/<id>.rs`) implementing `modes::ModeModule`,
+registered in `modes::MODULES` in `ModeKind` order (the rule set code's mode index; append
+only). Settings live in the mode's `ModeRules` variant (`ruleset.rs`, declared with
+`mode_settings!`: field, default, code precision); every mode has `teams`, `match_secs` and
+`respawn_secs`. Mutators (`crates/ls-sim/src/mutators/<id>.rs`, `MutatorModule`) rewrite the
+effective rule set before it resolves (`RuleSet::effective`), may change the respawn delay and
+damage, and set HUD flags; they run after the mode's hooks.
+
+| Hook | When | Context |
+| --- | --- | --- |
+| `validate`, `team_counts` | `RuleSet::resolve` | the settings |
+| `on_join`, `late_join_spectates` | `World::add_player` | `ModeMut` / `ModeRef` |
+| `on_start` | first tick | `ModeCtx` (`Ctx` commands + mutable `ModeState`) |
+| `allow_respawn`, `on_spawn` | respawns | `ModeRef` / `ModeMut` + the ship |
+| `on_damage` | damage pipeline, after friendly fire | `ModeRef` + `ModeHit` |
+| `on_kill` | a ship died | `ModeMut` + `Kill` |
+| `on_pickup` | a ship touches a pickup | `ModeState` + the ship |
+| `on_tick`, `end_check` | stage 7 | `ModeCtx`, `ModeRef` |
+| `view` | `World::mode_view` | `ModeState` |
+
+The world keeps the generic `mode::ModeState` (part of the state hash: kind, teams, phase,
+timer, stage and stage end tick, paint coverage, team scores, score target, per-player
+`PlayerMode` with score, lives, meter and flags, objectives with position, holder and timer,
+module scratch values) and replicates it as `mode::ModeView` (`World::mode_view`: teams, phase
+with the winning side, timer, stage, team scores, top 32 players with lives and flags, up to 8
+objective markers, HUD `view_flags`). `World::results` is the results table (winner or draw,
+kills, deaths, mode score per player). Modules that do not override a hook get the generic
+fallback (kills score, a suicide or team kill costs a point, lives where the mode has them,
+end on one side left, `score_target` or the timer); the six M3 modes other than Paint the Void
+are such stubs until wave B.
+
+Teams are per match: `teams` 2-4 (the smallest team gets a joining player; a team without
+spawn points of its own uses any spawn point) or 0 = free-for-all, where every ship is its own
+side with its own side id in `ShipState::team` (lowest free id, at most 254 ships), so
+friendly fire, kill credit and every weapon's "enemy" test work unchanged; free-for-all spawns
+pick the spawn point farthest from the other living ships. Lives and elimination: a player
+whose `PlayerMode` is eliminated or spectating never respawns, leaves play at the end of the
+tick (`Event::Eliminated` when eliminated) and appears in the view with its flags. Players
+joining after `modes::LATE_JOIN_GRACE_TICKS` (10 s) in modes with lives spectate until the
+next match; `World::set_spectator` switches by choice.
+
+A two-team Paint the Void match runs exactly as in M2 through the framework (its state hash
+and `REPLAY_GOLDEN_HASH` are unchanged): the mode state beyond the M2 fields is hashed only
+when it differs from a fresh two-team Paint the Void state.
 
 ## The arsenal as built
 

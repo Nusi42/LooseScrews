@@ -654,7 +654,7 @@ world generator (version 2) start with `LS08` to `LS0B`.
 
 A server's **rule set** decides the match length, respawn time, which weapons, gadgets and ship
 types are allowed, the starting loadout, the pickups, per-weapon tuning and friendly fire. A rule
-set fits into a short **rule set code** that starts with `LR`, for example `LR6V-69CM-G006-58R`
+set fits into a short **rule set code** that starts with `LR`, for example `LR8V-6097-G000-TMBG`
 (the default Paint the Void rules). You don't need one to play: the server sends its rules when
 you join. Codes are for hosts and for sharing rule ideas.
 
@@ -670,7 +670,7 @@ server would refuse are listed in red. When the rules are valid, the **Share** s
 - the **rule set code**,
 - an optional **World** field for a share code,
 - an **invite link** with both codes (`…/?world=LS…&rules=LR…`),
-- the **host command** (for example `ls-server --code LS0B-… --ruleset LR6V-…`), which the host
+- the **host command** (for example `ls-server --code LS0B-… --ruleset LR8V-…`), which the host
   runs to play those rules.
 
 The editor remembers the last code you made. Opening it with `?editor=rules&rules=LR…` loads that

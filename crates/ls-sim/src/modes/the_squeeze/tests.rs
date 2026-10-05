@@ -37,6 +37,8 @@ fn setup() -> MatchSetup {
         })
         .collect();
     MatchSetup {
+        wells: Vec::new(),
+        belt: None,
         spawns,
         pickup_points: vec![
             Vec3::new(-6.0, 0.0, 3.0),

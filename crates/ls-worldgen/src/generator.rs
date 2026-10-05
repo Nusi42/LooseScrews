@@ -27,6 +27,7 @@
 
 use std::cell::OnceCell;
 
+use ls_math::level::{Archetype, BeltSite, WellSite};
 use ls_math::rng::{mix64, SplitMix64};
 use ls_math::{det, Aabb, Vec3};
 
@@ -39,8 +40,28 @@ use crate::{ShareCode, Sliders, WorldgenError, CHUNK_CELLS, GENERATOR_VERSION};
 
 /// Thickness of the sealing wall inside the level box (u).
 pub const WALL_THICKNESS: f32 = 2.0;
-/// Default level size in chunks (256 x 128 x 256 u).
+/// Default level size in chunks (256 x 128 x 256 u): the classic box at
+/// Verticality 40-59.
 pub const DEFAULT_SIZE_CHUNKS: [i32; 3] = [8, 4, 8];
+/// The five classic level boxes in chunks, by Verticality: 0-19, 20-39,
+/// 40-59, 60-79, 80-100 (flat and wide to tall and narrow, about the same
+/// chunk count; M4 plan §3.3). The team axis is x in every shape.
+pub const BOX_SHAPES: [[i32; 3]; 5] = [[10, 2, 10], [9, 3, 9], [8, 4, 8], [7, 5, 7], [6, 7, 6]];
+/// The asteroid belt's level box in chunks (320 x 96 x 320 u).
+pub const BELT_SIZE_CHUNKS: [i32; 3] = [10, 3, 10];
+
+/// The classic level box for a Verticality value (see [`BOX_SHAPES`]).
+pub fn box_shape(verticality: u8) -> [i32; 3] {
+    BOX_SHAPES[(verticality.min(100) / 20).min(4) as usize]
+}
+
+/// The level box in chunks of a level with this archetype and sliders.
+pub fn level_size_chunks(archetype: Archetype, sliders: &Sliders) -> [i32; 3] {
+    match archetype {
+        Archetype::Classic => box_shape(sliders.verticality),
+        Archetype::Belt => BELT_SIZE_CHUNKS,
+    }
+}
 
 // --- Open sky: floating islands -------------------------------------------
 const ISLAND_CELL: f32 = 48.0;
@@ -112,6 +133,11 @@ impl Seeds {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Generator {
     code: ShareCode,
+    archetype: Archetype,
+    /// Gravity well sites (Gravity Chaos), in placement order.
+    wells: Vec<WellSite>,
+    /// The asteroid belt (belt levels only).
+    belt_site: Option<BeltSite>,
     size_chunks: [i32; 3],
     bounds: Aabb,
     room: Aabb,
@@ -166,6 +192,9 @@ impl Generator {
         );
         Generator {
             code: ShareCode::new(seed, sliders),
+            archetype: Archetype::Classic,
+            wells: Vec::new(),
+            belt_site: None,
             size_chunks,
             bounds,
             room,
@@ -182,6 +211,23 @@ impl Generator {
     /// The share code (seed, sliders, current version) this generator uses.
     pub fn code(&self) -> ShareCode {
         self.code
+    }
+
+    /// The level archetype (classic or asteroid belt).
+    pub fn archetype(&self) -> Archetype {
+        self.archetype
+    }
+
+    /// The level's gravity well sites (Gravity Chaos; on belt levels the
+    /// shepherd moons). Empty at Gravity Chaos 0.
+    pub fn gravity_wells(&self) -> &[WellSite] {
+        &self.wells
+    }
+
+    /// The asteroid belt (start slots, gates, exit, pickup points, boulder
+    /// orbits); `None` on classic levels.
+    pub fn belt(&self) -> Option<&BeltSite> {
+        self.belt_site.as_ref()
     }
 
     /// Level size in chunks.

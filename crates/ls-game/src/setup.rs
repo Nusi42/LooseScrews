@@ -282,6 +282,8 @@ pub fn match_setup(
     );
 
     Ok(MatchSetup {
+        wells: Vec::new(),
+        belt: None,
         spawns,
         pickup_points: pickups,
         instability: code.sliders.instability,

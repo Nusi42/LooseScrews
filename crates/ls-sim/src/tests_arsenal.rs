@@ -13,6 +13,8 @@ use wasm_bindgen_test::wasm_bindgen_test as test;
 
 fn setup() -> MatchSetup {
     MatchSetup {
+        wells: Vec::new(),
+        belt: None,
         spawns: vec![
             SpawnPoint {
                 pos: Vec3::new(-20.0, 0.0, 0.0),

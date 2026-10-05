@@ -81,6 +81,8 @@ pub(crate) mod testkit {
     /// Two teams, spawns at x = -20 / +20, Paint the Void rules.
     pub fn world() -> World {
         let setup = MatchSetup {
+            wells: Vec::new(),
+            belt: None,
             spawns: vec![
                 SpawnPoint {
                     pos: Vec3::new(-20.0, 0.0, 0.0),

@@ -311,12 +311,56 @@ culling and `frontFace: "ccw"`.
 
 ## Share codes
 
-`LS` followed by exactly 26 Crockford base32 symbols (130 bits: version u8, seed u64,
-7 sliders x 7 bit, CRC-8, 1 pad bit), printed as `LSab-cdef-ghij-klmn-opqr-stuv-wxyz`
-(34 characters). Decoding ignores case, dashes and whitespace and reads O as 0 and I/L as 1.
-`ls_worldgen::ShareCode` is the reference. The web start screen checks the format in
-TypeScript (`web/src/ui/shareCode.ts`) and then decodes the code, checksum and generator
-version through `ls-wasm`'s `checkShareCode`.
+`LS` followed by exactly 26 Crockford base32 symbols (130 bits), printed as
+`LSab-cdef-ghij-klmn-opqr-stuv-wxyz` (34 characters). Decoding ignores case, dashes and
+whitespace and reads O as 0 and I/L as 1. `ls_worldgen::ShareCode` is the reference.
+
+Generator version 4 layout (M4): version u8, archetype 3 bits (`ls_math::level::Archetype`
+index: 0 classic, 1 asteroid belt; append only), seed u64, the seven sliders packed as one
+base-101 number in 47 bits (enclosure most significant, `Sliders::to_array` order), CRC-8
+(poly 0x07, init 0) over the 122 bits before it. Versions 1-3 used version u8, seed u64,
+7 sliders x 7 bit, CRC-8, 1 pad bit; the version field (first 8 bits in both layouts) picks
+the layout, so old codes still decode and `Generator::from_code` refuses them by version.
+The web start screen checks the format in TypeScript (`web/src/ui/shareCode.ts`) and then
+decodes the code, checksum and generator version through `ls-wasm`'s `checkShareCode`;
+`web/src/renderer/atmosphere.ts` `decodeShareCode` mirrors both layouts for the sky and grade.
+
+## Levels (`ls_math::level`)
+
+Types the generator produces and the simulation and client read (M4, generator version 4):
+
+- **Level box** (`ls_worldgen::level_size_chunks`): classic levels take one of five boxes by
+  Verticality (`BOX_SHAPES`: 0-19 `[10, 2, 10]`, 20-39 `[9, 3, 9]`, 40-59 `[8, 4, 8]`,
+  60-79 `[7, 5, 7]`, 80-100 `[6, 7, 6]` chunks); belt levels `[10, 3, 10]`. Readers take the
+  real bounds from the generator (`Generator::bounds`) or `Welcome`'s quantization bounds,
+  never a 256 x 128 x 256 constant.
+- **`WellSite`** (`Generator::gravity_wells`, `MatchSetup::wells`): `pos` (core centre),
+  `core_radius` (rock), `hollow_radius` (open space kept around the core), `strength` in 0..=1
+  (Gravity Chaos / 100: the share of the rules' largest pull), `range` (u, where the pull has
+  tapered to 0; 20 + 20 x Gravity Chaos / 100), `kind` (`Core` in caverns and mines,
+  `Floating` in open sky, `Shepherd` on belts). Classic levels: none at Gravity Chaos 0, else
+  `1 + slider / 15` (at most 7) where they fit, at least 30 u apart, at least 40 u from every
+  spawn cavern (the network's end hubs and the team 2/3 caverns), outside the Heist vein,
+  with the core at least `core_radius + TUNNEL_RADIUS` from every network centre line;
+  `ls_game::setup` keeps every spawn point at least 40 u from every well. Placement draws from
+  `SplitMix64(Seeds::connect ^ 0x4752_4156_5745_4c4c)` ("GRAVWELL"). The force law lives in
+  `ls-sim` (gravity, A4).
+- **`BeltSite`** (`Generator::belt`, `MatchSetup::belt`; belt levels only): `center` (on the
+  vertical axis, in the belt plane), `inner_radius` 95, `outer_radius` 145, `half_thickness`
+  8-18 (Verticality), `cocoon_radius` 30, `exit_radius` 6, gates from `gate_inner_radius` 87 to
+  `gate_outer_radius` 153 over the full height, `slots` (8, slot k 3 degrees past gate k at
+  radius 120, facing prograde), `pickup_points` (3 per wedge, wedge-major), `boulders`
+  (`BoulderOrbit`: radius, height, phase, angular speed, size, tumble; positions are a pure
+  function of the tick, `BoulderOrbit::pos_at`). Azimuth is measured about +Y with the
+  right-hand rule (0 along +X, 90 degrees along -Z); increasing azimuth is prograde
+  (counter-clockwise seen from above). Gate k is the half-plane at azimuth k x 45 degrees
+  (`BeltSite::crosses_gate`). `BeltSite::shelter_distance` is the signed distance to the belt
+  slab or the cocoon (radiation reads it).
+- **Belt symmetry**: the generator builds one 45-degree wedge from
+  `SplitMix64(seed ^ 0x4245_4c54_5f47_454e)` ("BELT_GEN") and copies it by rotation about the
+  axis (8-fold) and by mirroring in the belt plane. The generator field is symmetric within
+  1e-4 u (rotation constants through `ls_math::det`); voxel meshes of rotated wedges may differ
+  by less than a cell.
 
 ## Game data ids (`ls-sim`)
 

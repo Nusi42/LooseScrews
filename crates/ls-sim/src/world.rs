@@ -87,6 +87,14 @@ pub struct MatchSetup {
     /// `None` (test rooms): Heist falls back to the spawn points.
     #[serde(default)]
     pub heist: Option<crate::modes::heist::HeistLevel>,
+    /// The level's gravity well sites (Gravity Chaos; on belt levels the
+    /// shepherd moons), from `ls_worldgen::Generator::gravity_wells`.
+    #[serde(default)]
+    pub wells: Vec<ls_math::level::WellSite>,
+    /// The asteroid belt (belt levels only; Belt Up, radiation), from
+    /// `ls_worldgen::Generator::belt`.
+    #[serde(default)]
+    pub belt: Option<ls_math::level::BeltSite>,
 }
 
 /// Everything needed to start a match.

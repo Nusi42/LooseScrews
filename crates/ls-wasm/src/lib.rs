@@ -29,8 +29,9 @@ pub mod beam;
 pub mod controls;
 pub mod game;
 pub mod inventory;
+pub mod level;
 pub mod mechanics;
-pub mod modes;
+mod modes;
 pub mod probe;
 pub mod scene;
 pub mod sharecode;
@@ -888,6 +889,24 @@ impl Game {
     #[wasm_bindgen(js_name = pickTeamPacket)]
     pub fn pick_team_packet(&self, team: i32) -> Option<Vec<u8>> {
         self.core.pick_team_packet(u8::try_from(team).ok())
+    }
+
+    /// The asteroid belt of a belt level as JSON (`level::belt_json`),
+    /// `undefined` on classic levels.
+    #[wasm_bindgen(js_name = beltSite)]
+    pub fn belt_site(&self) -> Option<String> {
+        self.core.belt().map(level::belt_json)
+    }
+
+    /// Drifting boulders of the belt at `tick` (fractional ticks
+    /// interpolate), `BOULDER_STRIDE` floats each: `[x, y, z, qx, qy, qz,
+    /// qw, radius]`; empty on classic levels. Pure function of the tick
+    /// (the simulation's orbit function), so every client agrees.
+    #[wasm_bindgen(js_name = boulderPoses)]
+    pub fn boulder_poses(&self, tick: f64) -> Vec<f32> {
+        self.core
+            .belt()
+            .map_or_else(Vec::new, |b| level::boulder_poses(b, tick))
     }
 
     /// `ArchitectAction` packet placing a stroke (protocol 6; send reliably;

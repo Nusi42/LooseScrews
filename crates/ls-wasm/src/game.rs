@@ -245,6 +245,9 @@ struct Practice {
     prev: Vec<ShipState>,
     /// Seconds since the match ended (the world stops ticking then).
     over_secs: f32,
+    /// The level's static gravity wells and asteroid belt (M4).
+    well_sites: Vec<ls_math::level::WellSite>,
+    belt: Option<ls_math::level::BeltSite>,
 }
 
 #[derive(Debug)]
@@ -619,6 +622,7 @@ impl GameCore {
         let cfg = MatchConfig::paint_the_void(code);
         let mut terrain = GameTerrain::new(gen);
         let setup = match_setup(&cfg.code, &cfg.rules, &terrain)?;
+        let (well_sites, belt) = (setup.wells.clone(), setup.belt.clone());
         let mut world = World::new(cfg.world_config(setup))?;
         if pregenerate {
             terrain.generate_all();
@@ -638,6 +642,8 @@ impl GameCore {
                 me,
                 prev,
                 over_secs: 0.0,
+                well_sites,
+                belt,
             })),
             step: FixedStep::default(),
             look: LookAccumulator::default(),
@@ -1987,6 +1993,22 @@ impl GameCore {
     /// `Ready` for the next match (send reliably; `None` offline).
     pub fn ready_packet(&self, ready: bool) -> Option<Vec<u8>> {
         self.lobby_packet(Message::Ready { ready })
+    }
+
+    /// The level's static gravity well sites (M4).
+    pub fn well_sites(&self) -> &[ls_math::level::WellSite] {
+        match &self.mode {
+            Mode::Online(o) => o.session.well_sites(),
+            Mode::Practice(p) => &p.well_sites,
+        }
+    }
+
+    /// The asteroid belt of a belt level (M4).
+    pub fn belt(&self) -> Option<&ls_math::level::BeltSite> {
+        match &self.mode {
+            Mode::Online(o) => o.session.belt(),
+            Mode::Practice(p) => p.belt.as_ref(),
+        }
     }
 
     /// `ArchitectAction` placing a stroke (online only; the server

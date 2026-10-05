@@ -134,6 +134,10 @@ pub struct ClientSession {
     lobby: Option<LobbyStateMsg>,
     /// Results of this match, once it ended.
     results: Option<MatchResultsMsg>,
+    /// The level's static gravity wells and asteroid belt (M4), from the
+    /// match setup of the pristine level, like the server's.
+    well_sites: Vec<ls_math::level::WellSite>,
+    belt: Option<ls_math::level::BeltSite>,
 }
 
 /// Snapshots of entities kept for interpolation.
@@ -217,6 +221,8 @@ impl ClientSession {
             pings: VecDeque::new(),
             next_nonce: 0,
             ticks_since_ping: PING_INTERVAL_TICKS,
+            well_sites: setup.wells.clone(),
+            belt: setup.belt.clone(),
             pickup_points: setup.pickup_points,
             match_end_tick: None,
             entity_history: VecDeque::new(),
@@ -330,6 +336,18 @@ impl ClientSession {
     /// The message that asks to spectate (or to play again).
     pub fn spectate(&self, spectate: bool) -> Message {
         Message::Spectate { spectate }
+    }
+
+    /// The level's static gravity well sites (Gravity Chaos; shepherd moons
+    /// on belt levels), as the server's match setup has them.
+    pub fn well_sites(&self) -> &[ls_math::level::WellSite] {
+        &self.well_sites
+    }
+
+    /// The asteroid belt of a belt level (slots, gates, exit, boulder
+    /// orbits), as the server's match setup has it.
+    pub fn belt(&self) -> Option<&ls_math::level::BeltSite> {
+        self.belt.as_ref()
     }
 
     /// The comedy director's state and the level's up of the newest

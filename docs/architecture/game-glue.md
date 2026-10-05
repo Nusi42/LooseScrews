@@ -218,10 +218,10 @@ catch-up sends only the newest 8 `Input` messages (older ones would be late anyw
   seed, `apply_move_effects_before` / `_after`) around the movement, exactly as `World::step`
   does. `Predictor::set_wells` takes the level's well field: the static wells of the match setup
   plus the dynamic wells rebuilt from the newest snapshot's well entities; the movement runs
-  `simulate_movement_env` with the clamped pull at the ship and the level's up. A dynamic well
-  that starts after the snapshot (telegraphed) carries its start in the entity, so the
-  prediction starts it on the right tick; one the client learns of late is corrected by the
-  next reconciliation (the server state already has its pull). `ClientSession::mood()`,
+  `simulate_movement_env` with the clamped pull at the ship and the level's up. Well entities
+  carry their exact start and end ticks: a telegraphed well starts on its tick, and a changed
+  well list makes the next reconciliation replay the stored inputs from the anchored state, so a
+  well the client learns of after it started pulls from its exact start as on the server. `ClientSession::mood()`,
   `well_sites()`, `belt()` expose the rest; `architect_action(...)` builds the stroke message.
   Test: `crates/ls-game/tests/mood_netplay.rs` (reconciliation error below 0.05 u through forced
   events, a turned up, a well field and dynamic wells starting and ending mid-flight).

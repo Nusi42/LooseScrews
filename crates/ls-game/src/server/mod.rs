@@ -21,7 +21,9 @@ use ls_sim::terrain::segment_sphere;
 use ls_sim::{Event, InputCmd, PlayerId, ReplicatedKind, ShipState, ShipType, World};
 
 use crate::client::INTERP_DELAY_TICKS;
-use crate::convert::{entity_to_net, events_to_net, net_to_input, projectile_to_net};
+use crate::convert::{
+    entity_to_net, events_to_net, net_to_input, projectile_to_net, well_entities,
+};
 use crate::mode::{legacy_scores, mode_view_to_net, results_to_net};
 use crate::setup::{build_match, MatchConfig};
 use crate::{GameError, GameTerrain, NetConv};
@@ -320,7 +322,9 @@ impl Room {
     }
     /// The mode state as snapshots carry it (wire ids).
     pub fn net_mode_state(&self) -> ls_net::NetModeState {
-        mode_view_to_net(&self.mode_view(), |p| wire_id(&self.clients, p))
+        let mut m = mode_view_to_net(&self.mode_view(), |p| wire_id(&self.clients, p));
+        m.mood.up = self.world.up();
+        m
     }
     /// The match results once the mode ended (also sent to every client as
     /// `Message::MatchResults`, once, and to clients joining afterwards).
@@ -779,6 +783,8 @@ impl Room {
         let view = self.mode_view();
         let scores = legacy_scores(&view);
         let mut mode = mode_view_to_net(&view, |p| wire_id(&self.clients, p));
+        // Protocol 6: the level's up (Bored level) travels with the mood.
+        mode.mood.up = self.world.up();
         if !view.is_running() {
             // Ended (possibly early): `end_tick` is the last simulated tick,
             // so clients freeze their prediction exactly where the server
@@ -803,12 +809,19 @@ impl Room {
         projectiles.sort_by_key(|p| p.id);
         debug_assert!(projectiles.windows(2).all(|w| w[0].id < w[1].id));
         projectiles.dedup_by_key(|p| p.id);
-        let entities: Vec<NetEntity> = self
+        let mut entities: Vec<NetEntity> = self
             .world
             .entity_views()
             .iter()
             .map(|v| entity_to_net(v, v.owner.and_then(|o| wire_id(&self.clients, o))))
             .collect();
+        // Protocol 6: dynamic gravity wells as well entities (the client
+        // predictor rebuilds them; ids above the simulation's 15-bit ones).
+        entities.extend(well_entities(
+            self.world.dynamic_wells(),
+            self.world.tick(),
+            |p| wire_id(&self.clients, p),
+        ));
         let players: Vec<ls_net::NetPlayer> = self
             .clients
             .iter()
@@ -820,6 +833,7 @@ impl Room {
         let log = self.terrain.edit_log();
 
         let mut inventories: Vec<(u8, Message)> = Vec::new();
+        let now = self.world.tick();
         // Clients still setting up (no input yet) get no snapshots.
         let ids: Vec<u8> = self
             .clients
@@ -843,7 +857,7 @@ impl Room {
                     .iter()
                     .filter_map(|(&sid, c)| {
                         let s = self.world.ship(c.player)?;
-                        Some(self.conv.ship_to_net(sid, s, sid == id))
+                        Some(self.conv.ship_to_net_at(sid, s, sid == id, now))
                     })
                     .collect();
                 let c = &self.clients[&id];

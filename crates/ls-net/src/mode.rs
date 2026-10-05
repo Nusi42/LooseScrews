@@ -70,8 +70,9 @@
 //! a Paperweight, the Architect's Gravity Chaos+ stroke) goes out as a
 //! generic entity of kind `ReplicatedKind::Well` at the well's centre, built
 //! by `ls_game::convert::well_entities` (ids `0x8000 |` the well key, apart
-//! from the simulation's 15-bit entity ids). Its 4 state bytes and `team`
-//! byte are [`crate::wire::well_state`] (range, peak pull, end tick, start).
+//! from the simulation's 15-bit entity ids). Its 4 state bytes and
+//! `visual` field are [`crate::wire::well_state`] (range, peak pull, end
+//! tick, start tick).
 //! The client predictor rebuilds the wells from them; modules only add
 //! `DynamicWell`s and need no wire work.
 //!

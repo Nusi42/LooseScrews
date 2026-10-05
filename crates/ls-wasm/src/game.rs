@@ -1143,10 +1143,13 @@ impl GameCore {
     /// practice between the last two ticks like the ships.
     pub fn entities(&self) -> Vec<EntityDraw> {
         match &self.mode {
+            // Well entities carry their start tick in `visual`; wells are
+            // drawn from `wells()` instead (practice has no well entities).
             Mode::Online(o) => o
                 .session
                 .entities()
                 .iter()
+                .filter(|e| e.kind != ls_sim::ReplicatedKind::Well as u8)
                 .map(EntityDraw::from_net)
                 .collect(),
             Mode::Practice(p) => {
@@ -1960,7 +1963,9 @@ impl GameCore {
             Mode::Online(o) => o.session.mode().clone(),
             Mode::Practice(p) => {
                 let view = p.world.mode_view();
-                ls_game::mode::mode_view_to_net(&view, |pl| u8::try_from(pl.0).ok())
+                let mut m = ls_game::mode::mode_view_to_net(&view, |pl| u8::try_from(pl.0).ok());
+                m.mood.up = p.world.up();
+                m
             }
         }
     }
@@ -2003,6 +2008,42 @@ impl GameCore {
         }
     }
 
+    /// The level's gravity wells now (static and dynamic; M4).
+    pub fn wells(&self) -> ls_sim::WellField {
+        match &self.mode {
+            Mode::Online(o) => o.session.wells().clone(),
+            Mode::Practice(p) => p.world.well_field().clone(),
+        }
+    }
+
+    /// The level's up (Bored level turns it; M4).
+    pub fn up(&self) -> Vec3 {
+        match &self.mode {
+            Mode::Online(o) => o.session.mood().up,
+            Mode::Practice(p) => p.world.up(),
+        }
+    }
+
+    /// Monochrome level (M4).
+    pub fn monochrome(&self) -> bool {
+        match &self.mode {
+            Mode::Online(o) => o.session.monochrome(),
+            Mode::Practice(p) => p.world.setup().monochrome,
+        }
+    }
+
+    /// Radiation dose rate (hull/s) at `p`: the world's (with the mode's
+    /// scale) in practice; online the unscaled law of the level's belt
+    /// (Belt Up's `radiation_scale` is 1 by default; B6 may pass its scale).
+    pub fn dose_rate_at(&self, p: Vec3) -> f32 {
+        match &self.mode {
+            Mode::Online(o) => o.session.belt().map_or(0.0, |b| {
+                ls_sim::radiation::dose_rate(b, ls_sim::radiation::RadiationSettings::builtin(), p)
+            }),
+            Mode::Practice(pr) => pr.world.dose_rate(p),
+        }
+    }
+
     /// The asteroid belt of a belt level (M4).
     pub fn belt(&self) -> Option<&ls_math::level::BeltSite> {
         match &self.mode {
@@ -2038,7 +2079,12 @@ impl GameCore {
             Mode::Practice(p) => p
                 .world
                 .ships()
-                .map(|s| (s.player.0 as u8, ls_game::convert::ship_ext(s)))
+                .map(|s| {
+                    (
+                        s.player.0 as u8,
+                        ls_game::convert::ship_ext(s, p.world.tick()),
+                    )
+                })
                 .collect(),
         }
     }

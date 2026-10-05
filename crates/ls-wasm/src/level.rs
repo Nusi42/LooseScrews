@@ -10,12 +10,46 @@
 //!   seen from above).
 //! - [`boulder_poses`]: the drifting boulders at a (fractional) tick, from
 //!   the same orbit functions the simulation uses.
+//! - [`wells_array`]: the well field (static and dynamic wells).
 
 use ls_math::level::{BeltSite, BELT_WEDGES};
 use ls_math::{Quat, Vec3};
 
 /// Floats per boulder in [`boulder_poses`]: position, orientation, radius.
 pub const BOULDER_STRIDE: usize = 8;
+/// Floats per well in [`wells_array`].
+pub const WELL_STRIDE: usize = 8;
+
+/// The well field as flat floats ([`WELL_STRIDE`] each): `[x, y, z, range,
+/// peakAccel, coreRadius (0 dynamic), startTick, endTick (-1 static)]`.
+pub fn wells_array(f: &ls_sim::WellField) -> Vec<f32> {
+    let mut out = Vec::with_capacity((f.statics.len() + f.dynamics.len()) * WELL_STRIDE);
+    for w in &f.statics {
+        out.extend_from_slice(&[
+            w.pos.x,
+            w.pos.y,
+            w.pos.z,
+            w.range,
+            w.peak_accel,
+            w.core_radius,
+            0.0,
+            -1.0,
+        ]);
+    }
+    for w in &f.dynamics {
+        out.extend_from_slice(&[
+            w.pos.x,
+            w.pos.y,
+            w.pos.z,
+            w.range,
+            w.peak_accel,
+            0.0,
+            w.start_tick as f32,
+            w.end_tick as f32,
+        ]);
+    }
+    out
+}
 
 fn num(v: f32) -> String {
     if v.is_finite() {

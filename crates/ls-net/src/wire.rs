@@ -111,12 +111,15 @@ pub mod proj_wire {
 /// state[0]    range in RANGE_UNIT (0.25 u) steps (up to 63.75 u)
 /// state[1]    peak pull in PEAK_UNIT (0.125 u/s^2) steps (up to 31.875)
 /// state[2..4] low 16 bits of the end tick (exclusive; little-endian)
-/// team        start: 0 = active at the snapshot's tick, else the ticks
-///             from the snapshot's tick to the start (1-255; wells starting
-///             later are not sent yet)
+/// visual      low 16 bits of the start tick (no visual: clients draw
+///             wells from the well list, not the visual table)
 /// ```
 ///
-/// Range and pull are exact when the simulation creates wells on this grid
+/// Both ticks decode to the value nearest the snapshot's tick with those
+/// low bits (wells last far less than 9 minutes), so the entity never
+/// changes while the well lives, a telegraphed well starts on its tick and
+/// one the client learns of late is replayed from its exact start. Range
+/// and pull are exact when the simulation creates wells on this grid
 /// ([`well_state::quantize_range`], [`well_state::quantize_peak`]); the
 /// position is an entity position (about 0.03 u steps).
 pub mod well_state {
@@ -124,9 +127,6 @@ pub mod well_state {
     pub const RANGE_UNIT: f32 = 0.25;
     /// Peak pull step (u/s^2).
     pub const PEAK_UNIT: f32 = 0.125;
-    /// A well starting later than this many ticks after the snapshot is not
-    /// sent yet.
-    pub const MAX_START_LEAD: u64 = 255;
 
     fn byte(v: f32, unit: f32) -> u8 {
         let q = ls_math::det::round(v / unit);
@@ -147,34 +147,19 @@ pub mod well_state {
         byte(peak, PEAK_UNIT) as f32 * PEAK_UNIT
     }
 
-    /// State bytes and team byte of a well with `range` (u), peak pull
-    /// `peak` (u/s^2), active from `start_tick` to `end_tick` (exclusive),
-    /// sent in the snapshot of tick `now`. `None` if it starts more than
-    /// [`MAX_START_LEAD`] ticks later.
-    pub fn encode(
-        range: f32,
-        peak: f32,
-        start_tick: u64,
-        end_tick: u64,
-        now: u64,
-    ) -> Option<([u8; 4], u8)> {
-        let team = if start_tick <= now {
-            0
-        } else if start_tick - now <= MAX_START_LEAD {
-            (start_tick - now) as u8
-        } else {
-            return None;
-        };
+    /// State bytes and visual field of a well with `range` (u), peak pull
+    /// `peak` (u/s^2), active from `start_tick` to `end_tick` (exclusive).
+    pub fn encode(range: f32, peak: f32, start_tick: u64, end_tick: u64) -> ([u8; 4], u16) {
         let end = (end_tick as u16).to_le_bytes();
-        Some((
+        (
             [
                 byte(range, RANGE_UNIT),
                 byte(peak, PEAK_UNIT),
                 end[0],
                 end[1],
             ],
-            team,
-        ))
+            start_tick as u16,
+        )
     }
 
     /// A decoded well: range (u), peak pull (u/s^2), start and end tick.
@@ -186,23 +171,25 @@ pub mod well_state {
         pub end_tick: u64,
     }
 
-    /// Decodes a well entity of the snapshot of tick `now`: the end tick is
-    /// the one nearest to `now` with the sent low 16 bits (wells last far
-    /// less than 9 minutes), the start `now + team` (`now` when active).
-    pub fn decode(state: [u8; 4], team: u8, now: u64) -> WellState {
-        let low = u16::from_le_bytes([state[2], state[3]]) as u64;
-        let mut end = (now & !0xffff) | low;
-        if end + 0x8000 < now {
-            end += 0x1_0000;
-        } else if end > now + 0x8000 && end >= 0x1_0000 {
-            end -= 0x1_0000;
+    /// The tick nearest to `now` whose low 16 bits are `low`.
+    pub fn nearest_tick(low: u16, now: u64) -> u64 {
+        let mut t = (now & !0xffff) | low as u64;
+        if t + 0x8000 < now {
+            t += 0x1_0000;
+        } else if t > now + 0x8000 && t >= 0x1_0000 {
+            t -= 0x1_0000;
         }
-        let start = now + team as u64;
+        t
+    }
+
+    /// Decodes a well entity (`state`, `visual`) of the snapshot of tick
+    /// `now`.
+    pub fn decode(state: [u8; 4], visual: u16, now: u64) -> WellState {
         WellState {
             range: state[0] as f32 * RANGE_UNIT,
             peak: state[1] as f32 * PEAK_UNIT,
-            start_tick: start,
-            end_tick: end,
+            start_tick: nearest_tick(visual, now),
+            end_tick: nearest_tick(u16::from_le_bytes([state[2], state[3]]), now),
         }
     }
 }
@@ -1172,26 +1159,29 @@ mod tests {
 
     #[test]
     fn well_state_round_trips_on_its_grid() {
-        let (st, team) = well_state::encode(16.0, 9.0, 69_000, 70_000, 69_990).unwrap();
-        assert_eq!(team, 0, "active at the snapshot");
-        let w = well_state::decode(st, team, 69_990);
-        assert_eq!((w.range, w.peak, w.end_tick), (16.0, 9.0, 70_000));
-        assert!(w.start_tick <= 69_990);
-        // A well that starts 120 ticks later (telegraphed) keeps its start.
-        let (st, team) = well_state::encode(20.0, 12.0, 1_120, 2_920, 1_000).unwrap();
-        assert_eq!(well_state::decode(st, team, 1_000).start_tick, 1_120);
-        assert!(well_state::encode(20.0, 12.0, 1_256, 2_920, 1_000).is_none());
-        // The end tick is recovered across the 16-bit wrap, before and after.
-        for now in [65_530u64, 65_536, 70_000, 69_000, 100] {
-            for end in [now, now + 360, now + 1800, now.saturating_sub(5)] {
-                let (st, team) = well_state::encode(10.0, 4.0, 0, end, now).unwrap();
-                let d = well_state::decode(st, team, now);
-                assert_eq!(d.end_tick, end, "now {now} end {end}");
+        let (st, visual) = well_state::encode(16.0, 9.0, 69_000, 70_000);
+        let w = well_state::decode(st, visual, 69_990);
+        assert_eq!(
+            (w.range, w.peak, w.start_tick, w.end_tick),
+            (16.0, 9.0, 69_000, 70_000)
+        );
+        // Start and end are recovered across the 16-bit wrap, before and
+        // after the snapshot's tick.
+        for now in [65_530u64, 65_536, 70_000, 69_000, 100, 200_000] {
+            for (start, end) in [
+                (now, now + 360),
+                (now + 120, now + 1920),
+                (now.saturating_sub(300), now + 60),
+                (now.saturating_sub(5), now),
+            ] {
+                let (st, v) = well_state::encode(10.0, 4.0, start, end);
+                let d = well_state::decode(st, v, now);
+                assert_eq!((d.start_tick, d.end_tick), (start, end), "now {now}");
             }
         }
         // Clamped and NaN-safe; grid helpers.
-        let (st, team) = well_state::encode(1e9, f32::NAN, 0, 0, 0).unwrap();
-        let d = well_state::decode(st, team, 0);
+        let (st, v) = well_state::encode(1e9, f32::NAN, 0, 0);
+        let d = well_state::decode(st, v, 0);
         assert_eq!((d.range, d.peak), (63.75, 0.0));
         assert_eq!(well_state::quantize_range(16.1), 16.0);
         assert_eq!(well_state::quantize_peak(9.06), 9.0);

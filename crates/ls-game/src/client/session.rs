@@ -138,6 +138,7 @@ pub struct ClientSession {
     /// match setup of the pristine level, like the server's.
     well_sites: Vec<ls_math::level::WellSite>,
     belt: Option<ls_math::level::BeltSite>,
+    monochrome: bool,
 }
 
 /// Snapshots of entities kept for interpolation.
@@ -196,6 +197,12 @@ impl ClientSession {
         let mut predictor = Predictor::new(ships.get(ship_type).clone(), config);
         predictor.set_ship_type(ship_type, ships.get(ship_type).clone());
         predictor.set_seed(crate::setup::match_seed(&code));
+        // The level's static wells, as `World::new` builds them.
+        predictor.set_wells(ls_sim::WellField::new(
+            &setup.wells,
+            setup.gravity_chaos,
+            ls_sim::GravitySettings::builtin(),
+        ));
         predictor.set_spawn_poses(
             setup
                 .spawns
@@ -224,6 +231,7 @@ impl ClientSession {
             ticks_since_ping: PING_INTERVAL_TICKS,
             well_sites: setup.wells.clone(),
             belt: setup.belt.clone(),
+            monochrome: setup.monochrome,
             pickup_points: setup.pickup_points,
             match_end_tick: None,
             entity_history: VecDeque::new(),
@@ -343,6 +351,17 @@ impl ClientSession {
     /// on belt levels), as the server's match setup has them.
     pub fn well_sites(&self) -> &[ls_math::level::WellSite] {
         &self.well_sites
+    }
+
+    /// The well field the prediction uses: the level's static wells and the
+    /// dynamic wells of the newest snapshot.
+    pub fn wells(&self) -> &ls_sim::WellField {
+        &self.predictor.env().wells
+    }
+
+    /// Monochrome level (pigment rules, the ink look).
+    pub fn monochrome(&self) -> bool {
+        self.monochrome
     }
 
     /// The asteroid belt of a belt level (slots, gates, exit, boulder
@@ -784,7 +803,13 @@ impl ClientSession {
         self.predictor.set_limits(
             ls_sim::modes::module(self.rules.mode.kind()).move_limits(&self.rules.mode, own_flags),
         );
-        // Event movement effects and the level's up (protocol 6 mood view).
+        // Dynamic wells (protocol 6 well entities), event movement effects
+        // and the level's up (mood view).
+        self.predictor
+            .set_dynamic_wells(crate::convert::wells_from_entities(
+                &snap.entities,
+                tick as u64,
+            ));
         self.predictor.set_mood(
             &crate::mode::mood_from_net(&snap.mode.mood),
             snap.mode.mood.up,

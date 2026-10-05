@@ -1415,7 +1415,7 @@ impl World {
             ended = true;
         }
 
-        // 8. The comedy director.
+        // 9. The comedy director.
         if self.director.is_on(cfg.absurdity) {
             self.run_director(&cfg, terrain, ended, &mut events);
         }

@@ -277,3 +277,62 @@ fn prediction_holds_through_forced_events() {
     }
     check_errors(&h, "events");
 }
+
+/// Wells: the level's static wells (Gravity Chaos 100; present once A1's
+/// generator places them), dynamic wells that start and end mid-flight next
+/// to each ship (one telegraphed 2 s ahead like the Architect's stroke, one
+/// starting at once like a landing Paperweight), and the level's up turned
+/// at once under the pilots (harsher than Bored level's 5 s turn: the
+/// clients learn it a round trip late): the reconciliation error stays
+/// under 0.05 u.
+#[test]
+fn prediction_holds_through_wells_and_a_turned_up() {
+    let mut sliders = Sliders::new(40, 30);
+    sliders.gravity_chaos = 100;
+    let code = ShareCode::new(0x6772_6176, sliders);
+    let mut h = Harness::new(MatchConfig::paint_the_void(code));
+    h.connect("alpha", 3, LinkConditions::default(), flyer(0));
+    h.connect("bravo", 5, LinkConditions::default(), flyer(1));
+    h.connect("charlie", 4, lossy(), flyer(2));
+    h.run(150);
+    let statics = h.room.world().well_field().statics.len();
+    eprintln!("static wells on the level: {statics}");
+    let mut placed = 0;
+    for round in 0..6u64 {
+        let now = h.room.tick();
+        let players: Vec<_> = h.room.clients().iter().map(|c| c.player).collect();
+        for (i, p) in players.into_iter().enumerate() {
+            let Some(ship) = h.room.world().ship(p) else {
+                continue;
+            };
+            let (pos, ahead) = (ship.pos, ship.orientation.forward() * 6.0 + ship.vel * 0.5);
+            let (start, len) = if (round + i as u64) % 2 == 0 {
+                (now + 120, 240) // telegraphed (Architect stroke)
+            } else {
+                (now, 180) // at once (Paperweight landing)
+            };
+            h.room.world_mut().add_well(ls_game::ls_sim::DynamicWell {
+                key: (round * 8 + i as u64) as u32,
+                pos: pos + ahead,
+                peak_accel: ls_game::ls_net::well_state::quantize_peak(9.0),
+                range: ls_game::ls_net::well_state::quantize_range(16.0),
+                start_tick: start,
+                end_tick: start + len,
+                owner: Some(p),
+            });
+            placed += 1;
+        }
+        if round == 3 {
+            // Bored level: the level's up turns under the pilots.
+            h.room.world_mut().set_up(Vec3::new(0.0, 0.6, 0.8));
+        }
+        h.run(200);
+    }
+    assert_eq!(placed, 18);
+    h.run(200);
+    for c in &h.clients {
+        let s = c.session.as_ref().unwrap();
+        assert!((s.mood().up - Vec3::new(0.0, 0.6, 0.8)).length() < 1e-6);
+    }
+    check_errors(&h, "wells");
+}

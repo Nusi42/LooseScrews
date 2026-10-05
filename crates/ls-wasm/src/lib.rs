@@ -906,6 +906,32 @@ impl Game {
         self.core.belt().map(level::belt_json)
     }
 
+    /// Gravity wells now, `level::WELL_STRIDE` floats each: `[x, y, z,
+    /// range, peakAccel, coreRadius (0 for dynamic), startTick, endTick
+    /// (-1 for static)]`, static wells first (`ls_sim::WellField`).
+    pub fn wells(&self) -> Vec<f32> {
+        level::wells_array(&self.core.wells())
+    }
+
+    /// The level's up (unit vector; +Y unless Bored level turned it).
+    pub fn up(&self) -> Vec<f32> {
+        let u = self.core.up();
+        vec![u.x, u.y, u.z]
+    }
+
+    /// Monochrome level (Palette 80+): pigment rules and the ink look.
+    #[wasm_bindgen(getter)]
+    pub fn monochrome(&self) -> bool {
+        self.core.monochrome()
+    }
+
+    /// Radiation dose rate (hull per second) at a point (the HUD meter);
+    /// 0 on classic levels.
+    #[wasm_bindgen(js_name = doseRateAt)]
+    pub fn dose_rate_at(&self, x: f32, y: f32, z: f32) -> f32 {
+        self.core.dose_rate_at(Vec3::new(x, y, z))
+    }
+
     /// Drifting boulders of the belt at `tick` (fractional ticks
     /// interpolate), `BOULDER_STRIDE` floats each: `[x, y, z, qx, qy, qz,
     /// qw, radius]`; empty on classic levels. Pure function of the tick

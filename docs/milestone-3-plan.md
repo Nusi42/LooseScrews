@@ -1,6 +1,6 @@
 # Milestone 3 — Modes and lobby
 
-Status: planned (no wave started) · Design source: [design/game-design-doc.md](design/game-design-doc.md) (Game modes, The Squeeze, Mutators, Match rules, Servers) · Previous milestone: [milestone-2-plan.md](milestone-2-plan.md) · Overall plan: [implementation-plan.md](implementation-plan.md)
+Status: complete with exceptions (waves A–D integrated; three §6 criteria only partly met, see [Milestone summary](#milestone-summary)) · Design source: [design/game-design-doc.md](design/game-design-doc.md) (Game modes, The Squeeze, Mutators, Match rules, Servers) · Previous milestone: [milestone-2-plan.md](milestone-2-plan.md) · Overall plan: [implementation-plan.md](implementation-plan.md)
 
 Milestone 3 turns the single-mode server (Paint the Void, one room, a restart by disconnect after every match) into a game with every PvP mode from the design doc, the Instagib mutator, duels, and a lobby: each `ls-server` hosts its own lobby and match rotation, a small optional directory service feeds the server list, and invites and party codes bring friends into the same match. It also takes over the five carried-over M3 items from [implementation-plan.md §8](implementation-plan.md#carried-over-items).
 
@@ -381,6 +381,52 @@ D3 as built (docs, WIN4):
 - Bots play every mode toward its objective (release tests: each mode reaches a result with 8 bots), and bot nav grids are built once per world per process.
 - All five carried-over items are closed with evidence (tests or measurements).
 - docs/ and userDocs/ describe the modes, the lobby, the server list, invites, parties, duels and all new server flags as built.
+
+## Milestone summary
+
+Wave D integration (WIN1): merged with `--no-ff` in the order D1 (WIN2, Rust review
+fixes), D2 (WIN3, web review fixes), D5 (WIN6, visual polish), D4 (WIN5, soak fixes), D3
+(WIN4, docs). No branch carried build output or oversized files. The only conflict was this
+file (D4's soak section next to D3's as-built note; both kept). Docs were brought to the merged
+behaviour at integration: D1's spectate (now applied from the next match), ship choice carried
+across rooms, cleared ready on leave and free-for-all side reuse (server.md, modes-and-lobby.md
+"Known gaps" and "Teams and sides", player manual and hosting guide "Not in this build yet");
+D2's focused-control keys (player manual); D5's `?shipshadows=off` (player manual page
+options); D4's Welcome figures (implementation-plan.md §8). Hashes: D5 re-blessed the
+ls-worldgen mesh goldens (mesher only: `sdf`, `GENERATOR_VERSION` 3, `REPLAY_GOLDEN_HASH` and
+every per-mode replay unchanged); `SIM_BEHAVIOR_VERSION` stays 5 (determinism.md "Milestone 3
+record": D1's side-reuse fix is server-side only and version 5 was never released).
+CI (`pwsh tools/ci.ps1`, three runs on the shared machine): run 1 failed in The Squeeze remesh
+benchmark on seed 7 only (dirty-set computation 3.9 ms against 0.5-0.8 ms on the other seeds,
+p99 3.2 ms; the machine was at about 46 % CPU from other work), a wall-clock flake; run 2 passed
+it and failed in `web` `wasm.test.ts` because the local `web/src/wasm/pkg` predated D5's
+mesher (CI builds `ls-wasm` but not the package; fixed by `npm run build:wasm`); run 3 passed
+every step: native and wasm32 tests including all golden hashes, the determinism cross-check
+(7 share codes, 9 mode replays), the browser smoke (150 checks). Visual gallery (`--label
+waveD`): all 42 scenes within budget.
+
+| §6 criterion | Status | Evidence |
+| --- | --- | --- |
+| Every PvP mode and Instagib as modules with a default rule set, scenario tests per core rule | Met | `ls-sim` `modes/*` and `mutators/instagib.rs` with their tests (347 ls-sim lib tests), nine built-in rule sets in `data/rulesets/`, generated [modes reference](../userDocs/reference/modes.md); B1-B5 as built |
+| Instagib with Team Brawl, The Squeeze and a duel | Met | `mutators::instagib::tests::{instagib_team_brawl_ends_at_the_kill_target, instagib_squeeze_one_hit_eliminates, instagib_duel_first_to_ten}`; the Instagib Brawl replay golden |
+| Replay determinism and WASM golden-hash check, one replay per mode; hash changes deliberate and documented | Met | `REPLAY_GOLDEN_HASH`, the per-mode unit goldens and `crates/ls-sim/tests/fixtures/mode_replays.txt` pass on native and wasm32 (CI steps `cargo test --workspace` and the wasm32 unit tests); `tools/determinism-check.mjs` (9 mode replays match the shipped WASM); every change recorded in determinism.md "Milestone 3 record" |
+| 60-minute rotation with 8 bots: results, 0 disconnects, 0 desyncs and protocol errors, at most 1 full snapshot per join, Welcome within 200 ms during builds, tick p99 < 4 ms per room on a quiet machine | Partly met | [Milestone soak](#milestone-soak-wave-d-d4), soak 3 on the final code: every match reached a result (public 12, every mode twice), 0 disconnects (198 in-place transitions), 0 desyncs and 0 protocol errors, 1.00 full snapshot per join or transition, 24 Welcome probes, worst 14.5 ms. **Not shown:** tick p99 < 4 ms on a quiet machine. The machine was shared with other agents (other processes 1.5-19.7 cores); 38 windows over 4 ms (public 7 of 719, duel 29, Team Brawl room 2), 26 of them in load bursts, plus one unattributed stall at 12:04 UTC (duel steps 77-97 ms, one input-starvation window in the public room). Soak 2 (an earlier variant of the route fix) had 0 public windows over. Needs a re-run on a quiet machine (carried to M4) |
+| The Squeeze closes in every phase on 8 seeds, no remesh spike above the frame budget, no ship survives inside the shell | Met | `ls-game` `tests/squeeze.rs`: `walls_close_in_every_phase_on_8_seeds` (asserts no living ship inside the shell on every tick), `shell_remeshing_stays_within_the_frame_budget` (p99 per chunk < 3 ms against the client's 4 ms per-frame chunk budget; D5: 1.81-2.03 ms on a quiet run), `default_rules_full_match_with_8_players`. The benchmark is wall-clock and can exceed its bound under load (CI note above) |
+| Private duel and party room alongside the public room, each within its tick budget | Partly met | Soak 3 ran a private duel (2 bots, 11 matches) and a private Team Brawl room (4 bots, 9 matches) next to the public rotation for 60 minutes with 0 desyncs; `ls-server` `tests/rooms.rs`. **Not shown:** the tick budget in every window: the same load-caused and unattributed misses as above (duel 29 windows, Team Brawl room 2) |
+| Server list via `ls-directory` with players, mode and ping; servers without `--directory` reachable by link | Met | `ls-server` `tests/social.rs` (two servers listed by a real directory), browser smoke `social.mjs` (server list with mode, players, region, ping), C3's `--directory local` e2e |
+| Invite links and party codes into the same room and team; a duel challenge from the server list starts a private match with the challenger's seed | Met | `tests/social.rs` (party invite into one room and team, also across a transition; local and relayed duels on the challenger's world), browser smoke `social.mjs` (116 checks) |
+| Bots play every mode toward its objective; nav grids built once per world per process | Met | `ls-bots` `tests/mode_matches.rs` (every built-in mode, 8 bots, a result, 0 desyncs; CI step `cargo test -p ls-bots --release`), objective on/off measurements in C2 as built; `tests/nav_cache.rs` (8.4-9.1x less navigation CPU) |
+| All five carried-over items closed with evidence | Partly met | Four closed (implementation-plan.md §8: match rebuild blocks joins, weapon state on the wire, own Leech Arc beam, bot navigation cost). The Tectonic collapse tick is only partly closed: crack ticks 0.5-0.9 ms, but the collapse tick's single 35 u crater bake still costs 3.5-5.3 ms against 2 ms; moved to M4 as an `ls-worldgen` job |
+| docs/ and userDocs/ describe modes, lobby, server list, invites, parties, duels and all new server flags as built | Met | D3 ([architecture/modes-and-lobby.md](architecture/modes-and-lobby.md), netcode, server, game-glue, contracts, determinism; player manual, hosting guide, generated modes reference; flags checked against `--help`), updated at integration for D1, D2, D4 and D5 |
+
+Open after M3 (carried to M4 or later):
+- Soak re-run on a quiet machine for the tick-p99 criterion and the 12:04 stall (with a per-tick log of slow steps); why the duel room thread is descheduled first under load; late bot inputs (100-200 per 5 s window); the server's per-window counters restarting at a swap.
+- Tectonic collapse tick bake (M4, implementation-plan.md §8).
+- Security and robustness gaps found in D1 (M5 hardening): duel answers and party tags without a token, directory address squatting and fake presence registrations, no backoff for failing next-room builds, a panicked private room thread keeps its slot, a join racing a closing private room gets no `Reject`.
+- Known gaps from D3 (modes-and-lobby.md "Known gaps"): private rooms and duels ignore `--ban` and `--balance-list`; the directory URL handed to `https://` pages is plain HTTP; teams 3 and 4 have no spawn zone of their own.
+- Web (D2): the party panel's polls never stop after a disconnect; the 7-column server table scrolls sideways at phone width; the weapon panel overlaps the hull panel at 360 px; the lobby card is not focused when it appears.
+- Visuals (D5): jagged outlines of thin rock blades (`cave-sunbeam`, needs a thin-rock mesher pass), a few folded triangles at bore rims, reference mid-range GPU timings.
+- Not covered by the soak: WebTransport bots, the directory under soak, browser clients.
 
 ## 7. Risks
 

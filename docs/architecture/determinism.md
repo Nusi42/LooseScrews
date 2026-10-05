@@ -157,10 +157,10 @@ What M3 changed deliberately (plan [§4](../milestone-3-plan.md#4-determinism-an
 
 | Item | Change | Why |
 | --- | --- | --- |
-| `SIM_BEHAVIOR_VERSION` | 4 -> 5 (wave A) | mode framework, per-match teams, Tectonic cracks spread over 6 ticks; later waves changed no existing behaviour (new rule set files change the data hash anyway) |
+| `SIM_BEHAVIOR_VERSION` | 4 -> 5 (wave A) | mode framework, per-match teams, Tectonic cracks spread over 6 ticks; later waves changed no existing behaviour (new rule set files change the data hash anyway), except D1's free-for-all side reuse (a side id stays taken while a departed owner's shots live): not bumped again, because version 5 was never released and only the server assigns sides (clients never predict a join) |
 | `REPLAY_GOLDEN_HASH` | unchanged (`0x8321_c0ab_902b_8ee5`) | the scripted replay fires no Tectonic Charge and plays two-team Paint the Void, which runs bit-identically through the framework; the crack change is pinned by `tectonic_charge::tests::cracks_spread_over_six_ticks_and_match_the_m2_set` |
 | `GENERATOR_VERSION` | 2 -> 3 (B3) | the Heist site (core vein chamber, extraction caverns) in every level; worldgen goldens re-blessed, share codes re-encoded (`LS0C`-`LS0F`), a seventh (Heist) world in the golden list |
-| Worldgen mesh goldens | re-blessed twice on version 3 without a version bump (VQ3a mesher, VQP thin bores) | mesher changes only: `sdf` and share-code geometry unchanged |
+| Worldgen mesh goldens | re-blessed three times on version 3 without a version bump (VQ3a mesher, VQP thin bores, D5 material blend weights and fold-minimising quad split) | mesher changes only: `sdf` and share-code geometry unchanged |
 | Per-mode replays | new (C3): `ls_sim::golden` and `crates/ls-sim/tests/fixtures/mode_replays.txt`, plus the module goldens above | one replay per built-in rule set on native, wasm32 and the shipped WASM package |
 | The Squeeze | no generator change | the walls are a runtime shell layer (`ShelledTerrain`, `GameTerrain::set_shell`), outside worldgen goldens and `GameTerrain::state_hash` |
 

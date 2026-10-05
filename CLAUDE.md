@@ -32,7 +32,7 @@
 - Cargo runs with `-j 4` (`.cargo/config.toml`; shared machine)
 - Python on Windows writes CRLF: open files with `newline=''`; write scripts to files, not heredocs with backslashes (the shell eats `\\`)
 - `git stash -u` in the master can trip on locked empty folders; don't stash there (nothing should be uncommitted there anyway)
-- Automated browsers (smoke, gallery, puppeteer scripts) must inject `tools/browser-smoke/fake-pointer-lock.mjs` (`page.evaluateOnNewDocument(fakePointerLock)`): on Windows even headless Chrome's hidden windows take a real pointer lock and capture the maintainer's mouse
+- Automated browsers (smoke, gallery, any puppeteer script, also throwaway ones) run headless only, never `headless: false` or headful fallbacks (windows pop up on the maintainer's desktop), and must inject `tools/browser-smoke/fake-pointer-lock.mjs` (`page.evaluateOnNewDocument(fakePointerLock)`): on Windows even headless Chrome's hidden windows take a real pointer lock and capture the maintainer's mouse
 - Tests, bots, e2e and smoke bind `127.0.0.1` (port 0 where possible); `tools/check-binds.mjs` fails on wildcard binds outside its allowlist (Windows firewall prompts)
 
 ## Layout

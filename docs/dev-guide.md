@@ -824,8 +824,10 @@ device, error screens, and server errors or panics. Screenshots, the browser con
 server logs go to `target/browser-smoke` (`--out-dir`). Exit codes: 0 passed or skipped (no
 browser found; `--require-browser` makes that a failure), 1 failed, 2 usage error. A software
 (fallback) WebGPU adapter fails unless `--allow-fallback`; on machines without a GPU set
-`LS_SKIP_BROWSER_SMOKE=1` for CI. `--mode headful` shows the window, `--browser <path>` (or
-`LS_BROWSER`) picks the browser.
+`LS_SKIP_BROWSER_SMOKE=1` for CI. The browser always runs headless (there is no automatic
+headful fallback) and the page gets a fake Pointer Lock (`fake-pointer-lock.mjs`), so a run
+never pops up a window or captures the desktop mouse. `--mode headful` shows the window (only
+for a person at the machine), `--browser <path>` (or `LS_BROWSER`) picks the browser.
 
 To cover a new mechanic: add its loadout to `mechanics.ron` if it needs one, then a step in
 `mechanics()` in `smoke.mjs` that presses the keys and asserts on the DOM (HUD elements have

@@ -14,8 +14,8 @@
 //   --code <share code>     server world [LS08-0000-0000-0000-8006-8001-8F9G]
 //   --transport ws|wt|auto  browser transport (?transport=) [ws]
 //   --mode auto|headless|headful
-//                           auto = headless, headful when headless has no
-//                           WebGPU adapter [auto]
+//                           auto = headless (no automatic headful fallback:
+//                           a visible window takes the desktop mouse) [auto]
 //   --practice-secs <s>     practice render time [5]
 //   --fly-secs <s>          online flight time [10]
 //   --mech-secs <s>         extra settle time in the mechanics phase [1]
@@ -493,7 +493,9 @@ async function main() {
     }
 
     // --- browser + WebGPU probe ---
-    const tries = opts.mode === "auto" ? [true, false] : [opts.mode === "headless"];
+    // Never fall back to a visible window on our own: it pops up on the developer's desktop
+    // and takes their mouse. Headful only when asked for explicitly (--mode headful).
+    const tries = [opts.mode !== "headful"];
     let probeResult = null;
     for (const headless of tries) {
       browser = await launch(headless);

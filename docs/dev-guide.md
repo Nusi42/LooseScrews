@@ -135,7 +135,7 @@ Everything honours it: `build-wasm.mjs` resolves a relative path against the rep
 
 ```sh
 cd web && npm run build && cd ..
-cargo run -p ls-server --release -- --code LS0C-0000-0000-0000-8006-8001-8F9M
+cargo run -p ls-server --release -- --code LS0G-0000-0000-0000-1001-6RFX-250V
 ```
 
 Open <http://localhost:7777>. The server serves `web/dist` (default `--web-root` when that

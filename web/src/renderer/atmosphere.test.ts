@@ -21,18 +21,29 @@ import { appendBox } from "./primitives.ts";
 
 const CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 
-/** Test-only encoder (ls-worldgen sharecode.rs layout), checked against Rust-made codes below. */
-function encode(version: number, seed: bigint, sliders: number[]): string {
+/**
+ * Test-only encoder (ls-worldgen sharecode.rs layout; version 4 with the
+ * archetype field, versions 1-3 the old layout), checked against Rust-made
+ * codes below.
+ */
+function encode(version: number, seed: bigint, sliders: number[], archetype = 0): string {
+  const legacy = version < 4;
   let bits = BigInt(version);
+  if (!legacy) bits = (bits << 3n) | BigInt(archetype);
   bits = (bits << 64n) | seed;
-  for (const v of sliders) bits = (bits << 7n) | BigInt(v);
-  const packed = bits << 7n;
+  if (legacy) {
+    for (const v of sliders) bits = (bits << 7n) | BigInt(v);
+  } else {
+    bits = (bits << 47n) | sliders.reduce((n, v) => n * 101n + BigInt(v), 0n);
+  }
+  const packed = bits << (legacy ? 7n : 6n);
   let crc = 0;
   for (let i = 15; i >= 0; i--) {
     crc ^= Number((packed >> BigInt(i * 8)) & 0xffn);
     for (let k = 0; k < 8; k++) crc = crc & 0x80 ? ((crc << 1) ^ 0x07) & 0xff : (crc << 1) & 0xff;
   }
-  bits = (((bits << 8n) | BigInt(crc)) << 1n);
+  bits = (bits << 8n) | BigInt(crc);
+  if (legacy) bits <<= 1n;
   let body = "";
   for (let i = 25; i >= 0; i--) body += CROCKFORD[Number((bits >> BigInt(i * 5)) & 31n)];
   let out = "LS";
@@ -49,17 +60,27 @@ test("share codes decode like ls-worldgen (codes made by the Rust encoder)", () 
   assert.equal(a.sliders.density, 20);
   // The other sliders at ls-worldgen's defaults (verticality 50, absurdity 20, instability 30).
   assert.deepEqual([a.sliders.verticality, a.sliders.gravityChaos, a.sliders.palette, a.sliders.absurdity, a.sliders.instability], [50, 0, 0, 20, 30]);
-  // The smoke and e2e world: version 3, seed 1, open sky.
-  const b = decodeShareCode("LS0C-0000-0000-0000-8006-8001-8F9M");
-  assert.deepEqual(b && [b.version, b.seed, b.sliders.enclosure, b.sliders.density], [3, 1n, 0, 0]);
+  assert.equal(a.archetype, 0);
+  // The M3 smoke and e2e world: version 3, seed 1, open sky.
+  const v3 = decodeShareCode("LS0C-0000-0000-0000-8006-8001-8F9M");
+  assert.deepEqual(v3 && [v3.version, v3.seed, v3.sliders.enclosure, v3.sliders.density, v3.archetype], [3, 1n, 0, 0, 0]);
+  // Generator version 4 (archetype field, sliders packed base-101): the
+  // smoke and e2e world, same seed and sliders.
+  const b = decodeShareCode("LS0G-0000-0000-0000-1001-6RFX-250V");
+  assert.deepEqual(b && [b.version, b.seed, b.sliders.enclosure, b.sliders.density, b.archetype], [4, 1n, 0, 0, 0]);
+  assert.deepEqual(b?.sliders, v3?.sliders);
   // The bots' soak world: caverns.
-  assert.equal(decodeShareCode("LS0C-PNEY-V86Z-VXZM-K4M6-8001-8F8J")?.sliders.enclosure, 50);
+  assert.equal(decodeShareCode("LS0G-2TNV-VD0V-ZFQY-JC58-T2XM-57QY")?.sliders.enclosure, 50);
+  // Asteroid belts (crates/ls-worldgen/tests/fixtures/golden_hashes.txt).
+  const belt = decodeShareCode("LS0G-G000-0016-MYKT-EH2T-94GC-EEK7");
+  assert.deepEqual(belt && [belt.archetype, belt.sliders.enclosure, belt.sliders.density, belt.sliders.verticality, belt.sliders.gravityChaos], [1, 70, 80, 70, 60]);
   // Lenient like the Rust decoder: case, dashes, whitespace, O/I/L look-alikes.
-  assert.deepEqual(decodeShareCode(" ls0c 0000-oooo-0000-8006-8001-8f9m "), b);
+  assert.deepEqual(decodeShareCode(" ls0g 0000-oooo-0000-1oo1-6rfx-25ov "), b);
 });
 
 test("share codes with a typo, a wrong length or no prefix do not decode", () => {
   assert.equal(decodeShareCode("LS0C-0000-0000-0000-8006-8001-8F9N"), null, "CRC");
+  assert.equal(decodeShareCode("LS0G-0000-0000-0000-1001-6RFX-250W"), null, "CRC v4");
   assert.equal(decodeShareCode("LS0C-0000-0000-0000-8006-8001-8F9"), null, "length");
   assert.equal(decodeShareCode("XX0C-0000-0000-0000-8006-8001-8F9M"), null, "prefix");
   assert.equal(decodeShareCode("LS0C-0000-0000-0000-8006-8001-8FU!"), null, "symbol");
@@ -71,12 +92,26 @@ test("the test encoder round-trips through the decoder", () => {
   for (let i = 0; i < 50; i++) {
     const seed = (BigInt(Math.floor(rnd() * 2 ** 32)) << 32n) | BigInt(Math.floor(rnd() * 2 ** 32));
     const sliders = Array.from({ length: 7 }, () => Math.floor(rnd() * 101));
-    const w = decodeShareCode(encode(3, seed, sliders));
-    assert.ok(w);
-    assert.equal(w.seed, seed);
-    assert.deepEqual(Object.values(w.sliders), sliders);
+    for (const [version, archetype] of [[3, 0], [4, 0], [4, 1]] as const) {
+      const w = decodeShareCode(encode(version, seed, sliders, archetype));
+      assert.ok(w);
+      assert.equal(w.seed, seed);
+      assert.equal(w.version, version);
+      assert.equal(w.archetype, archetype);
+      assert.deepEqual(Object.values(w.sliders), sliders);
+    }
   }
   assert.equal(encode(3, 1n, [0, 0, 50, 0, 0, 20, 30]), "LS0C-0000-0000-0000-8006-8001-8F9M");
+  assert.equal(encode(4, 1n, [0, 0, 50, 0, 0, 20, 30]), "LS0G-0000-0000-0000-1001-6RFX-250V");
+  assert.equal(encode(4, 42n, [50, 40, 50, 0, 0, 20, 30]), "LS0G-0000-0000-0001-AC58-T2XM-57ND");
+});
+
+test("asteroid belts are open space with a sky", () => {
+  const belt = atmosphereFor(encode(4, 9n, [100, 50, 50, 0, 0, 20, 30], 1), [0, 0, 0, 320, 96, 320]);
+  assert.equal(belt.open, 1);
+  assert.ok(belt.planet && belt.stars > 0);
+  const mines = atmosphereFor(encode(4, 9n, [100, 50, 50, 0, 0, 20, 30], 0), [0, 0, 0, 256, 128, 256]);
+  assert.equal(mines.open, 0);
 });
 
 // ----- world types, sky and grades -------------------------------------------------------------

@@ -28,6 +28,18 @@
 //! 4. The Heist site (core vein and extraction zones) comes from the
 //!    generator ([`heist_level`]); the sweep checks that the vein and both
 //!    zones reach the network like spawns do.
+//! 5. Teams 0 and 1 spawn at the low and high x ends; with three or four
+//!    teams, team 2 spawns at the low z end and team 3 at the high z end
+//!    (slabs of [`SPAWN_ZONE_FRACTION`] of the z length between the x
+//!    zones), each team falling back to its own network caverns
+//!    (`Network::team_hubs`; generator version 4 carves a cavern at each z
+//!    end).
+//! 6. Gravity wells (`Generator::gravity_wells`) go into
+//!    `MatchSetup::wells`; no spawn point lies within
+//!    [`WELL_SPAWN_DISTANCE`] of a well.
+//! 7. Asteroid belt levels (`Generator::belt`) take their spawn points from
+//!    the belt's 8 start slots and their pickup points from the belt
+//!    ([`belt_setup`]); `MatchSetup::belt` carries the site.
 //!
 //! Every slider combination gets a valid setup (see the sweep test).
 
@@ -37,7 +49,8 @@ use ls_sim::{
     GadgetTable, GameData, HeistLevel, MatchSetup, RuleSet, ShipTable, SpawnPoint, WeaponTable,
     World, WorldConfig,
 };
-use ls_worldgen::{Generator, RegionSampler, ShareCode};
+use ls_worldgen::wells::WELL_SPAWN_DISTANCE;
+use ls_worldgen::{BeltSite, Generator, RegionSampler, ShareCode};
 
 use crate::{GameError, GameTerrain};
 
@@ -171,18 +184,25 @@ pub fn match_seed(code: &ShareCode) -> u64 {
     mix64(code.seed ^ MATCH_SEED_SALT)
 }
 
-/// Deterministic spawn points (team 0 at low x, team 1 at high x, facing the
-/// level centre) and pickup points for a pristine level.
+/// Deterministic spawn points (team 0 at low x, team 1 at high x, teams 2
+/// and 3 at low and high z, facing the level centre) and pickup points for
+/// a pristine level; on belt levels the belt's start slots and pickup
+/// points ([`belt_setup`]).
 ///
 /// `rules` decides the number of teams (Paint the Void: 2). Fails only if a
-/// team's half of the level has no point with [`MIN_CLEARANCE`] of free space.
+/// team's part of the level has no point with [`MIN_CLEARANCE`] of free
+/// space.
 pub fn match_setup(
     code: &ShareCode,
     rules: &RuleSet,
     terrain: &GameTerrain,
 ) -> Result<MatchSetup, GameError> {
-    let teams = rules.paint_the_void_rules().teams.clamp(1, 2);
+    let teams = rules.paint_the_void_rules().teams.clamp(1, 4);
     let gen = terrain.generator();
+    if let Some(belt) = gen.belt() {
+        return Ok(belt_setup(code, teams, &gen, belt));
+    }
+    let wells = gen.gravity_wells().to_vec();
     let room = gen.room();
     // Keep points away from the sealing walls.
     let inner = Aabb::new(
@@ -200,11 +220,15 @@ pub fn match_setup(
         let zone = spawn_zone(inner, team, teams);
         let mut placed: Vec<Vec3> = Vec::new();
         let spaced = |p: Vec3, placed: &[Vec3]| {
-            placed.iter().all(|q| q.distance(p) >= SPAWN_SPACING) && linked(p)
+            placed.iter().all(|q| q.distance(p) >= SPAWN_SPACING)
+                && wells
+                    .iter()
+                    .all(|w| w.pos.distance(p) >= WELL_SPAWN_DISTANCE)
+                && linked(p)
         };
         let half = team_half(inner, team, teams);
         for area in [zone, half] {
-            let cands = on_own_side(within(&open, area), centre.x, team, teams);
+            let cands = on_own_side(within(&open, area), centre, team, teams);
             pick(
                 &mut rng,
                 &cands,
@@ -220,7 +244,7 @@ pub fn match_setup(
         if placed.is_empty() {
             let cands = on_own_side(
                 scan_open_space(&gen, half, FINE_SCAN_STEP),
-                centre.x,
+                centre,
                 team,
                 teams,
             );
@@ -236,15 +260,14 @@ pub fn match_setup(
         if placed.is_empty() {
             // The network caverns at this team's end always qualify.
             let net = gen.network();
-            let hubs = match (teams, team) {
-                (1, _) => net.hubs(),
-                (_, 0) => net.low_x_hubs(),
-                _ => net.high_x_hubs(),
+            let hubs = match teams {
+                1 => net.hubs(),
+                _ => net.team_hubs(team),
             };
             let cands: Vec<(Vec3, f32)> = hubs.iter().map(|h| (*h, gen.sample(*h))).collect();
             pick(
                 &mut rng,
-                &on_own_side(cands, centre.x, team, teams),
+                &on_own_side(cands, centre, team, teams),
                 &[MIN_CLEARANCE],
                 SPAWNS_PER_TEAM,
                 &mut placed,
@@ -282,11 +305,38 @@ pub fn match_setup(
     );
 
     Ok(MatchSetup {
+        wells,
+        belt: None,
         spawns,
         pickup_points: pickups,
         instability: code.sliders.instability,
         heist: heist_level(&gen),
     })
+}
+
+/// The setup of an asteroid belt level: one spawn point per start slot
+/// (slot `k` is spawn point `k`, facing prograde; with teams, slots
+/// alternate between them), the belt's pickup points, its shepherd moons as
+/// wells and the site itself in `MatchSetup::belt`. No Heist site.
+pub fn belt_setup(code: &ShareCode, teams: u8, gen: &Generator, belt: &BeltSite) -> MatchSetup {
+    let teams = teams.max(1);
+    MatchSetup {
+        spawns: belt
+            .slots
+            .iter()
+            .enumerate()
+            .map(|(k, slot)| SpawnPoint {
+                pos: slot.pos,
+                team: (k % teams as usize) as u8,
+                orientation: slot.orientation,
+            })
+            .collect(),
+        pickup_points: belt.pickup_points.clone(),
+        instability: code.sliders.instability,
+        heist: None,
+        wells: gen.gravity_wells().to_vec(),
+        belt: Some(belt.clone()),
+    }
 }
 
 /// The generator's Heist site (core vein, extraction zones) for the
@@ -317,34 +367,41 @@ fn linked(gen: &Generator, sampler: &RegionSampler, p: Vec3) -> bool {
     net.hubs().is_empty() || net.reaches(|x| sampler.sample(x), p, CONNECT_MARGIN, LINK_TRIES)
 }
 
-/// Team `team`'s spawn zone: a slab at one end of the level along x.
-fn spawn_zone(inner: Aabb, team: u8, teams: u8) -> Aabb {
-    let depth = (inner.max.x - inner.min.x) * SPAWN_ZONE_FRACTION;
-    side(inner, team, teams, depth)
+/// Team `team`'s spawn zone: a slab of [`SPAWN_ZONE_FRACTION`] at one end
+/// of the level, along x for teams 0 and 1, along z (between the x zones)
+/// for teams 2 and 3.
+pub fn spawn_zone(inner: Aabb, team: u8, teams: u8) -> Aabb {
+    side(inner, team, teams, SPAWN_ZONE_FRACTION)
 }
 
-/// Team `team`'s half of the level along x.
+/// Team `team`'s half of the level (teams 2 and 3: their half along z,
+/// between the x spawn zones).
 fn team_half(inner: Aabb, team: u8, teams: u8) -> Aabb {
-    let depth = (inner.max.x - inner.min.x) * 0.5;
-    side(inner, team, teams, depth)
+    side(inner, team, teams, 0.5)
 }
 
-/// The slab of `inner` of `depth` along x at team `team`'s end (all of
-/// `inner` with a single team).
-fn side(inner: Aabb, team: u8, teams: u8, depth: f32) -> Aabb {
+/// The slab of `inner` of `fraction` of its length at team `team`'s end
+/// (all of `inner` with a single team): low x, high x, then (between the x
+/// spawn zones) low z, high z.
+fn side(inner: Aabb, team: u8, teams: u8, fraction: f32) -> Aabb {
     if teams < 2 {
         return inner;
     }
-    if team == 0 {
-        Aabb::new(
-            inner.min,
-            Vec3::new(inner.min.x + depth, inner.max.y, inner.max.z),
-        )
-    } else {
-        Aabb::new(
-            Vec3::new(inner.max.x - depth, inner.min.y, inner.min.z),
-            inner.max,
-        )
+    let size = inner.size();
+    let (lo, hi) = (inner.min, inner.max);
+    match team {
+        0 => Aabb::new(lo, Vec3::new(lo.x + size.x * fraction, hi.y, hi.z)),
+        1 => Aabb::new(Vec3::new(hi.x - size.x * fraction, lo.y, lo.z), hi),
+        _ => {
+            let x0 = lo.x + size.x * SPAWN_ZONE_FRACTION;
+            let x1 = hi.x - size.x * SPAWN_ZONE_FRACTION;
+            let depth = size.z * fraction;
+            if team == 2 {
+                Aabb::new(Vec3::new(x0, lo.y, lo.z), Vec3::new(x1, hi.y, lo.z + depth))
+            } else {
+                Aabb::new(Vec3::new(x0, lo.y, hi.z - depth), Vec3::new(x1, hi.y, hi.z))
+            }
+        }
     }
 }
 
@@ -385,13 +442,19 @@ fn within(cands: &[(Vec3, f32)], area: Aabb) -> Vec<(Vec3, f32)> {
         .collect()
 }
 
-/// Drops the candidates not strictly on team `team`'s side of the midplane
-/// `x = mid_x` (with two teams): the team halves share the midplane, and a
-/// spawn there would face along the midplane and sit on the other team's
-/// boundary. With one team every candidate stays.
-fn on_own_side(mut cands: Vec<(Vec3, f32)>, mid_x: f32, team: u8, teams: u8) -> Vec<(Vec3, f32)> {
+/// Drops the candidates not strictly on team `team`'s side of the level
+/// centre `mid` (with two or more teams): x below or above the centre for
+/// teams 0 and 1, z for teams 2 and 3. The team halves share the
+/// midplane, and a spawn there would face along it and sit on another
+/// team's boundary. With one team every candidate stays.
+fn on_own_side(mut cands: Vec<(Vec3, f32)>, mid: Vec3, team: u8, teams: u8) -> Vec<(Vec3, f32)> {
     if teams >= 2 {
-        cands.retain(|(p, _)| if team == 0 { p.x < mid_x } else { p.x > mid_x });
+        cands.retain(|(p, _)| match team {
+            0 => p.x < mid.x,
+            1 => p.x > mid.x,
+            2 => p.z < mid.z,
+            _ => p.z > mid.z,
+        });
     }
     cands
 }
@@ -438,8 +501,9 @@ fn facing(dir: Vec3) -> Quat {
 mod tests {
     use super::*;
     use ls_math::terrain::TerrainQuery;
+    use ls_sim::ModeRules;
     use ls_worldgen::network::segment_clear;
-    use ls_worldgen::{ClearanceGrid, Sliders};
+    use ls_worldgen::{Archetype, ClearanceGrid, Sliders, BELT_WEDGES};
     #[cfg(target_arch = "wasm32")]
     use wasm_bindgen_test::wasm_bindgen_test as test;
 
@@ -447,13 +511,40 @@ mod tests {
         ShareCode::new(seed, Sliders::new(40, 30))
     }
 
-    /// Checks everything a playable setup needs.
-    fn check_setup(c: &ShareCode, t: &GameTerrain, s: &MatchSetup) {
+    /// Paint the Void rules with `teams` teams.
+    fn rules_with_teams(teams: u8) -> RuleSet {
+        let mut rules = RuleSet::paint_the_void();
+        if let ModeRules::PaintTheVoid(m) = &mut rules.mode {
+            m.teams = teams;
+        }
+        rules
+    }
+
+    /// The slider mix number `i` of the sweep: Enclosure and Density from
+    /// the 5 x 5 grid, the other five sliders cycling through their range so
+    /// every level shape meets every Enclosure and Gravity Chaos value.
+    fn sweep_sliders(i: usize) -> Sliders {
+        const STEPS: [u8; 5] = [0, 25, 50, 75, 100];
+        const VERTICALITY: [u8; 5] = [5, 30, 50, 70, 95];
+        const GRAVITY: [u8; 3] = [0, 50, 100];
+        Sliders {
+            enclosure: STEPS[i / 5 % 5],
+            density: STEPS[i % 5],
+            verticality: VERTICALITY[(i + i / 5) % 5],
+            gravity_chaos: GRAVITY[i % 3],
+            palette: (i * 37 % 101) as u8,
+            absurdity: (i * 53 % 101) as u8,
+            instability: (i * 71 % 101) as u8,
+        }
+    }
+
+    /// Checks everything a playable setup needs, for `teams` teams.
+    fn check_setup(c: &ShareCode, t: &GameTerrain, s: &MatchSetup, teams: u8) {
         // Every ship type fits (the Hauler has the largest hitbox).
         let radius = ShipTable::builtin().max_radius();
-        let mid = t.bounds().center().x;
+        let mid = t.bounds().center();
         let room = t.generator().room();
-        for team in 0..2u8 {
+        for team in 0..teams {
             let n = s.spawns.iter().filter(|p| p.team == team).count();
             assert!(
                 (1..=SPAWNS_PER_TEAM).contains(&n),
@@ -467,14 +558,26 @@ mod tests {
             );
             assert!(!t.sphere_overlap(sp.pos, radius), "{c}: {sp:?}");
             assert!(room.contains(sp.pos));
-            // Team 0 low x, team 1 high x, both facing inwards.
-            assert_eq!(sp.pos.x < mid, sp.team == 0, "{c}: {sp:?}");
+            // Team 0 low x, team 1 high x, team 2 low z, team 3 high z, all
+            // facing inwards.
             let fwd = sp.orientation.forward();
-            assert!((fwd.x > 0.0) == (sp.team == 0), "{c}: {fwd:?}");
+            match sp.team {
+                0 => assert!(sp.pos.x < mid.x && fwd.x > 0.0, "{c}: {sp:?}"),
+                1 => assert!(sp.pos.x > mid.x && fwd.x < 0.0, "{c}: {sp:?}"),
+                2 => assert!(sp.pos.z < mid.z && fwd.z > 0.0, "{c}: {sp:?}"),
+                _ => assert!(sp.pos.z > mid.z && fwd.z < 0.0, "{c}: {sp:?}"),
+            }
             for other in &s.spawns[i + 1..] {
                 if other.team == sp.team {
                     assert!(other.pos.distance(sp.pos) >= SPAWN_SPACING, "{c}");
                 }
+            }
+            // No spawn within 40 u of a gravity well.
+            for w in &s.wells {
+                assert!(
+                    w.pos.distance(sp.pos) >= WELL_SPAWN_DISTANCE,
+                    "{c}: spawn {sp:?} near well {w:?}"
+                );
             }
         }
         // Every spawn and pickup reaches the connection network.
@@ -503,6 +606,44 @@ mod tests {
             );
         }
         assert!(t.sdf(site.core) < 0.0, "{c}: the core is not in rock");
+        // The team 2/3 caverns reach the network.
+        let net = gen.network();
+        for team in 2..4u8 {
+            for h in net.team_hubs(team) {
+                assert!(
+                    gen.reaches_network(*h, CONNECT_MARGIN, LINK_TRIES),
+                    "{c}: team {team} cavern {h:?} does not reach the network"
+                );
+            }
+        }
+        // Gravity wells: the setup carries them, each hollow reaches the
+        // network, and no spawn cavern lies within 40 u.
+        assert_eq!(s.wells, gen.gravity_wells(), "{c}");
+        assert_eq!(s.belt, None);
+        for w in &s.wells {
+            let r = 0.5 * (w.core_radius + w.hollow_radius);
+            let ring = [
+                Vec3::X,
+                Vec3::NEG_X,
+                Vec3::Y,
+                Vec3::NEG_Y,
+                Vec3::Z,
+                Vec3::NEG_Z,
+            ];
+            assert!(
+                ring.iter().any(|d| gen.reaches_network(
+                    w.pos + *d * r,
+                    CONNECT_MARGIN,
+                    LINK_TRIES
+                )),
+                "{c}: well {w:?} does not reach the network"
+            );
+            for team in 0..4u8 {
+                for h in net.team_hubs(team) {
+                    assert!(h.distance(w.pos) >= WELL_SPAWN_DISTANCE, "{c}: {w:?}");
+                }
+            }
+        }
         assert!(!s.pickup_points.is_empty(), "{c}: no pickup points");
         assert!(s.pickup_points.len() <= PICKUP_POINTS);
         for (i, p) in s.pickup_points.iter().enumerate() {
@@ -525,7 +666,7 @@ mod tests {
         let a = match_setup(&c, &rules, &t).unwrap();
         let b = match_setup(&c, &rules, &GameTerrain::from_code(&c).unwrap()).unwrap();
         assert_eq!(a, b);
-        check_setup(&c, &t, &a);
+        check_setup(&c, &t, &a, 2);
         // Roomy level: every point gets the preferred clearance.
         assert_eq!(a.spawns.len(), 2 * SPAWNS_PER_TEAM);
         assert!(a.spawns.iter().all(|s| t.sdf(s.pos) >= SPAWN_CLEARANCE));
@@ -556,12 +697,13 @@ mod tests {
         let cfg = MatchConfig::paint_the_void(c);
         let (world, terrain) = build_match(&cfg).unwrap();
         let setup = match_setup(&c, &cfg.rules, &terrain).unwrap();
-        check_setup(&c, &terrain, &setup);
+        check_setup(&c, &terrain, &setup, 2);
         assert_eq!(world.tick(), 0);
     }
 
-    /// Every Enclosure x Density combination (0/25/50/75/100) over several
-    /// seeds gives a valid, steppable match.
+    /// The setup sweep: 8 seeds x 25 slider mixes (Enclosure x Density,
+    /// with every level shape, Gravity Chaos and the other sliders cycled
+    /// in) give a valid, steppable match, with two teams and with four.
     #[test]
     fn every_slider_combination_hosts_a_match() {
         // Debug builds are slow; release runs (CI's wasm32 job, or
@@ -571,22 +713,84 @@ mod tests {
         } else {
             &[0xDEAD_BEEF, 1, 2, 3, 42, 2024, 7777, u64::MAX]
         };
-        let steps = [0u8, 25, 50, 75, 100];
+        let mixes = if cfg!(debug_assertions) { 6 } else { 25 };
         for &seed in seeds {
-            for e in steps {
-                for d in steps {
-                    let c = ShareCode::new(seed ^ ((e as u64) << 8 | d as u64), Sliders::new(e, d));
-                    let cfg = MatchConfig::paint_the_void(c);
-                    let terrain = GameTerrain::from_code(&c).unwrap();
-                    let setup = match_setup(&c, &cfg.rules, &terrain)
-                        .unwrap_or_else(|err| panic!("{c}: {err}"));
-                    check_setup(&c, &terrain, &setup);
-                    // What build_match does with it.
-                    let world = World::new(cfg.world_config(setup))
-                        .unwrap_or_else(|err| panic!("{c}: {err}"));
-                    assert_eq!(world.tick(), 0);
+            for i in 0..mixes {
+                let s = sweep_sliders(i);
+                let c = ShareCode::new(seed ^ ((s.enclosure as u64) << 8 | s.density as u64), s);
+                let terrain = GameTerrain::from_code(&c).unwrap();
+                let teams = if i % 4 == 3 { 4 } else { 2 };
+                let mut cfg = MatchConfig::paint_the_void(c);
+                cfg.rules = rules_with_teams(teams);
+                let setup = match_setup(&c, &cfg.rules, &terrain)
+                    .unwrap_or_else(|err| panic!("{c}: {err}"));
+                check_setup(&c, &terrain, &setup, teams);
+                // What build_match does with it.
+                let world =
+                    World::new(cfg.world_config(setup)).unwrap_or_else(|err| panic!("{c}: {err}"));
+                assert_eq!(world.tick(), 0);
+            }
+        }
+    }
+
+    /// M3 leftover (D3): a 4-team match spawns each team in its own zone
+    /// (teams 2 and 3 at the z ends), and every ship of a team respawns
+    /// there.
+    #[test]
+    fn four_team_match_spawns_each_team_in_its_own_zone() {
+        for (seed, v) in [(11u64, 50u8), (12, 5), (13, 95)] {
+            let s = Sliders {
+                verticality: v,
+                ..Sliders::new(45, 35)
+            };
+            let c = ShareCode::new(seed, s);
+            let t = GameTerrain::from_code(&c).unwrap();
+            let rules = rules_with_teams(4);
+            let setup = match_setup(&c, &rules, &t).unwrap();
+            check_setup(&c, &t, &setup, 4);
+            let room = t.generator().room();
+            let inner = Aabb::new(
+                room.min + Vec3::splat(WALL_MARGIN),
+                room.max - Vec3::splat(WALL_MARGIN),
+            );
+            let zones: Vec<Aabb> = (0..4).map(|team| spawn_zone(inner, team, 4)).collect();
+            // The four zones are disjoint.
+            for a in 0..4 {
+                for b in a + 1..4 {
+                    let (za, zb) = (zones[a], zones[b]);
+                    let overlap = za.min.x < zb.max.x
+                        && zb.min.x < za.max.x
+                        && za.min.z < zb.max.z
+                        && zb.min.z < za.max.z;
+                    assert!(!overlap, "{c}: zones {a} and {b} overlap");
                 }
             }
+            for sp in &setup.spawns {
+                assert!(
+                    zones[sp.team as usize].contains(sp.pos),
+                    "{c}: team {} spawn {:?} outside its zone",
+                    sp.team,
+                    sp.pos
+                );
+            }
+            // In the simulation every team respawns at its own points.
+            let mut cfg = MatchConfig::paint_the_void(c);
+            cfg.rules = rules;
+            let mut world = World::new(cfg.world_config(setup)).unwrap();
+            let mut seen = [false; 4];
+            for _ in 0..8 {
+                let p = world.add_player(None, ls_sim::ShipType::Tinker).unwrap();
+                let ship = world.ship(p).unwrap();
+                let team = ship.team as usize;
+                assert!(team < 4);
+                assert!(
+                    zones[team].contains(ship.pos),
+                    "{c}: team {team} at {:?}",
+                    ship.pos
+                );
+                seen[team] = true;
+            }
+            assert_eq!(seen, [true; 4], "{c}");
         }
     }
 
@@ -600,8 +804,10 @@ mod tests {
         let grid = ClearanceGrid::level(&gen);
         let main = grid.main_component(&gen).expect("main component");
         let net = gen.network();
-        for hub in net.low_x_hubs().iter().chain(net.high_x_hubs()) {
-            assert_eq!(grid.nearest_component(*hub, 2.0), Some(main), "{c}");
+        for team in 0..4u8 {
+            for hub in net.team_hubs(team) {
+                assert_eq!(grid.nearest_component(*hub, 2.0), Some(main), "{c}");
+            }
         }
         let site = gen.heist().expect("Heist site");
         for p in std::iter::once(site.access).chain(site.extraction.map(|z| z.pos)) {
@@ -633,13 +839,12 @@ mod tests {
         } else {
             let mut v = Vec::new();
             for seed in [1u64, 2024] {
-                for e in [0u8, 25, 50, 75, 100] {
-                    for d in [0u8, 50, 100] {
-                        v.push(ShareCode::new(
-                            seed ^ ((e as u64) << 8 | d as u64),
-                            Sliders::new(e, d),
-                        ));
-                    }
+                for i in 0..25 {
+                    let s = sweep_sliders(i);
+                    v.push(ShareCode::new(
+                        seed ^ ((s.enclosure as u64) << 8 | s.density as u64),
+                        s,
+                    ));
                 }
             }
             v
@@ -648,27 +853,312 @@ mod tests {
         for c in codes {
             let t = GameTerrain::from_code(&c).unwrap();
             let s = match_setup(&c, &rules, &t).unwrap();
-            check_setup(&c, &t, &s);
+            check_setup(&c, &t, &s, 2);
             check_flood_fill(&c, &t, &s);
+        }
+    }
+
+    // ----- asteroid belt ---------------------------------------------------
+
+    /// The racing line of start slot `k` along the belt's clear corridor:
+    /// the slot, then the corridor's centre line prograde from the slot for
+    /// a full lap, ending just past the slot's own gate.
+    fn lap_line(gen: &Generator, k: usize) -> Vec<Vec3> {
+        let b = gen.belt().unwrap();
+        let corridor = gen.belt_field().unwrap().corridor();
+        let n = corridor.len();
+        let slot = b.slots[k].pos;
+        let a0 = b.azimuth(slot);
+        // First corridor point ahead of the slot.
+        let start = (0..n)
+            .min_by(|&i, &j| {
+                let ahead = |p: Vec3| {
+                    let d = b.azimuth(p) - a0;
+                    if d <= 0.0 {
+                        d + core::f32::consts::TAU
+                    } else {
+                        d
+                    }
+                };
+                ahead(corridor[i]).total_cmp(&ahead(corridor[j]))
+            })
+            .unwrap();
+        let mut line = vec![slot];
+        for i in 0..=n {
+            line.push(corridor[(start + i) % n]);
+        }
+        line
+    }
+
+    /// Belt-only line from every slot through its 8 gates in order (own gate
+    /// last), keeping [`CONNECT_MARGIN`], then the dive from the inner edge
+    /// to the exit; pickup points, moons and the cocoon as §3.8 says.
+    fn check_belt(c: &ShareCode, t: &GameTerrain, s: &MatchSetup) {
+        let gen = t.generator();
+        let b = gen.belt().expect("belt");
+        let sample = |p: Vec3| gen.sample(p);
+        assert_eq!(s.belt.as_ref(), Some(b), "{c}");
+        assert_eq!(s.wells, gen.gravity_wells(), "{c}");
+        assert!(s.heist.is_none());
+        assert_eq!(s.spawns.len(), BELT_WEDGES);
+        for (k, sp) in s.spawns.iter().enumerate() {
+            assert_eq!(sp.pos, b.slots[k].pos);
+            assert!(t.sdf(sp.pos) >= SPAWN_CLEARANCE, "{c}: slot {k}");
+        }
+        assert_eq!(s.pickup_points, b.pickup_points);
+        for k in 0..BELT_WEDGES {
+            let line = lap_line(&gen, k);
+            let mut gates = Vec::new();
+            for w in line.windows(2) {
+                assert!(
+                    segment_clear(sample, w[0], w[1], CONNECT_MARGIN),
+                    "{c}: slot {k} line blocked between {:?} and {:?}",
+                    w[0],
+                    w[1]
+                );
+                assert!(b.belt_distance(w[1]) < 0.0, "{c}: line leaves the belt");
+                for g in 0..BELT_WEDGES {
+                    if b.crosses_gate(g, w[0], w[1]) {
+                        gates.push(g);
+                    }
+                }
+            }
+            let want: Vec<usize> = (1..=BELT_WEDGES).map(|i| (k + i) % BELT_WEDGES).collect();
+            assert_eq!(gates, want, "{c}: slot {k} gates");
+            // The dive: past the own gate, from the slot's position straight
+            // to the exit.
+            let last = *line.last().unwrap();
+            let slot = b.slots[k].pos;
+            assert!(segment_clear(sample, last, slot, CONNECT_MARGIN), "{c}");
+            assert!(
+                segment_clear(sample, slot, b.center, CONNECT_MARGIN),
+                "{c}: dive {k}"
+            );
+        }
+        // Pickups: open, in the belt, reach the corridor.
+        let corridor = gen.belt_field().unwrap().corridor();
+        for p in &b.pickup_points {
+            assert!(t.sdf(*p) >= MIN_CLEARANCE, "{c}: pickup {p:?}");
+            assert!(
+                b.belt_distance(*p) < 0.0,
+                "{c}: pickup {p:?} outside the belt"
+            );
+            let near = corridor
+                .iter()
+                .min_by(|a, q| a.distance(*p).total_cmp(&q.distance(*p)))
+                .unwrap();
+            assert!(
+                segment_clear(sample, *p, *near, CONNECT_MARGIN),
+                "{c}: pickup {p:?}"
+            );
+        }
+        // Shepherd moons: one per wedge from Gravity Chaos 20, 25 u from
+        // the gates and slots, not on the racing line.
+        if c.sliders.gravity_chaos >= ls_worldgen::belt::MOON_GRAVITY_CHAOS {
+            assert_eq!(s.wells.len(), BELT_WEDGES, "{c}");
+        } else {
+            assert!(s.wells.is_empty(), "{c}");
+        }
+        for m in &s.wells {
+            for slot in &b.slots {
+                assert!(m.pos.distance(slot.pos) >= 25.0, "{c}: moon {m:?}");
+            }
+            for p in corridor {
+                assert!(
+                    p.distance(m.pos) >= m.hollow_radius,
+                    "{c}: moon on the line"
+                );
+            }
+        }
+        // No rock in the cocoon.
+        let r = b.cocoon_radius;
+        let mut z = -r;
+        while z <= r {
+            let mut y = -r;
+            while y <= r {
+                let mut x = -r;
+                while x <= r {
+                    let p = b.center + Vec3::new(x, y, z);
+                    if p.distance(b.center) <= r {
+                        assert!(t.sdf(p) > 0.0, "{c}: rock in the cocoon at {p:?}");
+                    }
+                    x += 3.0;
+                }
+                y += 3.0;
+            }
+            z += 3.0;
+        }
+    }
+
+    /// The belt setup sweep: 8 seeds x 25 slider mixes of belt worlds.
+    #[test]
+    fn every_belt_world_hosts_a_race() {
+        let seeds: &[u64] = if cfg!(debug_assertions) {
+            &[0xDEAD_BEEF]
+        } else {
+            &[0xDEAD_BEEF, 1, 2, 3, 42, 2024, 7777, u64::MAX]
+        };
+        let mixes = if cfg!(debug_assertions) { 3 } else { 25 };
+        for &seed in seeds {
+            for i in 0..mixes {
+                let s = sweep_sliders(i);
+                let c = ShareCode::with_archetype(seed ^ (i as u64) << 16, s, Archetype::Belt);
+                let t = GameTerrain::from_code(&c).unwrap();
+                let rules = RuleSet::paint_the_void();
+                let setup = match_setup(&c, &rules, &t).unwrap();
+                check_belt(&c, &t, &setup);
+                let cfg = MatchConfig::paint_the_void(c);
+                let world = World::new(cfg.world_config(setup)).unwrap();
+                assert_eq!(world.tick(), 0);
+            }
+        }
+    }
+
+    /// Fairness: the shortest belt-only lap of every start slot (through
+    /// its 8 gates, own gate last, keeping [`CONNECT_MARGIN`]) on a 2 u
+    /// lattice; the 8 lengths differ by less than 1 %.
+    fn lap_lengths(gen: &Generator) -> [f32; BELT_WEDGES] {
+        let b = gen.belt().unwrap();
+        let step = 2.0f32;
+        let r_max = b.outer_radius + step;
+        let lo = b.center - Vec3::new(r_max, b.half_thickness + step, r_max);
+        let dims = [
+            (2.0 * r_max / step) as usize + 1,
+            (2.0 * (b.half_thickness + step) / step) as usize + 1,
+            (2.0 * r_max / step) as usize + 1,
+        ];
+        let at = |i: [usize; 3]| lo + Vec3::new(i[0] as f32, i[1] as f32, i[2] as f32) * step;
+        let idx = |i: [usize; 3]| i[0] + dims[0] * (i[1] + dims[1] * i[2]);
+        let n = dims[0] * dims[1] * dims[2];
+        let mut free = vec![false; n];
+        let mut azim = vec![0.0f32; n];
+        for z in 0..dims[2] {
+            for y in 0..dims[1] {
+                for x in 0..dims[0] {
+                    let p = at([x, y, z]);
+                    let i = idx([x, y, z]);
+                    free[i] = b.belt_distance(p) <= 0.0 && gen.sample(p) >= CONNECT_MARGIN;
+                    azim[i] = b.azimuth(p);
+                }
+            }
+        }
+        let tau = core::f32::consts::TAU;
+        let mut out = [0.0f32; BELT_WEDGES];
+        for (k, len) in out.iter_mut().enumerate() {
+            let gate = BeltSite::gate_azimuth(k);
+            // Cut between the gate and the slot (1.5 degrees past the gate):
+            // the lap must go all the way round.
+            let cut = gate + 1.5f32.to_radians();
+            let rel = |a: f32| {
+                let d = a - cut;
+                if d < 0.0 {
+                    d + tau
+                } else {
+                    d
+                }
+            };
+            let goal = tau - 1.5f32.to_radians();
+            let slot = b.slots[k].pos;
+            let s = (slot - lo) / step;
+            let start = [s.x, s.y, s.z].map(|v| ls_math::det::round(v) as usize);
+            let mut dist = vec![f32::INFINITY; n];
+            let mut heap = std::collections::BinaryHeap::new();
+            let si = idx(start);
+            dist[si] = slot.distance(at(start));
+            heap.push((std::cmp::Reverse(dist[si].to_bits()), si));
+            *len = f32::INFINITY;
+            while let Some((std::cmp::Reverse(d), i)) = heap.pop() {
+                let d = f32::from_bits(d);
+                if d > dist[i] {
+                    continue;
+                }
+                if rel(azim[i]) >= goal {
+                    *len = d;
+                    break;
+                }
+                let (x, y, z) = (
+                    i % dims[0],
+                    (i / dims[0]) % dims[1],
+                    i / (dims[0] * dims[1]),
+                );
+                for dz in -1i32..=1 {
+                    for dy in -1i32..=1 {
+                        for dx in -1i32..=1 {
+                            if dx == 0 && dy == 0 && dz == 0 {
+                                continue;
+                            }
+                            let (nx, ny, nz) = (x as i32 + dx, y as i32 + dy, z as i32 + dz);
+                            if nx < 0
+                                || ny < 0
+                                || nz < 0
+                                || nx as usize >= dims[0]
+                                || ny as usize >= dims[1]
+                                || nz as usize >= dims[2]
+                            {
+                                continue;
+                            }
+                            let j = idx([nx as usize, ny as usize, nz as usize]);
+                            // No jumps across the cut.
+                            if !free[j] || (rel(azim[j]) - rel(azim[i])).abs() > 1.0 {
+                                continue;
+                            }
+                            let w = step * ((dx * dx + dy * dy + dz * dz) as f32).sqrt();
+                            let nd = d + w;
+                            if nd < dist[j] {
+                                dist[j] = nd;
+                                heap.push((std::cmp::Reverse(nd.to_bits()), j));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn every_slot_flies_a_lap_of_the_same_length() {
+        let worlds: Vec<(u64, Sliders)> = if cfg!(debug_assertions) {
+            vec![(5, sweep_sliders(12))]
+        } else {
+            (0..8u64)
+                .map(|i| (i * 7919 + 3, sweep_sliders(i as usize * 3)))
+                .collect()
+        };
+        for (seed, s) in worlds {
+            let c = ShareCode::with_archetype(seed, s, Archetype::Belt);
+            let gen = Generator::from_code(&c).unwrap();
+            let laps = lap_lengths(&gen);
+            let max = laps.iter().copied().fold(0.0f32, f32::max);
+            let min = laps.iter().copied().fold(f32::INFINITY, f32::min);
+            assert!(max.is_finite(), "{c}: no lap {laps:?}");
+            let spread = (max - min) / min;
+            assert!(spread < 0.01, "{c}: laps {laps:?} spread {spread}");
+            // The lap is about as long as the ring (597-911 u): belt-only.
+            assert!((550.0..1000.0).contains(&min), "{c}: lap {min}");
+            println!("{c}: lap lengths {laps:?} spread {:.4} %", spread * 100.0);
         }
     }
 
     #[test]
     fn fallback_candidates_never_sit_on_the_midplane() {
-        let mid = 128.0;
+        let mid = Vec3::new(128.0, 64.0, 128.0);
         let cands = vec![
             (Vec3::new(100.0, 10.0, 10.0), 2.0),
-            (Vec3::new(mid, 10.0, 10.0), 3.0),
-            (Vec3::new(140.0, 10.0, 10.0), 2.0),
+            (Vec3::new(mid.x, 10.0, 10.0), 3.0),
+            (Vec3::new(140.0, 10.0, 200.0), 2.0),
         ];
-        let xs = |team| -> Vec<f32> {
-            on_own_side(cands.clone(), mid, team, 2)
+        let xs = |team, teams| -> Vec<f32> {
+            on_own_side(cands.clone(), mid, team, teams)
                 .iter()
                 .map(|(p, _)| p.x)
                 .collect()
         };
-        assert_eq!(xs(0), vec![100.0]);
-        assert_eq!(xs(1), vec![140.0]);
+        assert_eq!(xs(0, 2), vec![100.0]);
+        assert_eq!(xs(1, 2), vec![140.0]);
+        // Teams 2 and 3 split along z.
+        assert_eq!(xs(2, 4), vec![100.0, mid.x]);
+        assert_eq!(xs(3, 4), vec![140.0]);
         // A single team keeps everything.
         assert_eq!(on_own_side(cands.clone(), mid, 0, 1).len(), 3);
     }

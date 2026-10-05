@@ -4,7 +4,7 @@
 //! enemies on the far side of a cave level.
 //!
 //! Three bots (two teams, like the soak that found it) play 60 s on the soak
-//! world `LS0C-PNEY-V86Z-VXZM-K4M6-8001-8F8J` and on nine more random worlds
+//! world `LS0G-2TNV-VD0V-ZFQY-JC58-T2XM-57QY` and on nine more random worlds
 //! (default sliders, like the server's random worlds) against an in-process
 //! `Room`; every world must see hits. A 5-minute match on the soak world
 //! must still see hits in its last minute (navigation must not wear out).
@@ -22,10 +22,11 @@ use ls_game::server::{Room, RoomConfig};
 use ls_game::MatchConfig;
 
 /// The soak world where 3 bots scored 0 hits in 12 matches (M1 code
-/// `LS04-PNEY-V86Z-VXZM-K4M6-8001-8F8T`), re-encoded for generator version 3:
+/// `LS04-PNEY-V86Z-VXZM-K4M6-8001-8F8T`), re-encoded for generator version 4:
 /// same seed and sliders, but the level now also has the tunnel network
-/// (version 2) and the Heist site (version 3).
-const SOAK_WORLD: &str = "LS0C-PNEY-V86Z-VXZM-K4M6-8001-8F8J";
+/// (version 2), the Heist site (version 3) and the team 2/3 caverns
+/// (version 4; Verticality 50 keeps the default box).
+const SOAK_WORLD: &str = "LS0G-2TNV-VD0V-ZFQY-JC58-T2XM-57QY";
 const BOTS: usize = 3;
 const SECS: u64 = 60;
 

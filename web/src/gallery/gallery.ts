@@ -38,7 +38,8 @@ import { Renderer, type CameraView, type Rgb, type SceneInstances } from "../ren
 import { CONTROLS_LEN, type GameHandle } from "../wasm/api.ts";
 import { loadWasm } from "../wasm/load.ts";
 import { pickCloseup, pickLongest, pickVista, probeAround, raycast, rayMesh, sphereDirections, type Probe, type RayMesh } from "./raycast.ts";
-import { FIT_TUNNEL_RADIUS, sceneById, type GalleryScene } from "./scenes.ts";
+import { FIT_TUNNEL_RADIUS, needsWorldCode, sceneById, worldSliders, type GalleryScene } from "./scenes.ts";
+import { levelPose } from "./levelScenes.ts";
 import { applyDecor, decorSpots, pickBorder, type DecorSpot } from "./decor.ts";
 import { explosionAt, simulateVfx } from "./vfxScenes.ts";
 import { pickShadePose, pickSunWallPose } from "./shadePose.ts";
@@ -417,8 +418,16 @@ export async function runGallery(canvas: HTMLCanvasElement, ui: HTMLElement, loc
     }
     const api = await loadWasm();
     const w = scene.world;
-    status.shareCode = api.randomShareCode(w.seed, 0, w.enclosure, w.density);
+    // Worlds with more sliders or a belt (generator version 4); a build
+    // without worldShareCode (before shots) takes the same seed, Enclosure
+    // and Density.
+    status.shareCode =
+      needsWorldCode(w) && api.worldShareCode
+        ? api.worldShareCode(w.seed, 0, Uint8Array.from(worldSliders(w)), w.archetype ?? 0)
+        : api.randomShareCode(w.seed, 0, w.enclosure, w.density);
     const game = api.Game.practice(status.shareCode, 0);
+    // The belt overview sees the whole level.
+    if (scene.pose === "belt" || scene.pose === "centre" || scene.pose === "rise") game.setViewRadius(600);
     game.frame(0, new Float32Array(CONTROLS_LEN));
     const spawn = parsePose(game.localPose());
     const origin = spawn?.position ?? boundsCenter(game.bounds());
@@ -458,7 +467,14 @@ export async function runGallery(canvas: HTMLCanvasElement, ui: HTMLElement, loc
     const sunPose = scene.pose === "sun" ? pickSunPose(near, probes, origin, atmosphere.sunDirection, atmosphere.room) : null;
     const shadePose = scene.pose === "shade" ? pickShadePose([...rayMeshes.values()], probes, origin, atmosphere.sunDirection, atmosphere.room) : null;
     const wallPose = scene.pose === "sunwall" ? pickSunWallPose([...rayMeshes.values()], probes, origin, atmosphere.sunDirection, atmosphere.room) : null;
-    const pose = sunPose ?? shadePose ?? wallPose ?? pickPose(scene, origin, view.orientation, probes, border, { sun: atmosphere.sunDirection, planet: atmosphere.planet?.direction ?? null });
+    // Level scenes (M4 A1) aim at the level's wells or belt; without them (or
+    // in a build without levelWells / levelBelt) they take a vista.
+    const levelScene = ["well", "belt", "slot", "centre", "rise"].includes(scene.pose);
+    const atLevel = levelScene
+      ? levelPose(scene.pose, api.levelWells?.(status.shareCode) ?? null, api.levelBelt?.(status.shareCode) ?? null, game.bounds())
+      : null;
+    const pickScene: GalleryScene = levelScene ? { ...scene, pose: "vista" } : scene;
+    const pose = atLevel ?? sunPose ?? shadePose ?? wallPose ?? pickPose(pickScene, origin, view.orientation, probes, border, { sun: atmosphere.sunDirection, planet: atmosphere.planet?.direction ?? null });
     if (scene.belowCeiling !== undefined && atmosphere.room) {
       pose.position = { ...pose.position, y: atmosphere.room.max.y - scene.belowCeiling };
     }

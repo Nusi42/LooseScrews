@@ -7,6 +7,8 @@ use crate::*;
 
 pub fn setup() -> MatchSetup {
     MatchSetup {
+        wells: Vec::new(),
+        belt: None,
         spawns: vec![
             SpawnPoint {
                 pos: Vec3::new(-20.0, 0.0, 0.0),

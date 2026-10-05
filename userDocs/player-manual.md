@@ -49,7 +49,7 @@ your colour in a black-and-white world (**Last Color Standing**), plus one-hit-k
 **Instagib** matches and one-on-one **duels**.
 
 Every world comes from a **share code**, a short text such as
-`LS0F-143C-ZQW8-CCHA-V4M6-8001-8FAE`. The same code always builds the same world.
+`LS0G-C4GD-KYZH-1HJ5-BC58-T2XM-57NT`. The same code always builds the same world.
 
 ## What you need
 
@@ -863,11 +863,11 @@ A share code describes a whole world: a random seed, the seven world sliders and
 generator version, plus a checksum that catches typos. It always looks like this:
 
 ```
-LS0F-143C-ZQW8-CCHA-V4M6-8001-8FAE
+LS0G-C4GD-KYZH-1HJ5-BC58-T2XM-57NT
 ```
 
 That's `LS` plus 26 letters and digits, 34 characters with the dashes. Codes of this build's
-world generator (version 3) start with `LS0C` to `LS0F`.
+world generator (version 4) start with `LS0G`.
 
 - **Typing codes:** upper or lower case both work, and dashes and spaces are optional. The letter
   O is read as zero, and I or L as one, so common typos still work.
@@ -879,20 +879,26 @@ world generator (version 3) start with `LS0C` to `LS0F`.
 - **Sharing a level:** send the code to a friend. The same code builds exactly the same world on
   every computer.
 - **Old codes:** a code made by an older version of the world generator (for example the
-  Milestone 1 codes starting `LS04` or `LS06`) is rejected with a message that names both
+  Milestone 3 codes starting `LS0C` to `LS0F`) is rejected with a message that names both
   versions.
 - **Sliders:** the code stores all seven sliders from the design (Enclosure, Density,
-  Verticality, Gravity Chaos, Palette, Absurdity, Instability). In this build **Enclosure** (open
+  Verticality, Gravity Chaos, Palette, Absurdity, Instability) and the kind of level: a
+  classic level or an **asteroid belt** (a ring of asteroids around an open centre, the same
+  from all of its 8 start slots, for the Belt Up racing mode). In this build **Enclosure** (open
   sky to dense mine shafts) and **Density** (few to many pillars and floating rocks) shape the
-  world, **Instability** sets how far a Tectonic Charge's cracks spread, and **Palette** drains
+  world, **Verticality** sets its shape (flat and wide with low chambers at 0, the usual box at
+  50, tall and narrow with chimneys and islands stacked in tiers at 100), **Gravity Chaos**
+  places up to seven gravity wells (a rock core floating in a round hollow; they don't pull
+  yet), **Instability** sets how far a Tectonic Charge's cracks spread, and **Palette** drains
   the colour from the picture (100 is nearly black and white). The seed also picks the sky:
   open worlds float in space with stars, a nebula, a sun and a planet. Rock blocks the sun:
   it casts shadows, and where caverns open to the sky, sunlight falls through the openings in
   visible shafts. Inside the rock, and in closed worlds (Enclosure 50 and above, which have no
   sky), caves are dark: your headlight, shots, explosions, engines and glowing rock light them.
-  The edge of an open world is invisible; a faint blue grid shows it when you fly close. Every level also has
-  a network of caverns and tunnels that links both teams' ends. There's no screen to set sliders
-  yet: random practice worlds and server worlds pick them for you.
+  The edge of an open world is invisible; a faint blue grid shows it when you fly close. Every classic level also has
+  a network of caverns and tunnels that links both teams' ends (and a cavern at each of the
+  other two ends for teams 3 and 4). There's no screen to set sliders yet: random practice
+  worlds and server worlds pick them for you.
 
 ### Rule set codes
 
@@ -1094,8 +1100,8 @@ These are part of the game design but aren't in the Milestone 3 build:
 - **Co-op modes** (Deep Dig, Tethered, Escort the Intern) and **The Architect**.
 - **Pigment pickups** that give colour back in Last Color Standing, and black-and-white levels
   as a general feature (the Palette slider only drains the colour of the picture).
-- **World sliders:** Verticality, Gravity Chaos (gravity wells) and Absurdity don't change the
-  world yet, and there's no screen to set sliders or save a level.
+- **World sliders:** gravity wells don't pull yet, Absurdity doesn't change anything yet, and
+  there's no screen to set sliders or save a level.
 - **Comedy events** ("the level has moods"): not yet.
 - **Voting for the next mode:** servers play their rotation in order.
 - **Sound:** none at all yet, so the Polite Laser's "excuse me" and the Tectonic Charge's

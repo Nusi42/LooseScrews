@@ -9,19 +9,25 @@
 //!         // A built-in rule set by id, a random world, 4 to 32 players.
 //!         (rules: "team_brawl", min_players: 4),
 //!         // A rule set file (relative to the playlist file) on a fixed world.
-//!         (rules: "my_rules.ron", world: Code("LS0C-0000-0000-0000-8006-8001-8F9M")),
+//!         (rules: "my_rules.ron", world: Code("LS0G-0000-0000-0000-1001-6RFX-250V")),
 //!         // An LR rule set code on a random world with slider ranges.
 //!         (rules: "LR8V-6097-G000-TMBG", world: RandomSliders(enclosure: (20, 60), density: (30, 70))),
+//!         // A random asteroid belt (Belt Up's slider ranges unless given).
+//!         (rules: "team_brawl", world: RandomSliders(archetype: Belt, gravity_chaos: (0, 20))),
 //!     ],
 //! )
 //! ```
 //!
 //! `rules` is a built-in rule set id (the file name in `data/rulesets/`
 //! without `.ron`), a rule set file or an `LR` code; `world` is `Random` (the
-//! default: default sliders), `RandomSliders(enclosure: (lo, hi), density:
-//! (lo, hi))` (each range optional) or `Code("LS..")`; `min_players` (default 1) and `max_players` (default
-//! 32) bound the player count the entry is played with. The server-wide bans
-//! and balance list apply to every entry.
+//! default: random sliders in [`SliderRanges::CLASSIC`]), `RandomSliders(..)`
+//! with a range `(lo, hi)` for any of the seven sliders (`enclosure`,
+//! `density`, `verticality`, `gravity_chaos`, `palette`, `absurdity`,
+//! `instability`; the others keep the default ranges) and an optional
+//! `archetype` (`Classic`, the default, or `Belt`, whose default ranges are
+//! [`SliderRanges::BELT`]), or `Code("LS..")`; `min_players` (default 1) and
+//! `max_players` (default 32) bound the player count the entry is played
+//! with. The server-wide bans and balance list apply to every entry.
 //!
 //! [`Rotation::pick`] walks the entries in order and skips those whose player
 //! range does not fit the current player count. If none fits it falls back
@@ -32,7 +38,7 @@ use std::path::{Path, PathBuf};
 
 use ls_game::MatchConfig;
 use ls_sim::ruleset::BUILTIN_RULESETS;
-use ls_worldgen::{ShareCode, Sliders};
+use ls_worldgen::{Archetype, ShareCode, Sliders};
 use serde::Deserialize;
 
 use crate::rules::ServerRules;
@@ -57,26 +63,101 @@ pub const FALLBACK_RULES: &str = "team_brawl";
 /// Largest player range an entry can name.
 pub const MAX_ENTRY_PLAYERS: u8 = 32;
 
+/// Inclusive ranges for the seven world sliders of a random world, in
+/// share-code order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SliderRanges {
+    pub enclosure: (u8, u8),
+    pub density: (u8, u8),
+    pub verticality: (u8, u8),
+    pub gravity_chaos: (u8, u8),
+    pub palette: (u8, u8),
+    pub absurdity: (u8, u8),
+    pub instability: (u8, u8),
+}
+
+impl SliderRanges {
+    /// Random classic worlds (M4 plan §3.3 "Playlists"): Enclosure and
+    /// Density at their defaults, Verticality 20-80, Gravity Chaos 0-60,
+    /// Palette 0-50 (monochrome only when an entry asks), Absurdity 10-60,
+    /// Instability 10-60.
+    pub const CLASSIC: SliderRanges = SliderRanges {
+        enclosure: (50, 50),
+        density: (40, 40),
+        verticality: (20, 80),
+        gravity_chaos: (0, 60),
+        palette: (0, 50),
+        absurdity: (10, 60),
+        instability: (10, 60),
+    };
+
+    /// Random asteroid belts for Belt Up entries (M4 plan §3.8): Enclosure
+    /// 30-70, Density 40-80, Verticality 30-70, Gravity Chaos 0-50, Palette
+    /// 0-50, Absurdity 10-60, Instability 10-40.
+    pub const BELT: SliderRanges = SliderRanges {
+        enclosure: (30, 70),
+        density: (40, 80),
+        verticality: (30, 70),
+        gravity_chaos: (0, 50),
+        palette: (0, 50),
+        absurdity: (10, 60),
+        instability: (10, 40),
+    };
+
+    /// The default ranges of an archetype.
+    pub fn for_archetype(archetype: Archetype) -> SliderRanges {
+        match archetype {
+            Archetype::Classic => SliderRanges::CLASSIC,
+            Archetype::Belt => SliderRanges::BELT,
+        }
+    }
+
+    /// The ranges in share-code order.
+    pub fn to_array(self) -> [(u8, u8); 7] {
+        [
+            self.enclosure,
+            self.density,
+            self.verticality,
+            self.gravity_chaos,
+            self.palette,
+            self.absurdity,
+            self.instability,
+        ]
+    }
+}
+
 /// The world of a playlist entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WorldChoice {
     /// Always this world.
     Fixed(ShareCode),
-    /// A new random world for every match, sliders drawn from the ranges
-    /// (inclusive).
+    /// A new random world of `archetype` for every match, sliders drawn from
+    /// the ranges (inclusive).
     Random {
-        enclosure: (u8, u8),
-        density: (u8, u8),
+        ranges: SliderRanges,
+        archetype: Archetype,
     },
 }
 
+/// Salts of the slider draws of a random world, in share-code order (the
+/// first two as before generator version 4).
+const SLIDER_SALTS: [u64; 7] = [0x51ed, 0xde45, 0x7e27, 0x6c4a, 0x9a1e, 0xab5d, 0x1257];
+
 impl WorldChoice {
-    /// Default sliders, random seed.
+    /// A random classic world ([`SliderRanges::CLASSIC`]).
     pub fn random() -> Self {
-        let d = Sliders::default();
         WorldChoice::Random {
-            enclosure: (d.enclosure, d.enclosure),
-            density: (d.density, d.density),
+            ranges: SliderRanges::CLASSIC,
+            archetype: Archetype::Classic,
+        }
+    }
+
+    /// A random asteroid belt ([`SliderRanges::BELT`]; Belt Up entries).
+    pub fn random_belt() -> Self {
+        WorldChoice::Random {
+            ranges: SliderRanges::BELT,
+            archetype: Archetype::Belt,
         }
     }
 
@@ -84,16 +165,25 @@ impl WorldChoice {
     pub fn share_code(&self) -> ShareCode {
         match self {
             WorldChoice::Fixed(code) => *code,
-            WorldChoice::Random { enclosure, density } => {
-                let seed = random_seed();
-                let pick = |(lo, hi): (u8, u8), salt: u64| {
-                    let span = u64::from(hi.saturating_sub(lo)) + 1;
-                    lo + (ls_math::rng::mix64(seed ^ salt) % span) as u8
-                };
-                let sliders = Sliders::new(pick(*enclosure, 0x51ed), pick(*density, 0xde45));
-                ShareCode::new(seed, sliders)
+            WorldChoice::Random { ranges, archetype } => {
+                Self::draw(random_seed(), ranges, *archetype)
             }
         }
+    }
+
+    /// The random world for `seed`: every slider drawn from its range.
+    pub fn draw(seed: u64, ranges: &SliderRanges, archetype: Archetype) -> ShareCode {
+        let pick = |(lo, hi): (u8, u8), salt: u64| {
+            let span = u64::from(hi.saturating_sub(lo)) + 1;
+            lo + (ls_math::rng::mix64(seed ^ salt) % span) as u8
+        };
+        let r = ranges.to_array();
+        let mut a = [0u8; 7];
+        for (i, v) in a.iter_mut().enumerate() {
+            *v = pick(r[i], SLIDER_SALTS[i]);
+        }
+        let sliders = Sliders::from_array(a).unwrap_or_default();
+        ShareCode::with_archetype(seed, sliders, archetype)
     }
 }
 
@@ -164,22 +254,29 @@ enum WorldFile {
     #[default]
     Random,
     RandomSliders {
-        #[serde(default = "default_enclosure")]
-        enclosure: (u8, u8),
-        #[serde(default = "default_density")]
-        density: (u8, u8),
+        #[serde(default)]
+        archetype: Archetype,
+        #[serde(default, deserialize_with = "some_range")]
+        enclosure: Option<(u8, u8)>,
+        #[serde(default, deserialize_with = "some_range")]
+        density: Option<(u8, u8)>,
+        #[serde(default, deserialize_with = "some_range")]
+        verticality: Option<(u8, u8)>,
+        #[serde(default, deserialize_with = "some_range")]
+        gravity_chaos: Option<(u8, u8)>,
+        #[serde(default, deserialize_with = "some_range")]
+        palette: Option<(u8, u8)>,
+        #[serde(default, deserialize_with = "some_range")]
+        absurdity: Option<(u8, u8)>,
+        #[serde(default, deserialize_with = "some_range")]
+        instability: Option<(u8, u8)>,
     },
     Code(String),
 }
 
-fn default_enclosure() -> (u8, u8) {
-    let e = Sliders::default().enclosure;
-    (e, e)
-}
-
-fn default_density() -> (u8, u8) {
-    let d = Sliders::default().density;
-    (d, d)
+/// A slider range written as a plain `(lo, hi)` tuple (absent: `None`).
+fn some_range<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<(u8, u8)>, D::Error> {
+    <(u8, u8)>::deserialize(d).map(Some)
 }
 
 fn invalid(msg: impl Into<String>) -> ServerError {
@@ -199,8 +296,8 @@ impl Playlist {
                     e.source, e.min_players, e.max_players
                 )));
             }
-            if let WorldChoice::Random { enclosure, density } = e.world {
-                for (lo, hi) in [enclosure, density] {
+            if let WorldChoice::Random { ranges, .. } = e.world {
+                for (lo, hi) in ranges.to_array() {
                     if lo > hi || hi > ls_worldgen::sliders::SLIDER_MAX {
                         return Err(invalid(format!(
                             "{}: slider range ({lo}, {hi}) is invalid",
@@ -293,8 +390,29 @@ impl Playlist {
             .map_err(|err| invalid(format!("entry {}: {err}", i + 1)))?;
             let world = match e.world {
                 WorldFile::Random => WorldChoice::random(),
-                WorldFile::RandomSliders { enclosure, density } => {
-                    WorldChoice::Random { enclosure, density }
+                WorldFile::RandomSliders {
+                    archetype,
+                    enclosure,
+                    density,
+                    verticality,
+                    gravity_chaos,
+                    palette,
+                    absurdity,
+                    instability,
+                } => {
+                    let d = SliderRanges::for_archetype(archetype);
+                    WorldChoice::Random {
+                        ranges: SliderRanges {
+                            enclosure: enclosure.unwrap_or(d.enclosure),
+                            density: density.unwrap_or(d.density),
+                            verticality: verticality.unwrap_or(d.verticality),
+                            gravity_chaos: gravity_chaos.unwrap_or(d.gravity_chaos),
+                            palette: palette.unwrap_or(d.palette),
+                            absurdity: absurdity.unwrap_or(d.absurdity),
+                            instability: instability.unwrap_or(d.instability),
+                        },
+                        archetype,
+                    }
                 }
                 WorldFile::Code(code) => WorldChoice::Fixed(
                     ShareCode::decode(&code)
@@ -467,12 +585,13 @@ mod tests {
                 (rules: "custom.ron", world: Code("{world}"), min_players: 2, max_players: 8),
                 (rules: "{code}", world: RandomSliders(enclosure: (10, 20), density: (30, 30))),
                 (rules: "sandbox_all_weapons", world: Random),
+                (rules: "paint_the_void", world: RandomSliders(archetype: Belt, palette: (90, 100))),
             ])"#
         );
         let path = dir.join("playlist.ron");
         std::fs::write(&path, &text).unwrap();
         let p = Playlist::load(&path, &["railspike".into()], None).unwrap();
-        assert_eq!(p.len(), 4);
+        assert_eq!(p.len(), 5);
         let e = p.entries();
         assert_eq!(e[0].rules.base.name, "Paint the Void");
         assert_eq!(e[0].world, WorldChoice::random());
@@ -486,11 +605,26 @@ mod tests {
         assert_eq!(
             e[2].world,
             WorldChoice::Random {
-                enclosure: (10, 20),
-                density: (30, 30)
+                ranges: SliderRanges {
+                    enclosure: (10, 20),
+                    density: (30, 30),
+                    ..SliderRanges::CLASSIC
+                },
+                archetype: Archetype::Classic,
             }
         );
         assert_eq!(e[3].rules.base, RuleSet::sandbox_all_weapons());
+        assert_eq!(
+            e[4].world,
+            WorldChoice::Random {
+                ranges: SliderRanges {
+                    palette: (90, 100),
+                    ..SliderRanges::BELT
+                },
+                archetype: Archetype::Belt,
+            }
+        );
+        assert_eq!(e[4].world.share_code().archetype, Archetype::Belt);
         // Bans apply to every entry.
         let mc = e[2]
             .match_config(&MatchConfig::paint_the_void(ShareCode::new(
@@ -559,11 +693,55 @@ mod tests {
     #[test]
     fn random_worlds_differ_and_stay_in_range() {
         let w = WorldChoice::Random {
-            enclosure: (0, 100),
-            density: (5, 6),
+            ranges: SliderRanges {
+                enclosure: (0, 100),
+                density: (5, 6),
+                ..SliderRanges::CLASSIC
+            },
+            archetype: Archetype::Classic,
         };
         let codes: Vec<ShareCode> = (0..8).map(|_| w.share_code()).collect();
         assert!(codes.windows(2).any(|p| p[0].seed != p[1].seed));
         assert!(codes.iter().all(|c| (5..=6).contains(&c.sliders.density)));
+    }
+
+    /// Every slider of a random world stays in its range, and the draws
+    /// cover the ranges (the M4 defaults for classic worlds and belts).
+    #[test]
+    fn random_worlds_draw_all_seven_sliders_in_their_ranges() {
+        for (choice, ranges, archetype) in [
+            (
+                WorldChoice::random(),
+                SliderRanges::CLASSIC,
+                Archetype::Classic,
+            ),
+            (
+                WorldChoice::random_belt(),
+                SliderRanges::BELT,
+                Archetype::Belt,
+            ),
+        ] {
+            let WorldChoice::Random { ranges: r, .. } = choice else {
+                panic!("random")
+            };
+            assert_eq!(r, ranges);
+            let mut lo = [u8::MAX; 7];
+            let mut hi = [0u8; 7];
+            for seed in 0..2000u64 {
+                let code = WorldChoice::draw(seed, &ranges, archetype);
+                assert_eq!(code.archetype, archetype);
+                for (i, v) in code.sliders.to_array().into_iter().enumerate() {
+                    let (a, b) = ranges.to_array()[i];
+                    assert!((a..=b).contains(&v), "slider {i}: {v} not in {a}..={b}");
+                    lo[i] = lo[i].min(v);
+                    hi[i] = hi[i].max(v);
+                }
+            }
+            for (i, (a, b)) in ranges.to_array().into_iter().enumerate() {
+                assert_eq!((lo[i], hi[i]), (a, b), "slider {i} covers its range");
+            }
+        }
+        assert_eq!(SliderRanges::CLASSIC.verticality, (20, 80));
+        assert_eq!(SliderRanges::BELT.instability, (10, 40));
     }
 }

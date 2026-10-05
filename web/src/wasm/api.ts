@@ -201,6 +201,14 @@ export interface ShareCodeInfoHandle {
 export interface WasmApi {
   checkShareCode(text: string): ShareCodeInfoHandle;
   randomShareCode(entropyLo: number, entropyHi: number, enclosure: number, density: number): string;
+  /** `randomShareCode`'s seed with all seven sliders (share-code order) and a level archetype (0 classic, 1 belt; generator version 4). */
+  worldShareCode?(entropyLo: number, entropyHi: number, sliders: Uint8Array, archetype: number): string;
+  /** The share code of a seed (decimal string), seven sliders and an archetype (the world workshop). */
+  makeShareCode?(seed: string, sliders: Uint8Array, archetype: number): string;
+  /** Gravity well sites of a code: 8 floats per well (x, y, z, core radius, hollow radius, strength, range, kind 0 core / 1 floating / 2 shepherd moon). */
+  levelWells?(code: string): Float32Array;
+  /** Asteroid belt of a code (empty for classic levels): centre, inner and outer radius, half thickness, cocoon, exit, gate radii, 8 start slots (x, y, z), then the clear corridor's centre line (x, y, z per point, a closed loop from gate 0). */
+  levelBelt?(code: string): Float32Array;
   helloPacket(name: string, preferredTeam: number): Uint8Array;
   /** Hello asking for a ship type (ls-sim ShipType index). */
   helloPacketAs?(name: string, preferredTeam: number, shipType: number): Uint8Array;

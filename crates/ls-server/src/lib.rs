@@ -55,7 +55,7 @@ pub use api::Social;
 pub use endpoint::{CertHashInfo, ConnSettings, Endpoint, EndpointContext, Hub};
 pub use lobby::LobbyTiming;
 pub use party::PartyCode;
-pub use playlist::{Playlist, PlaylistEntry, Rotation, WorldChoice};
+pub use playlist::{Playlist, PlaylistEntry, Rotation, SliderRanges, WorldChoice};
 pub use rooms::{RoomCode, RoomStatus};
 pub use rules::{load_rule_set, ServerRules};
 pub use server::{

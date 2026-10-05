@@ -5,13 +5,13 @@ import { checkShareCode, normalizeShareCode, SHARE_CODE_PRINTED_LEN } from "./sh
 import { cleanName, DEFAULT_NAME, readShareCode, readStored } from "./startScreen.ts";
 
 // Printed by ls-worldgen (crates/ls-worldgen/tests/fixtures/golden_hashes.txt).
-const REAL_CODE = "LS0C-0000-0000-000A-K4M6-8001-8F1Y";
+const REAL_CODE = "LS0G-0000-0000-0001-AC58-T2XM-57ND";
 
 test("share codes are normalised (case, spaces, dashes, Crockford look-alikes)", () => {
   assert.equal(normalizeShareCode("  ls-abcd efgh-OIL "), "LSABCDEFGH011");
   assert.deepEqual(checkShareCode(REAL_CODE), { ok: true, code: REAL_CODE });
   // Undashed, lowercase, spaced and with look-alikes: same code back in printed form.
-  assert.deepEqual(checkShareCode(" ls0c oooo 0000-OOoa k4m6 8OO1 8f1y "), { ok: true, code: REAL_CODE });
+  assert.deepEqual(checkShareCode(" ls0g oooo 0000-OOOl ac58 t2xm 57nd "), { ok: true, code: REAL_CODE });
   assert.deepEqual(checkShareCode(REAL_CODE.replace(/-/g, "")), { ok: true, code: REAL_CODE });
   assert.equal(REAL_CODE.length, SHARE_CODE_PRINTED_LEN);
 });
@@ -65,7 +65,7 @@ test("start screen: empty code means server/random world; validator runs after t
   assert.equal(readShareCode("XX", validate).ok, false);
   assert.equal(calls, 0, "format errors never reach the validator");
   assert.deepEqual(readShareCode(REAL_CODE, validate), { ok: true, code: REAL_CODE });
-  const typo = REAL_CODE.replace("K4M6", "K4M7");
+  const typo = REAL_CODE.replace("AC58", "AC59");
   assert.deepEqual(readShareCode(typo, validate), { ok: false, error: "checksum" });
 });
 

@@ -462,7 +462,7 @@ starts the countdown long before a 10-minute warm-up ends, `--directory` bots fi
 and an `--accept-duels` bot plays a challenger's duel and comes back.
 
 Tests: `tests/nav_sweep.rs` (release only, about 20 s): three bots on the soak world
-`LS0C-PNEY-V86Z-VXZM-K4M6-8001-8F8J` and nine random worlds must hit each other within 60 s,
+`LS0G-2TNV-VD0V-ZFQY-JC58-T2XM-57QY` and nine random worlds must hit each other within 60 s,
 and a 5-minute match on the soak world must still see hits in its last minute. `LS_NAV_TRACE=1`
 prints positions, modes and routes.
 

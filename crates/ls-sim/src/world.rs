@@ -87,6 +87,14 @@ pub struct MatchSetup {
     /// `None` (test rooms): Heist falls back to the spawn points.
     #[serde(default)]
     pub heist: Option<crate::modes::heist::HeistLevel>,
+    /// The level's gravity well sites (Gravity Chaos; on belt levels the
+    /// shepherd moons), from `ls_worldgen::Generator::gravity_wells`.
+    #[serde(default)]
+    pub wells: Vec<ls_math::level::WellSite>,
+    /// The asteroid belt (belt levels only; Belt Up, radiation), from
+    /// `ls_worldgen::Generator::belt`.
+    #[serde(default)]
+    pub belt: Option<ls_math::level::BeltSite>,
 }
 
 /// Everything needed to start a match.
@@ -2937,7 +2945,7 @@ impl World {
             MatchPhase::Running => h.write_u8(0),
             MatchPhase::Ended { winner } => {
                 h.write_u8(1);
-                h.write_u8(winner.map_or(u8::MAX, |w| w));
+                h.write_u8(winner.unwrap_or(u8::MAX));
             }
         }
         // Everything else of the mode state and the deferred edits, only

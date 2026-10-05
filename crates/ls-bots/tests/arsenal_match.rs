@@ -75,8 +75,10 @@ fn bots_fire_the_whole_arsenal() {
     // next seed dropped mines with and without VQ0 (6 and 2). Generator
     // version 3 (the Heist vein and extraction caverns) changed the level
     // again: seeds `..._0002` to `..._0006` each missed the Tectonic Charge
-    // or a mine; `..._0007` fires both (2 Tectonic Charges, 4 mines).
-    let code = ShareCode::new(0x5a4d_b0c5_a115_0007, Sliders::default());
+    // or a mine; `..._0007` fired both. Generator version 4 (the team 2/3
+    // caverns) changed it once more: `..._0007` to `..._000b` each missed
+    // one of them; `..._000c` fires both.
+    let code = ShareCode::new(0x5a4d_b0c5_a115_000c, Sliders::default());
     let mut mc = MatchConfig::paint_the_void(code);
     mc.rules = RuleSet::sandbox_all_weapons();
     let ModeRules::PaintTheVoid(rules) = &mut mc.rules.mode else {

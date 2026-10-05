@@ -23,12 +23,17 @@
 //! boundary cheap; their layouts are documented on each method and mirrored
 //! by `web/src/wasm/api.ts`.
 
+// wasm-bindgen's `getter_with_clone` getters clone every field, `Copy` ones
+// too; clippy 1.99 flags that generated code.
+#![allow(clippy::clone_on_copy)]
+
 use wasm_bindgen::prelude::*;
 
 pub mod beam;
 pub mod controls;
 pub mod game;
 pub mod inventory;
+pub mod level;
 pub mod mechanics;
 pub mod modes;
 pub mod probe;
@@ -74,6 +79,8 @@ pub struct ShareCodeInfo {
     /// Sliders in share-code order (enclosure, density, verticality, gravity
     /// chaos, palette, absurdity, instability).
     pub sliders: Vec<u8>,
+    /// Level archetype index (0 classic, 1 asteroid belt).
+    pub archetype: u8,
 }
 
 /// Full share-code validation (checksum and generator version included).
@@ -84,6 +91,7 @@ pub fn check_share_code(text: &str) -> ShareCodeInfo {
             printed,
             seed,
             sliders,
+            archetype,
             ..
         } => ShareCodeInfo {
             ok: true,
@@ -91,6 +99,7 @@ pub fn check_share_code(text: &str) -> ShareCodeInfo {
             error: String::new(),
             seed: seed.to_string(),
             sliders: sliders.to_vec(),
+            archetype,
         },
         CodeCheck::Invalid(error) => ShareCodeInfo {
             ok: false,
@@ -98,6 +107,7 @@ pub fn check_share_code(text: &str) -> ShareCodeInfo {
             error,
             seed: String::new(),
             sliders: Vec::new(),
+            archetype: 0,
         },
     }
 }
@@ -112,6 +122,46 @@ pub fn random_share_code(
 ) -> Result<String, JsError> {
     let entropy = (entropy_hi as u64) << 32 | entropy_lo as u64;
     sharecode::random_share_code(entropy, enclosure, density).map_err(|e| JsError::new(&e))
+}
+
+/// A share code like [`random_share_code`] (the same seed for the same
+/// entropy) with all seven sliders (share-code order, each clamped to
+/// 0..=100) and a level archetype index (0 classic, 1 asteroid belt); the
+/// visual gallery's worlds.
+#[wasm_bindgen(js_name = worldShareCode)]
+pub fn world_share_code(
+    entropy_lo: u32,
+    entropy_hi: u32,
+    sliders: &[u8],
+    archetype: u8,
+) -> Result<String, JsError> {
+    let entropy = (entropy_hi as u64) << 32 | entropy_lo as u64;
+    sharecode::world_share_code(entropy, sliders, archetype).map_err(|e| JsError::new(&e))
+}
+
+/// Gravity well sites of a share code: 8 floats per well (`x, y, z, core
+/// radius, hollow radius, strength, range, kind`; kind 0 core, 1 floating
+/// stone, 2 shepherd moon). See `level::level_wells`.
+#[wasm_bindgen(js_name = levelWells)]
+pub fn level_wells(code: &str) -> Result<Vec<f32>, JsError> {
+    level::level_wells(code).map_err(|e| JsError::new(&e))
+}
+
+/// The asteroid belt of a share code (empty for classic levels): centre,
+/// radii, half thickness, cocoon, exit and gate radii, the 8 start slots,
+/// then the clear corridor's centre line. See `level::level_belt`.
+#[wasm_bindgen(js_name = levelBelt)]
+pub fn level_belt(code: &str) -> Result<Vec<f32>, JsError> {
+    level::level_belt(code).map_err(|e| JsError::new(&e))
+}
+
+/// The share code of a seed (decimal string, any u64), the seven sliders in
+/// share-code order (each clamped to 0..=100) and a level archetype index
+/// (0 classic, 1 asteroid belt), for the current generator version (the
+/// world workshop builds codes with it).
+#[wasm_bindgen(js_name = makeShareCode)]
+pub fn make_share_code(seed: &str, sliders: &[u8], archetype: u8) -> Result<String, JsError> {
+    sharecode::make_share_code(seed, sliders, archetype).map_err(|e| JsError::new(&e))
 }
 
 /// Golden hashes of a share code (`ls_worldgen::golden::golden_hashes`) as
@@ -1362,10 +1412,11 @@ mod tests {
 
     #[test]
     fn share_code_info_mirrors_the_check() {
-        let ok = super::check_share_code("LS0C-0000-0000-000A-K4M6-8001-8F1Y");
+        let ok = super::check_share_code("LS0G-0000-0000-0001-AC58-T2XM-57ND");
         assert!(ok.ok);
         assert_eq!(ok.seed, "42");
         assert_eq!(ok.sliders.len(), 7);
+        assert_eq!(ok.archetype, 0);
         let bad = super::check_share_code("nope");
         assert!(!bad.ok && !bad.error.is_empty());
     }

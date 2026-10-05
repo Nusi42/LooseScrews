@@ -44,6 +44,7 @@ fn setup() -> MatchSetup {
             Vec3::new(1.0, -3.0, 9.0),
         ],
         instability: 0,
+        absurdity: 0,
         heist: None,
     }
 }

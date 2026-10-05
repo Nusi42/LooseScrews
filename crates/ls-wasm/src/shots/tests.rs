@@ -23,6 +23,7 @@ fn world() -> (World, PlayerId) {
         ],
         pickup_points: vec![],
         instability: 0,
+        absurdity: 0,
         heist: None,
     };
     let mut w = World::new(WorldConfig::paint_the_void(42, setup)).unwrap();

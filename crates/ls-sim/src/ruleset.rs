@@ -11,7 +11,9 @@
 //! | Weapon tuning | `tuning` (per weapon damage, fire rate and ammo multipliers; default 1x) |
 //! | Ship types | `allowed_ship_types` |
 //! | Friendly fire | `friendly_fire_percent` (0 = off, otherwise 10..=100) |
-//! | Absurdity, mutators | `absurdity` (0..=100), `mutators` (`crate::mutators`: Instagib) |
+//! | Absurdity, mutators | `absurdity` (0..=100, the cap of the comedy director's effective Absurdity), `mutators` (`crate::mutators`: Instagib) |
+//! | Comedy events | `events` (per event id; unlisted = on, `Banned` = never rolled) |
+//! | Pigment pickups | `pigment_pickup` (monochrome levels; `None` = none) |
 //!
 //! [`RuleSet::resolve`] validates a rule set against the loaded weapons and
 //! gadgets and precomputes index-based tables for the simulation. Rule sets
@@ -111,6 +113,28 @@ pub struct ScrapPickupRule {
     pub weight: f32,
     pub respawn_secs: f32,
     pub amount: f32,
+}
+
+/// Pigment pickups on monochrome levels (`docs/milestone-4-plan.md` §3.4):
+/// one per `players_per_pickup` players, at least `min_on_map`; Last Color
+/// Standing uses them to restore colour.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PigmentPickupRule {
+    /// Whole seconds (0..=1023).
+    pub respawn_secs: u16,
+    /// One pickup per this many players (1..=15).
+    pub players_per_pickup: u8,
+    /// At least this many (0..=15).
+    pub min_on_map: u8,
+}
+
+/// Whether the comedy director may roll an event (`RuleSet::events`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum EventRule {
+    /// Rolled as usual (the default for unlisted events).
+    On,
+    /// Never rolled in this match.
+    Banned,
 }
 
 /// Per-weapon multipliers (design doc: weapon tuning, default 1x).
@@ -463,11 +487,18 @@ pub struct RuleSet {
     /// Damage dealt to teammates in percent: 0 = off, otherwise 10..=100.
     pub friendly_fire_percent: u8,
     pub allowed_ship_types: Vec<ShipType>,
-    /// Comedy event frequency 0..=100 (the comedy director arrives in M4).
+    /// Cap of the comedy director's Absurdity, 0..=100: the director uses
+    /// `min(world slider, absurdity)` (0 = no events; built-in rule sets 100).
     #[serde(default)]
     pub absurdity: u8,
     #[serde(default)]
     pub mutators: Vec<Mutator>,
+    /// Comedy events by id (`crate::events`); unlisted events are on.
+    #[serde(default)]
+    pub events: BTreeMap<String, EventRule>,
+    /// Pigment pickups on monochrome levels (`None` = none).
+    #[serde(default)]
+    pub pigment_pickup: Option<PigmentPickupRule>,
 }
 
 const PAINT_THE_VOID_RON: &str = include_str!("../../../data/rulesets/paint_the_void.ron");
@@ -626,6 +657,22 @@ impl RuleSet {
         }
         if self.absurdity > 100 {
             return Err(bad(format!("absurdity {} > 100", self.absurdity)));
+        }
+        for id in self.events.keys() {
+            if crate::events::EventKind::from_id(id).is_none() {
+                return Err(SimError::UnknownEvent(id.clone()));
+            }
+        }
+        if let Some(p) = self.pigment_pickup {
+            if p.respawn_secs > 1023
+                || !(1..=15).contains(&p.players_per_pickup)
+                || p.min_on_map > 15
+            {
+                return Err(bad(
+                    "pigment_pickup: respawn_secs <= 1023, players_per_pickup 1..=15, min_on_map <= 15"
+                        .into(),
+                ));
+            }
         }
         for (i, m) in self.mutators.iter().enumerate() {
             if self.mutators[..i].contains(m) {
@@ -866,6 +913,28 @@ impl RuleSet {
 }
 
 impl RuleSet {
+    /// Whether the rule set bans comedy event `id`.
+    pub fn event_banned(&self, id: &str) -> bool {
+        self.events.get(id) == Some(&EventRule::Banned)
+    }
+
+    /// Bit per [`crate::events::EventKind`]: the banned events.
+    pub fn banned_events(&self) -> u32 {
+        crate::events::EventKind::ALL
+            .iter()
+            .filter(|k| self.event_banned(k.id()))
+            .fold(0, |m, k| m | 1 << k.index())
+    }
+
+    /// Bans (or allows) a comedy event.
+    pub fn ban_event(&mut self, id: &str, banned: bool) {
+        if banned {
+            self.events.insert(id.to_string(), EventRule::Banned);
+        } else {
+            self.events.remove(id);
+        }
+    }
+
     /// Bans a weapon: availability `Banned`, and it leaves the pickups,
     /// upgrade pickups and the starting loadout (so the result still
     /// resolves). Tuning and shield overrides stay (they have no effect).

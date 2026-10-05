@@ -1,0 +1,12 @@
+// Bored level: The level's "up" turns 90 degrees about a seeded horizontal axis over 5 s and
+// stays turned (`World::up`; terrain keeps its coordinates).
+// Behaviour: crates/ls-sim/src/events/bored_level.rs (B1). Schema: `ls_sim::events::EventDef`.
+EventDef(
+    id: "bored_level",
+    name: "Bored level",
+    enabled: true,
+    weight: 1.0,
+    active_secs: 5.0,
+    moods: [Bored],
+    params: { "turn_degrees": 90.0 },
+)

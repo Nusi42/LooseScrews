@@ -70,7 +70,7 @@ use ls_math::{det, Aabb, Pcg32, Vec3};
 
 use crate::entity::{EntitySpawn, MAX_DEBRIS};
 use crate::mode::{objective_kind, ModeKind, ModeState, Objective, ObjectiveView};
-use crate::modes::{add_score, lose_life, ticks, Kill, ModeCtx, ModeModule, ModeMut};
+use crate::modes::{add_score, lose_life, ticks, Kill, ModeCtx, ModeModule, ModeMut, ModeRef};
 use crate::ruleset::{ModeRules, TheSqueezeRules};
 use crate::ship::PlayerId;
 use crate::terrain::ShellSphere;
@@ -520,6 +520,13 @@ impl ModeModule for TheSqueeze {
 
     fn team_counts(&self) -> &'static [u8] {
         &[0]
+    }
+
+    /// No Cat paw or Duck parade from phase 4 on (the safe zone is too
+    /// small for a sweeping paw or a convoy of ducks).
+    fn allows_event(&self, m: &ModeRef, kind: crate::events::EventKind) -> bool {
+        use crate::events::EventKind;
+        !(m.state.stage >= 4 && matches!(kind, EventKind::CatPaw | EventKind::DuckParade))
     }
 
     fn validate(&self, rules: &ModeRules) -> Result<(), String> {

@@ -285,6 +285,7 @@ pub fn match_setup(
         spawns,
         pickup_points: pickups,
         instability: code.sliders.instability,
+        absurdity: code.sliders.absurdity,
         heist: heist_level(&gen),
     })
 }

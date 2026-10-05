@@ -1,0 +1,21 @@
+// The comedy director's cadence (docs/milestone-4-plan.md §3.1). One file per event sits next
+// to this one. Code: crates/ls-sim/src/director/mod.rs. Schema: `ls_sim::director::DirectorDef`.
+DirectorDef(
+    // Telegraph before every event (banner, sting, announcer line, in-world tell).
+    announce_secs: 3.0,
+    // A roll every 20 s while no event runs and the gap has passed...
+    roll_secs: 20.0,
+    // ...with this chance at Absurdity 100 (0.6 x absurdity / 100).
+    chance_at_100: 0.6,
+    // No announcement in the first 45 s of a match or in its last 20 s.
+    quiet_start_secs: 45.0,
+    quiet_end_secs: 20.0,
+    // At least 30 s between one event's end and the next announcement (calm mood: 1.5x).
+    gap_secs: 30.0,
+    calm_gap_scale: 1.5,
+    // The mood doubles the weight of its events.
+    mood_bias: 2.0,
+    // The mood drifts every 60-90 s.
+    mood_min_secs: 60.0,
+    mood_max_secs: 90.0,
+)

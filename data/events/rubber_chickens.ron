@@ -1,0 +1,11 @@
+// Rubber chickens: For 12 s every new projectile is flagged `CHICKEN` (`projectile_flags`);
+// speed, damage and craters unchanged.
+// Behaviour: crates/ls-sim/src/events/rubber_chickens.rs (B1). Schema: `ls_sim::events::EventDef`.
+EventDef(
+    id: "rubber_chickens",
+    name: "Rubber chickens",
+    enabled: true,
+    weight: 1.0,
+    active_secs: 12.0,
+    moods: [Giddy],
+)

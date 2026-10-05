@@ -1,0 +1,13 @@
+// Customer survey: A drone parks 2.5 u in front of the leader's view for 12 s or until shot (15
+// hp); the star the destroying shot went through is the leader's rating.
+// Behaviour: crates/ls-sim/src/events/customer_survey.rs (B2). Schema: `ls_sim::events::EventDef`.
+EventDef(
+    id: "customer_survey",
+    name: "Customer survey",
+    enabled: true,
+    weight: 1.0,
+    active_secs: 12.0,
+    moods: [Grumpy],
+    targeted: true,
+    params: { "distance": 2.5, "hp": 15.0 },
+)

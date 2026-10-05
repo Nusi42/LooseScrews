@@ -47,6 +47,7 @@ fn setup(level: bool) -> MatchSetup {
         spawns,
         pickup_points: vec![],
         instability: 0,
+        absurdity: 0,
         heist: level.then_some(HeistLevel {
             core: VEIN,
             knot_radius: KNOT,

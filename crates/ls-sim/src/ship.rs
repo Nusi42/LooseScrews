@@ -957,6 +957,7 @@ mod tests {
             spawns: vec![spawn(-5.0, 0), spawn(5.0, 1)],
             pickup_points: vec![],
             instability: 0,
+            absurdity: 0,
             heist: None,
         };
         let mut w = World::new(WorldConfig::paint_the_void(3, setup)).unwrap();
@@ -1056,6 +1057,7 @@ mod tests {
             spawns: vec![spawn(-5.0, 0), spawn(5.0, 1)],
             pickup_points: vec![],
             instability: 0,
+            absurdity: 0,
             heist: None,
         };
         let mut w = World::new(WorldConfig::paint_the_void(3, setup)).unwrap();

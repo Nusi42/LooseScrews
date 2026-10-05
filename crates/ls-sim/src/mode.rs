@@ -413,6 +413,9 @@ pub struct ModeView {
     pub objectives: Vec<ObjectiveView>,
     /// [`view_flags`] bits.
     pub flags: u16,
+    /// The comedy director: mood and running event (protocol 6).
+    #[serde(default)]
+    pub mood: crate::director::MoodView,
 }
 
 impl ModeView {

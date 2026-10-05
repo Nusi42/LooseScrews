@@ -1,0 +1,22 @@
+// Tax drone: A drone enters from the nearest boundary cavern and chases the leader at 22 u/s
+// along the network path; each touch takes 10 % of the leader's energy (2 s apart, at most 5);
+// 40 hp; shot down it bursts into a scrap pile of 2 scrap per energy taken (max 20).
+// Behaviour: crates/ls-sim/src/events/tax_drone.rs (B2). Schema: `ls_sim::events::EventDef`.
+EventDef(
+    id: "tax_drone",
+    name: "Tax drone",
+    enabled: true,
+    weight: 1.0,
+    active_secs: 25.0,
+    moods: [Grumpy],
+    targeted: true,
+    params: {
+        "speed": 22.0,
+        "energy_fraction": 0.1,
+        "touch_interval_secs": 2.0,
+        "max_touches": 5.0,
+        "hp": 40.0,
+        "scrap_per_energy": 2.0,
+        "max_scrap": 20.0,
+    },
+)

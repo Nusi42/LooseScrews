@@ -328,6 +328,8 @@ fn world() -> World {
             .insert(b.id().to_string(), Availability::PickupOnly);
     }
     let setup = MatchSetup {
+        wells: Vec::new(),
+        belt: None,
         spawns: vec![
             SpawnPoint {
                 pos: Vec3::new(-20.0, 0.0, 0.0),

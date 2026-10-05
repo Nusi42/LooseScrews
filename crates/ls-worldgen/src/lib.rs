@@ -39,7 +39,10 @@ pub mod sliders;
 
 pub use chunk::{ChunkCoord, ChunkStore, PaintCoverage};
 pub use connectivity::ClearanceGrid;
-pub use generator::{Generator, RegionSampler, DEFAULT_SIZE_CHUNKS, WALL_THICKNESS};
+pub use generator::{
+    box_shape, level_size_chunks, Generator, RegionSampler, BELT_SIZE_CHUNKS, BOX_SHAPES,
+    DEFAULT_SIZE_CHUNKS, WALL_THICKNESS,
+};
 pub use grid::SampleGrid;
 pub use material::{strengthen_edit, Material, MaterialField, MaterialRegion};
 pub use mesh::{
@@ -51,6 +54,9 @@ pub use sharecode::ShareCode;
 pub use sliders::Sliders;
 
 pub use ls_math;
+pub use ls_math::level::{
+    Archetype, BeltSite, BeltSlot, BoulderOrbit, WellKind, WellSite, BELT_WEDGES,
+};
 pub use ls_math::terrain::SurfaceStates;
 
 /// Version of the generator algorithm. Stored in every share code; bump it
@@ -78,6 +84,10 @@ pub enum WorldgenError {
     ChecksumMismatch,
     #[error("slider {name} is {value}, must be 0..=100")]
     SliderOutOfRange { name: &'static str, value: u8 },
+    #[error("share code holds no valid slider values")]
+    InvalidSliders,
+    #[error("share code names level archetype {0}, unknown to this build")]
+    UnknownArchetype(u8),
     #[error(
         "share code was made by generator version {0}, this build has version {GENERATOR_VERSION}"
     )]

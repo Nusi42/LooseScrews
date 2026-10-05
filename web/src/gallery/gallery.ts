@@ -41,6 +41,7 @@ import { pickCloseup, pickLongest, pickVista, probeAround, raycast, rayMesh, sph
 import { FIT_TUNNEL_RADIUS, sceneById, type GalleryScene } from "./scenes.ts";
 import { applyDecor, decorSpots, pickBorder, type DecorSpot } from "./decor.ts";
 import { explosionAt, simulateVfx } from "./vfxScenes.ts";
+import { pickShadePose } from "./shadePose.ts";
 
 /** Frames rendered before the page reports ready. */
 const WARMUP_FRAMES = 20;
@@ -412,7 +413,8 @@ export async function runGallery(canvas: HTMLCanvasElement, ui: HTMLElement, loc
     const probes = probeAround(near, origin, sphereDirections(PROBES), PROBE_RANGE);
     const border = scene.pose === "border" ? pickBorder(probes, near, origin) : null;
     const sunPose = scene.pose === "sun" ? pickSunPose(near, probes, origin, atmosphere.sunDirection, atmosphere.room) : null;
-    const pose = sunPose ?? pickPose(scene, origin, view.orientation, probes, border, { sun: atmosphere.sunDirection, planet: atmosphere.planet?.direction ?? null });
+    const shadePose = scene.pose === "shade" ? pickShadePose([...rayMeshes.values()], probes, origin, atmosphere.sunDirection, atmosphere.room) : null;
+    const pose = sunPose ?? shadePose ?? pickPose(scene, origin, view.orientation, probes, border, { sun: atmosphere.sunDirection, planet: atmosphere.planet?.direction ?? null });
     view = { ...view, ...pose };
     status.camera = pose;
     if ((scene.decor ?? "none") !== "none") {

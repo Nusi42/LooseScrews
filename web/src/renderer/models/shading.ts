@@ -102,7 +102,8 @@ fn model_noise(p: vec3f) -> f32 {
 // Blinn-Phong specular from the sun and the camera headlight.
 fn model_spec(n: vec3f, v: vec3f, power: f32) -> f32 {
   let h = normalize(frame.light_dir.xyz + v);
-  let sun = pow(max(dot(n, h), 0.0), power) * step(0.0, dot(n, frame.light_dir.xyz));
+  // sun_vis_last: the sun's visibility from light_spec() just before (VQ9, lighting.ts).
+  let sun = pow(max(dot(n, h), 0.0), power) * step(0.0, dot(n, frame.light_dir.xyz)) * sun_vis_last;
   let head = pow(max(dot(n, v), 0.0), power * 2.0) * frame.light_dir.w * 0.6;
   return sun + head;
 }

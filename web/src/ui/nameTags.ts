@@ -6,6 +6,7 @@
 import * as mat4 from "../math/mat4.ts";
 import type { Vec3 } from "../math/vec3.ts";
 import type { PlayerState, ShipState } from "../game/views.ts";
+import { sideCss } from "../game/sides.ts";
 
 /** Labels fade out towards this distance (u) and are hidden beyond it. */
 export const NAME_TAG_RANGE = 90;
@@ -90,7 +91,8 @@ export class NameTags {
     parent.appendChild(this.root);
   }
 
-  update(tags: readonly NameTag[]): void {
+  /** Places the labels; `teams` picks the side colours (0 = free-for-all). */
+  update(tags: readonly NameTag[], teams = 2): void {
     while (this.pool.length < tags.length) {
       const el = document.createElement("div");
       el.className = "name-tag";
@@ -106,6 +108,7 @@ export class NameTags {
       el.style.display = "";
       if (el.textContent !== t.name) el.textContent = t.name;
       el.className = `name-tag team-${t.team}${t.teammate ? " mate" : ""}`;
+      el.style.setProperty("--side", sideCss(t.team, teams));
       el.style.transform = `translate(${t.x.toFixed(1)}px, ${t.y.toFixed(1)}px) translate(-50%, -100%)`;
       el.style.opacity = t.opacity.toFixed(2);
     });

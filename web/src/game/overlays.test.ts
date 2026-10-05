@@ -4,22 +4,20 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { DebugOverlay, formatDebugLines, FpsMeter, type DebugInfo } from "../ui/debugOverlay.ts";
-import { endScreenModel, scoreboardModel } from "../ui/scoreboard.ts";
+import { scoreboardModel } from "../ui/scoreboard.ts";
+import { emptyModeState, VIEW_FLAG } from "./modeState.ts";
 import type { ChunkMeshHandle, GameHandle, HudStateHandle, LoadoutHandle } from "../wasm/api.ts";
 import { stubLoadout } from "../wasm/stub.ts";
 import { rejoin, rejoinDelay, RejoinCancelled } from "./rejoin.ts";
 import { transportLabel } from "../net/connect.ts";
 import { GameSession, type PacketLink } from "./session.ts";
 import {
-  intermissionLeft,
-  paintPercent,
   parseDebugStats,
   parseMatchInfo,
   parseScoreboard,
   playerName,
   rowsByTeam,
   teamName,
-  type MatchInfo,
 } from "./stats.ts";
 
 const NAMES = { entityKinds: [], shapes: [] };
@@ -53,7 +51,7 @@ test("stats: flat arrays decode; short or broken arrays are safe", () => {
   assert.equal(parseMatchInfo([]).over, false);
 });
 
-test("stats: names, paint share, intermission countdown and team grouping", () => {
+test("stats: names and team grouping", () => {
   assert.equal(playerName({ id: 4, isYou: false }), "Player 5");
   assert.equal(playerName({ id: 4, isYou: true }), "You");
   assert.equal(playerName({ id: 4, isYou: false, name: "Ada" }), "Ada", "names from the server");
@@ -61,12 +59,8 @@ test("stats: names, paint share, intermission countdown and team grouping", () =
   assert.equal(playerName({ id: 4, isYou: true, name: "You" }), "You", "practice names the player You");
   assert.equal(teamName(0), "Orange");
   assert.equal(teamName(1), "Blue");
-  const info: MatchInfo = { over: true, winner: 1, teamCells: [25, 50], surfaceCells: 200, secsSinceEnd: 3.2 };
-  assert.equal(paintPercent(info, 0), 12.5);
-  assert.equal(paintPercent({ ...info, surfaceCells: 0 }, 0), 0);
-  assert.equal(intermissionLeft(info), 7, "10 s default, rounded up");
-  assert.equal(intermissionLeft(info, 20), 17);
-  assert.equal(intermissionLeft({ ...info, secsSinceEnd: 12 }), 0);
+  assert.equal(teamName(2), "Lime");
+  assert.equal(teamName(3), "Magenta");
   const grouped = rowsByTeam(parseScoreboard([1, 1, 1, 0, 0, 0, 2, 0, 1, 0, 0, 1]));
   assert.deepEqual(
     grouped.map((g) => [g.team, g.rows.map((r) => r.id)]),
@@ -76,29 +70,45 @@ test("stats: names, paint share, intermission countdown and team grouping", () =
     ],
   );
   assert.deepEqual(rowsByTeam([]).map((g) => g.rows.length), [0, 0], "both teams always listed");
+  assert.deepEqual(rowsByTeam([], 4).map((g) => g.team), [0, 1, 2, 3], "every team of a 4-team match");
 });
 
-test("scoreboard and end-screen models", () => {
-  const info: MatchInfo = { over: true, winner: 1, teamCells: [30, 70], surfaceCells: 400, secsSinceEnd: 4.5 };
-  const rows = parseScoreboard([5, 0, 1, 2, 1, 0, 2, 1, 0, 3, 0, 1]);
-  const board = scoreboardModel(rows, info, 1, true);
+test("scoreboard model: teams with paint scores, free-for-all ranked by mode score with lives", () => {
+  const rows = parseScoreboard([5, 0, 1, 2, 1, 0, 2, 1, 0, 3, 0, 1], ["Ada", ""]);
+  const paint = { ...emptyModeState(), mode: "paint_the_void", teams: 2, flags: VIEW_FLAG.paintScores, teamScores: [30, 70], scoreTotal: 400 };
+  const board = scoreboardModel(rows, paint, 1, true);
+  assert.equal(board.title, "Paint the Void");
   assert.equal(board.teams.length, 2);
   assert.equal(board.teams[1]!.yours, true);
-  assert.equal(board.teams[1]!.winner, true);
-  assert.equal(board.teams[0]!.paint, "7.5%");
-  assert.deepEqual(board.teams[1]!.players, [{ name: "You", kills: 3, deaths: 0, alive: false, isYou: true }]);
+  assert.equal(board.teams[1]!.leading, true);
+  assert.equal(board.teams[0]!.score, "7.5%");
+  assert.equal(board.teams[1]!.players[0]!.name, "You");
+  assert.equal(board.teams[1]!.players[0]!.kills, 3);
+  assert.equal(board.showLives, false);
   assert.match(board.note, /since you joined/);
 
-  const end = endScreenModel(info, 1, true);
-  assert.equal(end.title, "Blue wins!");
-  assert.match(end.subtitle, /Your team/);
-  assert.equal(end.footer, "Next match in 6 s");
-  assert.deepEqual(end.teams.map((t) => t.paint), ["7.5%", "17.5%"]);
-  assert.equal(endScreenModel(info, 0, true).title, "Blue wins");
-  assert.equal(endScreenModel({ ...info, winner: null }, 0, true).title, "Draw");
-  assert.equal(endScreenModel({ ...info, secsSinceEnd: 11 }, 0, true).footer, "Starting the next match…");
-  assert.match(endScreenModel(info, 0, false).footer, /Practice over/);
-  assert.equal(endScreenModel(info, 0, true, 30).footer, "Next match in 26 s");
+  // Free-for-all (Hot Reactor-like): one ranked list, lives column, eliminated marked.
+  const ffaRows = parseScoreboard([4, 4, 1, 1, 0, 0, 7, 7, 0, 5, 3, 1, 9, 9, 1, 0, 0, 0], ["Bea", "Me", "Cy"]);
+  const ffa = {
+    ...emptyModeState(),
+    mode: "hot_reactor",
+    teams: 0,
+    flags: VIEW_FLAG.lives,
+    players: [
+      { id: 4, side: 4, score: 3, lives: 2, meter: 0, flags: 0 },
+      { id: 7, side: 7, score: 1, lives: 0, meter: 0, flags: 1 },
+      { id: 9, side: 9, score: 5, lives: 3, meter: 0, flags: 0 },
+    ],
+  };
+  const fb = scoreboardModel(ffaRows, ffa, 7, true);
+  assert.equal(fb.teams.length, 1);
+  assert.equal(fb.showLives, true);
+  assert.deepEqual(fb.teams[0]!.players.map((p) => [p.name, p.score, p.lives, p.out]), [
+    ["Cy", 5, 3, false],
+    ["Bea", 3, 2, false],
+    ["Me (you)", 1, 0, true],
+  ]);
+  assert.notEqual(fb.teams[0]!.players[0]!.color, fb.teams[0]!.players[1]!.color, "every side its own colour");
 });
 
 test("debug overlay text and fps meter", () => {
@@ -269,7 +279,7 @@ test("session: overlay data, transport name and send backpressure", () => {
   s.frame(1 / 60, {
     thrustForward: 0, thrustRight: 0, thrustUp: 0, roll: 0, lookX: 0, lookY: 0, boost: false,
     firePrimary: false, fireSecondary: false, scavenge: false, overdrive: false,
-    toggleHorizonAssist: false, weaponKey: 0, cyclePrimary: 0, cycleSecondary: false, gadget: false, cyclePaintColor: false, toggleShipSelect: false, pointerLocked: true, scoreboard: false, toggleDebug: false,
+    toggleHorizonAssist: false, weaponKey: 0, cyclePrimary: 0, cycleSecondary: false, gadget: false, cyclePaintColor: false, toggleShipSelect: false, pointerLocked: true, scoreboard: false, toggleDebug: false, toggleReady: false, cycleTeam: false, toggleSpectate: false,
   });
   assert.deepEqual(link.sent, [0, 1]);
   assert.equal(s.droppedSends, 1);

@@ -46,6 +46,12 @@ export interface InputState {
   scoreboard: boolean;
   /** True for exactly one sample after F3 is pressed. */
   toggleDebug: boolean;
+  /** Lobby: one sample after Enter (toggle ready). */
+  toggleReady: boolean;
+  /** Lobby: one sample after T (next team pick). */
+  cycleTeam: boolean;
+  /** Lobby: one sample after O (spectate the next match / play again). */
+  toggleSpectate: boolean;
 }
 
 export function emptyInput(): InputState {
@@ -71,6 +77,9 @@ export function emptyInput(): InputState {
     pointerLocked: false,
     scoreboard: false,
     toggleDebug: false,
+    toggleReady: false,
+    cycleTeam: false,
+    toggleSpectate: false,
   };
 }
 
@@ -157,6 +166,9 @@ export class InputController {
       pointerLocked: this.locked,
       scoreboard: this.held.has("scoreboard"),
       toggleDebug: this.edges.has("toggleDebug"),
+      toggleReady: this.edges.has("ready"),
+      cycleTeam: this.edges.has("cycleTeam"),
+      toggleSpectate: this.edges.has("toggleSpectate"),
     };
     this.lookX = 0;
     this.lookY = 0;

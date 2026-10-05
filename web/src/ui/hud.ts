@@ -1,6 +1,10 @@
 // HTML/CSS heads-up display. Call `update()` with any subset of values each
 // frame; DOM writes only happen for values that actually changed.
 //
+// The top-centre scoreline (mode, timer, scores) is the mode HUD
+// (ui/modeHud.ts); this is the ship: hull, energy and boost meters, the
+// weapon panel, the centre status line and the kill feed.
+//
 // The weapon panel lists the carried primaries with their number keys
 // (1-9, 0), the secondaries (X cycles) and the gadget (G), per the M2 key
 // scheme; the selected ones are highlighted.
@@ -21,9 +25,9 @@ export interface HudValues {
   ammo: string;
   /** Secondary weapon and count (e.g. "Bolt Rocket ×3"); empty hides it. */
   secondary: string;
-  /** Team share of painted surface, 0..1, indexed by 0-based team id. */
+  /** Team share of painted surface, 0..1, indexed by 0-based team id (Paint the Void; the mode HUD shows scores). */
   paint: readonly number[];
-  /** Remaining match time in seconds. */
+  /** Remaining match time in seconds (shown by the mode HUD). */
   timeLeft: number;
   horizonAssist: boolean;
   scavenging: boolean;
@@ -173,9 +177,6 @@ export class Hud {
   private readonly status: HTMLElement;
   private readonly feedEl: HTMLElement;
   private feed: FeedEntry[] = [];
-  private readonly timer: HTMLElement;
-  private readonly paintFills: HTMLElement[] = [];
-  private readonly paintLabels: HTMLElement[] = [];
   private readonly assist: HTMLElement;
   private readonly scavenge: HTMLElement;
   private readonly debug: HTMLElement;
@@ -186,20 +187,10 @@ export class Hud {
   private readonly paintEl: HTMLElement;
   private readonly offlineEl: HTMLElement;
 
-  constructor(parent: HTMLElement, teamCount = 2) {
+  constructor(parent: HTMLElement) {
     this.values.loadout = emptyLoadout();
     this.root = el("div", "hud hidden", parent);
     el("div", "hud-crosshair", this.root);
-
-    const top = el("div", "hud-top", this.root);
-    this.timer = el("div", "hud-timer", top);
-    const paint = el("div", "hud-paint", top);
-    for (let t = 0; t < teamCount; t++) {
-      const row = el("div", `hud-paint-row team-${t}`, paint);
-      const bar = el("div", "hud-paint-bar", row);
-      this.paintFills[t] = el("div", "hud-paint-fill", bar);
-      this.paintLabels[t] = el("span", "hud-paint-label", row);
-    }
 
     const left = el("div", "hud-panel hud-left", this.root);
     const meter = (name: string, cls: MeterName): Meter => {
@@ -247,6 +238,16 @@ export class Hud {
 
   show(visible: boolean): void {
     this.root.classList.toggle("hidden", !visible);
+  }
+
+  /** Instagib: hull and energy are hidden (any hit kills; energy is not spent). */
+  setInstagib(on: boolean): void {
+    this.root.classList.toggle("instagib", on);
+  }
+
+  /** Spectating: the ship panels and crosshair are hidden. */
+  setSpectating(on: boolean): void {
+    this.root.classList.toggle("spectating", on);
   }
 
   /** Shows the "click to fly" prompt (while the pointer is not locked). */
@@ -358,20 +359,6 @@ export class Hud {
       this.status.textContent = v.status;
       this.status.classList.toggle("hidden", v.status === "");
     });
-    const timer = formatTimer(v.timeLeft);
-    this.write("timer", timer, () => {
-      this.timer.textContent = timer;
-    });
-
-    for (let t = 0; t < this.paintFills.length; t++) {
-      const text = `${Math.max(0, Math.min(100, (v.paint[t] ?? 0) * 100)).toFixed(1)}%`;
-      const fill = this.paintFills[t];
-      const label = this.paintLabels[t];
-      this.write(`paint.${t}`, text, () => {
-        if (fill) fill.style.width = text;
-        if (label) label.textContent = text;
-      });
-    }
 
     const assist = `Horizon assist: ${v.horizonAssist ? "on" : "off"} (H)`;
     this.write("assist", assist, () => {

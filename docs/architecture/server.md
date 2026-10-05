@@ -179,13 +179,33 @@ down 2 s after the last player left (scripted runs).
   the server's idle timeout does not fire and held buttons are released at once.
 - Session end (server `Disconnect`, closed socket, desync, GPU device lost): the session is
   disposed (socket closed, wasm game freed) and an error screen shown.
-- Match restart (`Disconnect` with `MATCH_RESTART_REASON`): the game is cleaned up, the renderer
-  kept, and the client rejoins on its own (`web/src/game/rejoin.ts`: 0.5 s, then 1, 2, 3, 4, 4,
-  ... s, up to 12 attempts, then an error screen). Name, horizon assist, look settings and the
-  F3 overlay state carry over.
-- Overlays: Tab holds the scoreboard (player names by team, paint %); the end-of-match screen
-  shows the winner, paint per team and the scoreboard; F3 toggles the debug overlay (FPS, ping,
-  transport, prediction corrections, shot prediction counters, chunks, skipped sends).
+- Match transition (M3, a new `Welcome` on the open connection: warm-up room, next match):
+  `GameSession` reports `FrameResult.transition` once (also after hidden-tab frames) and
+  re-reads the match's visual table; `main.ts` keeps the renderer and the page, resets the
+  camera to the new level, the effects and the spectator camera, and streams the new level
+  (the old level's chunks come back from `takeUnloads`). No reload, no reconnect.
+- Match restart from an older host (`Disconnect` with `MATCH_RESTART_REASON`): the game is
+  cleaned up, the renderer kept, and the client rejoins on its own (`web/src/game/rejoin.ts`:
+  0.5 s, then 1, 2, 3, 4, 4, ... s, up to 12 attempts, then an error screen). Name, horizon
+  assist, look settings and the F3 overlay state carry over.
+- Mode and lobby UI (M3): `GameSession.frame` parses ls-wasm's `modeState()`, `lobbyState()` and
+  `results()` JSON (`web/src/game/modeState.ts`); `game/matchFlow.ts` decides the stage
+  (warm-up, countdown, match, results) and whether the player spectates (eliminated or
+  spectator flag), and `LobbyClock` counts the lobby's `phaseTicksLeft` down between
+  `LobbyState` updates (the server sends it only on change). `ui/modeHud.ts` draws the
+  scoreline (mode, timer, team scores or the free-for-all top three, target), the stage, own
+  lives and colour meter, alerts and the objective markers (projected, clamped to the screen
+  edge); `ui/lobby.ts` the lobby card (next mode, world, players with ready and team, Enter
+  ready, T team, O spectate, also as buttons); `ui/results.ts` the results screen (team bars or
+  a podium, the table, the next mode's countdown; in practice built from the local mode
+  state); `game/spectator.ts` the free-fly / follow camera. Lobby requests (`Ready`,
+  `PickTeam`, `Spectate`) are sent reliably. `game/sides.ts` colours sides: four team colours,
+  and in free-for-all a distinct colour per side id (ships, shots, name tags, tables).
+  `#ui[data-stage]` and `#ui[data-matches]` expose the stage and the match count to the
+  browser smoke test.
+- Overlays: Tab holds the scoreboard (per team or one free-for-all list: mode score, kills,
+  deaths, lives); F3 toggles the debug overlay (FPS, ping, transport, prediction corrections,
+  shot prediction counters, chunks, skipped sends).
 
 ### Drawing entities and projectiles (M2, data-driven)
 

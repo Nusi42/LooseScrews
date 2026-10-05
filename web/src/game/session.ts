@@ -19,6 +19,14 @@ import {
   type ShipChoice,
 } from "./mechanics.ts";
 import {
+  parseLobbyState,
+  parseModeState,
+  parseResults,
+  type LobbyState,
+  type MatchResults,
+  type ModeState,
+} from "./modeState.ts";
+import {
   parseDebugStats,
   parseMatchInfo,
   parseScoreboard,
@@ -94,6 +102,18 @@ export interface FrameResult {
   disconnected: string | null;
   /** With `disconnected`: the server finished the match and starts a new one (rejoin). */
   matchRestart: boolean;
+  /**
+   * The session moved to the next match on the open connection (a new
+   * Welcome) since the last frame: level, rules, team and visuals changed;
+   * the host resets what it derived from the old match.
+   */
+  transition: boolean;
+  /** Mode state (phase, timer, scores, lives, objectives). */
+  mode: ModeState;
+  /** Newest lobby state from the server (null offline or before the first). */
+  lobby: LobbyState | null;
+  /** Results of the finished match (online, null until it ended). */
+  results: MatchResults | null;
 }
 
 /** Number of idle target dummies in practice. */
@@ -146,8 +166,8 @@ export class GameSession {
   readonly link: PacketLink | null;
   readonly controls: ControlState;
   readonly names: SceneNames;
-  /** The match's visual table (constant for a match; indexed by visual id). */
-  readonly visuals: readonly VisualDef[];
+  /** The match's visual table (constant for a match, refreshed on a match transition; indexed by visual id). */
+  visuals: readonly VisualDef[];
   /** Server `Disconnect` reason that means "match over, rejoin" (see ls_game::MATCH_RESTART_REASON). */
   readonly restartReason: string | null;
   /** Gadget string ids by gadget id (cloak shimmer, shield bubble). */
@@ -158,6 +178,12 @@ export class GameSession {
   private choices: ShipChoice[] | null = null;
   /** Own ship alive at the previous frame (a change refreshes the ship choices). */
   private wasAlive: boolean | null = null;
+  /** A match transition the host has not seen in a FrameResult yet (hidden-tab frames keep it). */
+  private transitionUnreported = false;
+  /** Matches played on this connection after the first (match transitions). */
+  matchCount = 0;
+  /** Set while `idleFrame` runs, so its result does not swallow a transition. */
+  private idle = false;
   /** Monotonic clock in ms (times pings for the debug overlay). */
   clock: () => number = () => performance.now();
 
@@ -261,6 +287,7 @@ export class GameSession {
   frame(dt: number, input: InputState): FrameResult {
     let disconnected: string | null = null;
     let matchRestart = false;
+
     if (this.link && this.ended === null) {
       this.game.setClockMs(this.clock());
       for (const packet of this.link.drain()) {
@@ -284,6 +311,7 @@ export class GameSession {
         this.ended = disconnected;
         this.link.close(disconnected);
       }
+      if (this.game.takeMatchTransition?.()) this.onMatchTransition();
     }
 
     const controls = this.controls.update(input);
@@ -315,7 +343,62 @@ export class GameSession {
       weaponsOffline: this.game.weaponsOfflineSecs ?? 0,
       disconnected,
       matchRestart,
+      transition: this.takeTransition(),
+      mode: this.modeState(),
+      lobby: this.lobbyState(),
+      results: this.results(),
     };
+  }
+
+  private takeTransition(): boolean {
+    if (this.idle || !this.transitionUnreported) return false;
+    this.transitionUnreported = false;
+    return true;
+  }
+
+  /** Resets what the session derived from the previous match. */
+  private onMatchTransition(): void {
+    this.transitionUnreported = true;
+    this.matchCount++;
+    this.visuals = parseVisuals(this.game.visuals(), this.names.shapes);
+    this.choices = null;
+    this.wasAlive = null;
+  }
+
+  /** Mode state of the current match. */
+  modeState(): ModeState {
+    return parseModeState(this.disposed ? undefined : this.game.modeState?.());
+  }
+
+  /** Newest lobby state (null offline or before the server sent one). */
+  lobbyState(): LobbyState | null {
+    return this.disposed ? null : parseLobbyState(this.game.lobbyState?.());
+  }
+
+  /** Results of the finished match (null while running and offline). */
+  results(): MatchResults | null {
+    return this.disposed ? null : parseResults(this.game.results?.());
+  }
+
+  /** Lobby: ready (or not) for the next match. Returns false when it could not be sent. */
+  setReady(ready: boolean): boolean {
+    return this.sendLobby(this.game.readyPacket?.(ready));
+  }
+
+  /** Lobby: team for the next match (-1 = auto-balance). */
+  pickTeam(team: number): boolean {
+    return this.sendLobby(this.game.pickTeamPacket?.(team));
+  }
+
+  /** Lobby: spectate from the next match on (or play again). */
+  setSpectate(spectate: boolean): boolean {
+    return this.sendLobby(this.game.spectatePacket?.(spectate));
+  }
+
+  private sendLobby(packet: Uint8Array | undefined): boolean {
+    if (!packet || !this.link || this.ended !== null || this.disposed) return false;
+    this.link.send(packet, false);
+    return true;
   }
 
   /** The own gadget (name, on/off, cooldown). */
@@ -372,8 +455,13 @@ export class GameSession {
    */
   idleFrame(dt: number): FrameResult | null {
     if (!this.link || this.ended !== null || this.disposed) return null;
-    const r = this.frame(dt, emptyInput());
-    return r.disconnected ? r : null;
+    this.idle = true;
+    try {
+      const r = this.frame(dt, emptyInput());
+      return r.disconnected ? r : null;
+    } finally {
+      this.idle = false;
+    }
   }
 
   /** Team of a ship id (own ship included), for paint colours. */

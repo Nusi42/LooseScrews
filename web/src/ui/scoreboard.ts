@@ -1,81 +1,105 @@
-// Scoreboard (hold Tab) and the end-of-match screen (team paint scores,
-// winner, intermission countdown and the scoreboard). The models are pure
-// functions so they can be tested in Node; the classes only write the DOM,
-// and only when the model changed.
+// Scoreboard (hold Tab) for every mode: one block per team (2-4 teams) or
+// one ranked list in free-for-all, with the mode score, kills, deaths and
+// lives where the mode counts them. Kills and deaths come from ls-wasm's
+// tally, scores and lives from the replicated mode state. The model is a
+// pure function for Node tests; the class only writes the DOM on change.
+// (The end-of-match screen is ui/results.ts.)
 
-import {
-  intermissionLeft,
-  paintPercent,
-  playerName,
-  rowsByTeam,
-  teamName,
-  type MatchInfo,
-  type ScoreRow,
-} from "../game/stats.ts";
-
-export interface TeamLine {
-  team: number;
-  name: string;
-  /** Paint share in percent, one decimal. */
-  paint: string;
-  winner: boolean;
-  yours: boolean;
-}
+import { modeInfo, PLAYER_FLAG, VIEW_FLAG, type ModeState } from "../game/modeState.ts";
+import { sideCss, teamName } from "../game/sides.ts";
+import { playerName, rowsByTeam, type ScoreRow } from "../game/stats.ts";
 
 export interface PlayerLine {
   name: string;
+  score: number;
   kills: number;
   deaths: number;
+  /** Lives left, -1 = not shown. */
+  lives: number;
   alive: boolean;
+  /** Eliminated or spectating. */
+  out: boolean;
   isYou: boolean;
+  color: string;
+}
+
+export interface TeamBlock {
+  team: number;
+  name: string;
+  color: string;
+  /** Team score text ("12", "34.5%"); "" in free-for-all. */
+  score: string;
+  yours: boolean;
+  leading: boolean;
+  players: PlayerLine[];
 }
 
 export interface ScoreboardModel {
-  teams: Array<TeamLine & { players: PlayerLine[] }>;
+  title: string;
+  scoreLabel: string;
+  showLives: boolean;
+  teams: TeamBlock[];
   /** Footnote on where the numbers come from. */
   note: string;
 }
 
-export interface EndScreenModel {
-  title: string;
-  subtitle: string;
-  teams: TeamLine[];
-  /** Countdown / what happens next. */
-  footer: string;
-}
-
-function teamLine(info: MatchInfo, team: number, ownTeam: number): TeamLine {
-  return {
-    team,
-    name: teamName(team),
-    paint: `${paintPercent(info, team).toFixed(1)}%`,
-    winner: info.over && info.winner === team,
-    yours: team === ownTeam,
+/** Scoreboard model: rows from `Game.scoreboard()`, scores and lives from the mode state. */
+export function scoreboardModel(rows: readonly ScoreRow[], mode: ModeState, ownSide: number, online: boolean): ScoreboardModel {
+  const info = modeInfo(mode.mode);
+  const paint = (mode.flags & VIEW_FLAG.paintScores) !== 0;
+  const showLives = (mode.flags & VIEW_FLAG.lives) !== 0;
+  const byId = new Map(mode.players.map((p) => [p.id, p]));
+  const line = (r: ScoreRow): PlayerLine => {
+    const mp = byId.get(r.id);
+    return {
+      name: playerName(r),
+      score: mp?.score ?? 0,
+      kills: r.kills,
+      deaths: r.deaths,
+      lives: showLives && mp ? mp.lives : -1,
+      alive: r.alive,
+      out: mp !== undefined && (mp.flags & (PLAYER_FLAG.eliminated | PLAYER_FLAG.spectator)) !== 0,
+      isYou: r.isYou,
+      color: sideCss(r.team, mode.teams),
+    };
   };
-}
-
-export function scoreboardModel(rows: readonly ScoreRow[], info: MatchInfo, ownTeam: number, online: boolean): ScoreboardModel {
-  return {
-    teams: rowsByTeam(rows).map(({ team, rows: list }) => ({
-      ...teamLine(info, team, ownTeam),
-      players: list.map((r) => ({ name: playerName(r), kills: r.kills, deaths: r.deaths, alive: r.alive, isYou: r.isYou })),
-    })),
-    note: online ? "Kills and deaths since you joined · paint is per team" : "Practice · paint is per team",
-  };
-}
-
-export function endScreenModel(info: MatchInfo, ownTeam: number, online: boolean, intermissionSecs?: number): EndScreenModel {
-  const title =
-    info.winner === null ? "Draw" : info.winner === ownTeam ? `${teamName(info.winner)} wins!` : `${teamName(info.winner)} wins`;
-  const subtitle = info.winner === null ? "Both teams painted the same share" : info.winner === ownTeam ? "Your team painted the most" : "Your team lost this one";
-  let footer: string;
-  if (!online) {
-    footer = "Practice over · reload for a new round";
+  const byScore = (a: PlayerLine, b: PlayerLine): number => b.score - a.score || b.kills - a.kills || a.deaths - b.deaths;
+  let teams: TeamBlock[];
+  if (mode.teams > 0) {
+    const best = Math.max(...mode.teamScores);
+    const leaders = mode.teamScores.filter((s) => s === best).length;
+    teams = rowsByTeam(rows, mode.teams).map(({ team, rows: list }) => {
+      const s = mode.teamScores[team] ?? 0;
+      return {
+        team,
+        name: teamName(team),
+        color: sideCss(team, mode.teams),
+        score: paint ? `${mode.scoreTotal > 0 ? ((100 * s) / mode.scoreTotal).toFixed(1) : "0.0"}%` : String(s),
+        yours: team === ownSide,
+        leading: mode.teamScores.length > 0 && s === best && leaders === 1,
+        players: list.map(line).sort(byScore),
+      };
+    });
   } else {
-    const left = intermissionLeft(info, intermissionSecs);
-    footer = left > 0 ? `Next match in ${left} s` : "Starting the next match…";
+    teams = [
+      {
+        team: -1,
+        name: "Free-for-all",
+        color: "",
+        score: "",
+        yours: false,
+        leading: false,
+        players: rows.map(line).sort(byScore),
+      },
+    ];
   }
-  return { title, subtitle, teams: [0, 1].map((t) => teamLine(info, t, ownTeam)), footer };
+  return {
+    title: info.name,
+    scoreLabel: paint ? "Score" : info.scoreLabel,
+    showLives,
+    teams,
+    note: online ? "Kills and deaths since you joined" : "Practice",
+  };
 }
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, className: string, parent?: HTMLElement): HTMLElementTagNameMap[K] {
@@ -87,26 +111,32 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, className: string, pa
 
 function renderTeams(parent: HTMLElement, model: ScoreboardModel): void {
   const frag = document.createDocumentFragment();
+  const heads = ["Pilot", model.scoreLabel, "K", "D", ...(model.showLives ? ["Lives"] : [])];
   for (const t of model.teams) {
-    const block = el("div", `sb-team team-${t.team}${t.yours ? " yours" : ""}`);
+    const block = el("div", `sb-team${t.yours ? " yours" : ""}${t.leading ? " leading" : ""}`);
+    if (t.color) block.style.setProperty("--side", t.color);
     const head = el("div", "sb-team-head", block);
-    el("span", "sb-team-name", head).textContent = t.name + (t.yours ? " (your team)" : "");
-    el("span", "sb-team-paint", head).textContent = `${t.paint} painted`;
+    el("span", "sb-team-name", head).textContent = t.name + (t.yours ? " · your team" : "");
+    if (t.score) el("span", "sb-team-score", head).textContent = t.score;
     const table = el("table", "sb-table", block);
     const hr = el("tr", "", el("thead", "", table));
-    for (const h of ["Pilot", "Kills", "Deaths"]) el("th", "", hr).textContent = h;
+    for (const h of heads) el("th", "", hr).textContent = h;
     const body = el("tbody", "", table);
     if (t.players.length === 0) {
-      const tr = el("tr", "sb-empty", body);
-      const td = el("td", "", tr);
-      td.colSpan = 3;
+      const td = el("td", "", el("tr", "sb-empty", body));
+      td.colSpan = heads.length;
       td.textContent = "No pilots";
     }
     for (const p of t.players) {
-      const tr = el("tr", `${p.isYou ? "you" : ""}${p.alive ? "" : " dead"}`, body);
-      el("td", "sb-name", tr).textContent = p.name;
+      const tr = el("tr", `${p.isYou ? "you" : ""}${p.alive ? "" : " dead"}${p.out ? " out" : ""}`, body);
+      tr.style.setProperty("--side", p.color);
+      const name = el("td", "sb-name", tr);
+      el("span", "sb-swatch", name);
+      el("span", "", name).textContent = p.name;
+      el("td", "sb-num", tr).textContent = String(p.score);
       el("td", "sb-num", tr).textContent = String(p.kills);
       el("td", "sb-num", tr).textContent = String(p.deaths);
+      if (model.showLives) el("td", "sb-num", tr).textContent = p.out ? "out" : p.lives >= 0 ? String(p.lives) : "–";
     }
     frag.appendChild(block);
   }
@@ -116,13 +146,14 @@ function renderTeams(parent: HTMLElement, model: ScoreboardModel): void {
 /** The Tab scoreboard. */
 export class Scoreboard {
   readonly root: HTMLElement;
+  private readonly title: HTMLElement;
   private readonly teams: HTMLElement;
   private readonly note: HTMLElement;
   private last = "";
 
   constructor(parent: HTMLElement) {
     this.root = el("div", "scoreboard hidden", parent);
-    el("h2", "sb-title", this.root).textContent = "Scoreboard";
+    this.title = el("h2", "sb-title", this.root);
     this.teams = el("div", "sb-teams", this.root);
     this.note = el("div", "sb-note", this.root);
   }
@@ -139,68 +170,9 @@ export class Scoreboard {
     const key = JSON.stringify(model);
     if (key === this.last) return;
     this.last = key;
+    this.title.textContent = model.title;
     renderTeams(this.teams, model);
     this.note.textContent = model.note;
-  }
-
-  dispose(): void {
-    this.root.remove();
-  }
-}
-
-/** Full-screen end-of-match overlay with the scoreboard below the result. */
-export class EndScreen {
-  readonly root: HTMLElement;
-  private readonly title: HTMLElement;
-  private readonly subtitle: HTMLElement;
-  private readonly bars: HTMLElement;
-  private readonly board: HTMLElement;
-  private readonly footer: HTMLElement;
-  private last = "";
-  private lastBoard = "";
-
-  constructor(parent: HTMLElement) {
-    this.root = el("div", "end-screen hidden", parent);
-    const card = el("div", "end-card", this.root);
-    el("div", "end-kicker", card).textContent = "Match over";
-    this.title = el("h1", "end-title", card);
-    this.subtitle = el("p", "end-subtitle", card);
-    this.bars = el("div", "end-bars", card);
-    this.board = el("div", "sb-teams end-board", card);
-    this.footer = el("p", "end-footer", card);
-  }
-
-  show(visible: boolean): void {
-    this.root.classList.toggle("hidden", !visible);
-  }
-
-  get visible(): boolean {
-    return !this.root.classList.contains("hidden");
-  }
-
-  update(model: EndScreenModel, board: ScoreboardModel): void {
-    const key = JSON.stringify(model);
-    if (key !== this.last) {
-      this.last = key;
-      this.title.textContent = model.title;
-      this.subtitle.textContent = model.subtitle;
-      this.footer.textContent = model.footer;
-      this.bars.replaceChildren(
-        ...model.teams.map((t) => {
-          const row = el("div", `end-bar-row team-${t.team}${t.winner ? " winner" : ""}${t.yours ? " yours" : ""}`);
-          el("span", "end-bar-name", row).textContent = t.name;
-          const bar = el("div", "end-bar", row);
-          el("div", "end-bar-fill", bar).style.width = t.paint;
-          el("span", "end-bar-value", row).textContent = t.paint;
-          return row;
-        }),
-      );
-    }
-    const boardKey = JSON.stringify(board);
-    if (boardKey !== this.lastBoard) {
-      this.lastBoard = boardKey;
-      renderTeams(this.board, board);
-    }
   }
 
   dispose(): void {

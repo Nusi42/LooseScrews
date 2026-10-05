@@ -15,6 +15,7 @@ Wave D of M3 extends it into the full renderer reference.
 | Volumetric sun shafts ("high"/"medium", caverns with openings to the sky): each pixel of a half (third) resolution target marches its view ray through the shadow map up to the scene depth; added onto the resolved scene with a 2x2 tent | `rgba16float` low-resolution target, then the HDR scene texture | `volumetric.ts`, `shaders/volumetric.ts` |
 | Sky (open levels only): drawn *under* the resolved scene, `out = scene + sky x (1 - alpha)` (geometry writes alpha 1, the clear is transparent black) | the HDR scene texture, single-sampled | `sky.ts`, `shaders/sky.ts` `SKY_WGSL` |
 | Light shafts ("high", open levels, sun on or near the screen): sky mask (scene alpha 0) at quarter resolution, radial blur toward the sun, added onto the scene | the HDR scene texture | `sky.ts` `encodeShafts`, `SHAFT_*_WGSL` |
+| Cloak refraction (only while a cloaked ship is in view): a copy of the scene, then the cloaked hulls drawn into the scene sampling the copy through their surface (no depth attachment; each fragment reads the scene depth) | the HDR scene texture (needs `COPY_SRC`) | `cloak.ts`, `shaders/cloak.ts` |
 | Particles: sprites at least `halfResPx` wide into a half-resolution `rgba16float` target, composited onto the resolved scene; then dust motes and the smaller sprites at full resolution. No depth attachment: each fragment reads the scene depth (soft particles, occlusion) | the resolved HDR scene texture | `particles.ts`, `shaders/particles.ts`, `spriteAtlas.ts` |
 | Bloom down: 13-tap filter, the first step with a Karis average and a soft-knee threshold | up to 6 half-size `rgba16float` mips | `post.ts`, `shaders/post.ts` `BLOOM_DOWN_WGSL` |
 | Bloom up: 3x3 tent, added onto the next larger mip | the same mips | `BLOOM_UP_WGSL` |
@@ -152,6 +153,17 @@ tinted by the nebula; caverns (50) a warm dark haze, density 0.012 and a low-lyi
 mine shafts (100) a sodium-orange haze, density 0.014. Worlds in between blend these; any
 Enclosure below 50 shows the sky.
 
+**Rock at the hidden walls (VQP).** In open levels the sealing walls are hidden, so pillars
+that run floor to ceiling and rock cut by the level box used to end in a sharp, jagged cut
+against the sky. The `Frame` uniform carries the room box (`room_min`, `room_max`; `w` the fade
+width `ROOM_FADE` = 3 u, 0 in closed levels); `room_fade` in `shaders/frame.ts` gives the rock's
+coverage, falling to 0 at a wall along a slightly wandering line, and only for rock seen from
+`ROOM_FADE_NEAR`-`ROOM_FADE_FAR` (12-30 u) away or more, so rock you can touch stays solid. The
+terrain shader writes premultiplied colour and that coverage as alpha (the sky composite
+draws the sky under it; the shafts treat it as partly sky) and discards below 0.01.
+`Renderer.roomFade = false` (gallery `?roomfade=off`) cuts sharply as before. Cost: a few ALU
+per terrain fragment (no measurable change).
+
 ## Sun occlusion (VQ9)
 
 Rock blocks the sun. `sunShadow.ts` (`Renderer.sunShadow`) keeps one orthographic depth map
@@ -209,7 +221,11 @@ from the sun over the whole level (`depth16unorm`, 4096², about 0.09 u per texe
   every access in try/catch) and are set on the start screen.
 - **Cockpit hull frame** (`renderer/hullFrame.ts`, models in `renderer/hullFrameModels.ts`):
   the nose deck, side parts and canopy pillars of the own ship type, built with the VQ4 kit at
-  the VQ4 hull's dimensions and fit, seen from an eye above the hull's centre line. Drawn last
+  the VQ4 hull's dimensions and fit, seen from an eye above the hull's centre line. The canopy
+  frame (VQP) is a window frame, not loose struts: each pillar is a dark beam with a lighter
+  metal rail along its inner edge, a bow arches across the top of the view (higher in the
+  middle; the Hauler keeps its heavy visor above it) and rounded corners join bow and pillars
+  (`canopyPillars`, `canopyBow`). Drawn last
   in the scene pass in view space (`Renderer.hullFrame.state`, `null` hides it) with its own
   projection (near 0.01 u) and its depth squeezed into the front 1/1000 of the shared depth
   buffer, so rock and ships never cut it. It is lit by the scene at its world position through
@@ -270,6 +286,37 @@ it (or on top of `renderer.atmosphere.grade`). The gallery previews a preset wit
   smoke-only worst case (15 000 large smoke puffs) 0.40 ms with the half-resolution split,
   1.12 ms without it.
 
+### Charge-up (VQP)
+
+`game/chargeFx.ts`: while a ship holds a charge weapon (Fusion Charger, Polite Laser) energy
+gathers at its muzzle: a white-hot core in an orb of the weapon's colour that grows with the
+charge (`orbRadius`), a halo, a ring around the aim axis pulsing from 2 to 9 Hz, sparks
+streaming in from a shell around it (25-135 per second), crackling arcs above half charge, a
+turning star flare and a second ring at full charge, and an overcharge that turns it red,
+unstable and spitting sparks. A point light grows with it (`chargeLight`: intensity 1.2-6.2,
+reach 3-8 u). `ChargeTracker` takes the own charge from `Game.charge()` every frame (drawn at
+the cockpit nose, below the crosshair, at `OWN_CHARGE_SIZE`) and other ships' from their
+`ChargeStart` cues, which ls-wasm fills with the charging weapon (`target`), ending when the
+ship's next projectile of that weapon appears, the ship dies or 4 s after full charge. `Vfx`
+draws `VfxFrame.charges`; `main.ts` adds the lights. Gallery: `charge-up` (full, 45 %,
+overcharge), `charge-cockpit` (the own charge at 75 %). Cost: 4 immediate sprites and a few
+dozen particles per charging ship; particles pass 0.02 ms in both scenes (RTX 5080).
+
+### Cloak refraction (VQP)
+
+Cloaked ships (`game/scene.ts` `addShips` with `refractCloak`, which `main.ts` sets) go into
+the scene's `refract` list instead of a flickering translucent hull. `cloak.ts` `CloakPass`
+runs after the sky and shafts and before the particles, only while such a ship is in view: it
+copies the resolved HDR scene, then draws the hulls (back faces culled, no depth attachment;
+fragments behind the scene depth are dropped, so rock and the cockpit frame still hide them)
+sampling the copy through the hull. The bend follows the normal of a smooth ellipsoid around
+the hull (mixed with a quarter of the mesh normal, so the flat-shaded parts do not shatter the
+image), from 1.6 % of the viewport in the middle to 5 % at the silhouette, larger for near
+hulls, with a slow ripple and a slight split into colour channels; the hull tints the view
+faintly and a thin rim and travelling bands shimmer in its team colour (`CLOAK_RIM`). Gallery:
+`cloak` (`?cloak=flat` for the old look). Cost: the copy plus one draw per cloaked hull,
+timed in `objects` (0.01 ms with two cloaked hulls at 1080p on an RTX 5080).
+
 ## Quality presets
 
 `quality.ts`: one `RenderQuality` object per level; later packages add their switches to it.
@@ -307,7 +354,7 @@ ALU; `fwidth` is taken before the branch). Specular from VQ6's dynamic lights is
 attribute bit layout, sRGB helpers), `shaders/lighting.ts`, `shaders/terrain.ts`,
 `shaders/objects.ts` (instanced and translucent), `shaders/lights.ts` (the light froxel
 builder), `shaders/shadow.ts` (VQ9: the SunShadow struct and `sun_visibility`, included by
-`lighting.ts`; the caster pass), `shaders/volumetric.ts` (VQ9: the shaft march and composite), `shaders/particles.ts` (particles, motes, half-resolution composite), `shaders/post.ts`, `shaders/sky.ts` (VQ7: the
+`lighting.ts`; the caster pass), `shaders/volumetric.ts` (VQ9: the shaft march and composite), `shaders/particles.ts` (particles, motes, half-resolution composite), `shaders/cloak.ts` (VQP: the cloak refraction), `shaders/post.ts`, `shaders/sky.ts` (VQ7: the
 environment and planet bakes, the sky pass, the shafts, gradient noise). Each package edits its
 own file (VQ3b terrain, VQ5 particles, VQ6 lighting, VQ7 sky); keep `FRAME_UNIFORM_FLOATS` and
 `Renderer.writeFrameUniforms` in sync with the `Frame` struct (`sky.test.ts` checks the sizes of

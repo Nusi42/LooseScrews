@@ -140,6 +140,10 @@ export interface GameHandle {
   nowTick?(): number;
   /** Charge in progress (CHARGE_LEN numbers) or empty. */
   charge?(): Float64Array;
+  /** The own Leech Arc beam drawn locally online: [from x, y, z, to x, y, z, target (255 = none)] or empty (VQP). */
+  localBeam?(): Float32Array;
+  /** Visual id (index into visuals()) of a weapon's projectiles (VQP). */
+  projectileVisual?(weapon: number): number;
   /** The own gadget. */
   gadget?(): GadgetHandle;
   /** Ship types with loadout preview (JSON). */

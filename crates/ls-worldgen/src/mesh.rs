@@ -300,7 +300,16 @@ fn refine_crossing(f: impl Fn(f32) -> f32, va: f32, vb: f32) -> f32 {
 
 fn build(grid: &SampleGrid, placement: Placement<'_>) -> Mesh {
     let mut mesh = Mesh::default();
-    if grid.is_uniform_sign() {
+    // With the exact field, rock corners next to open space finer than a
+    // cell count as open (`thin_air`), so thin bores get vertices
+    // all around (placed on the true surface by `fit_thin`), even in a
+    // chunk whose corners are all rock.
+    let thin = match placement {
+        Placement::Smooth(Some(sdf)) => thin_air(grid, sdf),
+        _ => None,
+    };
+    let promoted = thin.as_ref().and_then(|t| t.values.as_deref());
+    if promoted.is_none() && grid.is_uniform_sign() {
         return mesh;
     }
     let n = GRID_CELLS;
@@ -323,7 +332,7 @@ fn build(grid: &SampleGrid, placement: Placement<'_>) -> Mesh {
     };
 
     // Corner row `(j, k)` for x in `-1..=32` (contiguous in the halo array).
-    let values = grid.values();
+    let values = promoted.unwrap_or(grid.values());
     let row = |j: i32, k: i32| {
         let start = corner_index(-1, j, k);
         &values[start..start + GRID_CORNERS]
@@ -384,7 +393,14 @@ fn build(grid: &SampleGrid, placement: Placement<'_>) -> Mesh {
                     (origin[2] + k) as f32 + local[2],
                 ];
                 if let Placement::Smooth(sdf) = placement {
-                    let v = refine_vertex(&field, world, sdf, || trilinear_gradient(&c, local));
+                    let forced = thin.as_ref().map_or(0, |t| {
+                        let b = corner_index(i, j, k);
+                        [0, 1, SY, SY + 1, SZ, SZ + 1, SZ + SY, SZ + SY + 1]
+                            .iter()
+                            .fold(0, |m, &o| m.max(t.corners[b + o]))
+                    });
+                    let v =
+                        refine_vertex(&field, world, sdf, forced, || trilinear_gradient(&c, local));
                     mesh.positions.push(v.position);
                     mesh.normals.push(v.normal);
                     mesh.ao.push(v.ao);
@@ -455,6 +471,7 @@ fn refine_vertex(
     field: &Field<'_>,
     v: [f32; 3],
     sdf: Option<&dyn Fn(Vec3) -> f32>,
+    thin: u8,
     cell_gradient: impl FnOnce() -> [f32; 3],
 ) -> Refined {
     let v0 = Vec3::from_array(v);
@@ -487,6 +504,27 @@ fn refine_vertex(
             p = v0 - step;
         }
     }
+    // Thin features (bores and pockets about a cell wide or narrower, tight
+    // inside corners): the grid cannot see them, so the exact field places
+    // the vertex and gives its normal, and the vertex moves into the rock by
+    // the chord sag, so the drawn faces sit on the surface instead of inside
+    // the open space.
+    if let Some(f) = sdf {
+        // Next to a promoted corner the grid's mass point means nothing, so
+        // the vertex goes onto the exact surface even at a crease.
+        let fitted = match thin {
+            THIN_NONE => None,
+            THIN_RIDGE => fit_thin(f, v0),
+            _ => fit_thin(f, v0).or_else(|| exact_snap(f, v0)),
+        };
+        if let Some((q, n)) = fitted {
+            return Refined {
+                position: q.to_array(),
+                normal: n.to_array(),
+                ao: exact_ambient_occlusion(f, q, n),
+            };
+        }
+    }
     let (cell, t) = field.locate(p, 1);
     let g = if cell == cell0 {
         Field::interpolate(&grads, t)
@@ -506,6 +544,304 @@ fn refine_vertex(
         ao: field.ambient_occlusion(p, n, glen.max(MIN_GRADIENT)),
     }
 }
+
+/// Thin open features of a chunk ([`thin_air`]).
+struct ThinAir {
+    /// Corner values with the promoted rock corners, if any.
+    values: Option<Vec<f32>>,
+    /// Per halo corner: [`THIN_RIDGE`] for an open ridge corner of a thin
+    /// feature, [`THIN_PROMOTED`] for a promoted rock corner, else
+    /// [`THIN_NONE`] (the cells around a marked corner place their vertices
+    /// with [`fit_thin`]).
+    corners: Vec<u8>,
+}
+
+const THIN_NONE: u8 = 0;
+const THIN_RIDGE: u8 = 1;
+const THIN_PROMOTED: u8 = 2;
+
+/// One Newton step pair on the exact field `f` from `v0` (no slope or
+/// crease checks): the point and its unit normal.
+fn exact_snap(f: &dyn Fn(Vec3) -> f32, v0: Vec3) -> Option<(Vec3, Vec3)> {
+    let mut q = v0;
+    let mut g = Vec3::ZERO;
+    for _ in 0..THIN_NEWTON_STEPS {
+        let (d, grad) = value_gradient(f, q, THIN_PROBE);
+        let g2 = grad.dot(grad);
+        if !(g2 > 1e-6 && g2.is_finite()) {
+            return None;
+        }
+        g = grad;
+        let mut step = grad * (d / g2);
+        let len2 = step.dot(step);
+        if len2 > SNAP_MAX_STEP * SNAP_MAX_STEP {
+            step *= SNAP_MAX_STEP / len2.sqrt();
+        }
+        q -= step;
+    }
+    let ok = q.x.is_finite() && q.y.is_finite() && q.z.is_finite();
+    ok.then(|| (q, g.normalize()))
+}
+
+/// [`Field::ambient_occlusion`] on the exact field (thin features, which the
+/// grid does not see; the field is a true distance there).
+fn exact_ambient_occlusion(f: &dyn Fn(Vec3) -> f32, p: Vec3, n: Vec3) -> u8 {
+    let mut occlusion = 0.0f32;
+    for (h, w) in AO_PROBES {
+        let d = f(p + n * h);
+        occlusion += w * ((h - d) / h).clamp(0.0, 1.0);
+    }
+    let ao = (1.0 - AO_STRENGTH * occlusion).clamp(0.0, 1.0);
+    (ao * 255.0 + 0.5) as u8
+}
+
+/// Open corners up to this value (field units, about the radius of the
+/// widest bore treated as thin) can mark a thin feature.
+pub const THIN_OPEN: f32 = 0.75;
+
+/// Corner value of a rock corner promoted to open space by
+/// [`thin_air`] (just above zero, so edge crossings sit at it).
+const PROMOTED: f32 = 1.0e-4;
+/// Rock corners at most this deep (field units) can be promoted.
+pub const PROMOTE_DEPTH: f32 = 0.5;
+/// Least drop (field units) to the lower neighbour for a ridge direction
+/// of [`thin_air`].
+pub const RIDGE_DROP: f32 = 0.45;
+
+/// Surface nets sees open space only through corners whose value is
+/// positive, so a bore narrower than a cell between two corner rows
+/// vanishes, and one that touches a single row of corners is drawn as a
+/// square of four vertices around it (much narrower than the bore).
+///
+/// Thin open features are found on the grid as ridges: open corners below
+/// [`THIN_OPEN`] that peak in at least two axis directions (see `ridge`),
+/// or rock corners that do (a bore between the corner rows). Every rock
+/// corner within [`PROMOTE_DEPTH`] of the surface that is such a ridge or
+/// next to an open one, and whose box of half a cell holds thin open space
+/// on the exact field (`open_within_box`: a true distance field, the
+/// surface inside the box, open space beyond and rock again
+/// [`THIN_ACROSS`] further), counts as open for the topology. The cells
+/// around marked corners place their vertices with [`fit_thin`] on the
+/// true surface. Walls, room corners, large tunnels and the bound cavern
+/// fields never qualify, and thin rock is never removed. Returns `None` if
+/// no corner is marked. Decisions read corners by world position (within
+/// the halo) and the exact field, so neighbouring chunks agree.
+fn thin_air(grid: &SampleGrid, f: &dyn Fn(Vec3) -> f32) -> Option<ThinAir> {
+    let values = grid.values();
+    // A ridge of the field in at least two axis directions: on each, the
+    // corner is at least as open as both neighbours and clearly more open
+    // than one (a bore's axis). An open corner must also be strictly more
+    // open than both neighbours on one of them: an inside corner of a room
+    // ties with its neighbours along the walls on every axis. A rock corner
+    // may tie on all (the four corners around a bore through cell centres
+    // have the same value); rock along a wall or a crease is never a ridge.
+    let ridge = |idx: usize| {
+        let d = values[idx];
+        let (mut axes, mut strict) = (0, false);
+        for s in [1, SY, SZ] {
+            let (a, b) = (values[idx - s], values[idx + s]);
+            let top = a.max(b);
+
+            if d >= top && d - a.min(b) >= RIDGE_DROP {
+                axes += 1;
+                strict |= d > top;
+            }
+        }
+        axes >= 2 && (strict || d < 0.0)
+    };
+    // Open ridge corners (thin open features the grid sees) for the corners
+    // the cells read (-1..=32) and their neighbours.
+    let mut open_ridge = vec![THIN_NONE; values.len()];
+    let mut any = false;
+    for k in -2..=CHUNK_CELLS + 1 {
+        for j in -2..=CHUNK_CELLS + 1 {
+            for i in -2..=CHUNK_CELLS + 1 {
+                let idx = corner_index(i, j, k);
+                let d = values[idx];
+                if d > 0.0 && d < THIN_OPEN && ridge(idx) {
+                    open_ridge[idx] = THIN_RIDGE;
+                    any = true;
+                }
+            }
+        }
+    }
+    let mut promoted: Option<Vec<f32>> = None;
+    let origin = grid.origin;
+    for k in -1..=CHUNK_CELLS {
+        for j in -1..=CHUNK_CELLS {
+            for i in -1..=CHUNK_CELLS {
+                let idx = corner_index(i, j, k);
+                let d = values[idx];
+                if !(d < 0.0 && d > -PROMOTE_DEPTH) {
+                    continue;
+                }
+                let thin = [idx - 1, idx + 1, idx - SY, idx + SY, idx - SZ, idx + SZ]
+                    .iter()
+                    .any(|&n| open_ridge[n] == THIN_RIDGE)
+                    || ridge(idx);
+                if !thin {
+                    continue;
+                }
+                let corner = Vec3::new(
+                    (origin[0] + i) as f32,
+                    (origin[1] + j) as f32,
+                    (origin[2] + k) as f32,
+                );
+                if open_within_box(f, corner) {
+                    promoted.get_or_insert_with(|| values.to_vec())[idx] = PROMOTED;
+                    open_ridge[idx] = THIN_PROMOTED;
+                    any = true;
+                }
+            }
+        }
+    }
+    any.then_some(ThinAir {
+        values: promoted,
+        corners: open_ridge,
+    })
+}
+
+/// Whether the exact field `f` has open space within the box of half a
+/// cell around `corner` (rock there): Newton steps from the corner reach
+/// the surface inside the box, and the field is positive just beyond.
+fn open_within_box(f: &dyn Fn(Vec3) -> f32, corner: Vec3) -> bool {
+    let Some((q, n)) = surface_point(f, corner) else {
+        return false;
+    };
+    let o = q - corner;
+    // Open space just beyond the surface, and rock again across it: a thin
+    // feature, not the open side of an ordinary wall next to a bore's mouth.
+    o.x.abs().max(o.y.abs()).max(o.z.abs()) <= 0.5
+        && f(q + n * 0.05) > 0.0
+        && f(q + n * THIN_ACROSS) < 0.0
+}
+
+/// Newton steps on the exact field `f` from `start` to the surface: the
+/// point and the unit normal there, or `None` where the field is not a
+/// true distance ([`EXACT_SLOPE`]) or the point lies on a crease (the
+/// gradient there is shorter than on the way: two surfaces meet, e.g. at
+/// the mouth of a bore, where the grid's own snap is kept).
+fn surface_point(f: &dyn Fn(Vec3) -> f32, start: Vec3) -> Option<(Vec3, Vec3)> {
+    let mut q = start;
+    let mut slope = 0.0f32;
+    for _ in 0..THIN_NEWTON_STEPS {
+        let (d, g) = value_gradient(f, q, THIN_PROBE);
+        let g2 = g.dot(g);
+        if !(g2 >= EXACT_SLOPE * EXACT_SLOPE && g2.is_finite()) {
+            return None;
+        }
+        slope = slope.max(g2.sqrt());
+        let mut step = g * (d / g2);
+        let len2 = step.dot(step);
+        if len2 > SNAP_MAX_STEP * SNAP_MAX_STEP {
+            step *= SNAP_MAX_STEP / len2.sqrt();
+        }
+        q -= step;
+    }
+    let (d, g) = value_gradient(f, q, THIN_PROBE);
+    let glen = g.length();
+    let ok = q.x.is_finite()
+        && q.y.is_finite()
+        && q.z.is_finite()
+        && d.abs() < 0.02
+        && glen >= CREASE_SLOPE * slope;
+    ok.then(|| (q, g * (1.0 / glen)))
+}
+
+/// Value and central-difference gradient of `f` at `p` (step `e`).
+fn value_gradient(f: &dyn Fn(Vec3) -> f32, p: Vec3, e: f32) -> (f32, Vec3) {
+    let g = Vec3::new(
+        f(p + Vec3::X * e) - f(p - Vec3::X * e),
+        f(p + Vec3::Y * e) - f(p - Vec3::Y * e),
+        f(p + Vec3::Z * e) - f(p - Vec3::Z * e),
+    ) * (0.5 / e);
+    (f(p), g)
+}
+
+/// Places a thin-feature vertex from its mass point `v0` with the exact
+/// field `f`: Newton steps onto the surface, then the principal curvatures
+/// of the field there (central-difference Hessian projected onto the
+/// tangent plane). Where the surface bends around open space (a bore, a
+/// pocket, an inside corner) the chords between neighbouring vertices
+/// would cut into the open space by their sag, so the vertex moves into
+/// the rock by `sqrt(R² + L²/4) - R` (radius `R` = 1 / curvature, chord
+/// `L` = [`THIN_CHORD`]): the drawn faces then sit on the surface.
+/// Returns the position and the unit normal, or `None` if the field gives
+/// no usable gradient or the vertex would move too far.
+fn fit_thin(f: &dyn Fn(Vec3) -> f32, v0: Vec3) -> Option<(Vec3, Vec3)> {
+    let finite = |p: Vec3| p.x.is_finite() && p.y.is_finite() && p.z.is_finite();
+    // Only true distance fields (carved bores); the bound cavern fields and
+    // creases keep the grid snap.
+    let (q, n) = surface_point(f, v0)?;
+    if q.distance_squared(v0) > THIN_MAX_MOVE * THIN_MAX_MOVE {
+        return None;
+    }
+    // Second derivatives in the tangent plane (5 evaluations): the shape
+    // operator's 2x2 matrix (for a distance field |gradient| = 1).
+    let helper = if n.x.abs() < 0.6 { Vec3::X } else { Vec3::Y };
+    let t1 = n.cross(helper).normalize();
+    let t2 = n.cross(t1);
+    let e = THIN_PROBE;
+    let c = f(q);
+    let second = |t: Vec3| f(q + t * e) - 2.0 * c + f(q - t * e);
+    let inv = 1.0 / (e * e);
+    let a = second(t1) * inv;
+    let cc = second(t2) * inv;
+    // d²/dt1dt2 from the diagonal: (s(t1 + t2) - s(t1) - s(t2)) / 2, with
+    // s(t1 + t2) the second difference along (t1 + t2) at the same step.
+    let b = (second(t1 + t2) * inv - a - cc) * 0.5;
+    if a.abs().max(cc.abs()) > CREASE_CURVATURE {
+        // A crease within the probe: keep the exact position, no sag.
+        return Some((q, n));
+    }
+    let mid = (a + cc) * 0.5;
+    let r = (((a - cc) * 0.5) * ((a - cc) * 0.5) + b * b).sqrt();
+    // Negative curvature: the surface bends around open space.
+    let sag = |k: f32| {
+        if k >= 0.0 || k.is_nan() {
+            return 0.0;
+        }
+        let k = -k;
+        let w = ((k - THIN_SAG_FROM) / (THIN_SAG_FULL - THIN_SAG_FROM)).clamp(0.0, 1.0);
+        let radius = 1.0 / k;
+        w * w
+            * (3.0 - 2.0 * w)
+            * ((radius * radius + 0.25 * THIN_CHORD * THIN_CHORD).sqrt() - radius)
+    };
+    // The sharper bend counts fully, the other one a third (the triangles
+    // of a sphere sag by about 4/3 of one chord's sag).
+    let s = (sag(mid - r) + sag(mid + r) * (1.0 / 3.0)).min(THIN_MAX_SAG);
+    let q = q - n * s;
+    finite(q).then_some((q, n))
+}
+
+/// Field slope (|gradient|) from which the field counts as a true distance
+/// (carved and filled edits, mine shafts): only there are sub-cell bores
+/// promoted and chord sag corrected. The generated cavern fields are bounds
+/// with a slope of about 0.3 whose small dents need neither.
+pub const EXACT_SLOPE: f32 = 0.75;
+/// A surface point whose gradient is shorter than this share of the
+/// steepest one on the way lies on a crease ([`surface_point`]).
+const CREASE_SLOPE: f32 = 0.97;
+/// Second derivatives (1/u) beyond which [`fit_thin`] sees a crease, not a
+/// bend (a bore of radius 0.25 u bends by 4).
+const CREASE_CURVATURE: f32 = 4.5;
+/// A promoted corner's open space must end within this distance (u)
+/// across ([`open_within_box`]): bores up to about 1.5 u wide.
+const THIN_ACROSS: f32 = 1.6;
+/// Newton steps of [`fit_thin`].
+const THIN_NEWTON_STEPS: usize = 2;
+/// Finite-difference step (u) of [`fit_thin`].
+const THIN_PROBE: f32 = 0.1;
+/// Largest distance (u) [`fit_thin`] may move a vertex from its mass point.
+const THIN_MAX_MOVE: f32 = 0.9;
+/// Chord length (u) between neighbouring vertices assumed for the sag.
+pub const THIN_CHORD: f32 = 0.75;
+/// Curvature (1/u) where the sag correction starts and where it is full.
+const THIN_SAG_FROM: f32 = 0.35;
+const THIN_SAG_FULL: f32 = 0.7;
+/// Largest sag correction (u).
+pub const THIN_MAX_SAG: f32 = 0.35;
 
 /// The grid's corner values as a continuous field over world positions
 /// (trilinear values and smooth gradients), read by world position so a

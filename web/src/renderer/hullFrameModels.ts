@@ -103,21 +103,64 @@ function deck(m: Model, rings: V3[][], part: PartFn): void {
   m.loft(rings, { part, group: m.smooth(42), capStart: true, capEnd: true });
 }
 
+/** Screen fraction (half-width, half-height at 100° horizontal, 16:9) at `depth` u ahead to eye coordinates. */
+function screenAt(sx: number, sy: number, depth: number, spread = 1): V3 {
+  const tx = Math.tan(50 * (Math.PI / 180));
+  const ty = tx / (16 / 9);
+  return [sx * spread * tx * depth, sy * ty * depth, -depth];
+}
+
 /**
  * Canopy pillars through fixed screen positions, so every hull frames the
  * view the same way: (sx, sy) are fractions of the half-width and
  * half-height at 100° horizontal (16:9), `depth` the distance ahead (u).
  * They rise from the bottom edge at about a fifth of the width to the top
- * corners and then curve overhead out of view.
+ * corners and then curve overhead out of view. Each pillar is a dark frame
+ * beam with a lighter metal rail along its inner edge (the glass seal), so
+ * it reads as a machined canopy frame and not as a stray line (VQP).
  */
 function canopyPillars(m: Model, w: number, d: number, spread = 1): void {
-  const tx = Math.tan(50 * (Math.PI / 180));
-  const ty = tx / (16 / 9);
-  const at = (sx: number, sy: number, depth: number): V3 => [sx * spread * tx * depth, sy * ty * depth, -depth];
-  pillars(m, [at(0.6, -1.08, 0.27), at(0.77, -0.25, 0.24), at(0.89, 0.45, 0.2), at(1.02, 1.08, 0.16), [0.13 * spread, 0.17, -0.05]], w, d, PART_TRIM, PART_HULL);
+  const at = (sx: number, sy: number, depth: number): V3 => screenAt(sx, sy, depth, spread);
+  const path: V3[] = [at(0.6, -1.08, 0.27), at(0.77, -0.25, 0.24), at(0.89, 0.45, 0.2), at(1.02, 1.08, 0.16), [0.13 * spread, 0.17, -0.05]];
+  pillars(m, path, w, d, PART_TRIM, PART_HULL);
+  // The rail: thinner, nearer the eye, on the inner (screen-centre) side.
+  const rail = path.slice(0, 4).map(([x, y, z]): V3 => {
+    const k = 1 - (w * 0.55) / Math.max(1e-6, Math.hypot(x, y));
+    return [x * k, y * k, z * 0.985];
+  });
+  pillars(m, rail, w * 0.32, d * 0.5, PART_METAL, PART_METAL);
 }
 
-/** A beam across the top of the view at screen height `sy` (heavy visor or canopy bow). */
+/**
+ * The canopy bow: an arch across the top of the view at screen height
+ * `sy` (its middle slightly higher), with corner gussets down to the
+ * pillars, so pillars and bow read as one moulded window frame.
+ */
+function canopyBow(m: Model, sy: number, w: number, d: number, spread = 1): void {
+  const depth = 0.18;
+  const pts: V3[] = [];
+  for (const sx of [-1.25, -0.9, -0.6, -0.3, 0, 0.3, 0.6, 0.9, 1.25]) pts.push(screenAt(sx, sy + 0.06 * (1 - sx * sx), depth, spread));
+  pillar(m, pts, w, d, PART_TRIM, PART_HULL);
+  // Inner rail along the bow's lower edge.
+  const ty = Math.tan(50 * (Math.PI / 180)) / (16 / 9);
+  const rail = pts.map(([x, y, z]): V3 => [x, y - w * 0.55 * (ty / ty), z * 0.985]);
+  pillar(m, rail, w * 0.32, d * 0.5, PART_METAL, PART_METAL);
+  // Rounded window corners where the bow meets the pillars: a quarter arc
+  // from the bow down into each pillar (the window reads as one frame).
+  for (const s of [-1, 1]) {
+    const arc: V3[] = [];
+    for (let i = 0; i <= 6; i++) {
+      const a = (i / 6) * (Math.PI / 2);
+      // Corner centre inside the window; the arc bulges toward the screen corner.
+      const sx = 0.72 + 0.22 * Math.sin(a);
+      const sy2 = sy - 0.34 + 0.34 * Math.cos(a) + 0.05;
+      arc.push(screenAt(sx * s, sy2, depth * (1.0 + 0.06 * Math.sin(a)), spread));
+    }
+    pillar(m, arc, w * 0.9, d, PART_TRIM, PART_HULL);
+  }
+}
+
+/** A heavy visor beam across the top of the view at screen height `sy` (Hauler). */
 function topBow(m: Model, sy: number, w: number, d: number, part = PART_HULL): void {
   const tx = Math.tan(50 * (Math.PI / 180));
   const ty = tx / (16 / 9);
@@ -147,7 +190,8 @@ function skitterFrame(): { hull: Model; eye: Model } {
     hull.lathe([[0, -0.3], [0.007, -0.29], [0.008, -0.05], [0.012, 0.0]], 8, { center: [x, -0.03, 0], part: PART_METAL, group: hull.smooth(60), capEnd: true });
   }
   const eye = new Model();
-  canopyPillars(eye, 0.009, 0.012, 1.02);
+  canopyPillars(eye, 0.014, 0.012, 1.02);
+  canopyBow(eye, 0.96, 0.011, 0.01, 1.02);
   return { hull, eye };
 }
 
@@ -177,7 +221,8 @@ function tinkerFrame(): { hull: Model; eye: Model } {
     hull.sphere([x + 0.068 * s, 0, -0.05], 0.016, 1, s > 0 ? PART_NAV_STARBOARD : PART_NAV_PORT, hull.smooth(80));
   }
   const eye = new Model();
-  canopyPillars(eye, 0.012, 0.014);
+  canopyPillars(eye, 0.02, 0.016);
+  canopyBow(eye, 0.92, 0.016, 0.014);
   return { hull, eye };
 }
 
@@ -204,8 +249,9 @@ function haulerFrame(): { hull: Model; eye: Model } {
     else hull.addMirrorX(piece);
   }
   const eye = new Model();
-  canopyPillars(eye, 0.02, 0.02);
+  canopyPillars(eye, 0.026, 0.02);
   topBow(eye, 0.9, 0.024, 0.02, PART_TRIM);
+  canopyBow(eye, 0.84, 0.012, 0.012);
   return { hull, eye };
 }
 
@@ -242,8 +288,8 @@ function tugFrame(): { hull: Model; eye: Model } {
     else hull.addMirrorX(arm);
   }
   const eye = new Model();
-  canopyPillars(eye, 0.014, 0.016);
-  topBow(eye, 0.97, 0.014, 0.016, PART_TRIM);
+  canopyPillars(eye, 0.022, 0.018);
+  canopyBow(eye, 0.94, 0.018, 0.016);
   return { hull, eye };
 }
 

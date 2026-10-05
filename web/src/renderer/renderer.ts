@@ -18,6 +18,7 @@ import type { Quat } from "../math/quat.ts";
 import type { Vec3 } from "../math/vec3.ts";
 import { stripRoomWalls, type Atmosphere } from "./atmosphere.ts";
 import { CanvasSizer } from "./canvas.ts";
+import { CloakPass } from "./cloak.ts";
 import { Frustum } from "./frustum.ts";
 import { initGpu, type GpuContext } from "./gpu.ts";
 import { GpuTimer, type GpuTimings } from "./gpuTimer.ts";
@@ -30,7 +31,7 @@ import { DEFAULT_POST, HDR_FORMAT, PostChain, type PostSettings } from "./post.t
 import { TerrainMaterial } from "./rockTextures.ts";
 import { terrainVertexData } from "./terrainBlend.ts";
 import { QUALITY_PRESETS, QualityAuto, qualityFromSearch, type QualityLevel, type RenderQuality } from "./quality.ts";
-import { FRAME_UNIFORM_FLOATS, srgbToLinear, TEAM_SLOTS } from "./shaders/frame.ts";
+import { FRAME_UNIFORM_FLOATS, ROOM_FADE, srgbToLinear, TEAM_SLOTS } from "./shaders/frame.ts";
 import { Sky } from "./sky.ts";
 import { SunShadow, sunShadowBindLayoutEntries } from "./sunShadow.ts";
 import { VOLUMETRIC_LOOKS, VolumetricShafts, volumetricLook } from "./volumetric.ts";
@@ -135,13 +136,19 @@ export function packInstances(instances: readonly Instance[], out?: Float32Array
   return data;
 }
 
-/** Opaque pass (depth-written) or translucent pass (blended, drawn after). */
-export type RenderPass = "opaque" | "translucent";
+/**
+ * Opaque pass (depth-written), translucent pass (blended, drawn after), or
+ * the cloak refraction (cloak.ts: drawn through a copy of the finished
+ * scene; `opacity` is the cloak's strength).
+ */
+export type RenderPass = "opaque" | "translucent" | "refract";
 
 /** Instances per mesh kind for each pass (built by game/scene.ts). */
 export interface SceneInstances {
   opaque: Partial<Record<MeshKind, Instance[]>>;
   translucent: Partial<Record<MeshKind, Instance[]>>;
+  /** Cloaked ships (VQP); optional, missing = none. */
+  refract?: Partial<Record<MeshKind, Instance[]>>;
 }
 
 export function emptyScene(): SceneInstances {
@@ -281,7 +288,10 @@ export class Renderer {
   private readonly batches: Record<RenderPass, Map<MeshKind, InstanceBatch>> = {
     opaque: new Map(),
     translucent: new Map(),
+    refract: new Map(),
   };
+  /** Cloaked ships drawn as refraction (VQP). */
+  private readonly cloak: CloakPass;
   private readonly frustum = new Frustum();
   /** Dynamic point lights (VQ6, lights.ts): this frame's lights from `setLights`. */
   private readonly lightSystem: LightSystem;
@@ -302,6 +312,8 @@ export class Renderer {
   detailedTiming = false;
   /** Shader time (s) for this and later frames instead of the wall clock (fixed-pose screenshots). */
   timeOverride: number | null = null;
+  /** Open levels: rock fades into the sky before the hidden walls (VQP); false = cut off sharply (before shots). */
+  roomFade = true;
   /** The own ship's cockpit frame (VQ1), drawn last in the scene pass; set its `state` per frame. */
   readonly hullFrame: HullFrame;
 
@@ -388,6 +400,7 @@ export class Renderer {
     this.terrainMaterial = new TerrainMaterial(device);
     this.terrainLayout = device.createPipelineLayout({ bindGroupLayouts: [bindGroupLayout, this.terrainMaterial.layout] });
     this.hullFrame = new HullFrame(device, bindGroupLayout);
+    this.cloak = new CloakPass(device, bindGroupLayout);
     this.modules = {
       terrain: device.createShaderModule({ label: "terrain", code: TERRAIN_WGSL }),
       instanced: device.createShaderModule({ label: "instanced", code: INSTANCED_WGSL }),
@@ -572,8 +585,8 @@ export class Renderer {
 
   /** Replaces every instance: kinds missing from `scene` are cleared. */
   setScene(scene: SceneInstances): void {
-    for (const pass of ["opaque", "translucent"] as const) {
-      const wanted = scene[pass];
+    for (const pass of ["opaque", "translucent", "refract"] as const) {
+      const wanted = scene[pass] ?? {};
       for (const kind of MESH_KINDS) this.setInstances(kind, wanted[kind] ?? [], pass);
     }
   }
@@ -637,6 +650,8 @@ export class Renderer {
     // Open levels clear to transparent black: the sky is drawn under the scene after the resolve (sky.ts).
     const sky = this.sky.visible;
     const clearValue = sky ? { r: 0, g: 0, b: 0, a: 0 } : { r: fog[0] ?? 0, g: fog[1] ?? 0, b: fog[2] ?? 0, a: 1 };
+    let refracted = 0;
+    for (const batch of this.batches.refract.values()) refracted += batch.count;
     const beginPass = (label: string, first: boolean, last: boolean): GPURenderPassEncoder => {
       const timestampWrites = timer?.pass(label);
       const color: GPURenderPassColorAttachment = {
@@ -654,8 +669,8 @@ export class Renderer {
           view: depthView,
           depthClearValue: 1,
           depthLoadOp: first ? "clear" : "load",
-          // The particle pass (soft particles) and the volumetric shafts read the depth after the scene.
-          depthStoreOp: last && !this.particles && quality.volumetric.divisor === 0 ? "discard" : "store",
+          // The particle pass (soft particles), the volumetric shafts and the cloak pass read the depth after the scene.
+          depthStoreOp: last && !this.particles && quality.volumetric.divisor === 0 && refracted === 0 ? "discard" : "store",
         },
       });
       pass.setBindGroup(0, this.bindGroup);
@@ -701,6 +716,14 @@ export class Renderer {
     this.volumetric.encode(encoder, this.post.sceneHdr, this.depthTexture!, camera, this.sizer.aspect, quality.volumetric, timer);
     if (sky) this.sky.composite(encoder, this.post.sceneHdr, camera, time, timer);
     if (quality.shafts) this.sky.encodeShafts(encoder, this.post.sceneHdr, viewProj, timer);
+    // Cloaked ships bend the finished backdrop (VQP); particles draw over them.
+    this.cloak.encode(encoder, this.post.sceneHdr, this.depthTexture!, this.bindGroup, camera.orientation, refracted, (p) => {
+      for (const batch of this.batches.refract.values()) {
+        batch.draw(p);
+        stats.instances += batch.count;
+        stats.triangles += (batch.mesh.indexCount / 3) * batch.count;
+      }
+    }, timer);
     // Particles after the sky and shafts: smoke and glows draw over the finished backdrop.
     this.particles?.encode(encoder, sceneView, this.depthTexture!, camera, { width: this.canvas.width, height: this.canvas.height }, timer);
     this.post.encode(encoder, this.context.getCurrentTexture().createView(), this.settings.post, time, timer);
@@ -713,6 +736,7 @@ export class Renderer {
   destroy(): void {
     this.clearChunks();
     this.hullFrame.destroy();
+    this.cloak.destroy();
     for (const batches of Object.values(this.batches)) for (const batch of batches.values()) batch.destroy();
     for (const mesh of Object.values(this.meshes)) mesh.destroy();
     this.depthTexture?.destroy();
@@ -792,6 +816,10 @@ export class Renderer {
     }
     const h = s.heightFog;
     d.set([h.density, h.falloff, h.baseY, s.skyHaze], 48);
+    // Open levels: rock fades out before the hidden walls (VQP; frame.ts room_fade).
+    const room = this.sky.visible && this.roomFade ? this.sky.atmosphere?.room : null;
+    d.set(room ? [room.min.x, room.min.y, room.min.z, ROOM_FADE] : [0, 0, 0, 0], 52);
+    d.set(room ? [room.max.x, room.max.y, room.max.z, 0] : [0, 0, 0, 0], 56);
     this.device.queue.writeBuffer(this.frameBuffer, 0, d);
   }
 }

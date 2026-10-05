@@ -707,6 +707,11 @@ fn leech_arc_draws_no_bolt_but_still_spends_energy() {
     // The arcs' energy is still counted against later shots.
     let spent: f32 = p.pending().iter().map(|s| s.cost).sum();
     assert!(spent > 0.0);
+    // Its arcs are recorded for the locally drawn beam.
+    let (tick, w) = p.last_beam().expect("arcs recorded");
+    assert_eq!(w, t.id("leech_arc"));
+    let last = p.pending().iter().map(|s| s.tick).max().unwrap();
+    assert_eq!(tick, last);
 }
 
 #[test]

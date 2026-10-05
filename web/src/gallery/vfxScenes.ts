@@ -18,6 +18,8 @@ import type { VfxSink } from "../game/vfxLibrary.ts";
 import type { ProjectileState, ShipState, VisualDef } from "../game/views.ts";
 import { mulberry32 } from "../renderer/spriteAtlas.ts";
 import type { GalleryScene } from "./scenes.ts";
+import type { ChargeGlow } from "../game/chargeFx.ts";
+import { chargeAt, cloakAt } from "./vqpScenes.ts";
 
 /** Seconds of history simulated before the scene's time. */
 export const HISTORY_SECS = 2.5;
@@ -34,6 +36,8 @@ export interface Moment {
   ships: ShipState[];
   shots: ProjectileState[];
   cues: Cue[];
+  /** Charges in progress (VQP, game/chargeFx.ts). */
+  charges?: ChargeGlow[];
 }
 
 function frameOf(cam: Cam): (fw: number, rt: number, upw: number) => Vec3 {
@@ -212,6 +216,12 @@ export function momentAt(
       return explosionAt(cam, t, scene.time);
     case "stress":
       return stressAt(cam, visuals, t, scene.time);
+    case "charge": {
+      const m = chargeAt(cam, t, scene.time, scene.ship === undefined ? null : (radii[scene.ship] ?? 0.5));
+      return { ships: m.ships, shots: [], cues: [], charges: m.charges };
+    }
+    case "cloak":
+      return { ships: cloakAt(cam), shots: [], cues: [] };
     default:
       return null;
   }
@@ -255,6 +265,7 @@ export function simulateVfx(
       flashes: [],
       gadgetOf,
       hullOf: () => 100,
+      ...(m.charges ? { charges: m.charges } : {}),
     };
     // The last frame's immediate sprites (cores, flames) stay for the fixed-frame render.
     vfx.update(frame);

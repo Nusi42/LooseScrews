@@ -27,9 +27,11 @@ export type PoseKind = "closeup" | "tunnel" | "vista" | "border" | "sun" | "plan
 /**
  * What is placed in front of the camera besides terrain. `fit` carves a
  * fixed test shape (VQ1): a rock ball ahead with a dead-end tunnel of
- * FIT_TUNNEL_RADIUS bored along the view.
+ * FIT_TUNNEL_RADIUS bored along the view. `charge` (VQP) shows ships
+ * charging the Fusion Charger (with `ship`: the own charge at the nose),
+ * `cloak` cloaked ships bending the scene (vqpScenes.ts).
  */
-export type SceneContent = "none" | "lineup" | "fight" | "lights" | "explosion" | "stress" | "fit";
+export type SceneContent = "none" | "lineup" | "fight" | "lights" | "explosion" | "stress" | "fit" | "charge" | "cloak";
 
 /** Radius of the `fit` scene's tunnel (u): 1.2 u across. */
 export const FIT_TUNNEL_RADIUS = 0.6;
@@ -53,6 +55,10 @@ export interface GalleryScene {
    * show (VQ1); absent = no cockpit, the plain camera.
    */
   ship?: number;
+  /** Pitch (degrees, up positive) added to the picked camera pose; default 0. */
+  pitch?: number;
+  /** Open levels: the camera moves up to this distance (u) below the hidden ceiling of the room box. */
+  belowCeiling?: number;
 }
 
 const CAVES: GalleryWorld = { seed: 7, enclosure: 50, density: 50 };
@@ -217,6 +223,22 @@ export const SCENES: readonly GalleryScene[] = [
     time: 2.15,
   },
   { id: "cockpit-tug", title: "Tug cockpit", covers: "fit, ships", world: CAVES, pose: "tunnel", content: "none", time: 1.0, ship: 3 },
+  { id: "cockpit-hauler", title: "Hauler cockpit", covers: "fit, ships", world: CAVES, pose: "tunnel", content: "none", time: 1.0, ship: 2 },
+  { id: "cockpit-sky", title: "Tinker cockpit under the open sky", covers: "fit, ships, backdrop", world: { seed: 7, enclosure: 20, density: 70 }, pose: "vista", content: "none", time: 1.0, ship: 1 },
+  {
+    id: "open-pillars",
+    title: "Open sky: pillars fading out before the hidden ceiling",
+    covers: "backdrop",
+    world: { seed: 7, enclosure: 20, density: 70 },
+    pose: "vista",
+    content: "none",
+    time: 1.0,
+    pitch: 14,
+    belowCeiling: 16,
+  },
+  { id: "charge-up", title: "Fusion Charger charge-up: full, 45 %, overcharge", covers: "effects", world: CAVES, pose: "tunnel", content: "charge", time: 3.0 },
+  { id: "charge-cockpit", title: "Own Fusion Charger charging (75 %) from the cockpit", covers: "effects", world: CAVES, pose: "tunnel", content: "charge", time: 3.0, ship: 1 },
+  { id: "cloak", title: "Cloaked ships bending the rock behind them", covers: "effects, ships", world: CAVES, pose: "tunnel", content: "cloak", time: 1.0 },
 ];
 
 export function sceneById(id: string): GalleryScene | undefined {

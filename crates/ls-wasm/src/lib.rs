@@ -25,6 +25,7 @@
 
 use wasm_bindgen::prelude::*;
 
+pub mod beam;
 pub mod controls;
 pub mod game;
 pub mod inventory;
@@ -735,6 +736,25 @@ impl Game {
             .map_or_else(Vec::new, |c| charge_array(&c))
     }
 
+    /// The own Leech Arc beam, drawn locally online instead of a round trip
+    /// late (`crate::beam`): `[from x, y, z, to x, y, z, target]` (target
+    /// 255 = none), or empty while the beam is off (and in practice, where
+    /// the beam cues arrive at once).
+    #[wasm_bindgen(js_name = localBeam)]
+    pub fn local_beam(&mut self) -> Vec<f32> {
+        self.core.local_beam().map_or_else(Vec::new, |b| {
+            vec![
+                b.from.x,
+                b.from.y,
+                b.from.z,
+                b.to.x,
+                b.to.y,
+                b.to.z,
+                b.target.map_or(255.0, f32::from),
+            ]
+        })
+    }
+
     /// The own gadget for the HUD.
     pub fn gadget(&self) -> GadgetHud {
         gadget_hud(&self.core.gadget())
@@ -925,6 +945,12 @@ impl Game {
     /// Constant for a match; read it once.
     pub fn visuals(&self) -> Vec<f32> {
         scene::visual_rows(self.core.visuals())
+    }
+
+    /// Visual id of a weapon's projectiles (index into [`Game::visuals`]).
+    #[wasm_bindgen(js_name = projectileVisual)]
+    pub fn projectile_visual(&self, weapon: u8) -> u32 {
+        u32::from(self.core.visuals().projectile(ls_sim::WeaponId(weapon)).0)
     }
 
     /// Players, [`PLAYER_STRIDE`] numbers each: `[id, team, shipType,

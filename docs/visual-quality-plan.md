@@ -106,12 +106,13 @@ Rules for every package:
 | VQ2 HDR core and post | Done (WIN9), merged on WIN1 with wave B. Exposure, bloom and AgX look tuned by eye; phone review open. |
 | VQ3a Terrain mesh data | Done (WIN11), merged on WIN1 before B3; worldgen goldens re-blessed together with B3's generator version 3. Meshing costs about 2x per chunk (plan: +40 %). Integration: The Squeeze's shell mesher uses the same snap through `ChunkStore::mesh_surface_nets_min` (milestone-3-plan.md "Wave B integration"). |
 | VQ4 Ships and props | Done (WIN10), merged on WIN1 after VQ2. Integration: the object shader edits moved into `shaders/objects.ts`; `shade_model` follows VQ2's colour convention (material literals linearised at build time, the plain part and the instance emissive wash use `emissive_glow`); `Renderer.create(canvas, { quality, legacyModels })`. Engine and nav-light strengths are still the LDR-tuned values (pending review); the wreck's hull type is still inferred on the client. |
-| VQ1 Camera and scale cues | Done (WIN5), merged on WIN1 in wave C round 1; see "VQ1 as built". Thin tunnels (about 1.2 u) render narrower than their collision shape (surface nets on the 1 u grid), an open item for VQ3a/VQ3b. |
+| VQ1 Camera and scale cues | Done (WIN5), merged on WIN1 in wave C round 1; see "VQ1 as built". The thin-tunnel open item (1.2 u bores drawn narrower than they are) and the canopy look are closed by VQP. |
 | VQ3b Terrain shading (uses VQ3a's AO) | Done (WIN2), merged on WIN1 in wave C round 1; see "VQ3b as built". Integration: dynamic lights (VQ6) now also add a highlight on rock (`light_spec` at the roughness' power, scaled by the Fresnel base). Terrain pass +0.06-0.20 ms on the RTX 5080 (estimated 1.8-2.9 ms on the reference mid GPU, at or slightly above the 2.0 ms share); reference-GPU run open. |
-| VQ5 Particles and VFX | Done (WIN3), merged on WIN1 in wave C round 1; see "VQ5 as built". ls-wasm gains the client-only hit cue (kind 250). Integration: effects drive VQ6's lights (`Vfx.lightSink` emits muzzle, spark/plasma impact, explosion and ship-death pulses into `LightFx`, which then stops watching projectiles); particles draw after VQ7's sky and shafts. Charge-up effect and reference-GPU timing open. |
+| VQ5 Particles and VFX | Done (WIN3), merged on WIN1 in wave C round 1; see "VQ5 as built". ls-wasm gains the client-only hit cue (kind 250). Integration: effects drive VQ6's lights (`Vfx.lightSink` emits muzzle, spark/plasma impact, explosion and ship-death pulses into `LightFx`, which then stops watching projectiles); particles draw after VQ7's sky and shafts. Charge-up effect done in VQP; reference-GPU timing open. |
 | VQ6 Dynamic lights | Done (WIN4), merged on WIN1 in wave C round 1. Also retuned VQ4's engine, nav-light and lamp strengths for HDR. Lights owns group 0 bindings 1-3; the sun is not occluded by rock, so lights read best in shade (open). |
-| VQ9 Sun occlusion | Done (WIN5), wave C round 2; see "VQ9 as built". Rock blocks the sun (a shadow map over the level, updated only where terrain changes), sealed levels get no sun, caverns with openings get volumetric shafts. Not merged yet. |
-| VQ7 Atmosphere and backdrop | Done (WIN6), merged on WIN1 in wave C round 1; see "VQ7 as built" below. Integration: the environment cube and its sampler moved to group 0 bindings 6-7 (VQ6 owns 1-3). Pillars end sharply at the hidden walls (soft fade open). |
+| VQ9 Sun occlusion | Done (WIN5), wave C round 2; see "VQ9 as built". Rock blocks the sun (a shadow map over the level, updated only where terrain changes), sealed levels get no sun, caverns with openings get volumetric shafts. Merged on WIN1 in wave C round 2. |
+| VQ7 Atmosphere and backdrop | Done (WIN6), merged on WIN1 in wave C round 1; see "VQ7 as built" below. Integration: the environment cube and its sampler moved to group 0 bindings 6-7 (VQ6 owns 1-3). Pillars at the hidden walls fade out since VQP. |
+| VQP Polish | Done (WIN4); see "VQP as built". Fusion Charger charge-up, cloak refraction, own Leech Arc beam drawn locally (M3 carried-over item), pillars fading at hidden walls, thin bores drawn at their true width, canopy frame. Mesh golden hashes re-blessed (sdf unchanged); reference-GPU timing open as for the other packages. |
 
 **VQ9 as built (WIN5):** see [architecture/renderer.md](architecture/renderer.md#sun-occlusion-vq9). The package asked for cheap sun visibility, baked per vertex in the mesher or a shadow map within budget. Chosen: a **shadow map**, because a per-vertex bake cannot stay correct under edits (a crater in a ceiling opens the sun onto floors in other chunks, far beyond `DIRTY_MARGIN`; the bake would need sun rays through the whole level per vertex and cross-chunk invalidation), its 1 u resolution gives blobs instead of shaft edges, and it would cost meshing time that VQ3a already doubled. The mesher is unchanged: no golden hash, no `GENERATOR_VERSION` and no replay hash changes, remesh CPU cost unchanged.
 - `web/src/renderer/sunShadow.ts` (`SunShadow`, `Renderer.sunShadow`): one orthographic `depth16unorm` 4096² map from the sun over the level (about 0.09 u per texel), back faces as casters (no acne on lit rock), region = the chunks seen so far snapped to the 32 u grid. Updates only on terrain changes: `setChunk` marks the old and new chunk extent's texel rectangles dirty (merged, at most 6); the next frame clears each rectangle by a scissored full-screen triangle and redraws the chunks overlapping it. Sealed levels (no sky, Enclosure >= 50: the level box encloses everything, also with the walls not casting, checked with a visibility debug view on caves, mines and the default world) skip the map: visibility 0, no lookups, no updates.
@@ -141,6 +142,81 @@ Rules for every package:
 | 8 | **VQ7 Atmosphere and backdrop** | Starfield plus procedural nebula skybox for open-sky worlds (seeded by share code); fog colour tinted toward the sun and a subtle height gradient; per-world-type grade (caves warm, mines sodium-orange, sky cold blue) through VQ2's grade hook; light shafts through cave openings (screen-space radial blur from the sun, high only) | new `web/src/renderer/sky.ts`, `web/src/renderer/shaders/sky.ts`, grade presets in `post.ts` | ≤ 0.6 ms | VQ2 |
 
 **VQ6 as built (WIN4):** see [architecture/renderer.md](architecture/renderer.md) "Dynamic lights". Clustered forward: a compute pass (`lights`) builds one 128-bit light mask per froxel of a 16x9x24 grid (screen tiles, exponential depth slices 0.5-240 u); terrain and objects look up their froxel from the clip position and loop over the set bits (`shaders/lighting.ts` `light()` and, for model materials, `light_spec()` with a Blinn-Phong highlight). Lights per frame: high 128, medium 32, low 16 (`RenderQuality.maxLights`), the best by intensity, range and distance to the camera after frustum culling. Sources (`web/src/game/lightFx.ts`): glowing projectiles by shape, engines (orange idle, blue-white boost, none while cloaked), muzzle pulses for new shots and impact or explosion pulses for vanished ones (white-hot fireballs cooling to orange and growing), ship deaths, the mechanics flashes (muzzle flashes, shockwaves, swaps, ...), Leech Arc beams, pickups, wreck embers, armed mines, mode objectives (reactor pulsing faster before detonation, core, extraction) and hot, charged or glowing rock (hot spots gathered from the chunk meshes per 6 u cell, breathing or crackling). The headlight is a soft spot along the view (full inside 14 degrees, 30 % beyond 40). Emitter API for VQ5 and C1: `LightFx.emit(preset or pulse, position, now, { color, scale })` with `LIGHT_PRESETS` (muzzle, spark, plasma, explosion, bigExplosion, shipDeath, pickup); an effect system that emits its own impacts sets `watchProjectiles = false`. VQ4 retune: engines 2.6 idle / 7.5 boost (were 0.9 / 2.6), nav lights 1.4 steady + 7.0 flash (0.45 + 3.0), lamps 4.5 (1.6). Gallery: new scenes `light-volley` (12 lights down a mine shaft) and `light-storm` (64 lights in the cave tunnel); `--lights off` renders the same frames unlit. Measured (RTX 5080, Chrome 154, 1920x1080, high, 300 frames, on vs off): 64 lights cost about 0.07 ms (terrain +0.06, objects +0.01, compute 0.01), 12 lights 0.01-0.02 ms; scaled by the 10-12x compute gap to the reference mid GPU that is about 0.7-0.85 ms for 64 lights (budget 1.0; a measurement on that class is still open). Tests: `web/src/renderer/lights.test.ts` (falloff and range, selection and culling, packing and the view transform, froxel maths: every point in its own froxel, the light assignment conservative, the light info, quality caps, hot spots, shader bindings), `web/src/game/lightFx.test.ts` (pulse curves, emit and expiry, projectile appear and vanish, ship deaths, scene lights, objectives). Browser smoke: the `light clusters` compute pipeline is required and validates. Deviations and notes: "low" keeps 16 lights instead of the pre-VQ6 path (the lights are cheap and carry gameplay information); the sun has no occlusion, so caves that the sun direction reaches stay evenly lit and the lights read strongest in shaded and dark rock (online smoke shots `online-laser.png`, `online-rocket.png`); occluding the sun and ambient (VQ3b's AO, or a sky-visibility bake) is the next big step for the cave look. Light lifetimes do not come from VQ5's presets yet: until VQ5 calls `emit`, `LightFx.observe` derives impacts from vanished projectiles (a projectile that leaves the interest range also flashes). `tools/browser-smoke/models.mjs` reports `in-flight: never ready` on `main` too (pre-existing).
+
+### VQP as built (WIN4)
+
+Polish package after wave C round 1. Shared-file edits are small and listed at the end.
+
+- **Thin bores** (VQ1 open item 1; `crates/ls-worldgen/src/mesh.rs`): surface nets only sees
+  open space through positive corners, so a bore narrower than a cell between two corner rows
+  vanished, and one touching a single row was drawn as a square of four vertices (the 1.2 u
+  test bore about 0.65 u across). With the exact field (`surface_nets_with_sdf`, the game's
+  mesher) `thin_air` finds thin open features as ridges of the corner values (open corners up
+  to 0.75 that peak along two axes, strictly on one; rock corners that do, for bores between
+  rows) and promotes rock corners within 0.5 of the surface next to them when Newton steps on
+  the exact field find open space inside their half-cell box with rock again 1.6 u across
+  (`open_within_box`; only true distance fields, slope 0.75 or more: carved bores, mine shafts;
+  the bound cavern fields are meshed as before apart from carved spots). Vertices of cells
+  touching marked corners go onto the exact surface (`fit_thin`: Newton steps, exact normal and
+  occlusion; creases keep the grid snap, or a plain exact snap next to promoted corners) and
+  then into the rock by the chord sag of the curvature they bend around (shape operator in the
+  tangent plane, at most 0.35 u), so the faces, not the vertices, sit on the surface. Test
+  `crates/ls-worldgen/tests/thin_tunnels.rs`: bores of radius 0.6, 0.75, 1.0 and 1.5 u through
+  solid rock in 14 positions and directions each, 1 152 rays from the axis per bore. Before,
+  the 0.6 u bore through cell centres was not drawn at all and diagonal ones were drawn in
+  pieces (rays from the axis met rock 0.01 u away, or nothing); now every ray meets the wall,
+  the mean drawn radius is within 0.08 u of the true one and the closest wall at 0.55 r or more
+  (0.84 r for 1.5 u). A second test drills the gallery's bore into a 3.5 u rock ball: no vertex
+  inside the bore (before: one 0.5 u off the surface, 0.1 u from the axis), every vertex within
+  0.15 u of the surface, at most 1 in 25 triangles folded at the mouth (14 of 560; the grid
+  cannot represent the rim). Cavern worlds (`tests/mesh_quality.rs`): vertex count +0.03 %,
+  every statistic within 0.002 u of before; mine shafts unchanged. Meshing cost
+  (`worldgen_bench`, shared machine, 3 runs each): busy cavern chunk 1.83-1.97 ms before,
+  2.08-2.23 ms after (the ridge scan); 200-crater remesh 11.7-19.4 ms before, 13.1-14.6 ms
+  after. Golden mesh hashes (`surface_nets`, `edited`) re-blessed; `sdf` hashes and
+  `GENERATOR_VERSION` unchanged (the mesh is client-only). Gallery `fit-tunnel`: the hole is
+  drawn about 390 px wide at 2.5 u, as wide as 1.2 u is there (before: a 230 px square).
+- **Cockpit canopy** (`renderer/hullFrameModels.ts`): pillars about 1.6x wider with a metal
+  rail along the inner edge, a canopy bow across the top (every ship; the Hauler keeps its
+  visor above it) and rounded corners, so the struts read as a window frame. Gallery
+  `cockpit-sky` and `cockpit-hauler` (new), `cockpit-skitter`, `cockpit-tug`. Cost unchanged
+  (objects pass 0.01-0.02 ms).
+- **Fusion Charger charge-up** (`game/chargeFx.ts`; renderer.md "Charge-up"): core, orb,
+  halo, pulsing ring, inflowing sparks, arcs, full-charge flare, red overcharge and a growing
+  point light; other ships' charges from `ChargeStart` cues (ls-wasm now puts the charging
+  weapon in the cue's `target`), the own one at the cockpit nose. Gallery `charge-up`,
+  `charge-cockpit`: particles pass 0.02 ms.
+- **Cloak refraction** (`renderer/cloak.ts`, `shaders/cloak.ts`; renderer.md "Cloak
+  refraction"): closes VQ5's deviation "cloak refraction shimmer is not done". Gallery `cloak`
+  (`?cloak=flat` for the old flickering translucent hull): objects pass 0.01 ms, frame 0.34 vs
+  0.32 ms.
+- **Own Leech Arc beam** (M3 carried-over item; `crates/ls-wasm/src/beam.rs`,
+  `Game.localBeam()`, `EffectsState.frame(now, ctx, local)`): drawn from the predicted arcs on
+  the frame the trigger fires; the server's own beam cues only correct the lock. Beams with a
+  lock (remote ones too) now follow the target as it moves. Tests: ls-wasm
+  `own_leech_arc_beam_is_drawn_locally_at_once` (online core against a room at zero latency:
+  the beam is there on the firing frame, steady while held, gone within the fire interval after
+  release, no own beam cue passed on), `beam::tests` (lock, kept lock, grounding),
+  `web/src/game/beams.test.ts`.
+- **Pillars at hidden walls** (VQ7 open item; renderer.md "Rock at the hidden walls"): rock
+  fades into the sky over the last 3 u before a hidden wall when seen from 12-30 u away or
+  more. Gallery `open-pillars` (camera 16 u below the hidden ceiling; `?roomfade=off` for the
+  before shot).
+- **Gallery**: new scenes `cockpit-hauler`, `cockpit-sky`, `open-pillars`, `charge-up`,
+  `charge-cockpit`, `cloak`; `GalleryScene.pitch` and `belowCeiling` place a camera; content
+  kinds `charge` and `cloak` (`web/src/gallery/vqpScenes.ts`). All 27 scenes within budget
+  (label `VQP-after`; RTX 5080, Chrome, 1080p, high: frames 0.15-0.57 ms).
+- **Shared files touched**: `renderer.ts` (the `refract` pass list and `CloakPass`, the room
+  box in the frame uniforms, `roomFade`), `shaders/frame.ts` (`room_min`, `room_max`,
+  `room_fade`; `FRAME_UNIFORM_FLOATS` 60), `shaders/terrain.ts` (the coverage output),
+  `post.ts` (`COPY_SRC` on the HDR scene texture), `main.ts` (charge tracker, charge lights,
+  local beam, `refractCloak`), `game/scene.ts` (`refractCloak`), `game/vfx.ts` (`charges`),
+  `game/mechanics.ts` (local beam, beams follow their lock), `game/session.ts` (`localBeam`),
+  `gallery/*` (scenes), `crates/ls-wasm/src/{game.rs,lib.rs,shots.rs,mechanics.rs}`.
+- **Open**: timings on the reference GPU; bore mouths keep a few folded triangles where the
+  rim crosses a cell; carved holes narrower than about 0.55 u radius (Plasma Repeater pits)
+  are still only what the grid samples; the own cockpit frame is not refracted while cloaked
+  (the screen-edge shimmer stays).
 
 ### VQ3a as built (WIN11)
 
@@ -235,7 +311,7 @@ Data-driven: `VFX_SHAPES` maps each visual shape to its core, trail, muzzle, imp
 **Deviations from the plan**:
 - No compute update pass: particle motion is analytic (spawn state, drag, lifetime), which needs no per-frame GPU work and no read-back; spawns are written once.
 - No per-emitter sorting: a single premultiplied blend (additive light writes alpha 0); flames are partly opaque, which keeps fireballs from summing to a flat white disc. Smoke-over-fire order follows spawn order.
-- Cloak refraction shimmer is not done (it needs a copy of the scene colour; a later package with the scene copy, e.g. VQ7's shafts, can add it); a cloaked ship shows a faint shimmer of glints.
+- Cloak refraction shimmer is not done (it needs a copy of the scene colour; a later package with the scene copy, e.g. VQ7's shafts, can add it); a cloaked ship shows a faint shimmer of glints. Done in VQP (`renderer/cloak.ts`).
 - The death explosion does not throw the VQ4 wreck parts themselves (the wreck is a replicated entity the VQ4 meshes draw); it throws hull-shard sprites and the fresh wreck smoulders.
 - Explosion size per shape and visual scale, not the weapon's splash radius (the client does not know it; ls-sim is out of scope).
 - "low" keeps particles (8 192 slots, 0.35 density, no motes); the pre-VQ5 mesh effects stay behind `?vfx=off` (`Renderer.create(canvas, { particles: false })`) instead of `RenderQuality.low`. The gallery shows the low preset without errors (`--quality low`).

@@ -268,7 +268,12 @@ per vertex, 255 = open, 0 = fully occluded; surface nets only, empty for dual co
 carries it.
 Surface-nets vertices lie on the collision surface (`ChunkStore::eval`): each mass point is
 snapped by one Newton step (tricubic grid interpolation, the exact field at creases); the
-normals are the smooth grid gradient (continuous across cells and chunks). Shared border
+normals are the smooth grid gradient (continuous across cells and chunks). Thin open features
+of true distance fields (carved bores up to about 1.5 u across, e.g. Fusion Charger channels)
+are found as ridges of the corner values; rock corners next to them count as open for the
+topology, and their vertices go onto the exact surface (exact normal and occlusion) and then
+up to 0.35 u into the rock by the chord sag, so the drawn bore is as wide as the flyable one
+(`ls_worldgen::mesh` `thin_air`, `fit_thin`; `tests/thin_tunnels.rs`). Shared border
 vertices carry bit-identical positions, normals and occlusion in both chunks. A chunk's
 `SampleGrid` holds corner values with a 4-corner halo (`GRID_HALO`) read from the neighbouring
 chunks; meshing a chunk generates its in-level neighbours.

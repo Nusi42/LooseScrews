@@ -145,6 +145,7 @@ export function addShips(
   time = 0,
   teams = 2,
   vfx = false,
+  refract = false,
 ): void {
   for (const s of ships) {
     if (!s.alive) continue;
@@ -166,7 +167,12 @@ export function addShips(
       // A lighter shade of the team hull colour, so a cloaked teammate and a
       // cloaked enemy still read apart.
       const shimmer: Rgb = [0.5 + color[0] * 0.5, 0.5 + color[1] * 0.5, 0.5 + color[2] * 0.5];
-      push(scene, "translucent", mesh, { ...hull, color: shimmer, emissive: 0.9, opacity: cloakShimmer(time, s.id) });
+      if (refract) {
+        // VQP: drawn as a lens through the finished scene (renderer/cloak.ts).
+        ((scene.refract ??= {})[mesh] ??= []).push({ ...hull, color: shimmer, emissive: 0, opacity: 1 });
+      } else {
+        push(scene, "translucent", mesh, { ...hull, color: shimmer, emissive: 0.9, opacity: cloakShimmer(time, s.id) });
+      }
       continue;
     }
     push(scene, "opaque", mesh, hull);
@@ -410,6 +416,11 @@ export interface SceneExtras extends EntityHulls {
    * false (the pre-VQ5 mesh effects, e.g. with `?vfx=off`).
    */
   vfx?: boolean;
+  /**
+   * Cloaked ships bend the scene behind them (the renderer's refraction
+   * pass, VQP) instead of a flickering translucent hull. Default false.
+   */
+  refractCloak?: boolean;
 }
 
 /** Builds the whole instance scene for one frame. */
@@ -425,7 +436,7 @@ export function buildScene(
   const scene = emptyScene();
   const teams = extras.teams ?? 2;
   const vfx = extras.vfx ?? false;
-  addShips(scene, ships, extras.gadgetOf, time, teams, vfx);
+  addShips(scene, ships, extras.gadgetOf, time, teams, vfx, extras.refractCloak ?? false);
   const hide = extras.hideShot;
   addProjectiles(scene, hide ? shots.filter((p) => !hide(p)) : shots, visuals, teamOf, time, teams, vfx);
   // Ship types of the ships in view, unless the caller knows every player's.

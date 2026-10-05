@@ -916,7 +916,10 @@ material border, paint edges, surface states, the four hulls, a fight frame with
 `light-volley` and `light-storm`: a volley of glowing shots down a mine shaft and 64 dynamic
 lights in a cave tunnel, VQ6; a ship blowing up and the 20 k particle budget scene, VQ5; VQ1: a
 Tinker and a Hauler in front of a carved 1.2 u tunnel with the cockpit frame and fit ring, and
-the Skitter and Tug cockpits) at 1920x1080 and saves one PNG per scene, plus a
+the Skitter, Tug and Hauler cockpits and the Tinker's under the open sky; VQP: pillars fading
+before the hidden ceiling (`?roomfade=off` cuts them sharply), the Fusion Charger charge-up
+from outside and from the cockpit, cloaked ships (`?cloak=flat` for the old translucent
+hull); pass page options with `--query`) at 1920x1080 and saves one PNG per scene, plus a
 `manifest.json` with the share code, the camera pose and the per-pass GPU times, under
 `target/visual-gallery/<label>/`. `target/visual-gallery/index.html` shows every label side by
 side per scene, so a package takes a `before` run on its base and an `after` run on its branch:

@@ -24,6 +24,7 @@ use ls_net::{Message, Reject, RejectReason, PROTOCOL_VERSION};
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
+use crate::api::Social;
 use crate::link::{link_pair, ConnInfo, LinkConfig, PeerLink};
 use crate::rooms::{requested_room, Rooms, RouteError};
 use crate::sim::SimCommand;
@@ -96,6 +97,9 @@ pub type CertHash = Arc<RwLock<Option<CertHashInfo>>>;
 #[derive(Debug, Clone)]
 pub struct Hub {
     rooms: Arc<Rooms>,
+    /// Parties, presence and duels (`None`: no `/api` and no party codes,
+    /// as in endpoint tests).
+    social: Option<Arc<Social>>,
     next_id: Arc<AtomicU64>,
     stats: Arc<SharedStats>,
     settings: ConnSettings,
@@ -122,10 +126,22 @@ impl Hub {
     ) -> Self {
         Hub {
             rooms,
+            social: None,
             next_id: Arc::new(AtomicU64::new(1)),
             stats,
             settings,
         }
+    }
+
+    /// The hub with the server's parties and duels (party routing, `/api`).
+    pub(crate) fn with_social(mut self, social: Arc<Social>) -> Self {
+        self.social = Some(social);
+        self
+    }
+
+    /// Parties, presence and duels, if the server has them.
+    pub fn social(&self) -> Option<&Arc<Social>> {
+        self.social.as_ref()
     }
 
     /// Sends a command to the public room.
@@ -147,7 +163,8 @@ impl Hub {
     }
 
     /// Checks the first packet of a connection. On success the player is
-    /// queued for the sim thread of the room its `Hello` asks for (which
+    /// queued for the sim thread of the room its `Hello` asks for (its
+    /// party's room for a party code, see [`crate::party`]; which
     /// sends `Welcome`, or `Reject` if the room is full) and the socket side
     /// of the link is returned. On failure returns the encoded `Reject` to
     /// send before closing (also for an unknown room code).
@@ -160,8 +177,30 @@ impl Hub {
         first_packet: &[u8],
         max_unreliable_size: usize,
     ) -> Result<PeerLink, Vec<u8>> {
-        let hello = ls_net::accept_hello(first_packet).map_err(|r| self.reject(r))?;
-        let room = requested_room(&hello);
+        let mut hello = ls_net::accept_hello(first_packet).map_err(|r| self.reject(r))?;
+        let mut room = requested_room(&hello);
+        // A party code wins over a room code: the party's room.
+        if let Some(text) = hello.party.clone().filter(|p| !p.trim().is_empty()) {
+            let resolved = match &self.social {
+                Some(s) => s.resolve_party(&text).map_err(|e| e.to_string()),
+                None => Err(format!("unknown party {}", text.trim())),
+            };
+            match resolved {
+                Ok((code, party_room)) => {
+                    hello.party = Some(code.to_string());
+                    room = party_room.map(|r| r.to_string());
+                }
+                Err(message) => {
+                    return Err(self.reject(Reject {
+                        reason: RejectReason::Other,
+                        server_version: PROTOCOL_VERSION,
+                        message,
+                    }))
+                }
+            }
+        } else {
+            hello.party = None;
+        }
         self.open_in(
             room.as_deref(),
             transport,

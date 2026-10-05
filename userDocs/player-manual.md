@@ -23,6 +23,7 @@ game's data files, so those pages always match the build.
 - [Pickups and wrecks](#pickups-and-wrecks)
 - [Paint the Void](#paint-the-void)
 - [Share codes, rule set codes and invite links](#share-codes-rule-set-codes-and-invite-links)
+  ([server list, parties and duels](#server-list-parties-and-duels))
 - [Troubleshooting](#troubleshooting)
 - [Not in this build yet](#not-in-this-build-yet)
 
@@ -695,10 +696,29 @@ server would refuse are listed in red. When the rules are valid, the **Share** s
 The editor remembers the last code you made. Opening it with `?editor=rules&rules=LR…` loads that
 code. **Close** returns to the start screen.
 
-**Invite links in this build:** opening an invite link shows the normal start screen; the game
-doesn't yet fill in the world or switch rules from it. Online you always play the server's world
-and rules, so an invite link is a way to hand both codes to a host, who starts the server with
-the host command. To look at an invite's rules, add `&editor=rules` to the link.
+**Opening an invite link** shows the normal start screen; choose **Play online**. A link with a
+world and/or rule set code (like the editor's) opens a private **custom match** with them on the
+server that serves the page (or the one named by `join=`), and you play there; friends who open
+the same link get their own custom match, so to play together use a party invite (below). To look
+at an invite's rules, add `&editor=rules` to the link.
+
+### Server list, parties and duels
+
+- **Server list:** the **Server list** link on the start screen lists the servers registered
+  with the server directory your host uses (name, region, mode, players, ping, world). **Join**
+  opens that server. If no directory is set up, the list says so; you can still join a server
+  by its address or an invite link.
+- **Parties:** in game, press Esc (to free the mouse) and click **Party & duels**, then
+  **Create party invite**. Send the link to your friends: it brings them into your room and, in
+  team modes, onto your team when the teams stay even (otherwise the party is split). The party
+  code (`P-…`) works only on that server.
+- **Duels:** the same panel lists the other players on the server with a **Duel** button; the
+  server list has one next to every listed player too. A duel is played on your current world
+  (from the server list: the world you enter, or a random one). The other player sees a
+  challenge with **Accept** and **Decline** for 30 seconds; when they accept, you both move to
+  a private two-player match (first to 10 kills or 5 minutes). Players on another server get
+  the challenge through the directory.
+- Your browser remembers a random player id for this; there are no accounts.
 
 ## Troubleshooting
 
@@ -787,7 +807,7 @@ These are part of the game design but aren't in the Milestone 2 build:
   rumble are banners only.
 - **Scorch fading and cosmetic chips:** scorch marks stay for the whole match; there are no
   client-only decals or small cosmetic debris chips.
-- **Invite links** don't fill in the world or rules when opened (see above). No lobby, server
-  list or party codes: you join by opening the server's address.
+- **Accounts and friends lists:** parties live on one server; duel challenges reach players
+  on servers listed in the same directory only.
 - **Settings:** no mouse sensitivity, invert-look or key rebinding options.
 - **Cosmetics, a WebGL2 fallback for browsers without WebGPU, and a desktop app.**

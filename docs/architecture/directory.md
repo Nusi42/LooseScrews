@@ -89,9 +89,17 @@ let task = ls_directory::spawn_heartbeats(client, ls_directory::new_secret(), mo
 
 `spawn_heartbeats` sends a heartbeat at once and then every `heartbeat_secs` the directory returns,
 calling the closure for the current `ServerInfo`; failures are logged at `warn` and retried at the
-next interval; when the shutdown watch turns true it sends `DELETE /servers` and ends. The server's
-flags (`--directory`, `--server-name`, `--region`, `--public-address`) and the browser's server
-list are M3 package B7.
+next interval; when the shutdown watch turns true it sends `DELETE /servers` and ends.
+
+`ls-server --directory <url> [--server-name <name>] [--region <tag>] [--public-address <host:port>]`
+does exactly that (`crates/ls-server/src/directory.rs`, `Social::server_info`): the public room's
+mode id, world and rules code, players over all rooms, the WebTransport certificate hash and the
+roster of players present on the server (public ids from the browser, never its token). It also
+relays duel challenges for players not on the server (`POST /invites` with kind `duel` and the
+challenger's server as `address`). The browser's server list (`web/src/ui/serverList.ts`) reads
+`GET /servers` with its build's protocol and data hash and pings each server itself; in game it
+polls `GET /invites?player=<own public id>` for relayed challenges. Details:
+[server.md](server.md#server-list-invites-parties-and-duels-apirs-partyrs-duelrs-directoryrs-m3-b7).
 
 ## Tests
 

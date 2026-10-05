@@ -37,36 +37,47 @@ pub struct RoomCode(String);
 impl RoomCode {
     /// The code for 30 random bits.
     pub fn from_bits(bits: u64) -> RoomCode {
-        let mut s = String::from("R-");
-        for i in (0..CODE_LEN).rev() {
-            s.push(CROCKFORD[((bits >> (5 * i)) & 31) as usize] as char);
-        }
-        RoomCode(s)
+        RoomCode(code_from_bits("R-", bits))
     }
 
     /// Parses a code leniently: case, a missing `R-` prefix, spaces and the
     /// Crockford look-alikes (O for 0, I and L for 1) are accepted.
     pub fn parse(text: &str) -> Option<RoomCode> {
-        let t = text.trim().to_ascii_uppercase();
-        let body = t.strip_prefix("R-").unwrap_or(&t);
-        let mut s = String::from("R-");
-        for c in body.chars().filter(|c| *c != '-' && *c != ' ') {
-            let c = match c {
-                'O' => '0',
-                'I' | 'L' => '1',
-                c => c,
-            };
-            if !CROCKFORD.contains(&(c as u8)) || !c.is_ascii() {
-                return None;
-            }
-            s.push(c);
-        }
-        (s.len() == 2 + CODE_LEN).then_some(RoomCode(s))
+        parse_code("R-", text).map(RoomCode)
     }
 
     pub fn as_str(&self) -> &str {
         &self.0
     }
+}
+
+/// `prefix` and six Crockford base32 characters for the low 30 bits.
+pub(crate) fn code_from_bits(prefix: &str, bits: u64) -> String {
+    let mut s = String::from(prefix);
+    for i in (0..CODE_LEN).rev() {
+        s.push(CROCKFORD[((bits >> (5 * i)) & 31) as usize] as char);
+    }
+    s
+}
+
+/// Parses `prefix` + six Crockford base32 characters leniently (see
+/// [`RoomCode::parse`]); returns the canonical spelling.
+pub(crate) fn parse_code(prefix: &str, text: &str) -> Option<String> {
+    let t = text.trim().to_ascii_uppercase();
+    let body = t.strip_prefix(prefix).unwrap_or(&t);
+    let mut s = String::from(prefix);
+    for c in body.chars().filter(|c| *c != '-' && *c != ' ') {
+        let c = match c {
+            'O' => '0',
+            'I' | 'L' => '1',
+            c => c,
+        };
+        if !c.is_ascii() || !CROCKFORD.contains(&(c as u8)) {
+            return None;
+        }
+        s.push(c);
+    }
+    (s.len() == prefix.len() + CODE_LEN).then_some(s)
 }
 
 impl std::fmt::Display for RoomCode {
@@ -87,6 +98,8 @@ pub struct RoomStatus {
     pub label: String,
     /// Lobby phase (`warmup`, `countdown`, `match`, `results`).
     pub phase: &'static str,
+    /// Mode id of the current or upcoming match (`ls_sim::ModeKind::id`).
+    pub mode: &'static str,
     /// Playlist entry being warmed up or played (rule set id, file or code).
     pub entry: String,
     /// World of the current or upcoming match.
@@ -243,6 +256,31 @@ impl Rooms {
         let entry = start(&code)?;
         rooms.insert(code.clone(), entry);
         Ok(code)
+    }
+
+    /// Whether the private room `code` is open.
+    pub fn is_open(&self, code: &RoomCode) -> bool {
+        self.private
+            .lock()
+            .is_ok_and(|r| r.get(code).is_some_and(|e| !e.closed()))
+    }
+
+    /// Sends a command to the room `code` names; see [`Rooms::send`].
+    pub(crate) fn send_to(
+        &self,
+        code: Option<&RoomCode>,
+        cmd: SimCommand,
+    ) -> Result<(), RouteError> {
+        self.send(code.map(RoomCode::as_str), cmd)
+    }
+
+    /// The public room's status.
+    pub fn public_status(&self) -> RoomStatus {
+        self.public
+            .status
+            .read()
+            .map(|s| s.clone())
+            .unwrap_or_default()
     }
 
     /// Removes a private room (a room that failed to start).

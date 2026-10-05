@@ -1,10 +1,13 @@
 //! HTTP/1.1 on the game port: static files from the web root (the built web
 //! client, for one-command local play), `GET /cert-hash` for WebTransport
 //! (JSON, see [`crate::endpoint::CertHashInfo`]),
-//! and the WebSocket upgrade at `/ws` (also accepted at `/`, so
-//! `ws://host:7777` works too).
+//! the JSON API at `/api/...` ([`crate::api`]: server info, presence,
+//! parties, duels; CORS open), and the WebSocket upgrade at `/ws` (also
+//! accepted at `/`, so `ws://host:7777` works too).
 //!
-//! Deliberately small: GET/HEAD only, keep-alive, no ranges or compression.
+//! Deliberately small: GET/HEAD (POST and OPTIONS for `/api` only, bodies
+//! with `Content-Length` up to [`crate::api::MAX_BODY`]), keep-alive, no
+//! ranges or compression.
 
 use std::net::SocketAddr;
 use std::path::{Component, Path, PathBuf};
@@ -36,6 +39,8 @@ pub struct Request {
     pub method: String,
     /// Path without query or fragment, still percent-encoded.
     pub path: String,
+    /// Query string (after `?`, without the fragment), still encoded.
+    pub query: String,
     pub version: String,
     /// Header names lower-cased.
     pub headers: Vec<(String, String)>,
@@ -79,6 +84,11 @@ pub fn parse_request(head: &[u8]) -> Option<Request> {
         return None;
     }
     let path = target.split(['?', '#']).next().unwrap_or("/").to_string();
+    let query = target
+        .split('#')
+        .next()
+        .and_then(|t| t.split_once('?'))
+        .map_or(String::new(), |(_, q)| q.to_string());
     let mut headers = Vec::new();
     for line in lines {
         if line.is_empty() {
@@ -90,6 +100,7 @@ pub fn parse_request(head: &[u8]) -> Option<Request> {
     Some(Request {
         method,
         path,
+        query,
         version,
         headers,
     })
@@ -283,6 +294,12 @@ async fn handle_connection(mut stream: TcpStream, remote: SocketAddr, shared: Ar
         }
         debug!(%remote, method = %req.method, path = %req.path, "http request");
         let keep_alive = req.keep_alive() && !*shared.shutdown.borrow();
+        if req.path.starts_with("/api/") {
+            match handle_api(&mut stream, &req, &mut buf, &shared, keep_alive).await {
+                Ok(true) => continue,
+                _ => return,
+            }
+        }
         if handle_request(&mut stream, &req, &shared, keep_alive)
             .await
             .is_err()
@@ -350,6 +367,89 @@ async fn upgrade(
     )
     .await;
     ws::serve(ws, remote, shared.hub.clone(), shared.shutdown.clone()).await;
+}
+
+/// CORS headers of every `/api` reply.
+const API_CORS: &str = "Access-Control-Allow-Origin: *\r\n";
+/// CORS preflight reply headers for `/api`.
+const API_PREFLIGHT: &str = "Access-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type\r\nAccess-Control-Max-Age: 600\r\n";
+
+/// Reads the request body (`Content-Length`, at most `MAX_BODY`) into
+/// `body`, taking what `buf` already holds first; `Err(status)` for a
+/// missing, invalid or too large length.
+async fn read_body(
+    stream: &mut TcpStream,
+    req: &Request,
+    buf: &mut Vec<u8>,
+) -> Result<Vec<u8>, u16> {
+    let len = match req.header("content-length") {
+        Some(v) => v.trim().parse::<usize>().map_err(|_| 400u16)?,
+        None if req.method == "POST" => return Err(411),
+        None => 0,
+    };
+    if len > crate::api::MAX_BODY {
+        return Err(413);
+    }
+    let read = async {
+        while buf.len() < len {
+            let mut chunk = [0u8; 4096];
+            let n = stream.read(&mut chunk).await?;
+            if n == 0 {
+                return Err(std::io::ErrorKind::UnexpectedEof.into());
+            }
+            buf.extend_from_slice(&chunk[..n]);
+        }
+        Ok::<(), std::io::Error>(())
+    };
+    match tokio::time::timeout(HEAD_TIMEOUT, read).await {
+        Ok(Ok(())) => {
+            let rest = buf.split_off(len);
+            Ok(std::mem::replace(buf, rest))
+        }
+        _ => Err(408),
+    }
+}
+
+/// Serves one `/api` request. `Ok(true)`: the connection stays open.
+async fn handle_api(
+    stream: &mut TcpStream,
+    req: &Request,
+    buf: &mut Vec<u8>,
+    shared: &Shared,
+    keep_alive: bool,
+) -> std::io::Result<bool> {
+    let json = "application/json";
+    if req.method == "OPTIONS" {
+        respond_with(stream, 204, json, API_PREFLIGHT, b"", true, keep_alive).await?;
+        return Ok(keep_alive);
+    }
+    let body = match read_body(stream, req, buf).await {
+        Ok(b) => b,
+        Err(status) => {
+            let msg = format!(r#"{{"error":"bad request body ({status})"}}"#);
+            respond_with(stream, status, json, API_CORS, msg.as_bytes(), false, false).await?;
+            return Ok(false);
+        }
+    };
+    let reply = match shared.hub.social() {
+        Some(social) => social.handle(&req.method, &req.path, &body).await,
+        None => crate::api::Reply {
+            status: 404,
+            body: r#"{"error":"no API on this endpoint"}"#.into(),
+        },
+    };
+    let head = req.method == "HEAD";
+    respond_with(
+        stream,
+        reply.status,
+        json,
+        API_CORS,
+        reply.body.as_bytes(),
+        head,
+        keep_alive,
+    )
+    .await?;
+    Ok(keep_alive)
 }
 
 async fn handle_request(
@@ -459,10 +559,17 @@ async fn resolve_file(root: &Path, rel: &Path) -> Option<PathBuf> {
 fn reason_phrase(status: u16) -> &'static str {
     match status {
         200 => "OK",
+        204 => "No Content",
         400 => "Bad Request",
         403 => "Forbidden",
         404 => "Not Found",
         405 => "Method Not Allowed",
+        408 => "Request Timeout",
+        411 => "Length Required",
+        413 => "Payload Too Large",
+        500 => "Internal Server Error",
+        502 => "Bad Gateway",
+        503 => "Service Unavailable",
         _ => "Error",
     }
 }
@@ -526,6 +633,7 @@ mod tests {
         .unwrap();
         assert_eq!(r.method, "GET");
         assert_eq!(r.path, "/ws");
+        assert_eq!(r.query, "x=1");
         assert_eq!(r.header("host"), Some("a"));
         assert!(r.is_websocket_upgrade());
         assert!(r.header_has_token("connection", "upgrade"));

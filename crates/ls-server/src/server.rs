@@ -14,9 +14,11 @@ use tokio::sync::{oneshot, watch};
 use tokio::task::JoinHandle;
 use tracing::info;
 
+use crate::api::Social;
 use crate::endpoint::{CertHash, ConnSettings, Endpoint, EndpointContext, Hub};
 use crate::http::HttpEndpoint;
 use crate::lobby::LobbyTiming;
+use crate::party::Parties;
 use crate::playlist::{Playlist, WorldChoice};
 use crate::rooms::{RoomCode, RoomEntry, RoomStatus, Rooms, SharedStatus, PUBLIC_ROOM};
 use crate::rules::ServerRules;
@@ -41,6 +43,8 @@ pub enum ServerError {
     Playlist(String),
     #[error("rooms: {0}")]
     Rooms(String),
+    #[error("directory: {0}")]
+    Directory(String),
 }
 
 /// Everything needed to start a server.
@@ -76,6 +80,25 @@ pub struct ServerConfig {
     pub private_rooms: usize,
     /// Extra time every next-room build takes (tests of slow builds).
     pub build_delay: Duration,
+    /// Server list and invites: the directory to register with
+    /// (`--directory`, `None`: no server list entry), the name and region
+    /// shown there and the public `host:port` players reach this server at
+    /// (`--public-address`; default: the bound address, `localhost` for an
+    /// unspecified one). See [`crate::directory`].
+    pub listing: Listing,
+}
+
+/// How the server presents itself in the server list and in invites.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Listing {
+    /// Directory URL (`http://host:port[/path]`).
+    pub directory: Option<String>,
+    /// Server name (`--server-name`, default [`crate::directory::DEFAULT_SERVER_NAME`]).
+    pub server_name: Option<String>,
+    /// Region tag (`--region`).
+    pub region: String,
+    /// Public `host:port` (`--public-address`).
+    pub public_address: Option<String>,
 }
 
 impl ServerConfig {
@@ -98,6 +121,7 @@ impl ServerConfig {
             playlist: None,
             private_rooms: crate::rooms::DEFAULT_PRIVATE_ROOMS,
             build_delay: Duration::ZERO,
+            listing: Listing::default(),
         }
     }
 
@@ -195,8 +219,16 @@ pub struct Server;
 impl Server {
     /// Binds the ports, builds the public room's first room on its sim
     /// thread (waits until it is ready) and starts accepting HTTP, WebSocket
-    /// and (if configured) WebTransport connections.
+    /// and (if configured) WebTransport connections. With
+    /// [`Listing::directory`] it also starts the directory heartbeats.
     pub async fn start(config: ServerConfig) -> Result<ServerHandle, ServerError> {
+        let directory = config
+            .listing
+            .directory
+            .as_deref()
+            .map(ls_directory::DirectoryClient::new)
+            .transpose()
+            .map_err(|e| ServerError::Directory(e.to_string()))?;
         let endpoint = HttpEndpoint::bind(config.bind, config.web_root.clone()).await?;
         let local_addr = endpoint.local_addr()?;
         let wt_endpoint = config
@@ -205,6 +237,7 @@ impl Server {
             .transpose()?;
         let webtransport_addr = wt_endpoint.as_ref().map(|e| e.local_addr()).transpose()?;
         let stats = Arc::new(SharedStats::default());
+        let parties = Arc::new(Parties::new(random_seed()));
         let playlist = config.effective_playlist();
         let params = SimParams {
             template: config.match_cfg.clone(),
@@ -215,6 +248,7 @@ impl Server {
             label: PUBLIC_ROOM.into(),
             close_when_empty: false,
             build_delay: config.build_delay,
+            parties: Some(parties.clone()),
         };
         let (entry, ready_rx) = start_room(params, stats.clone())?;
         let room = match ready_rx.await {
@@ -230,23 +264,49 @@ impl Server {
         };
         let rooms = Arc::new(Rooms::new(entry, config.private_room_cap()));
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let config = Arc::new(config);
+        let factory = RoomFactory {
+            config: config.clone(),
+            rooms: rooms.clone(),
+            stats: stats.clone(),
+            parties: parties.clone(),
+            code_counter: AtomicU64::new(random_seed()),
+        };
+        let cert_hash: CertHash = Arc::new(RwLock::new(None));
+        let social = Arc::new(Social::new(
+            factory,
+            parties,
+            crate::directory::public_address(&config.listing, local_addr),
+            directory.clone(),
+            cert_hash.clone(),
+        ));
         let mut handle = ServerHandle {
             local_addr,
             webtransport_addr,
             room,
             stats: stats.clone(),
-            hub: Hub::with_rooms(rooms.clone(), stats, config.conn),
+            hub: Hub::with_rooms(rooms.clone(), stats, config.conn).with_social(social.clone()),
             rooms,
-            config: Arc::new(config.clone()),
-            code_counter: Arc::new(AtomicU64::new(random_seed())),
+            social: social.clone(),
+            config: config.clone(),
             shutdown_tx,
             shutdown_rx,
             endpoints: Vec::new(),
-            cert_hash: Arc::new(RwLock::new(None)),
+            cert_hash,
         };
         handle.spawn_endpoint(Box::new(endpoint));
         if let Some(wt) = wt_endpoint {
             handle.spawn_endpoint(Box::new(wt));
+        }
+        if let Some(client) = directory {
+            let info = social.clone();
+            let task = ls_directory::spawn_heartbeats(
+                client,
+                ls_directory::new_secret(),
+                move || info.server_info(),
+                handle.shutdown_rx.clone(),
+            );
+            handle.endpoints.push(task);
         }
         info!(
             webtransport = ?webtransport_addr,
@@ -258,6 +318,8 @@ impl Server {
             playlist_entries = playlist.len(),
             private_rooms = handle.rooms.max_private(),
             lobby = !config.lobby.is_off(),
+            public_address = %social.address(),
+            directory = config.listing.directory.as_deref().unwrap_or("none"),
             "listening (http + websocket at /ws)"
         );
         Ok(handle)
@@ -299,6 +361,88 @@ async fn join_room(entry: &RoomEntry) {
     }
 }
 
+/// Opens private rooms (for the [`ServerHandle`] and the HTTP API).
+#[derive(Debug)]
+pub struct RoomFactory {
+    config: Arc<ServerConfig>,
+    rooms: Arc<Rooms>,
+    stats: Arc<SharedStats>,
+    parties: Arc<Parties>,
+    /// Source of private room codes.
+    code_counter: AtomicU64,
+}
+
+impl RoomFactory {
+    /// The server's configuration.
+    pub fn config(&self) -> &ServerConfig {
+        &self.config
+    }
+
+    /// The room registry.
+    pub fn rooms(&self) -> &Arc<Rooms> {
+        &self.rooms
+    }
+
+    /// See [`ServerHandle::create_private_room`].
+    pub async fn create(&self, spec: PrivateRoomSpec) -> Result<RoomCode, ServerError> {
+        let mut room_cfg = self.config.room;
+        if let Some(n) = spec.max_players {
+            room_cfg.max_players = n;
+        }
+        let mut ready = None;
+        let counter = &self.code_counter;
+        let code = self.rooms.insert_private(
+            || RoomCode::from_bits(ls_math::rng::mix64(counter.fetch_add(1, Ordering::Relaxed))),
+            |code| {
+                let params = SimParams {
+                    template: self.config.match_cfg.clone(),
+                    room_cfg,
+                    stats_interval: self.config.stats_interval,
+                    lobby: spec.lobby.unwrap_or(self.config.lobby),
+                    playlist: spec.playlist.clone(),
+                    label: code.to_string(),
+                    close_when_empty: true,
+                    build_delay: self.config.build_delay,
+                    parties: Some(self.parties.clone()),
+                };
+                let stats = Arc::new(SharedStats {
+                    links: self.stats.links.clone(),
+                    ..SharedStats::default()
+                });
+                let (entry, rx) = start_room(params, stats)?;
+                ready = Some(rx);
+                Ok(entry)
+            },
+        )?;
+        let built = match ready {
+            Some(rx) => rx.await,
+            None => return Err(ServerError::SimStopped),
+        };
+        match built {
+            Ok(Ok(info)) => {
+                info!(
+                    room = %code,
+                    share_code = %info.share_code,
+                    ruleset = %info.ruleset,
+                    max_players = room_cfg.max_players,
+                    private_rooms = self.rooms.private_count(),
+                    "private room open"
+                );
+                Ok(code)
+            }
+            other => {
+                if let Some(t) = self.rooms.remove_private(&code) {
+                    let _ = tokio::task::spawn_blocking(move || t.join()).await;
+                }
+                Err(match other {
+                    Ok(Err(e)) => ServerError::Room(e),
+                    _ => ServerError::SimStopped,
+                })
+            }
+        }
+    }
+}
+
 /// A running server. Dropping it stops the sim threads and the endpoints
 /// without waiting; [`ServerHandle::shutdown`] stops them gracefully.
 #[derive(Debug)]
@@ -309,9 +453,8 @@ pub struct ServerHandle {
     stats: Arc<SharedStats>,
     hub: Hub,
     rooms: Arc<Rooms>,
+    social: Arc<Social>,
     config: Arc<ServerConfig>,
-    /// Source of private room codes.
-    code_counter: Arc<AtomicU64>,
     shutdown_tx: watch::Sender<bool>,
     shutdown_rx: watch::Receiver<bool>,
     endpoints: Vec<JoinHandle<()>>,
@@ -408,59 +551,22 @@ impl ServerHandle {
         &self,
         spec: PrivateRoomSpec,
     ) -> Result<RoomCode, ServerError> {
-        let mut room_cfg = self.config.room;
-        if let Some(n) = spec.max_players {
-            room_cfg.max_players = n;
-        }
-        let mut ready = None;
-        let counter = self.code_counter.clone();
-        let code = self.rooms.insert_private(
-            || RoomCode::from_bits(ls_math::rng::mix64(counter.fetch_add(1, Ordering::Relaxed))),
-            |code| {
-                let params = SimParams {
-                    template: self.config.match_cfg.clone(),
-                    room_cfg,
-                    stats_interval: self.config.stats_interval,
-                    lobby: spec.lobby.unwrap_or(self.config.lobby),
-                    playlist: spec.playlist.clone(),
-                    label: code.to_string(),
-                    close_when_empty: true,
-                    build_delay: self.config.build_delay,
-                };
-                let stats = Arc::new(SharedStats {
-                    links: self.stats.links.clone(),
-                    ..SharedStats::default()
-                });
-                let (entry, rx) = start_room(params, stats)?;
-                ready = Some(rx);
-                Ok(entry)
-            },
-        )?;
-        let built = match ready {
-            Some(rx) => rx.await,
-            None => return Err(ServerError::SimStopped),
-        };
-        match built {
-            Ok(Ok(info)) => {
-                info!(
-                    room = %code,
-                    share_code = %info.share_code,
-                    ruleset = %info.ruleset,
-                    private_rooms = self.rooms.private_count(),
-                    "private room open"
-                );
-                Ok(code)
-            }
-            other => {
-                if let Some(t) = self.rooms.remove_private(&code) {
-                    let _ = tokio::task::spawn_blocking(move || t.join()).await;
-                }
-                Err(match other {
-                    Ok(Err(e)) => ServerError::Room(e),
-                    _ => ServerError::SimStopped,
-                })
-            }
-        }
+        self.social.factory().create(spec).await
+    }
+
+    /// The configuration the server started with.
+    pub fn config(&self) -> &ServerConfig {
+        &self.config
+    }
+
+    /// Parties, duels and presence (the `/api` endpoints' state).
+    pub fn social(&self) -> &Arc<Social> {
+        &self.social
+    }
+
+    /// The public `host:port` this server announces (directory, invites).
+    pub fn public_address(&self) -> &str {
+        self.social.address()
     }
 
     /// Graceful shutdown: players get `Disconnect`, sockets flush and close,

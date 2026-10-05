@@ -119,12 +119,15 @@ async fn end_match(server: &ServerHandle) {
         .unwrap();
 }
 
+/// Extra time of every next-match build in the rotation test.
+const BUILD_DELAY: Duration = Duration::from_secs(2);
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn matches_rotate_on_one_connection_and_joins_never_wait_for_a_build() {
     let mut cfg = config();
     cfg.playlist = Some(Playlist::new(vec![entry("First"), entry("Second")]).unwrap());
     // Every next-match build takes at least 2 s.
-    cfg.build_delay = Duration::from_secs(2);
+    cfg.build_delay = BUILD_DELAY;
     let server = Server::start(cfg).await.unwrap();
     let addr = server.local_addr();
 
@@ -134,16 +137,29 @@ async fn matches_rotate_on_one_connection_and_joins_never_wait_for_a_build() {
     // Match 1 ends; the next one is built while the results show.
     end_match(&server).await;
     tokio::time::sleep(Duration::from_millis(300)).await;
-    // A join during the build is welcomed at once (into the finished match).
+    // A join during the build is welcomed at once, by the finished match's
+    // room: its epoch proves the sim thread served the join before the 2 s
+    // build had finished and been swapped in (a join that waited for the
+    // build would get the next room's Welcome), whatever the machine's
+    // load. The wall clock only backs that up with a bound far below the
+    // build time; the 200 ms target holds on a quiet machine (printed) and
+    // in the e2e/soak runs, not under a parallel test load.
     let (mut b, wb, took) = connect(addr, "b").await;
-    assert!(took < Duration::from_millis(200), "Welcome took {took:?}");
+    eprintln!("join during the next-match build: Welcome after {took:?} (target < 200 ms)");
+    assert_eq!(
+        wb.epoch, w1.epoch,
+        "served by the running room, not the next one"
+    );
     assert_eq!(rules_name(&wb), "First");
+    assert!(took < BUILD_DELAY / 2, "Welcome took {took:?}");
 
     // Both get the second match's Welcome on the same connection.
     let a2 = next_welcome(&mut a, "a").await;
     let b2 = next_welcome(&mut b, "b").await;
     assert_eq!(rules_name(&a2), "Second");
     assert_eq!(rules_name(&b2), "Second");
+    assert_ne!(a2.epoch, w1.epoch, "the next room has its own epoch");
+    assert_eq!(b2.epoch, a2.epoch);
     assert_ne!(a2.player_id, b2.player_id);
 
     // And a third match, still on the same connections.

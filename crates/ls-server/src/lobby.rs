@@ -29,7 +29,7 @@
 use std::time::Duration;
 
 use ls_math::TICK_HZ;
-use ls_sim::RuleSet;
+use ls_sim::{ModeRules, PaintTheVoidRules, RuleSet};
 
 /// Default longest warm-up before the countdown starts.
 pub const DEFAULT_WARMUP: Duration = Duration::from_secs(30);
@@ -82,9 +82,18 @@ pub fn ticks(d: Duration) -> u64 {
     (d.as_secs_f64() * f64::from(TICK_HZ)).round() as u64
 }
 
-/// The rules of a warm-up room for `rules`: same mode and ships, every
-/// weapon and gadget banned (empty loadout, no pickups) and a long match
+/// The rules of a warm-up room for `rules`: same ships and teams, every
+/// weapon and gadget banned (empty loadout, no pickups, no mutators: a
+/// mutator such as Instagib would hand its weapon back) and a long match
 /// clock, so players can fly the level but not fight.
+///
+/// The warm-up never ends early, whatever the next match's mode: instead
+/// of that mode (whose kill target, lives, last-side-standing check or
+/// objectives could end the room or eliminate players), the warm-up plays
+/// [`warmup_mode`], whose only end condition is its clock (which the sim
+/// thread keeps pushing back while the warm-up lasts, see
+/// [`extend_warmup_clock`]). The lobby announces the real next mode in
+/// `LobbyState`.
 pub fn warmup_rules(rules: &RuleSet) -> RuleSet {
     let mut r = rules.clone();
     r.name = format!("Warm-up: {}", rules.name);
@@ -99,14 +108,43 @@ pub fn warmup_rules(rules: &RuleSet) -> RuleSet {
     r.starting_loadout.gadget = None;
     // Mutators would rewrite the arsenal back in (Instagib: the Railspike).
     r.mutators.clear();
-    r.mode.set_field("match_secs", WARMUP_MATCH_SECS);
-    // Hot Reactor: no reactor during the warm-up (it would cost lives and
-    // end the warm-up early). Other modes ignore the field.
-    r.mode.set_field("next_reactor_secs", WARMUP_MATCH_SECS);
-    // The Squeeze: no walls closing in during a warm-up (1023 s is the
-    // field's largest code value; other modes ignore the name).
-    r.mode.set_field("first_phase_secs", 1023.0);
+    // A timer-only mode whatever the next mode (no reactor, no closing
+    // walls, no kill target or lives can end a warm-up).
+    r.mode = warmup_mode(&rules.mode);
     r
+}
+
+/// The mode of a warm-up room before a match of `mode`: Paint the Void (no
+/// lives, no score target, kills do not score, and with every weapon banned
+/// nobody paints), which ends only by its clock ([`WARMUP_MATCH_SECS`]).
+/// It keeps the match's team count (2 to 4); a free-for-all match warms up
+/// on two sides (Paint the Void has no free-for-all; without weapons the
+/// sides only colour the ships).
+pub fn warmup_mode(mode: &ModeRules) -> ModeRules {
+    let teams = mode.teams();
+    ModeRules::PaintTheVoid(PaintTheVoidRules {
+        teams: if (2..=4).contains(&teams) { teams } else { 2 },
+        match_secs: WARMUP_MATCH_SECS,
+        ..PaintTheVoidRules::default()
+    })
+}
+
+/// Clock a warm-up room keeps ahead of it ([`extend_warmup_clock`]).
+const WARMUP_CLOCK_MARGIN_TICKS: u64 = 600 * TICK_HZ as u64;
+
+/// Keeps a warm-up room's match clock from running out however long the
+/// warm-up lasts (a lone player waiting for a mode's minimum): sets the
+/// end tick [`WARMUP_MATCH_SECS`] ahead whenever less than ten minutes are
+/// left. Returns true if it moved the clock.
+pub fn extend_warmup_clock(world: &mut ls_sim::World) -> bool {
+    let now = world.tick();
+    let mode = world.mode_mut();
+    if mode.is_running() && mode.end_tick.saturating_sub(now) < WARMUP_CLOCK_MARGIN_TICKS {
+        mode.end_tick = now + (f64::from(WARMUP_MATCH_SECS) * f64::from(TICK_HZ)) as u64;
+        true
+    } else {
+        false
+    }
 }
 
 /// Lobby phase. Times are sim-thread ticks ([`Lobby::update`]'s `now`).
@@ -443,16 +481,11 @@ mod tests {
 
     #[test]
     fn hot_reactor_warmup_has_no_reactor() {
+        // The warm-up plays Paint the Void (B7's `warmup_mode`): no reactor
+        // can cost lives or end it.
         let hot = RuleSet::default_for(ls_sim::ModeKind::HotReactor);
         let w = warmup_rules(&hot);
-        let next = w
-            .mode
-            .fields()
-            .iter()
-            .find(|f| f.name == "next_reactor_secs")
-            .unwrap()
-            .value;
-        assert!(next >= w.mode.match_secs());
+        assert_eq!(w.mode.kind(), ls_sim::ModeKind::PaintTheVoid);
         w.resolve(&ls_sim::WeaponTable::builtin()).unwrap();
     }
 
@@ -473,10 +506,8 @@ mod tests {
         assert_eq!(rules.mode.match_secs(), WARMUP_MATCH_SECS);
         let squeeze = warmup_rules(&RuleSet::default_for(ls_sim::ModeKind::TheSqueeze));
         assert!(squeeze.resolve(&mc.weapons).is_ok());
-        assert!(matches!(
-            squeeze.mode,
-            ls_sim::ModeRules::TheSqueeze(m) if m.first_phase_secs == 1023.0
-        ));
+        // No walls close in a warm-up: it plays Paint the Void.
+        assert_eq!(squeeze.mode.kind(), ls_sim::ModeKind::PaintTheVoid);
         // A room builds, a player joins, holds fire for a while: nothing breaks.
         let cfg = RoomConfig {
             pregenerate: false,
@@ -501,5 +532,102 @@ mod tests {
         assert!(room.world().ship(player).is_some());
         assert!(room.world().mode().is_running());
         assert_eq!(room.world().projectiles().len(), 0, "nothing to fire");
+    }
+
+    /// Every mode's rules (team and free-for-all variants, with Instagib),
+    /// as the playlist would play them.
+    fn every_mode_rules() -> Vec<RuleSet> {
+        let mut out = Vec::new();
+        for kind in ls_sim::ModeKind::ALL {
+            let base = RuleSet::default_for(kind);
+            let mut ffa = base.clone();
+            ffa.mode.set_field("teams", 0.0);
+            let mut instagib = base.clone();
+            instagib.mutators = vec![ls_sim::Mutator::Instagib];
+            out.extend([base, ffa, instagib]);
+        }
+        out
+    }
+
+    #[test]
+    fn warmup_rules_drop_every_early_end_condition() {
+        for rules in every_mode_rules() {
+            let w = warmup_rules(&rules);
+            let what = format!("{} ({:?})", rules.name, rules.mode.kind());
+            // A timer-only mode: no lives, no kill target, no objectives.
+            assert_eq!(w.mode.kind(), ls_sim::ModeKind::PaintTheVoid, "{what}");
+            assert_eq!(w.mode.lives(), 0, "{what}");
+            assert_eq!(w.mode.match_secs(), WARMUP_MATCH_SECS, "{what}");
+            let teams = rules.mode.teams();
+            let want = if (2..=4).contains(&teams) { teams } else { 2 };
+            assert_eq!(w.mode.teams(), want, "{what}");
+            assert!(w.mutators.is_empty(), "{what}");
+            assert_eq!(w.allowed_ship_types, rules.allowed_ship_types, "{what}");
+            let mc = MatchConfig::paint_the_void(ShareCode::new(5, Sliders::new(40, 30)));
+            w.resolve_with(&mc.weapons, &mc.gadgets)
+                .unwrap_or_else(|e| panic!("{what}: {e}"));
+            assert!(
+                mc.weapons
+                    .iter()
+                    .all(|(_, d)| w.availability(&d.id).is_banned()),
+                "{what}"
+            );
+        }
+    }
+
+    /// A warm-up room does not end or eliminate anyone, whatever happens to
+    /// scores and lives, and its clock keeps being pushed back.
+    #[test]
+    fn warmup_rooms_never_end_early() {
+        let rules = RuleSet::default_for(ls_sim::ModeKind::TheSqueeze);
+        let mc = MatchConfig {
+            rules: warmup_rules(&rules),
+            ..MatchConfig::paint_the_void(ShareCode::new(6, Sliders::new(40, 30)))
+        };
+        let cfg = RoomConfig {
+            pregenerate: false,
+            ..RoomConfig::default()
+        };
+        let mut room = Room::new(mc, cfg).unwrap();
+        let ids: Vec<u8> = (0..3)
+            .map(|i| {
+                room.join(&ls_game::client_hello(format!("p{i}"), None, None))
+                    .unwrap()
+            })
+            .collect();
+        for _ in 0..5 {
+            room.step();
+        }
+        // What would end a kill-target or last-side-standing match: huge
+        // scores, one life left, all but one side gone from the score.
+        {
+            let mode = room.world_mut().mode_mut();
+            mode.score_target = 0;
+            mode.team_scores = [1000, 0, 0, 0];
+            for p in mode.players.values_mut() {
+                p.score = 1000;
+                p.lives = 1;
+            }
+        }
+        for _ in 0..120 {
+            room.step();
+        }
+        assert!(room.world().mode().is_running());
+        assert!(room.results().is_none(), "no MatchResults in a warm-up");
+        for id in &ids {
+            let player = room.player_of(*id).unwrap();
+            assert!(room.world().ship(player).is_some());
+            assert!(!room.world().mode().players[&player].is_out());
+        }
+        // The clock: pushed back when it gets close, left alone otherwise.
+        assert!(!extend_warmup_clock(room.world_mut()));
+        let now = room.world().tick();
+        room.world_mut().mode_mut().end_tick = now + 2;
+        assert!(extend_warmup_clock(room.world_mut()));
+        for _ in 0..10 {
+            room.step();
+        }
+        assert!(room.world().mode().is_running());
+        assert!(room.world().mode().end_tick > now + 3000 * 60);
     }
 }

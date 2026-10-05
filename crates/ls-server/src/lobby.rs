@@ -100,6 +100,9 @@ pub fn warmup_rules(rules: &RuleSet) -> RuleSet {
     // Mutators would rewrite the arsenal back in (Instagib: the Railspike).
     r.mutators.clear();
     r.mode.set_field("match_secs", WARMUP_MATCH_SECS);
+    // Hot Reactor: no reactor during the warm-up (it would cost lives and
+    // end the warm-up early). Other modes ignore the field.
+    r.mode.set_field("next_reactor_secs", WARMUP_MATCH_SECS);
     r
 }
 
@@ -433,6 +436,21 @@ mod tests {
         assert!(warm.mutators.is_empty());
         assert!(warm.availability("railspike").is_banned());
         assert!(warm.starting_loadout.primaries.is_empty());
+    }
+
+    #[test]
+    fn hot_reactor_warmup_has_no_reactor() {
+        let hot = RuleSet::default_for(ls_sim::ModeKind::HotReactor);
+        let w = warmup_rules(&hot);
+        let next = w
+            .mode
+            .fields()
+            .iter()
+            .find(|f| f.name == "next_reactor_secs")
+            .unwrap()
+            .value;
+        assert!(next >= w.mode.match_secs());
+        w.resolve(&ls_sim::WeaponTable::builtin()).unwrap();
     }
 
     #[test]

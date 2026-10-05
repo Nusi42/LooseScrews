@@ -146,7 +146,8 @@ impact).
 hash while pending); the Tectonic Charge spreads its cracks with it.
 
 Damage goes through one pipeline: friendly-fire scaling between teammates, then the mode's and
-the mutators' `on_damage` hooks, then the target's active gadget (`GadgetBehavior::on_damage`,
+the mutators' `on_damage` hooks, the mode's `on_hit` (it sees every hit, also one a shield
+will absorb), then the target's active gadget (`GadgetBehavior::on_damage`,
 the Shield; a mode hook may skip it), then hull, `Damaged` event and kill (the mode's
 `on_kill`).
 Every hit pushes: the projectile's `knockback` scales with its damage (level, ship type, rule
@@ -372,6 +373,7 @@ damage, let weapons fire without paying their cost (`unlimited_ammo`, resolved i
 | `on_start` | first tick | `ModeCtx` (`Ctx` commands + mutable `ModeState`) |
 | `allow_respawn`, `on_spawn` | respawns | `ModeRef` / `ModeMut` + the ship |
 | `on_damage` | damage pipeline, after friendly fire | `ModeRef` + `ModeHit` |
+| `on_hit` | damage pipeline, after the mode's and mutators' `on_damage`, before the gadget | `ModeMut` + the final `ModeHit` (Hot Reactor passes the reactor to the shooter) |
 | `on_kill` | a ship died | `ModeMut` + `Kill` |
 | `on_pickup` | a ship touches a pickup | `ModeState` + the ship |
 | `on_tick`, `end_check` | stage 7 | `ModeCtx`, `ModeRef` |
@@ -387,6 +389,10 @@ kills, deaths, mode score per player). Modules that do not override a hook get t
 fallback (kills score, a suicide or team kill costs a point, lives where the mode has them,
 end on one side left, `score_target` or the timer); the M3 modes not implemented yet are such
 stubs until their wave B package lands.
+
+Hot Reactor (`modes/hot_reactor.rs`, wave B4): the module docs list its rules and gap decisions;
+the reactor is objective kind `REACTOR` with the holder, the predicted detonation tick in
+`timer_end` and the fuse radius as `radius`; the holder has the `CARRIER` player flag.
 
 Team Brawl (`modes/team_brawl.rs`, wave B1): kills score for the killer and their team; a
 suicide (or a death without a killer) costs the victim's side and a team kill the killer's side

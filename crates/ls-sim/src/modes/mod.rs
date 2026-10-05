@@ -15,6 +15,7 @@
 //! | `allow_respawn` | a dead ship's respawn timer ran out | [`ModeRef`] |
 //! | `on_spawn` | a ship (re)spawned with its loadout | [`ModeMut`] + the ship |
 //! | `on_damage` | a ship takes damage (after friendly fire, before gadgets) | [`ModeRef`] + [`ModeHit`] |
+//! | `on_hit` | right after `on_damage` (and the mutators'): the final hit, before gadgets absorb it | [`ModeMut`] + [`ModeHit`] |
 //! | `on_kill` | a ship died | [`ModeMut`] + [`Kill`] |
 //! | `on_pickup` | a ship touches a pickup: may it take it? | [`ModeState`] + the ship |
 //! | `on_tick` | every tick, last stage (scores, timers, objectives) | [`ModeCtx`] (commands) |
@@ -220,6 +221,12 @@ pub trait ModeModule: Send + Sync + Debug {
 
     /// A ship takes damage.
     fn on_damage(&self, _m: &ModeRef, _hit: &mut ModeHit) {}
+
+    /// A ship was hit: the hit as `on_damage` hooks (mode, then mutators)
+    /// left it, before the target's gadget (shield) absorbs any of it. For
+    /// modes that react to hits (Hot Reactor passes the reactor to the
+    /// shooter).
+    fn on_hit(&self, _m: &mut ModeMut, _hit: &ModeHit) {}
 
     /// A ship died (deaths and kills on the ships are already counted).
     fn on_kill(&self, m: &mut ModeMut, kill: &Kill) {

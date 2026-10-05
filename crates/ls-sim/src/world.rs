@@ -2284,6 +2284,16 @@ impl World {
                 mm.on_damage(&m, &mut hit);
             }
         }
+        cfg.mode_module.on_hit(
+            &mut ModeMut {
+                state: &mut self.mode,
+                rules: &cfg.rules.mode,
+                mutators: &cfg.rules.mutators,
+                ships: &self.ships,
+                now,
+            },
+            &hit,
+        );
         amount = hit.amount;
         let Some(ship) = self.ships.get_mut(&target) else {
             return;

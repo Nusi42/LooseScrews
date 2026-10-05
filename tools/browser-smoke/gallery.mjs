@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // Visual gallery (docs/visual-quality-plan.md, VQ8): renders the fixed scenes
 // of web/src/gallery/scenes.ts (cave close-up, cave tunnel, open sky, mine
-// shaft, the four hulls, a fight frame with an explosion) in a locally
+// shaft, material border, paint edges, surface states, the four hulls, a
+// fight frame with an explosion) in a locally
 // installed Chrome or Edge with WebGPU, saves one screenshot per scene under
 // <out-dir>/<label>/, records the per-pass GPU times (timestamp-query) and
 // checks them against the frame budget, then writes <out-dir>/index.html

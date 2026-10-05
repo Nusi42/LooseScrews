@@ -164,11 +164,17 @@ export class GpuMesh {
   readonly positionBuffer: GPUBuffer;
   readonly normalBuffer: GPUBuffer;
   readonly teamBuffer: GPUBuffer;
+  /** Terrain blend weights and AO (terrainBlend.ts, two u32 per vertex); only for terrain chunks. */
+  readonly extraBuffer: GPUBuffer | null;
   readonly indexBuffer: GPUBuffer;
   readonly indexCount: number;
   readonly aabb: Aabb | null;
 
-  constructor(device: GPUDevice, mesh: MeshData, label = "mesh") {
+  /**
+   * `terrain`: the chunk's attributes from terrainBlend.ts `terrainVertexData`
+   * (its team replaces the plain expanded team; adds the extra buffer).
+   */
+  constructor(device: GPUDevice, mesh: MeshData, label = "mesh", terrain?: { team: Uint32Array; extra: Uint32Array }) {
     validateMesh(mesh);
     this.indexCount = mesh.indices.length;
     this.aabb = computeAabb(mesh.positions);
@@ -176,10 +182,11 @@ export class GpuMesh {
     this.normalBuffer = createBuffer(device, mesh.normals, GPUBufferUsage.VERTEX, `${label}.normals`);
     this.teamBuffer = createBuffer(
       device,
-      expandTeams(mesh.team, mesh.surface, mesh.materials, mesh.paintColors),
+      terrain?.team ?? expandTeams(mesh.team, mesh.surface, mesh.materials, mesh.paintColors),
       GPUBufferUsage.VERTEX,
       `${label}.team`,
     );
+    this.extraBuffer = terrain ? createBuffer(device, terrain.extra, GPUBufferUsage.VERTEX, `${label}.extra`) : null;
     this.indexBuffer = createBuffer(device, mesh.indices, GPUBufferUsage.INDEX, `${label}.indices`);
   }
 
@@ -187,6 +194,7 @@ export class GpuMesh {
     this.positionBuffer.destroy();
     this.normalBuffer.destroy();
     this.teamBuffer.destroy();
+    this.extraBuffer?.destroy();
     this.indexBuffer.destroy();
   }
 }

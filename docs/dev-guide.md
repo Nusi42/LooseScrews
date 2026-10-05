@@ -867,8 +867,8 @@ All servers it starts are stopped at the end; it never uses port 7777.
 ### Visual gallery and GPU budget
 
 `tools/browser-smoke/gallery.mjs` (visual-quality-plan.md VQ8) renders the fixed scenes of
-`web/src/gallery/scenes.ts` (cave close-up, cave tunnel, open sky, mine shaft, the four hulls, a
-fight frame with an explosion) at 1920x1080 and saves one PNG per scene, plus a
+`web/src/gallery/scenes.ts` (cave close-up, cave tunnel, open sky, mine shaft, a rock material
+border, paint edges, surface states, the four hulls, a fight frame with an explosion) at 1920x1080 and saves one PNG per scene, plus a
 `manifest.json` with the share code, the camera pose and the per-pass GPU times, under
 `target/visual-gallery/<label>/`. `target/visual-gallery/index.html` shows every label side by
 side per scene, so a package takes a `before` run on its base and an `after` run on its branch:

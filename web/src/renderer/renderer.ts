@@ -20,6 +20,8 @@ import { GpuTimer, type GpuTimings } from "./gpuTimer.ts";
 import { GpuMesh, type MeshData } from "./mesh.ts";
 import { LEGACY_MESH_BUILDERS, MESH_BUILDERS, MESH_KINDS, type MeshKind } from "./models/index.ts";
 import { DEFAULT_POST, HDR_FORMAT, PostChain, type PostSettings } from "./post.ts";
+import { TerrainMaterial } from "./rockTextures.ts";
+import { terrainVertexData } from "./terrainBlend.ts";
 import { QUALITY_PRESETS, QualityAuto, qualityFromSearch, type QualityLevel, type RenderQuality } from "./quality.ts";
 import { FRAME_UNIFORM_FLOATS, srgbToLinear, TEAM_SLOTS } from "./shaders/frame.ts";
 import { INSTANCED_WGSL, TRANSLUCENT_WGSL } from "./shaders/objects.ts";
@@ -46,6 +48,8 @@ export interface RenderSettings {
   /** Direction towards the sun (normalised by the renderer). */
   sunDirection: Vec3;
   headlight: number;
+  /** Per-world terrain look (strata tilt, rock pattern offsets; rockTextures.ts `hashSeed` of the share code); default 0. */
+  terrainSeed?: number;
   /** Exposure, bloom, vignette, grain, AgX look and colour grade (post.ts). */
   post: PostSettings;
 }
@@ -155,6 +159,14 @@ const TEAM_LAYOUT: GPUVertexBufferLayout = {
   arrayStride: 4,
   attributes: [{ shaderLocation: 2, offset: 0, format: "uint32" }],
 };
+/** Terrain AO and blend weights (terrainBlend.ts: two unorm8x4 per vertex). */
+const EXTRA_LAYOUT: GPUVertexBufferLayout = {
+  arrayStride: 8,
+  attributes: [
+    { shaderLocation: 3, offset: 0, format: "unorm8x4" },
+    { shaderLocation: 4, offset: 4, format: "unorm8x4" },
+  ],
+};
 /** Per-vertex material part of instanced meshes (the mesh's expanded `team` buffer; models/kit.ts PART_*). */
 const PART_LAYOUT: GPUVertexBufferLayout = {
   arrayStride: 4,
@@ -232,9 +244,11 @@ export class Renderer {
   private readonly frameData = new Float32Array(FRAME_UNIFORM_FLOATS);
   private readonly bindGroup: GPUBindGroup;
   private readonly pipelineLayout: GPUPipelineLayout;
+  private readonly terrainMaterial: TerrainMaterial;
+  private readonly terrainLayout: GPUPipelineLayout;
   private readonly modules: { terrain: GPUShaderModule; instanced: GPUShaderModule; translucent: GPUShaderModule };
-  /** Scene pipelines per MSAA sample count (built when a quality level first needs them). */
-  private readonly scenePipelines = new Map<number, ScenePipelines>();
+  /** Scene pipelines per MSAA sample count and terrain detail (built when a quality level first needs them). */
+  private readonly scenePipelines = new Map<string, ScenePipelines>();
   private readonly post: PostChain;
   private readonly chunks = new Map<string, GpuMesh>();
   private readonly meshes: Record<MeshKind, GpuMesh>;
@@ -316,12 +330,14 @@ export class Renderer {
       entries: [{ binding: 0, resource: { buffer: this.frameBuffer } }],
     });
     this.pipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [bindGroupLayout] });
+    this.terrainMaterial = new TerrainMaterial(device);
+    this.terrainLayout = device.createPipelineLayout({ bindGroupLayouts: [bindGroupLayout, this.terrainMaterial.layout] });
     this.modules = {
       terrain: device.createShaderModule({ label: "terrain", code: TERRAIN_WGSL }),
       instanced: device.createShaderModule({ label: "instanced", code: INSTANCED_WGSL }),
       translucent: device.createShaderModule({ label: "translucent", code: TRANSLUCENT_WGSL }),
     };
-    this.scenePipelinesFor(this.qualityLevel.msaa);
+    this.scenePipelinesFor(this.qualityLevel);
     this.post = new PostChain(device, gpu.format);
 
     this.timer = GpuTimer.create(device);
@@ -332,9 +348,11 @@ export class Renderer {
     this.meshes = meshes;
   }
 
-  /** Terrain, instanced and translucent pipelines rendering into the HDR target at `samples` MSAA. */
-  private scenePipelinesFor(samples: number): ScenePipelines {
-    const cached = this.scenePipelines.get(samples);
+  /** Terrain, instanced and translucent pipelines rendering into the HDR target at the quality's MSAA and terrain detail. */
+  private scenePipelinesFor(quality: RenderQuality): ScenePipelines {
+    const samples = quality.msaa;
+    const key = `${samples}:${quality.terrainDetail ? 1 : 0}`;
+    const cached = this.scenePipelines.get(key);
     if (cached) return cached;
     const device = this.device;
     const layout = this.pipelineLayout;
@@ -344,9 +362,14 @@ export class Renderer {
     const pipelines: ScenePipelines = {
       terrain: device.createRenderPipeline({
         label: "terrain",
-        layout,
-        vertex: { module: terrain, entryPoint: "vs_main", buffers: [POSITION_LAYOUT, NORMAL_LAYOUT, TEAM_LAYOUT] },
-        fragment: { module: terrain, entryPoint: "fs_main", targets: [{ format: HDR_FORMAT }] },
+        layout: this.terrainLayout,
+        vertex: { module: terrain, entryPoint: "vs_main", buffers: [POSITION_LAYOUT, NORMAL_LAYOUT, TEAM_LAYOUT, EXTRA_LAYOUT] },
+        fragment: {
+          module: terrain,
+          entryPoint: "fs_main",
+          targets: [{ format: HDR_FORMAT }],
+          constants: { DETAIL: quality.terrainDetail ? 1 : 0 },
+        },
         primitive: { topology: "triangle-list", cullMode: TERRAIN_CULL_MODE, frontFace: "ccw" },
         depthStencil,
         multisample,
@@ -383,7 +406,7 @@ export class Renderer {
         multisample,
       }),
     };
-    this.scenePipelines.set(samples, pipelines);
+    this.scenePipelines.set(key, pipelines);
     return pipelines;
   }
 
@@ -431,7 +454,7 @@ export class Renderer {
     this.chunks.get(key)?.destroy();
     this.chunks.delete(key);
     if (mesh && mesh.indices.length > 0) {
-      this.chunks.set(key, new GpuMesh(this.device, mesh, `chunk ${key}`));
+      this.chunks.set(key, new GpuMesh(this.device, mesh, `chunk ${key}`, terrainVertexData(mesh)));
     }
   }
 
@@ -481,7 +504,7 @@ export class Renderer {
     const quality = this.qualityLevel;
     const samples = quality.msaa;
     this.ensureTargets(samples, quality.bloomMips);
-    const pipelines = this.scenePipelinesFor(samples);
+    const pipelines = this.scenePipelinesFor(quality);
 
     const viewProj = this.viewProjection(camera);
     this.frustum.setFromViewProj(viewProj);
@@ -525,11 +548,13 @@ export class Renderer {
     const stats: FrameStats = { chunksTotal: this.chunks.size, chunksDrawn: 0, triangles: 0, instances: 0 };
     let pass = beginPass(split ? "terrain" : "scene", true, !split);
     pass.setPipeline(pipelines.terrain);
+    pass.setBindGroup(1, this.terrainMaterial.bindGroup);
     for (const mesh of this.chunks.values()) {
-      if (mesh.aabb && !this.frustum.intersectsAabb(mesh.aabb)) continue;
+      if (!mesh.extraBuffer || (mesh.aabb && !this.frustum.intersectsAabb(mesh.aabb))) continue;
       pass.setVertexBuffer(0, mesh.positionBuffer);
       pass.setVertexBuffer(1, mesh.normalBuffer);
       pass.setVertexBuffer(2, mesh.teamBuffer);
+      pass.setVertexBuffer(3, mesh.extraBuffer);
       pass.setIndexBuffer(mesh.indexBuffer, "uint32");
       pass.drawIndexed(mesh.indexCount);
       stats.chunksDrawn++;
@@ -568,6 +593,7 @@ export class Renderer {
     this.depthTexture?.destroy();
     this.msaaTexture?.destroy();
     this.post.destroy();
+    this.terrainMaterial.destroy();
     this.timer?.destroy();
     this.frameBuffer.destroy();
     this.sizer.dispose();
@@ -628,6 +654,7 @@ export class Renderer {
     const lin = (c: Rgb): number[] => [srgbToLinear(c[0]), srgbToLinear(c[1]), srgbToLinear(c[2])];
     d.set([...lin(s.fogColor), s.fogDensity], 24);
     d.set([...lin(s.rockColor), 1], 28);
+    this.terrainMaterial.setSeed(s.terrainSeed ?? 0);
     for (let i = 0; i < TEAM_SLOTS; i++) {
       const c = s.teamColors[i] ?? s.rockColor;
       d.set([...lin(c), 1], 32 + i * 4);

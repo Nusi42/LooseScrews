@@ -48,6 +48,7 @@ import { createWriteStream, existsSync, mkdirSync, readFileSync, writeFileSync }
 import { createServer } from "node:net";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { fakePointerLock } from "./fake-pointer-lock.mjs";
 
 import { assertWorkFolder } from "../lib/work-folder.mjs";
 
@@ -513,6 +514,8 @@ async function main() {
       const page = await browser.newPage();
       if (summary.mode === "headful") await page.setViewport({ width: 1280, height: 720 });
       await page.evaluateOnNewDocument(gpuInstrumentation);
+      // Never lock the real OS cursor (hidden headless windows still grab it on Windows).
+      await page.evaluateOnNewDocument(fakePointerLock);
       watchPage(page, consoleLog, () => phase);
       return page;
     };

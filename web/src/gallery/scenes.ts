@@ -2,6 +2,8 @@
 // §3, VQ8). Pure data and maths: imported by the in-page gallery
 // (gallery.ts) and by tools/browser-smoke/gallery.mjs (Node strips the types).
 
+import type { Quat } from "../math/quat.ts";
+import type { Vec3 } from "../math/vec3.ts";
 import type { SceneDecor } from "./decor.ts";
 import type { ModeSceneKind } from "./modeScenes.ts";
 
@@ -21,9 +23,12 @@ export interface GalleryWorld {
  * from the spawn point toward the world's sun or planet
  * (renderer/atmosphere.ts, VQ7), the target a little off the screen centre;
  * `shade` stands in rock's shadow and looks at rock the sun reaches through
- * an opening (shadePose.ts, VQ9; falls back to `tunnel`).
+ * an opening (shadePose.ts, VQ9; falls back to `tunnel`); `corner` walks
+ * toward a rock edge or corner 4-16 u away (two neighbouring probes whose
+ * faces turn by 60° or more, raycast.ts pickCorner) and looks at it from
+ * 7 u (falls back to `tunnel`).
  */
-export type PoseKind = "closeup" | "tunnel" | "vista" | "border" | "sun" | "planet" | "shade" | "sunwall";
+export type PoseKind = "closeup" | "tunnel" | "vista" | "border" | "sun" | "planet" | "shade" | "sunwall" | "corner";
 
 /**
  * What is placed in front of the camera besides terrain. `fit` carves a
@@ -68,6 +73,12 @@ export interface GalleryScene {
   belowCeiling?: number;
   /** "mode" content: which mode's visuals (M3 C1, modeScenes.ts). */
   mode?: ModeSceneKind;
+  /**
+   * A fixed camera instead of the picked pose, for scenes whose before and
+   * after shots must match while the meshes (and so the picked pose) change
+   * (M4 A2 `mine-corner`: picked once with `pose`, then pinned).
+   */
+  camera?: { position: Vec3; orientation: Quat };
 }
 
 const CAVES: GalleryWorld = { seed: 7, enclosure: 50, density: 50 };
@@ -121,6 +132,21 @@ export const SCENES: readonly GalleryScene[] = [
     covers: "textures, lighting",
     world: { seed: 7, enclosure: 100, density: 30 },
     pose: "tunnel",
+    content: "none",
+    time: 1.0,
+  },
+  {
+    id: "mine-corner",
+    title: "Mine shaft corners and edges up close (M4 A2: dual-contouring placement)",
+    covers: "textures, polygon switches",
+    world: { seed: 7, enclosure: 100, density: 30 },
+    pose: "corner",
+    // Picked with the `corner` pose on the A2 meshes, then pinned so the
+    // before shots (older meshes, another pick) show the same rock.
+    camera: {
+      position: { x: 33.10193870017096, y: 67.85334618982269, z: 201.7128839405682 },
+      orientation: { x: 0.010131473546369701, y: 0.9588073227240413, z: 0.034474733313723964, w: -0.2817753784443956 },
+    },
     content: "none",
     time: 1.0,
   },

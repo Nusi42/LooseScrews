@@ -38,11 +38,13 @@ fn surface_nets_chunk_timing() {
         let t0 = Instant::now();
         store.ensure_generated(candidates[0]);
         let gen_time = t0.elapsed();
-        let (chunk, tris) = busiest_chunk(&mut store, &candidates);
+        let (chunk, _) = busiest_chunk(&mut store, &candidates);
         let t0 = Instant::now();
         let grid = store.sample_grid(chunk);
         let grid_time = t0.elapsed();
 
+        // The bare grid has no exact field: no thin passes, its own count.
+        let tris = surface_nets(&grid).triangle_count();
         let runs = if release { 25 } else { 3 };
         let mut times: Vec<Duration> = (0..runs)
             .map(|_| {

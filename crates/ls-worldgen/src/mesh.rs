@@ -151,9 +151,10 @@ pub fn surface_nets_with_sdf(grid: &SampleGrid, sdf: &dyn Fn(Vec3) -> f32) -> Me
     build(grid, Placement::Smooth(Some(sdf)), None)
 }
 
-/// [`surface_nets_with_sdf`] with the thin-feature pass ([`THIN_OPEN`])
-/// only at grid corners where `thin_allowed` holds; elsewhere the cells
-/// mesh as plain [`surface_nets_with_sdf`] without thin features. Where
+/// [`surface_nets_with_sdf`] with the thin-feature passes ([`THIN_OPEN`],
+/// thin rock) only at grid corners where `thin_allowed` holds, and the
+/// sharp-feature placement only at vertices where it holds; elsewhere the
+/// cells mesh as plain [`surface_nets_with_sdf`] without them. Where
 /// `thin_allowed` holds for every corner the mesh is bit-identical to
 /// [`surface_nets_with_sdf`]. The game's Squeeze shell turns the pass off
 /// next to its moving wall: the slivers of open space between the wall
@@ -296,9 +297,14 @@ impl HermiteCache<'_> {
 /// Finds the sign change of `f` on `[0, 1]` (with `f(0) = va`, `f(1) = vb` of
 /// opposite signs) by alternating false-position and bisection steps.
 fn refine_crossing(f: impl Fn(f32) -> f32, va: f32, vb: f32) -> f32 {
+    refine_crossing_steps(f, va, vb, CROSSING_ITERATIONS)
+}
+
+/// [`refine_crossing`] with `steps` evaluations.
+fn refine_crossing_steps(f: impl Fn(f32) -> f32, va: f32, vb: f32, steps: u32) -> f32 {
     let (mut t0, mut t1, mut v0, mut v1) = (0.0f32, 1.0f32, va, vb);
     let solid0 = v0 < 0.0;
-    for it in 0..CROSSING_ITERATIONS {
+    for it in 0..steps {
         let t = if it % 2 == 0 {
             t0 + (t1 - t0) * (v0 / (v0 - v1))
         } else {
@@ -418,14 +424,34 @@ fn build(
                     (origin[2] + k) as f32 + local[2],
                 ];
                 if let Placement::Smooth(sdf) = placement {
-                    let forced = thin.as_ref().map_or(0, |t| {
+                    let (forced, rock) = thin.as_ref().map_or((0, 0), |t| {
                         let b = corner_index(i, j, k);
-                        [0, 1, SY, SY + 1, SZ, SZ + 1, SZ + SY, SZ + SY + 1]
+                        let marks = [0, 1, SY, SY + 1, SZ, SZ + 1, SZ + SY, SZ + SY + 1]
+                            .map(|o| t.corners[b + o]);
+                        let rock = marks
                             .iter()
-                            .fold(0, |m, &o| m.max(t.corners[b + o]))
+                            .enumerate()
+                            .fold(0u8, |m, (n, &v)| m | ((v == THIN_ROCK) as u8) << n);
+                        (marks.into_iter().fold(0, u8::max), rock)
                     });
-                    let v =
-                        refine_vertex(&field, world, sdf, forced, || trilinear_gradient(&c, local));
+                    let world = match sdf {
+                        Some(f) if rock != 0 => {
+                            let low = Vec3::new(
+                                (origin[0] + i) as f32,
+                                (origin[1] + j) as f32,
+                                (origin[2] + k) as f32,
+                            );
+                            thin_rock_start(f, low, &c, rock).to_array()
+                        }
+                        _ => world,
+                    };
+                    // Sharp features only where the thin passes run too
+                    // (the Squeeze shell mesher keeps both off next to its
+                    // moving wall, see `surface_nets_with_sdf_thin_where`).
+                    let sharp = thin_allowed.is_none_or(|a| a(Vec3::from_array(world)));
+                    let v = refine_vertex(&field, world, sdf, forced, sharp, || {
+                        trilinear_gradient(&c, local)
+                    });
                     mesh.positions.push(v.position);
                     mesh.normals.push(v.normal);
                     mesh.ao.push(v.ao);
@@ -469,13 +495,52 @@ fn build(
                     // Counter-clockwise seen from open space (on the +axis
                     // side when the lower corner is rock).
                     let quad = if solid0 { q } else { [q[0], q[3], q[2], q[1]] };
-                    mesh.indices.extend_from_slice(&split_quad(&mesh, quad));
+                    emit_quad(
+                        &mut mesh,
+                        quad,
+                        matches!(placement, Placement::Smooth(Some(_))),
+                    );
                 }
             }
         }
     }
     mesh
 }
+
+/// Whether triangle `(i, j, k)` faces against its vertex normals (a fold,
+/// culled as a hole on screen).
+fn folded(mesh: &Mesh, i: u32, j: u32, k: u32) -> bool {
+    let p = |v: u32| Vec3::from_array(mesh.positions[v as usize]);
+    let n = |v: u32| Vec3::from_array(mesh.normals[v as usize]);
+    let (pi, pj, pk) = (p(i), p(j), p(k));
+    (pj - pi).cross(pk - pi).dot(n(i) + n(j) + n(k)) < 0.0
+}
+
+/// Appends the triangles of quad `[a, b, c, d]` ([`split_quad`]), except a
+/// lid across an opening (M4 A2, "rim-aware quad split"): where the exact
+/// field placed the vertices (`exact`) and two of them face each other
+/// (normals more than [`LID_ANGLE`] apart: the walls on opposite sides of a
+/// bore's mouth), and even the better diagonal folds, the quad spans open
+/// space the grid could not see. Its triangles would face against their
+/// vertices and be culled as a hole on screen anyway, but they would still
+/// close the bore against rays and light from inside; the quad is left
+/// out. A quad belongs to one chunk only, so leaving it out keeps the seams.
+fn emit_quad(mesh: &mut Mesh, quad: [u32; 4], exact: bool) {
+    let tris = split_quad(mesh, quad);
+    let folds = tris.chunks_exact(3).any(|t| folded(mesh, t[0], t[1], t[2]));
+    if folds && exact {
+        let n = |v: u32| Vec3::from_array(mesh.normals[v as usize]);
+        let facing = (0..4).any(|i| (i + 1..4).any(|j| n(quad[i]).dot(n(quad[j])) < LID_ANGLE));
+        if facing {
+            return;
+        }
+    }
+    mesh.indices.extend_from_slice(&tris);
+}
+
+/// Cosine beyond which two vertex normals of a quad face each other
+/// ([`emit_quad`]; 120 degrees).
+const LID_ANGLE: f32 = -0.5;
 
 /// The two triangles of a surface-nets quad `[a, b, c, d]` (counter-
 /// clockwise seen from open space). Split along `a-c` unless one of those
@@ -529,6 +594,7 @@ fn refine_vertex(
     v: [f32; 3],
     sdf: Option<&dyn Fn(Vec3) -> f32>,
     thin: u8,
+    sharp: bool,
     cell_gradient: impl FnOnce() -> [f32; 3],
 ) -> Refined {
     let v0 = Vec3::from_array(v);
@@ -560,6 +626,18 @@ fn refine_vertex(
         if step.x.is_finite() && step.y.is_finite() && step.z.is_finite() {
             p = v0 - step;
         }
+        // A sharp edge or corner of a true distance field (mine shafts,
+        // carved tunnels, crater rims): the dual-contouring placement puts
+        // the vertex on it instead of rounding it off (M4 A2).
+        // (Not next to thin rock, whose faces are parallel planes a cell
+        // apart: the start point there picks the face.)
+        if let (Some(f), true) = (sdf, sharp && g2 >= FEATURE_MIN_SLOPE2 && thin != THIN_ROCK) {
+            if let Some(q) = feature_vertex(field, cell0, p, f) {
+                if f(q).abs() <= FEATURE_TOLERANCE {
+                    p = q;
+                }
+            }
+        }
     }
     // Thin features (bores and pockets about a cell wide or narrower, tight
     // inside corners): the grid cannot see them, so the exact field places
@@ -572,7 +650,9 @@ fn refine_vertex(
         let fitted = match thin {
             THIN_NONE => None,
             THIN_RIDGE => fit_thin(f, v0),
-            _ => fit_thin(f, v0).or_else(|| exact_snap(f, v0)),
+            THIN_PROMOTED => fit_thin(f, v0).or_else(|| exact_snap(f, v0)),
+            // Thin rock: the start point already lies on the right face.
+            _ => exact_snap(f, v0),
         };
         if let Some((q, n)) = fitted {
             return Refined {
@@ -602,6 +682,333 @@ fn refine_vertex(
     }
 }
 
+/// Largest exact-field value (u) at a [`feature_vertex`] for it to be used.
+pub const FEATURE_TOLERANCE: f32 = 0.02;
+/// Least squared smooth-gradient length for a [`feature_vertex`]: the
+/// bound cavern fields (slope about 0.3) never have unit-length corner
+/// gradients, so they skip the search.
+const FEATURE_MIN_SLOPE2: f32 = 0.25;
+/// Half the diagonal of a cell (u): a plane further from the cell's centre
+/// misses the cell.
+const CELL_HALF_DIAGONAL: f32 = 0.8661;
+/// Distance (u) from a face within which a corner on the other side of
+/// the face's plane does not contradict it ([`feature_vertex`]).
+const FEATURE_SIDE: f32 = 0.0;
+/// Crossing refinement steps of [`hermite_planes`].
+const HERMITE_STEPS: u32 = 3;
+/// Finite-difference step (u) of [`hermite_planes`].
+const HERMITE_PROBE: f32 = 0.01;
+/// Largest distance (u) of a [`feature_vertex`] from any of its planes.
+const FEATURE_RESIDUAL: f32 = 0.05;
+/// Corners whose value is at most this (u) give a [`feature_vertex`] plane.
+const FEATURE_REACH: f32 = 1.5;
+/// Gradient lengths from which a corner's field counts as a true distance
+/// for [`feature_vertex`].
+const FEATURE_SLOPE: f32 = 1.01;
+/// Forward and backward differences (u per u) further apart than this mark
+/// a fold of the field next to a corner ([`Field::distance_normal`]).
+const FEATURE_FOLD: f32 = 0.02;
+/// Normals of a [`feature_vertex`]'s planes must differ by more than this
+/// angle (cosine; 30 degrees) for the cell to hold a sharp feature.
+const FEATURE_SPREAD: f32 = 0.866;
+/// Pull of a [`feature_vertex`] towards the snapped vertex, along the
+/// directions the planes leave free (an edge's direction).
+const FEATURE_WEIGHT: f32 = 0.001;
+
+/// Dual-contouring placement of a crease vertex (M4 A2; the carried-over
+/// "dual contouring in play"): the vertex of a cell that holds a sharp edge
+/// or corner of a true distance field (mine shafts, carved tunnels, crater
+/// rims) goes onto it instead of being rounded off by the snap. `b` is the
+/// cell's low corner index (located with margin 1), `snap` the snapped
+/// vertex, `f` the exact field. Steps, cheapest first:
+///
+/// 1. An affine cell (corner values linear in the position: one face, no
+///    fold of the field) holds no feature ([`affine`]).
+/// 2. Planes from the grid: every corner within [`FEATURE_REACH`] of the
+///    surface whose one-sided differences show a face of a true distance
+///    field ([`Field::distance_normal`]) gives the plane through its
+///    nearest surface point `corner - n d`, if that plane cuts the cell.
+///    One plane that puts every corner on its side explains the cell (the
+///    fold is in the open space or the rock beside the face): no feature.
+///    Without two face directions the corners one step outside the cell
+///    join in (a face too small to reach the cell's own corners cleanly).
+/// 3. The point the planes meet at ([`solve_planes`]: dual contouring's QEF
+///    around the snapped vertex, planes of neighbouring features dropped).
+///    A point outside the cell belongs to a neighbour: none here.
+/// 4. If the grid planes do not meet, Hermite data from the exact field on
+///    the cell edges no grid plane explains ([`hermite_planes`], dual
+///    contouring's exact crossings and normals) joins them, and the point is
+///    solved again.
+///
+/// The caller checks the result against the exact field
+/// ([`FEATURE_TOLERANCE`]). `None` where the cell holds no sharp feature.
+fn feature_vertex(
+    field: &Field<'_>,
+    b: usize,
+    snap: Vec3,
+    f: &dyn Fn(Vec3) -> f32,
+) -> Option<Vec3> {
+    const OFFSETS: [usize; 8] = [0, 1, SY, SY + 1, SZ, SZ + 1, SZ + SY, SZ + SY + 1];
+    // The planes read corners up to three steps beyond the cell: only cells
+    // -1..=32 (a vertex moved off its cell by a thin pass may lie further
+    // out) keep that inside the halo.
+    let cell = [b % SY, (b / SY) % SY, b / SZ].map(|v| v as i32 - GRID_HALO);
+    if cell.iter().any(|&v| !(-1..=CHUNK_CELLS).contains(&v)) {
+        return None;
+    }
+    let c = OFFSETS.map(|o| field.values[b + o]);
+    // An affine cell (one face through it, no fold of the field) holds no
+    // feature: the common case, two dozen operations.
+    if affine(&c) {
+        return None;
+    }
+    let low = field.corner_position(b);
+    let mut planes = [(Vec3::ZERO, 0.0f32); 32];
+    let mut count = 0;
+    // Plane `n . x = n . (corner - n d)` in cell-local coordinates of the
+    // corner at local offset `l`.
+    let plane = |l: [i32; 3]| {
+        let c = (b as isize
+            + l[0] as isize
+            + l[1] as isize * SY as isize
+            + l[2] as isize * SZ as isize) as usize;
+        let v = field.values[c];
+        if v.is_nan() || v.abs() > FEATURE_REACH {
+            return None;
+        }
+        let n = field.distance_normal(c)?;
+        let corner = Vec3::new(l[0] as f32, l[1] as f32, l[2] as f32);
+        let d = n.dot(corner) - v;
+        // Only planes that cut the cell can hold its feature.
+        ((n.dot(Vec3::splat(0.5)) - d).abs() <= CELL_HALF_DIAGONAL).then_some((n, d))
+    };
+    for l in CORNERS {
+        if let Some(p) = plane(l) {
+            planes[count] = p;
+            count += 1;
+        }
+    }
+    // One face whose sides match every corner's sign explains the cell
+    // (the fold of the field is in the open space or the rock beside it):
+    // no feature.
+    // (Corners within [`FEATURE_SIDE`] of the face on either reading do
+    // not count: a curved surface leaves the tangent plane by that much
+    // within a cell.)
+    let explains = |&(n, d): &(Vec3, f32)| {
+        CORNERS.iter().zip(&c).all(|(l, &v)| {
+            let corner = Vec3::new(l[0] as f32, l[1] as f32, l[2] as f32);
+            let side = n.dot(corner) - d;
+            (side < 0.0) == (v < 0.0) || side.abs() < FEATURE_SIDE || v.abs() < FEATURE_SIDE
+        })
+    };
+    if !spread(&planes[..count]) && planes[..count].iter().any(explains) {
+        return None;
+    }
+    // A face may meet the cell without reaching a corner whose one-sided
+    // differences see it (a plateau of a clamped shaft field, a lip a cell
+    // thick): the corners one step outside the cell join in.
+    if !spread(&planes[..count]) {
+        for l in CORNERS {
+            for a in 0..3 {
+                let mut o = l;
+                o[a] = if l[a] == 0 { -1 } else { 2 };
+                if let Some(p) = plane(o) {
+                    planes[count] = p;
+                    count += 1;
+                }
+            }
+        }
+        // No corner of a true distance field near the surface (bound
+        // fields): nothing to place.
+        if count == 0 {
+            return None;
+        }
+    }
+    let s = snap - low;
+    let x = match solve_planes(&planes[..count], s) {
+        Solved::Inside(x) => x,
+        Solved::Outside => return None,
+        // Faces smaller than the stencils or several features around the
+        // cell: Hermite data from the exact field at the cell's edge
+        // crossings, as dual contouring takes it.
+        Solved::Inconsistent => {
+            if !spread(&planes[..count]) && planes[..count].iter().any(explains) {
+                return None;
+            }
+            let count = hermite_planes(field, b, f, &mut planes, count);
+            match solve_planes(&planes[..count], s) {
+                Solved::Inside(x) => x,
+                Solved::Outside => return None,
+                _ => return None,
+            }
+        }
+    };
+    let q = low + x;
+    (q.x.is_finite() && q.y.is_finite() && q.z.is_finite()).then_some(q)
+}
+
+/// Whether the corner values `c` (bit 0 = x, 1 = y, 2 = z) are affine in
+/// the position within [`FEATURE_FOLD`]: the four differences along each
+/// axis agree.
+fn affine(c: &[f32; 8]) -> bool {
+    let same = |a: f32, b: f32, cc: f32, d: f32| {
+        let (lo, hi) = (a.min(b).min(cc.min(d)), a.max(b).max(cc.max(d)));
+        hi - lo <= FEATURE_FOLD
+    };
+    same(c[1] - c[0], c[3] - c[2], c[5] - c[4], c[7] - c[6])
+        && same(c[2] - c[0], c[3] - c[1], c[6] - c[4], c[7] - c[5])
+        && same(c[4] - c[0], c[5] - c[1], c[6] - c[2], c[7] - c[3])
+}
+
+/// Result of [`solve_planes`].
+enum Solved {
+    /// The planes meet at this cell-local point (clamped to the cell).
+    Inside(Vec3),
+    /// They meet outside the cell (the feature belongs to a neighbour).
+    Outside,
+    /// No point lies on two independent planes (none, one direction, or
+    /// planes that do not meet).
+    Inconsistent,
+}
+
+/// The point (cell-local) where the planes `n . x = d` meet: the
+/// least-squares solution of dual contouring's QEF around `s` (the snapped
+/// vertex, which keeps the directions no plane constrains, such as an
+/// edge's), from the distinct planes. Planes of a neighbouring feature (a
+/// second edge a cell away) do not pass through it: the plane furthest from
+/// the solution is dropped and the rest solved again while two directions
+/// remain. `None` unless every remaining plane passes within
+/// [`FEATURE_RESIDUAL`] of a point inside the cell.
+fn solve_planes(all: &[(Vec3, f32)], s: Vec3) -> Solved {
+    // Distinct planes (corners on one face give the same plane).
+    let mut planes = [(Vec3::ZERO, 0.0f32); 32];
+    let mut count = 0;
+    for &(n, d) in all {
+        let seen = planes[..count]
+            .iter()
+            .any(|&(m, e)| n.dot(m) > 0.9995 && (d - e).abs() < FEATURE_RESIDUAL);
+        if !seen {
+            planes[count] = (n, d);
+            count += 1;
+        }
+    }
+    loop {
+        let active = &planes[..count];
+        if !spread(active) {
+            return Solved::Inconsistent;
+        }
+        // Normal equations relative to `s`: (A^T A + w I) y = A^T (d - A s).
+        let mut ata = [[0.0f32; 3]; 3];
+        let mut atb = [0.0f32; 3];
+        for &(n, dist) in active {
+            let n = n.to_array();
+            let r = dist - (n[0] * s.x + n[1] * s.y + n[2] * s.z);
+            for row in 0..3 {
+                for col in 0..3 {
+                    ata[row][col] += n[row] * n[col];
+                }
+                atb[row] += n[row] * r;
+            }
+        }
+        for (r, row) in ata.iter_mut().enumerate() {
+            row[r] += FEATURE_WEIGHT;
+        }
+        let Some(y) = solve3(&ata, &atb) else {
+            return Solved::Inconsistent;
+        };
+        let x = Vec3::new(s.x + y[0], s.y + y[1], s.z + y[2]);
+        let (worst, at) = active
+            .iter()
+            .enumerate()
+            .map(|(i, &(n, d))| ((n.dot(x) - d).abs(), i))
+            .fold((0.0f32, 0), |a, b| if b.0 > a.0 { b } else { a });
+        if worst <= FEATURE_RESIDUAL {
+            let inside = [x.x, x.y, x.z]
+                .iter()
+                .all(|&v| (-FEATURE_RESIDUAL..=1.0 + FEATURE_RESIDUAL).contains(&v));
+            return if inside {
+                Solved::Inside(x.clamp(Vec3::ZERO, Vec3::ONE))
+            } else {
+                Solved::Outside
+            };
+        }
+        if !(worst.is_finite()) {
+            return Solved::Inconsistent;
+        }
+        planes.copy_within(at + 1..count, at);
+        count -= 1;
+    }
+}
+
+/// Hermite planes of the cell with low corner index `b` from the exact
+/// field `f`, for the sign-changing cell edges that none of the first
+/// `known` (grid) planes in `planes` explains: the crossing refined on the
+/// exact field ([`HERMITE_STEPS`] evaluations), the exact field's normal
+/// there (forward differences, [`HERMITE_PROBE`]) and the plane through the
+/// crossing moved onto the surface (eight evaluations per edge). Appends
+/// the planes (cell-local) after the known ones and returns the new count.
+fn hermite_planes(
+    field: &Field<'_>,
+    b: usize,
+    f: &dyn Fn(Vec3) -> f32,
+    planes: &mut [(Vec3, f32); 32],
+    known: usize,
+) -> usize {
+    let low = field.corner_position(b);
+    let offsets = [0, 1, SY, SY + 1, SZ, SZ + 1, SZ + SY, SZ + SY + 1];
+    let c = offsets.map(|o| field.values[b + o]);
+    let corner = |i: usize| Vec3::from_array(CORNERS[i].map(|v| v as f32));
+    let mut count = known;
+    for &(i, j) in &EDGES {
+        if !is_crossing(&c, i, j) || count == planes.len() {
+            continue;
+        }
+        // A grid plane that puts the edge's ends on their sides already
+        // stands for this crossing.
+        let explained = planes[..known].iter().any(|&(n, d)| {
+            (n.dot(corner(i)) - d < 0.0) == (c[i] < 0.0)
+                && (n.dot(corner(j)) - d < 0.0) == (c[j] < 0.0)
+        });
+        if explained {
+            continue;
+        }
+        // The crossing refined on the exact field (the corner values may
+        // measure the distance to another face than the one the edge
+        // crosses).
+        let (a, z) = (corner(i), corner(j));
+        let t = refine_crossing_steps(|t| f(low + a + (z - a) * t), c[i], c[j], HERMITE_STEPS);
+        let local = a + (z - a) * t;
+        let p = low + local;
+        let d = f(p);
+        let e = HERMITE_PROBE;
+        let g = Vec3::new(
+            f(p + Vec3::X * e) - d,
+            f(p + Vec3::Y * e) - d,
+            f(p + Vec3::Z * e) - d,
+        );
+        let l2 = g.dot(g);
+        if !(l2 > 1e-12 && l2.is_finite()) {
+            continue;
+        }
+        let n = g * (1.0 / l2.sqrt());
+        // `n . x = n . p - d / |grad|` (`g` is the gradient times `e`).
+        planes[count] = (n, n.dot(local) - d * (e / l2.sqrt()));
+        count += 1;
+    }
+    count
+}
+
+/// Whether two of the planes' normals differ by more than
+/// [`FEATURE_SPREAD`] (parallel and opposite faces, the two walls of a
+/// shaft, do not count: they never meet).
+fn spread(planes: &[(Vec3, f32)]) -> bool {
+    planes.iter().enumerate().any(|(i, a)| {
+        planes[i + 1..]
+            .iter()
+            .any(|c| a.0.dot(c.0).abs() < FEATURE_SPREAD)
+    })
+}
+
 /// Thin open features of a chunk ([`thin_air`]).
 struct ThinAir {
     /// Corner values with the promoted rock corners, if any.
@@ -616,6 +1023,8 @@ struct ThinAir {
 const THIN_NONE: u8 = 0;
 const THIN_RIDGE: u8 = 1;
 const THIN_PROMOTED: u8 = 2;
+/// An open corner promoted to rock by the thin-rock pass ([`thin_air`]).
+const THIN_ROCK: u8 = 3;
 
 /// One Newton step pair on the exact field `f` from `v0` (no slope or
 /// crease checks): the point and its unit normal.
@@ -659,6 +1068,15 @@ pub const THIN_OPEN: f32 = 0.75;
 /// Corner value of a rock corner promoted to open space by
 /// [`thin_air`] (just above zero, so edge crossings sit at it).
 const PROMOTED: f32 = 1.0e-4;
+/// Open corners up to this value (field units) can be thin rock.
+pub const THIN_ROCK_OPEN: f32 = 0.75;
+/// Rock thinner than this (u) across counts as thin ([`rock_within_box`]).
+pub const THIN_ROCK_ACROSS: f32 = 0.9;
+/// Corners deeper in the rock than this (u, half of [`THIN_ROCK_ACROSS`])
+/// cannot lie in thin rock.
+const THIN_ROCK_DEPTH: f32 = 0.5 * THIN_ROCK_ACROSS;
+/// Sphere-tracing steps of [`thin_rock_start`].
+const THIN_ROCK_MARCH: usize = 8;
 /// Rock corners at most this deep (field units) can be promoted.
 pub const PROMOTE_DEPTH: f32 = 0.5;
 /// Least drop (field units) to the lower neighbour for a ridge direction
@@ -760,10 +1178,142 @@ fn thin_air(
             }
         }
     }
+    // Thin rock (M4 A2), the mirror image: an open corner within
+    // [`THIN_ROCK_OPEN`] of rock that ends again within [`THIN_ROCK_ACROSS`]
+    // (`rock_within_box`; grid prefilter `near_thin`) counts as rock. The
+    // promoted corners on both sides of a blade make a band thicker than a
+    // cell's diagonal, so no cell sees both faces, and a blade thinner than
+    // a cell is drawn whole instead of in pieces. Those corners and the
+    // rock corners of blades the grid sees ([`THIN_ROCK`]) make their cells
+    // place the vertex on the face that the cell's open corners look at.
+    // Near thin rock on the grid: along an axis the field dips (this corner
+    // or the next one is strictly the lowest, the next one at most half a
+    // blade deep) and rises to open space again within two corners; towards
+    // a wall it keeps falling, and on the plateaus of a capped field (mine
+    // shafts) it stays level.
+    let near_thin = |idx: usize| {
+        let d = values[idx];
+        [1isize, SY as isize, SZ as isize].into_iter().any(|s| {
+            [s, -s].into_iter().any(|t| {
+                let at = |n: isize| values[(idx as isize + n * t) as usize];
+                let (v1, v2) = (at(1), at(2));
+                (v1 > d && at(-1) > d && v1.max(at(-1)) - d >= RIDGE_DROP)
+                    || (v1 < d && v1 > -THIN_ROCK_DEPTH && v2 > 0.0 && v2 - v1 >= RIDGE_DROP)
+            })
+        })
+    };
+    for k in -1..=CHUNK_CELLS {
+        for j in -1..=CHUNK_CELLS {
+            for i in -1..=CHUNK_CELLS {
+                let idx = corner_index(i, j, k);
+                let d = values[idx];
+                if open_ridge[idx] != THIN_NONE || !allowed_at(i, j, k) {
+                    continue;
+                }
+                // A rock corner with open space on both sides along an axis
+                // lies in a blade the grid sees: its cells place their
+                // vertices from the open sides too (`thin_rock_start`).
+                if d < 0.0 && d > -THIN_ROCK_DEPTH {
+                    if [1, SY, SZ]
+                        .into_iter()
+                        .any(|s| values[idx - s] > 0.0 && values[idx + s] > 0.0)
+                        && rock_within_box(f, corner_pos(i, j, k))
+                    {
+                        open_ridge[idx] = THIN_ROCK;
+                        any = true;
+                    }
+                    continue;
+                }
+                if !(d > 0.0 && d < THIN_ROCK_OPEN) || !near_thin(idx) {
+                    continue;
+                }
+                if rock_within_box(f, corner_pos(i, j, k)) {
+                    promoted.get_or_insert_with(|| values.to_vec())[idx] = -PROMOTED;
+                    open_ridge[idx] = THIN_ROCK;
+                    any = true;
+                }
+            }
+        }
+    }
     any.then_some(ThinAir {
         values: promoted,
         corners: open_ridge,
     })
+}
+
+/// Whether the exact field `f` has a rock surface within [`THIN_ROCK_OPEN`]
+/// of `corner` (open, or in the rock), and open space again at most
+/// [`THIN_ROCK_ACROSS`] beyond that surface (a blade, not a wall).
+/// Unlike [`open_within_box`] any field slope is accepted (the thin rock of
+/// caverns lies in their bound fields).
+fn rock_within_box(f: &dyn Fn(Vec3) -> f32, corner: Vec3) -> bool {
+    let Some((q, n)) = exact_snap(f, corner) else {
+        return false;
+    };
+    q.distance_squared(corner) <= THIN_ROCK_OPEN * THIN_ROCK_OPEN
+        && f(q - n * 0.05) < 0.0
+        && f(q - n * THIN_ROCK_ACROSS) > 0.0
+}
+
+/// Start point for placing the vertex of a cell next to thin-rock corners
+/// ([`THIN_ROCK`]): per crossing edge of the cell (signs from `c`, the
+/// corner values with the promotions), the surface where the exact field
+/// `f` first turns to rock walking from the edge's open end through the
+/// promoted corner (the face of the blade that end looks at; up to half a
+/// cell beyond the corner), else the linear crossing; averaged. `low` is
+/// the cell's low corner (world), `rock` has bit `n` set for a promoted
+/// corner `n` of the cell.
+fn thin_rock_start(f: &dyn Fn(Vec3) -> f32, low: Vec3, c: &[f32; 8], rock: u8) -> Vec3 {
+    let local = |i: usize| {
+        Vec3::new(
+            CORNERS[i][0] as f32,
+            CORNERS[i][1] as f32,
+            CORNERS[i][2] as f32,
+        )
+    };
+    let mut sum = Vec3::ZERO;
+    let mut count = 0.0f32;
+    for &(a, b) in &EDGES {
+        if !is_crossing(c, a, b) {
+            continue;
+        }
+        let (open, other) = if c[a] >= 0.0 { (a, b) } else { (b, a) };
+        let linear = low + Vec3::from_array(crossing(c, a, b));
+        let p = if rock >> other & 1 == 1 {
+            let (o, dir) = (low + local(open), local(other) - local(open));
+            let mut t = 0.0f32;
+            let mut prev = 0.0f32;
+            let mut hit = None;
+            for _ in 0..THIN_ROCK_MARCH {
+                let d = f(o + dir * t);
+                if d <= 0.0 {
+                    // Bisect between the last open point and here.
+                    let (mut t0, mut t1) = (prev, t);
+                    for _ in 0..3 {
+                        let m = (t0 + t1) * 0.5;
+                        if f(o + dir * m) > 0.0 {
+                            t0 = m;
+                        } else {
+                            t1 = m;
+                        }
+                    }
+                    hit = Some(o + dir * ((t0 + t1) * 0.5));
+                    break;
+                }
+                prev = t;
+                t += d.max(0.02);
+                if t > 1.5 {
+                    break;
+                }
+            }
+            hit.unwrap_or(linear)
+        } else {
+            linear
+        };
+        sum += p;
+        count += 1.0;
+    }
+    sum * (1.0 / count)
 }
 
 /// Whether the exact field `f` has open space within the box of half a
@@ -914,6 +1464,18 @@ pub const THIN_MAX_SAG: f32 = 0.35;
 struct Field<'a> {
     values: &'a [f32],
     origin: [i32; 3],
+    /// [`Field::distance_normal`] of the corners in the four z slices the
+    /// cells being meshed read (cells go up in z).
+    normals: std::cell::RefCell<NormalCache>,
+}
+
+/// Corner normals ([`Field::distance_normal`]) of four z slices of the halo.
+struct NormalCache {
+    /// The halo z index each slice holds (`-1`: none yet).
+    slice: [i32; 4],
+    /// Per corner of a slice: 0 unknown, 1 no normal, 2 `normal` holds it.
+    known: Vec<u8>,
+    normal: Vec<Vec3>,
 }
 
 /// Index of local corner `(i, j, k)` in the halo corner array.
@@ -970,6 +1532,11 @@ impl<'a> Field<'a> {
         Field {
             values: grid.values(),
             origin: grid.origin,
+            normals: std::cell::RefCell::new(NormalCache {
+                slice: [-1; 4],
+                known: vec![0; 4 * SZ],
+                normal: vec![Vec3::ZERO; 4 * SZ],
+            }),
         }
     }
 
@@ -997,6 +1564,95 @@ impl<'a> Field<'a> {
         let (j, v) = axis(p.y, self.origin[1]);
         let (k, w) = axis(p.z, self.origin[2]);
         (i + SY * j + SZ * k, [u, v, w])
+    }
+
+    /// Unit normal of a true distance field at the corner with halo index
+    /// `c` (at least one corner from the halo's edge), from one-sided
+    /// differences: per axis the forward or the backward difference,
+    /// whichever pair of choices gives a gradient of unit length (central
+    /// differences where both agree). Next to a fold of the field (an edge
+    /// or corner of the rock within a unit) the central difference mixes
+    /// two faces; a one-sided difference that stays on the corner's side of
+    /// the fold gives the face's exact normal. `None` where no choice is
+    /// within [`FEATURE_SLOPE`] of unit length (bound fields, curved
+    /// distance fields close to their centre of curvature).
+    fn distance_normal(&self, c: usize) -> Option<Vec3> {
+        let kz = (c / SZ) as i32;
+        let slot = (kz & 3) as usize;
+        let at = slot * SZ + c % SZ;
+        {
+            let mut cache = self.normals.borrow_mut();
+            if cache.slice[slot] != kz {
+                cache.slice[slot] = kz;
+                cache.known[slot * SZ..(slot + 1) * SZ].fill(0);
+            }
+            match cache.known[at] {
+                1 => return None,
+                2 => return Some(cache.normal[at]),
+                _ => {}
+            }
+        }
+        let n = self.distance_normal_uncached(c);
+        let mut cache = self.normals.borrow_mut();
+        cache.known[at] = if n.is_some() { 2 } else { 1 };
+        if let Some(n) = n {
+            cache.normal[at] = n;
+        }
+        n
+    }
+
+    /// [`Field::distance_normal`] without the cache.
+    fn distance_normal_uncached(&self, c: usize) -> Option<Vec3> {
+        let x = self.values;
+        let v = x[c];
+        // Per axis: the forward and backward differences, each `None` unless
+        // the next step on that side repeats it (the field is linear on
+        // that side: one face, not the curved field around an edge).
+        let mut fwd = [None; 3];
+        let mut bwd = [None; 3];
+        let mut smooth = true;
+        let mut central = [0.0f32; 3];
+        for (a, s) in [1, SY, SZ].into_iter().enumerate() {
+            let (f1, b1) = (x[c + s] - v, v - x[c - s]);
+            let (f2, b2) = (x[c + 2 * s] - x[c + s], x[c - s] - x[c - 2 * s]);
+            fwd[a] = ((f1 - f2).abs() <= FEATURE_FOLD).then_some(f1);
+            bwd[a] = ((b1 - b2).abs() <= FEATURE_FOLD).then_some(b1);
+            smooth &= (f1 - b1).abs() <= FEATURE_FOLD;
+            central[a] = (f1 + b1) * 0.5;
+        }
+        let unit = |g: [f32; 3]| (g[0] * g[0] + g[1] * g[1] + g[2] * g[2] - 1.0).abs();
+        let tol = FEATURE_SLOPE * FEATURE_SLOPE - 1.0;
+        let mut best = None;
+        let mut err = tol;
+        if smooth && unit(central) <= err {
+            best = Some(central);
+        } else {
+            for pick in 0..8 {
+                let mut g = [0.0f32; 3];
+                let mut ok = true;
+                for a in 0..3 {
+                    match if pick >> a & 1 == 0 { fwd[a] } else { bwd[a] } {
+                        Some(d) => g[a] = d,
+                        None => ok = false,
+                    }
+                }
+                if ok && unit(g) <= err {
+                    (best, err) = (Some(g), unit(g));
+                }
+            }
+        }
+        let g = Vec3::from_array(best?);
+        Some(g * (1.0 / g.length()))
+    }
+
+    /// World position of the corner with halo index `b`.
+    fn corner_position(&self, b: usize) -> Vec3 {
+        let (i, j, k) = (b % SY, (b / SY) % SY, b / SZ);
+        Vec3::new(
+            (self.origin[0] + i as i32 - GRID_HALO) as f32,
+            (self.origin[1] + j as i32 - GRID_HALO) as f32,
+            (self.origin[2] + k as i32 - GRID_HALO) as f32,
+        )
     }
 
     /// Trilinear interpolation of the corner values at `p`.
@@ -1369,6 +2025,57 @@ mod tests {
     }
 
     /// Dual contouring reproduces a sharp box corner much better than surface nets.
+    /// Surface nets with the exact field put the vertices of cells that
+    /// hold an edge or a corner of a true distance field on it (M4 A2): a
+    /// rock octant (convex corner), an open box (a room's inside corners)
+    /// and a rock slab corner, at offsets off the grid.
+    #[test]
+    fn crease_vertices_sit_on_edges_and_corners() {
+        let corner = Vec3::new(16.3, 15.7, 16.45);
+        let lo = Vec3::splat(-100.0);
+        let hi = Vec3::splat(100.0);
+        let rock_octant = ls_math::Aabb::new(lo, corner);
+        let open_box = ls_math::Aabb::new(corner, hi);
+        type Field = Box<dyn Fn(Vec3) -> f32>;
+        // The edges run from the corner towards -axis (octant) or +axis (box).
+        let cases: [(&str, f32, Field); 2] = [
+            ("rock octant", -1.0, Box::new(move |p| rock_octant.sdf(p))),
+            ("open box", 1.0, Box::new(move |p| -open_box.sdf(p))),
+        ];
+        for (name, dir, f) in cases {
+            let grid = SampleGrid::from_fn([0, 0, 0], &f);
+            let m = surface_nets_with_sdf(&grid, &f);
+            let verts: Vec<Vec3> = m.positions.iter().map(|p| Vec3::from_array(*p)).collect();
+            let at_corner = verts
+                .iter()
+                .map(|v| v.distance(corner))
+                .fold(f32::INFINITY, f32::min);
+            // Along each of the three edges from the corner: every cell
+            // the edge passes through has a vertex on it.
+            let mut worst = 0.0f32;
+            for axis in 0..3 {
+                for step in 1..10 {
+                    let mut q = corner.to_array();
+                    q[axis] += dir * (step as f32 + 0.37);
+                    let line = |v: Vec3| {
+                        let mut d = (v - corner).to_array();
+                        d[axis] = 0.0;
+                        Vec3::from_array(d).length()
+                    };
+                    let near = verts
+                        .iter()
+                        .filter(|v| (v[axis] - q[axis]).abs() <= 0.5)
+                        .map(|&v| line(v))
+                        .fold(f32::INFINITY, f32::min);
+                    worst = worst.max(near);
+                }
+            }
+            println!("{name}: corner {at_corner:.4} u, worst edge cell {worst:.4} u");
+            assert!(at_corner < 0.03, "{name}: corner error {at_corner}");
+            assert!(worst < 0.03, "{name}: edge error {worst}");
+        }
+    }
+
     #[test]
     fn dual_contouring_keeps_sharp_corners() {
         let corner = Vec3::new(20.3, 18.6, 21.4);

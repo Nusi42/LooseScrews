@@ -272,8 +272,10 @@ fn bore_mouth_stays_on_the_surface() {
     // A few folded (culled) triangles where the bore meets the ball: the
     // grid cannot represent the rim, every vertex there is a compromise.
     // Quads split along the diagonal that folds less (D5): 9 of 560, before
-    // 14 of 560 with the fixed diagonal.
-    assert!(folds * 50 <= tris, "{folds} of {tris} triangles folded");
+    // 14 of 560 with the fixed diagonal. M4 A2 leaves out the lid quads
+    // that span the mouth between walls facing each other (`emit_quad`):
+    // 5 of 552.
+    assert!(folds * 100 <= tris, "{folds} of {tris} triangles folded");
 }
 
 /// The gated mesher (the game's Squeeze shell mesher) is the plain one where
@@ -295,4 +297,132 @@ fn thin_pass_gate() {
     let nowhere = surface_nets_with_sdf_thin_where(&grid, &|p| bore.field(p), &|_| false);
     assert_ne!(plain.positions, nowhere.positions);
     assert!(nowhere.indices.len() < plain.indices.len());
+}
+
+/// A blade of rock `2 h` thick with normal `n` through `c`, ending at a
+/// straight edge: rock where `|n . (p - c)| < h` and `m . (p - c) < 0`
+/// (exact distance field, negative in rock).
+struct Blade {
+    c: Vec3,
+    n: Vec3,
+    m: Vec3,
+    h: f32,
+}
+
+impl Blade {
+    fn field(&self, p: Vec3) -> f32 {
+        let q = p - self.c;
+        let across = q.dot(self.n).abs() - self.h;
+        let along = q.dot(self.m);
+        // Exact distance to the half-slab (intersection of a slab and a
+        // half-space): outside both, the Euclidean distance to the edge.
+        if across > 0.0 && along > 0.0 {
+            (across * across + along * along).sqrt()
+        } else {
+            across.max(along)
+        }
+    }
+}
+
+/// Measures a blade: for a grid of points on the blade's mid-plane, a ray
+/// from each side along the normal. Inside the blade (at least `margin`
+/// from the edge) both rays must hit a face at the true distance (the blade
+/// is drawn, both faces); beyond the edge by `margin` neither may hit; and
+/// along the edge the drawn outline (the last point inside that is drawn)
+/// must stay within `edge_tol` of the true edge.
+fn blade_errors(blade: &Blade) -> (usize, usize, f32, f32) {
+    let grid = SampleGrid::from_fn([0, 0, 0], |p| blade.field(p));
+    let mesh = surface_nets_with_sdf(&grid, &|p| blade.field(p));
+    let t = blade.n.cross(blade.m);
+    let (mut holes, mut ghosts, mut worst_face, mut worst_edge) = (0, 0, 0.0f32, 0.0f32);
+    for i in 0..24 {
+        let s = -6.0 + i as f32 * 0.5;
+        // Along the edge direction `t`, across the edge along `m`.
+        let mut last_drawn = f32::NEG_INFINITY;
+        for k in 0..60 {
+            let a = -6.0 + k as f32 * 0.1;
+            let o = blade.c + t * s + blade.m * a;
+            let mut drawn = true;
+            for side in [-1.0f32, 1.0] {
+                let start = o + blade.n * (side * 3.0);
+                match first_hit(&mesh, start, blade.n * -side, 6.0) {
+                    Some(d) => {
+                        if a < -0.75 {
+                            worst_face = worst_face.max((d - (3.0 - blade.h)).abs());
+                        }
+                    }
+                    None => drawn = false,
+                }
+            }
+            if a < -0.75 && !drawn {
+                holes += 1;
+            }
+            if a > 0.75 && drawn {
+                ghosts += 1;
+            }
+            if drawn {
+                last_drawn = a;
+            }
+        }
+        worst_edge = worst_edge.max(last_drawn.abs());
+    }
+    (holes, ghosts, worst_face, worst_edge)
+}
+
+/// Thin rock (M4 A2, the M3 D5 "thin-rock jaggies"): a blade thinner than a
+/// cell is drawn whole with both faces at their true place, and its edge
+/// within half a cell of the true edge, at every offset and slant. Before
+/// the thin-rock pass the slanted blades fell through the corners: 260 to
+/// 970 of 576 x 2 rays per blade found no face (holes), the faces drawn
+/// were up to 0.88 u off (a face on the wrong side of the blade, sheets
+/// through the rock), and the outline wandered up to 5 u from the edge.
+/// Now: no holes, faces within 0.001 u, outline within 0.5 u.
+#[test]
+fn thin_rock_blades_are_drawn_whole() {
+    let mut state = 0x2545_f491u32;
+    let mut rnd = || {
+        state ^= state << 13;
+        state ^= state >> 17;
+        state ^= state << 5;
+        state as f32 / u32::MAX as f32
+    };
+    for h in [0.2f32, 0.3] {
+        for case in 0..6 {
+            let n = match case {
+                0 => Vec3::X,
+                1 => Vec3::new(1.0, 0.3, 0.0).normalize(),
+                _ => Vec3::new(1.0, rnd() * 1.2 - 0.6, rnd() * 1.2 - 0.6).normalize(),
+            };
+            // Edge direction across the blade's plane.
+            let m = n.cross(Vec3::Z).normalize();
+            let blade = Blade {
+                c: Vec3::splat(16.0) + Vec3::new(rnd(), rnd(), rnd()),
+                n,
+                m,
+                h,
+            };
+            let (holes, ghosts, face, edge) = blade_errors(&blade);
+            println!(
+                "blade {:.1} u case {case}: holes {holes}, ghosts {ghosts}, worst face {face:.3} u, worst edge {edge:.3} u",
+                2.0 * h
+            );
+            assert_eq!(holes, 0, "blade {} case {case}: holes", 2.0 * h);
+            assert_eq!(
+                ghosts,
+                0,
+                "blade {} case {case}: drawn beyond the edge",
+                2.0 * h
+            );
+            assert!(
+                face <= 0.02,
+                "blade {} case {case}: face off by {face}",
+                2.0 * h
+            );
+            assert!(
+                edge <= 0.5,
+                "blade {} case {case}: edge off by {edge}",
+                2.0 * h
+            );
+        }
+    }
 }

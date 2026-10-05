@@ -37,7 +37,7 @@ import { mulberry32 } from "../renderer/spriteAtlas.ts";
 import { Renderer, type CameraView, type Rgb, type SceneInstances } from "../renderer/renderer.ts";
 import { CONTROLS_LEN, type GameHandle } from "../wasm/api.ts";
 import { loadWasm } from "../wasm/load.ts";
-import { pickCloseup, pickLongest, pickVista, probeAround, raycast, rayMesh, sphereDirections, type Probe, type RayMesh } from "./raycast.ts";
+import { pickCloseup, pickCorner, pickLongest, pickVista, probeAround, raycast, rayMesh, sphereDirections, type Probe, type RayMesh } from "./raycast.ts";
 import { FIT_TUNNEL_RADIUS, sceneById, type GalleryScene } from "./scenes.ts";
 import { applyDecor, decorSpots, pickBorder, type DecorSpot } from "./decor.ts";
 import { explosionAt, simulateVfx } from "./vfxScenes.ts";
@@ -79,6 +79,9 @@ export interface GalleryStatus {
 
 /** The pre-VQ1 camera (`?view=legacy`: 75° vertical FOV, no cockpit frame or fit ring) for before shots. */
 export const LEGACY_CAMERA: CameraParams = { fovY: (75 * Math.PI) / 180, near: 0.05, far: 600 };
+
+/** `corner` pose: distance from the camera to the picked rock edge (u). */
+export const CORNER_DISTANCE = 7;
 
 /** `fit` scene: distance from the camera to the rock ball's face (u), the ball's radius and the tunnel depth. */
 export const FIT_WALL_DISTANCE = 2.5;
@@ -144,6 +147,15 @@ export function pickPose(
     const a = (25 * Math.PI) / 180;
     const dir = v3.normalize(v3.add(v3.scale(p.dir, Math.cos(a)), v3.scale(side, Math.sin(a))));
     return { position, orientation: look(dir) };
+  }
+  if (scene.pose === "corner") {
+    // Walk toward the edge until it is CORNER_DISTANCE away and look at it.
+    const at = pickCorner(probes, 4, 16);
+    if (at) {
+      const dist = Math.hypot(at.x, at.y, at.z);
+      const dir = v3.scale(at, 1 / dist);
+      return { position: v3.addScaled(origin, dir, Math.max(0, dist - CORNER_DISTANCE)), orientation: look(dir) };
+    }
   }
   const p = scene.pose === "vista" ? pickVista(probes, 40, 150) : pickLongest(probes, PROBE_RANGE);
   return p ? { position: origin, orientation: look(p.dir) } : { position: origin, orientation: fallback };
@@ -458,7 +470,9 @@ export async function runGallery(canvas: HTMLCanvasElement, ui: HTMLElement, loc
     const sunPose = scene.pose === "sun" ? pickSunPose(near, probes, origin, atmosphere.sunDirection, atmosphere.room) : null;
     const shadePose = scene.pose === "shade" ? pickShadePose([...rayMeshes.values()], probes, origin, atmosphere.sunDirection, atmosphere.room) : null;
     const wallPose = scene.pose === "sunwall" ? pickSunWallPose([...rayMeshes.values()], probes, origin, atmosphere.sunDirection, atmosphere.room) : null;
-    const pose = sunPose ?? shadePose ?? wallPose ?? pickPose(scene, origin, view.orientation, probes, border, { sun: atmosphere.sunDirection, planet: atmosphere.planet?.direction ?? null });
+    const pose = scene.camera
+      ? { position: { ...scene.camera.position }, orientation: { ...scene.camera.orientation } }
+      : (sunPose ?? shadePose ?? wallPose ?? pickPose(scene, origin, view.orientation, probes, border, { sun: atmosphere.sunDirection, planet: atmosphere.planet?.direction ?? null }));
     if (scene.belowCeiling !== undefined && atmosphere.room) {
       pose.position = { ...pose.position, y: atmosphere.room.max.y - scene.belowCeiling };
     }

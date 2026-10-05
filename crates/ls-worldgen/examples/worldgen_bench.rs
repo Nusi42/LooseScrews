@@ -5,6 +5,8 @@
 //! ```
 //!
 //! - generation: `generate_all` per slider mix, and ms per chunk;
+//! - one 35 u crater (the Tectonic Charge's collapse) and one 3 u crater
+//!   applied to the stored samples (no meshing);
 //! - remesh after 1 and after 200 craters, with every chunk generated (the
 //!   game's case) and lazily (a fresh store that replays 200 craters first);
 //! - `ChunkStore::eval` cost next to 0 and 200 craters;
@@ -152,6 +154,28 @@ fn main() {
     }
     let (t, n, tris) = remesh(&mut s200, all[199]);
     println!("after 200 craters: {t:.2} ms ({n} dirty chunks, {tris} triangles)");
+
+    println!("== one 35 u crater (Tectonic collapse), samples only ==");
+    for (name, r) in [("35 u crater", 35.0f32), ("3 u crater", 3.0)] {
+        let edit = TerrainEdit::SubtractSphere {
+            center: hit,
+            radius: r,
+        };
+        let mut times: Vec<f64> = (0..25)
+            .map(|_| {
+                let mut s = store.clone();
+                let t = Instant::now();
+                std::hint::black_box(s.apply(edit));
+                ms(t)
+            })
+            .collect();
+        times.sort_by(f64::total_cmp);
+        println!(
+            "{name}: apply best {:.2} ms, median {:.2} ms",
+            times[0],
+            times[times.len() / 2]
+        );
+    }
 
     println!("== remesh, lazy store (craters replayed before generation) ==");
     let chunk = store.chunk_at(hit).expect("in level");

@@ -280,7 +280,7 @@ optional `surface` field, `materials` and `colors` through `ChunkMesh.materials(
 `ChunkMesh.paintColors()` (unknown colour ids become plain), occlusion through `ChunkMesh.ao()`
 as the optional `MeshData.ao` (`Uint8Array`, one byte per vertex; the terrain shader multiplies
 its ambient light by it, VQ3b). The web client packs the first ones into
-one `u32` terrain vertex attribute (`web/src/renderer/shaders.ts`): bits 0-7 paint team (255
+one `u32` terrain vertex attribute (`web/src/renderer/shaders/frame.ts`): bits 0-7 paint team (255
 unpainted), bits 8-15 surface states, bits 16-23 material + 1 (0 unknown), bits 24-31 paint
 colour; without the optional layers the packing is the M1 one. Coloured paint draws a
 per-effect pattern (red stripes, blue waves, yellow dots) in a dark shade of the team colour,

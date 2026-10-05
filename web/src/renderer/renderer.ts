@@ -1,7 +1,11 @@
-// Thin WebGPU renderer: world-space terrain chunks (frustum-culled per chunk
+// WebGPU renderer: world-space terrain chunks (frustum-culled per chunk
 // AABB) plus instanced objects (ships, projectiles, pickups, debris, wrecks,
 // ...), one batch per mesh kind (primitives.ts MESH_BUILDERS) in an opaque
-// and a translucent pass, all lit and fogged by the shaders in shaders.ts.
+// and a translucent pass, all lit and fogged by the shaders in shaders/.
+// The scene renders linear HDR radiance into an rgba16float target with
+// MSAA (quality.ts presets); post.ts adds bloom, grades, tonemaps (AgX) and
+// encodes sRGB into the swapchain. Passes are timed with timestamp queries
+// when the device has them (gpuTimer.ts).
 //
 // The game calls `setChunk(key, mesh)` with meshes produced by ls-wasm and
 // `setScene(...)` with the instances built by game/scene.ts each frame.
@@ -12,9 +16,14 @@ import type { Vec3 } from "../math/vec3.ts";
 import { CanvasSizer } from "./canvas.ts";
 import { Frustum } from "./frustum.ts";
 import { initGpu, type GpuContext } from "./gpu.ts";
+import { GpuTimer, type GpuTimings } from "./gpuTimer.ts";
 import { GpuMesh, type MeshData } from "./mesh.ts";
 import { MESH_BUILDERS, MESH_KINDS, type MeshKind } from "./primitives.ts";
-import { FRAME_UNIFORM_FLOATS, INSTANCED_WGSL, TEAM_SLOTS, TERRAIN_WGSL, TRANSLUCENT_WGSL } from "./shaders.ts";
+import { DEFAULT_POST, HDR_FORMAT, PostChain, type PostSettings } from "./post.ts";
+import { QUALITY_PRESETS, QualityAuto, qualityFromSearch, type QualityLevel, type RenderQuality } from "./quality.ts";
+import { FRAME_UNIFORM_FLOATS, srgbToLinear, TEAM_SLOTS } from "./shaders/frame.ts";
+import { INSTANCED_WGSL, TRANSLUCENT_WGSL } from "./shaders/objects.ts";
+import { TERRAIN_WGSL } from "./shaders/terrain.ts";
 
 export type Rgb = readonly [number, number, number];
 
@@ -37,6 +46,8 @@ export interface RenderSettings {
   /** Direction towards the sun (normalised by the renderer). */
   sunDirection: Vec3;
   headlight: number;
+  /** Exposure, bloom, vignette, grain, AgX look and colour grade (post.ts). */
+  post: PostSettings;
 }
 
 export const DEFAULT_SETTINGS: RenderSettings = {
@@ -51,6 +62,7 @@ export const DEFAULT_SETTINGS: RenderSettings = {
   ],
   sunDirection: { x: 0.35, y: 0.85, z: 0.4 },
   headlight: 0.9,
+  post: DEFAULT_POST,
 };
 
 /** One instanced object (ship, projectile, pickup, debris, ...). */
@@ -150,6 +162,12 @@ const INSTANCE_LAYOUT: GPUVertexBufferLayout = {
   ],
 };
 
+interface ScenePipelines {
+  terrain: GPURenderPipeline;
+  instanced: GPURenderPipeline;
+  translucent: GPURenderPipeline;
+}
+
 /** Instances of one shared mesh (the batch does not own the mesh). */
 class InstanceBatch {
   readonly mesh: GpuMesh;
@@ -195,7 +213,7 @@ class InstanceBatch {
 
 export class Renderer {
   readonly device: GPUDevice;
-  settings: RenderSettings = { ...DEFAULT_SETTINGS };
+  settings: RenderSettings = { ...DEFAULT_SETTINGS, post: { ...DEFAULT_POST } };
 
   private readonly canvas: HTMLCanvasElement;
   private readonly context: GPUCanvasContext;
@@ -203,9 +221,11 @@ export class Renderer {
   private readonly frameBuffer: GPUBuffer;
   private readonly frameData = new Float32Array(FRAME_UNIFORM_FLOATS);
   private readonly bindGroup: GPUBindGroup;
-  private readonly terrainPipeline: GPURenderPipeline;
-  private readonly instancedPipeline: GPURenderPipeline;
-  private readonly translucentPipeline: GPURenderPipeline;
+  private readonly pipelineLayout: GPUPipelineLayout;
+  private readonly modules: { terrain: GPUShaderModule; instanced: GPUShaderModule; translucent: GPUShaderModule };
+  /** Scene pipelines per MSAA sample count (built when a quality level first needs them). */
+  private readonly scenePipelines = new Map<number, ScenePipelines>();
+  private readonly post: PostChain;
   private readonly chunks = new Map<string, GpuMesh>();
   private readonly meshes: Record<MeshKind, GpuMesh>;
   private readonly batches: Record<RenderPass, Map<MeshKind, InstanceBatch>> = {
@@ -214,21 +234,40 @@ export class Renderer {
   };
   private readonly frustum = new Frustum();
   private depthTexture: GPUTexture | null = null;
+  private msaaTexture: GPUTexture | null = null;
   private startTime = performance.now();
   private deviceLost = false;
   private lastGpuError: string | null = null;
+  private readonly timer: GpuTimer | null;
+  private readonly auto: QualityAuto;
+  private qualityLevel: RenderQuality;
+  /**
+   * Time per pass: with `timestamp-query`, true times terrain and objects as
+   * separate render passes (the debug overlay and the visual gallery switch
+   * it on); false draws the scene in one pass, timed as "scene".
+   */
+  detailedTiming = false;
+  /** Shader time (s) for this and later frames instead of the wall clock (fixed-pose screenshots). */
+  timeOverride: number | null = null;
 
-  /** Creates the renderer; throws GpuUnavailableError when WebGPU cannot be used. */
-  static async create(canvas: HTMLCanvasElement): Promise<Renderer> {
-    return new Renderer(canvas, await initGpu(canvas));
+  /**
+   * Creates the renderer; throws GpuUnavailableError when WebGPU cannot be
+   * used. `quality` forces a level (default: `?quality=`, else picked
+   * automatically from the GPU time of the first seconds).
+   */
+  static async create(canvas: HTMLCanvasElement, quality?: QualityLevel): Promise<Renderer> {
+    const forced = quality ?? (typeof location === "undefined" ? null : qualityFromSearch(location.search));
+    return new Renderer(canvas, await initGpu(canvas), forced);
   }
 
-  private constructor(canvas: HTMLCanvasElement, gpu: GpuContext) {
+  private constructor(canvas: HTMLCanvasElement, gpu: GpuContext, forced: QualityLevel | null) {
     this.canvas = canvas;
     this.device = gpu.device;
     this.context = gpu.context;
     const device = this.device;
     this.sizer = new CanvasSizer(canvas, device.limits.maxTextureDimension2D);
+    this.qualityLevel = QUALITY_PRESETS[forced ?? "high"];
+    this.auto = new QualityAuto(forced);
 
     // Validation errors outside error scopes would otherwise only show up as a
     // console warning; log them and keep the latest for the HUD debug line.
@@ -262,67 +301,75 @@ export class Renderer {
       layout: bindGroupLayout,
       entries: [{ binding: 0, resource: { buffer: this.frameBuffer } }],
     });
-    const layout = device.createPipelineLayout({ bindGroupLayouts: [bindGroupLayout] });
-    const depthStencil: GPUDepthStencilState = {
-      format: DEPTH_FORMAT,
-      depthWriteEnabled: true,
-      depthCompare: "less",
+    this.pipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [bindGroupLayout] });
+    this.modules = {
+      terrain: device.createShaderModule({ label: "terrain", code: TERRAIN_WGSL }),
+      instanced: device.createShaderModule({ label: "instanced", code: INSTANCED_WGSL }),
+      translucent: device.createShaderModule({ label: "translucent", code: TRANSLUCENT_WGSL }),
     };
+    this.scenePipelinesFor(this.qualityLevel.msaa);
+    this.post = new PostChain(device, gpu.format);
 
-    const terrainModule = device.createShaderModule({ label: "terrain", code: TERRAIN_WGSL });
-    this.terrainPipeline = device.createRenderPipeline({
-      label: "terrain",
-      layout,
-      vertex: { module: terrainModule, entryPoint: "vs_main", buffers: [POSITION_LAYOUT, NORMAL_LAYOUT, TEAM_LAYOUT] },
-      fragment: { module: terrainModule, entryPoint: "fs_main", targets: [{ format: gpu.format }] },
-      primitive: { topology: "triangle-list", cullMode: TERRAIN_CULL_MODE, frontFace: "ccw" },
-      depthStencil,
-    });
-
-    const instancedModule = device.createShaderModule({ label: "instanced", code: INSTANCED_WGSL });
-    this.instancedPipeline = device.createRenderPipeline({
-      label: "instanced",
-      layout,
-      vertex: {
-        module: instancedModule,
-        entryPoint: "vs_main",
-        buffers: [POSITION_LAYOUT, NORMAL_LAYOUT, INSTANCE_LAYOUT],
-      },
-      fragment: { module: instancedModule, entryPoint: "fs_main", targets: [{ format: gpu.format }] },
-      primitive: { topology: "triangle-list", cullMode: "back", frontFace: "ccw" },
-      depthStencil,
-    });
-
-    const translucentModule = device.createShaderModule({ label: "translucent", code: TRANSLUCENT_WGSL });
-    this.translucentPipeline = device.createRenderPipeline({
-      label: "translucent",
-      layout,
-      vertex: {
-        module: translucentModule,
-        entryPoint: "vs_main",
-        buffers: [POSITION_LAYOUT, NORMAL_LAYOUT, INSTANCE_LAYOUT],
-      },
-      fragment: {
-        module: translucentModule,
-        entryPoint: "fs_main",
-        targets: [
-          {
-            format: gpu.format,
-            blend: {
-              color: { srcFactor: "src-alpha", dstFactor: "one-minus-src-alpha", operation: "add" },
-              alpha: { srcFactor: "one", dstFactor: "one-minus-src-alpha", operation: "add" },
-            },
-          },
-        ],
-      },
-      // Both faces: the inside of a dust cloud is visible from within.
-      primitive: { topology: "triangle-list", cullMode: "none", frontFace: "ccw" },
-      depthStencil: { format: DEPTH_FORMAT, depthWriteEnabled: false, depthCompare: "less" },
-    });
+    this.timer = GpuTimer.create(device);
 
     const meshes = {} as Record<MeshKind, GpuMesh>;
     for (const kind of MESH_KINDS) meshes[kind] = new GpuMesh(device, MESH_BUILDERS[kind](), kind);
     this.meshes = meshes;
+  }
+
+  /** Terrain, instanced and translucent pipelines rendering into the HDR target at `samples` MSAA. */
+  private scenePipelinesFor(samples: number): ScenePipelines {
+    const cached = this.scenePipelines.get(samples);
+    if (cached) return cached;
+    const device = this.device;
+    const layout = this.pipelineLayout;
+    const multisample: GPUMultisampleState = { count: samples };
+    const depthStencil: GPUDepthStencilState = { format: DEPTH_FORMAT, depthWriteEnabled: true, depthCompare: "less" };
+    const { terrain, instanced, translucent } = this.modules;
+    const pipelines: ScenePipelines = {
+      terrain: device.createRenderPipeline({
+        label: "terrain",
+        layout,
+        vertex: { module: terrain, entryPoint: "vs_main", buffers: [POSITION_LAYOUT, NORMAL_LAYOUT, TEAM_LAYOUT] },
+        fragment: { module: terrain, entryPoint: "fs_main", targets: [{ format: HDR_FORMAT }] },
+        primitive: { topology: "triangle-list", cullMode: TERRAIN_CULL_MODE, frontFace: "ccw" },
+        depthStencil,
+        multisample,
+      }),
+      instanced: device.createRenderPipeline({
+        label: "instanced",
+        layout,
+        vertex: { module: instanced, entryPoint: "vs_main", buffers: [POSITION_LAYOUT, NORMAL_LAYOUT, INSTANCE_LAYOUT] },
+        fragment: { module: instanced, entryPoint: "fs_main", targets: [{ format: HDR_FORMAT }] },
+        primitive: { topology: "triangle-list", cullMode: "back", frontFace: "ccw" },
+        depthStencil,
+        multisample,
+      }),
+      translucent: device.createRenderPipeline({
+        label: "translucent",
+        layout,
+        vertex: { module: translucent, entryPoint: "vs_main", buffers: [POSITION_LAYOUT, NORMAL_LAYOUT, INSTANCE_LAYOUT] },
+        fragment: {
+          module: translucent,
+          entryPoint: "fs_main",
+          targets: [
+            {
+              format: HDR_FORMAT,
+              blend: {
+                color: { srcFactor: "src-alpha", dstFactor: "one-minus-src-alpha", operation: "add" },
+                alpha: { srcFactor: "one", dstFactor: "one-minus-src-alpha", operation: "add" },
+              },
+            },
+          ],
+        },
+        // Both faces: the inside of a dust cloud is visible from within.
+        primitive: { topology: "triangle-list", cullMode: "none", frontFace: "ccw" },
+        depthStencil: { format: DEPTH_FORMAT, depthWriteEnabled: false, depthCompare: "less" },
+        multisample,
+      }),
+    };
+    this.scenePipelines.set(samples, pipelines);
+    return pipelines;
   }
 
   /** True once the GPU device is lost; the frame loop should stop. */
@@ -338,6 +385,26 @@ export class Renderer {
   /** Resolves with a message when the GPU device is lost (driver reset, tab backgrounded, ...). */
   get lost(): Promise<string> {
     return this.device.lost.then((info) => info.message || info.reason || "unknown reason");
+  }
+
+  /** Per-pass GPU times (window average), or null without `timestamp-query` or before the first readback. */
+  gpuTimings(): GpuTimings | null {
+    return this.timer?.timings() ?? null;
+  }
+
+  /** True when the device can time passes (`timestamp-query`). */
+  get canTime(): boolean {
+    return this.timer !== null;
+  }
+
+  /** The active quality preset. */
+  get quality(): RenderQuality {
+    return this.qualityLevel;
+  }
+
+  /** Switches the quality preset (pipelines and targets follow on the next frame). */
+  setQuality(level: QualityLevel): void {
+    this.qualityLevel = QUALITY_PRESETS[level];
   }
 
   get aspect(): number {
@@ -394,35 +461,55 @@ export class Renderer {
   }
 
   render(camera: CameraView): FrameStats {
+    this.pickQuality();
     this.sizer.update();
-    this.ensureDepthTexture();
+    const quality = this.qualityLevel;
+    const samples = quality.msaa;
+    this.ensureTargets(samples, quality.bloomMips);
+    const pipelines = this.scenePipelinesFor(samples);
 
     const viewProj = this.viewProjection(camera);
     this.frustum.setFromViewProj(viewProj);
-    this.writeFrameUniforms(viewProj, camera.position);
+    const time = this.timeOverride ?? (performance.now() - this.startTime) / 1000;
+    this.writeFrameUniforms(viewProj, camera.position, time);
 
-    const s = this.settings;
+    const fog = this.frameData.subarray(24, 27);
     const encoder = this.device.createCommandEncoder({ label: "frame" });
-    const pass = encoder.beginRenderPass({
-      colorAttachments: [
-        {
-          view: this.context.getCurrentTexture().createView(),
-          clearValue: { r: s.fogColor[0], g: s.fogColor[1], b: s.fogColor[2], a: 1 },
-          loadOp: "clear",
-          storeOp: "store",
+    const timer = this.timer;
+    timer?.beginFrame();
+    const split = this.detailedTiming && timer !== null;
+    // With MSAA the scene renders into the multisampled target and the last
+    // scene pass resolves it into the post chain's HDR texture.
+    const sceneView = this.post.sceneView;
+    const colorView = samples > 1 ? this.msaaTexture!.createView() : sceneView;
+    const depthView = this.depthTexture!.createView();
+    const beginPass = (label: string, first: boolean, last: boolean): GPURenderPassEncoder => {
+      const timestampWrites = timer?.pass(label);
+      const color: GPURenderPassColorAttachment = {
+        view: colorView,
+        clearValue: { r: fog[0] ?? 0, g: fog[1] ?? 0, b: fog[2] ?? 0, a: 1 },
+        loadOp: first ? "clear" : "load",
+        storeOp: samples > 1 && last ? "discard" : "store",
+      };
+      if (samples > 1 && last) color.resolveTarget = sceneView;
+      const pass = encoder.beginRenderPass({
+        label,
+        ...(timestampWrites ? { timestampWrites } : {}),
+        colorAttachments: [color],
+        depthStencilAttachment: {
+          view: depthView,
+          depthClearValue: 1,
+          depthLoadOp: first ? "clear" : "load",
+          depthStoreOp: last ? "discard" : "store",
         },
-      ],
-      depthStencilAttachment: {
-        view: this.depthTexture!.createView(),
-        depthClearValue: 1,
-        depthLoadOp: "clear",
-        depthStoreOp: "discard",
-      },
-    });
-    pass.setBindGroup(0, this.bindGroup);
+      });
+      pass.setBindGroup(0, this.bindGroup);
+      return pass;
+    };
 
     const stats: FrameStats = { chunksTotal: this.chunks.size, chunksDrawn: 0, triangles: 0, instances: 0 };
-    pass.setPipeline(this.terrainPipeline);
+    let pass = beginPass(split ? "terrain" : "scene", true, !split);
+    pass.setPipeline(pipelines.terrain);
     for (const mesh of this.chunks.values()) {
       if (mesh.aabb && !this.frustum.intersectsAabb(mesh.aabb)) continue;
       pass.setVertexBuffer(0, mesh.positionBuffer);
@@ -433,10 +520,14 @@ export class Renderer {
       stats.chunksDrawn++;
       stats.triangles += mesh.indexCount / 3;
     }
+    if (split) {
+      pass.end();
+      pass = beginPass("objects", false, true);
+    }
 
     const passes: Array<[RenderPass, GPURenderPipeline]> = [
-      ["opaque", this.instancedPipeline],
-      ["translucent", this.translucentPipeline],
+      ["opaque", pipelines.instanced],
+      ["translucent", pipelines.translucent],
     ];
     for (const [kind, pipeline] of passes) {
       pass.setPipeline(pipeline);
@@ -446,9 +537,12 @@ export class Renderer {
         stats.triangles += (batch.mesh.indexCount / 3) * batch.count;
       }
     }
-
     pass.end();
+
+    this.post.encode(encoder, this.context.getCurrentTexture().createView(), this.settings.post, time, timer);
+    timer?.endFrame(encoder);
     this.device.queue.submit([encoder.finish()]);
+    timer?.afterSubmit();
     return stats;
   }
 
@@ -457,36 +551,71 @@ export class Renderer {
     for (const batches of Object.values(this.batches)) for (const batch of batches.values()) batch.destroy();
     for (const mesh of Object.values(this.meshes)) mesh.destroy();
     this.depthTexture?.destroy();
+    this.msaaTexture?.destroy();
+    this.post.destroy();
+    this.timer?.destroy();
     this.frameBuffer.destroy();
     this.sizer.dispose();
     this.device.destroy();
   }
 
-  private ensureDepthTexture(): void {
-    const { width, height } = this.canvas;
-    if (this.depthTexture && this.depthTexture.width === width && this.depthTexture.height === height) return;
-    this.depthTexture?.destroy();
-    this.depthTexture = this.device.createTexture({
-      label: "depth",
-      size: { width, height },
-      format: DEPTH_FORMAT,
-      usage: GPUTextureUsage.RENDER_ATTACHMENT,
-    });
+  /** Automatic quality: steps down once if the GPU time of the first seconds exceeds the budget. */
+  private pickQuality(): void {
+    if (this.auto.decided) return;
+    const gpu = this.timer?.timings() ?? null;
+    const picked = this.auto.sample(gpu && gpu.frames >= 10 ? gpu.total : null, performance.now(), this.qualityLevel.level);
+    if (picked && picked !== this.qualityLevel.level) {
+      console.info(`renderer: GPU ${gpu?.total.toFixed(2)} ms per frame, quality ${this.qualityLevel.level} -> ${picked}`);
+      this.setQuality(picked);
+    }
   }
 
-  private writeFrameUniforms(viewProj: mat4.Mat4, cameraPos: Vec3): void {
+  /** Depth (and MSAA colour) targets at the canvas size, and the post chain's HDR texture and bloom mips. */
+  private ensureTargets(samples: number, bloomMips: number): void {
+    const { width, height } = this.canvas;
+    const fits = (t: GPUTexture | null): boolean =>
+      t !== null && t.width === width && t.height === height && t.sampleCount === samples;
+    if (!fits(this.depthTexture)) {
+      this.depthTexture?.destroy();
+      this.depthTexture = this.device.createTexture({
+        label: "depth",
+        size: { width, height },
+        format: DEPTH_FORMAT,
+        sampleCount: samples,
+        usage: GPUTextureUsage.RENDER_ATTACHMENT,
+      });
+    }
+    if (samples > 1 && !fits(this.msaaTexture)) {
+      this.msaaTexture?.destroy();
+      this.msaaTexture = this.device.createTexture({
+        label: "hdr scene msaa",
+        size: { width, height },
+        format: HDR_FORMAT,
+        sampleCount: samples,
+        usage: GPUTextureUsage.RENDER_ATTACHMENT,
+      });
+    } else if (samples === 1 && this.msaaTexture) {
+      this.msaaTexture.destroy();
+      this.msaaTexture = null;
+    }
+    this.post.resize(width, height, bloomMips);
+  }
+
+  private writeFrameUniforms(viewProj: mat4.Mat4, cameraPos: Vec3, time: number): void {
     const d = this.frameData;
     const s = this.settings;
     d.set(viewProj, 0);
-    d.set([cameraPos.x, cameraPos.y, cameraPos.z, (performance.now() - this.startTime) / 1000], 16);
+    d.set([cameraPos.x, cameraPos.y, cameraPos.z, time], 16);
     const sun = s.sunDirection;
     const len = Math.hypot(sun.x, sun.y, sun.z) || 1;
     d.set([sun.x / len, sun.y / len, sun.z / len, s.headlight], 20);
-    d.set([...s.fogColor, s.fogDensity], 24);
-    d.set([...s.rockColor, 1], 28);
+    // Colours are authored as display values; the scene lights in linear.
+    const lin = (c: Rgb): number[] => [srgbToLinear(c[0]), srgbToLinear(c[1]), srgbToLinear(c[2])];
+    d.set([...lin(s.fogColor), s.fogDensity], 24);
+    d.set([...lin(s.rockColor), 1], 28);
     for (let i = 0; i < TEAM_SLOTS; i++) {
       const c = s.teamColors[i] ?? s.rockColor;
-      d.set([c[0], c[1], c[2], 1], 32 + i * 4);
+      d.set([...lin(c), 1], 32 + i * 4);
     }
     this.device.queue.writeBuffer(this.frameBuffer, 0, d);
   }

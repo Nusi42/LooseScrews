@@ -50,6 +50,7 @@ import { NameTags, nameTagModel } from "./ui/nameTags.ts";
 import { EndScreen, endScreenModel, Scoreboard, scoreboardModel } from "./ui/scoreboard.ts";
 import { showLoading, showStartScreen, type StartOptions } from "./ui/startScreen.ts";
 import { loadWasm } from "./wasm/load.ts";
+import { runGallery, wantsGallery } from "./gallery/gallery.ts";
 import { addRuleEditorLink, showRuleEditor, wantsRuleEditor } from "./rules/editor.ts";
 import { parseInvite } from "./rules/model.ts";
 import type { WasmApi } from "./wasm/api.ts";
@@ -82,6 +83,12 @@ type GameEnd = { kind: "restart" } | { kind: "disconnected"; detail: string } | 
 async function start(): Promise<void> {
   const canvas = mustGet("game", HTMLCanvasElement);
   const ui = mustGet("ui", HTMLDivElement);
+
+  // `?gallery=<scene>`: a fixed-pose render for the visual gallery (tools/browser-smoke/gallery.mjs).
+  if (wantsGallery(location)) {
+    await runGallery(canvas, ui, location);
+    return;
+  }
 
   // `?editor=rules`: the rule set editor (no game core or GPU needed).
   if (wantsRuleEditor(location)) {
@@ -366,6 +373,8 @@ function runGame(
       const fog = dustFog(DEFAULT_SETTINGS, dustDensityAt(view.position, r.entities, session.visuals));
       renderer.settings.fogDensity = fog.fogDensity;
       renderer.settings.fogColor = fog.fogColor;
+      // Per-pass GPU timing (separate terrain/objects passes) while the overlay shows.
+      renderer.detailedTiming = overlay.visible;
       frameStats = renderer.render(view);
       nameTags.update(
         nameTagModel(
@@ -437,6 +446,8 @@ function runGame(
             shareCode: codeLabel,
             speed,
             gpuError: renderer.lastError ?? null,
+            gpu: renderer.gpuTimings(),
+            quality: renderer.quality.level,
           }),
         );
       }

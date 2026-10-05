@@ -97,7 +97,7 @@ export function computeAabb(positions: Float32Array): Aabb | null {
  * Widens the per-vertex team bytes to u32 for the GPU. WebGPU vertex buffers
  * need 4-byte strides and the single-byte `uint8` vertex format is not yet
  * universally supported, so one u32 per vertex is the portable choice. The
- * optional surface state bits go into bits 8-15 (shaders.ts SURFACE_SHIFT),
+ * optional surface state bits go into bits 8-15 (shaders/frame.ts SURFACE_SHIFT),
  * the rock material plus one into bits 16-23 (0 = unknown, drawn as
  * ordinary rock) and the paint effect colour into bits 24-31 (plain when
  * absent).

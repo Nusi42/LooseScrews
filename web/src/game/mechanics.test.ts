@@ -8,7 +8,7 @@ import { emptyInput, type InputState } from "../input/input.ts";
 import { KEY_BINDINGS } from "../input/bindings.ts";
 import * as q from "../math/quat.ts";
 import { expandTeams, MeshError, validateMesh } from "../renderer/mesh.ts";
-import { MATERIAL_SHIFT, PAINT_COLOR_SHIFT, SURFACE_SHIFT } from "../renderer/shaders.ts";
+import { MATERIAL_SHIFT, PAINT_COLOR_SHIFT, SURFACE_SHIFT } from "../renderer/shaders/frame.ts";
 import { chargeModel, loadoutLines } from "../ui/hud.ts";
 import { bannerText } from "../ui/effects.ts";
 import { shipPanelModel } from "../ui/shipSelect.ts";

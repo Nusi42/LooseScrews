@@ -7,8 +7,9 @@
 //
 // Colour literals are display (sRGB) values, linearised here (VQ2 colour
 // convention, shaders/frame.ts). Emissive strengths are constants below,
-// in the HDR scene's units (above 1 blooms); they were tuned on the LDR
-// output and may be raised toward 4-8 in the visual review.
+// in the HDR scene's units (above 1 blooms; VQ6 retuned them for the HDR
+// pipeline: idle engines and steady nav lights bloom softly, boost and the
+// nav flash bloom hard).
 
 import {
   PART_CANOPY,
@@ -27,11 +28,11 @@ import {
 import { srgbToLinear } from "../shaders/frame.ts";
 
 /** Engine glow at rest and at full boost (multiplies the engine colour). */
-export const ENGINE_IDLE = 0.9;
-export const ENGINE_BOOST = 2.6;
+export const ENGINE_IDLE = 2.6;
+export const ENGINE_BOOST = 7.5;
 /** Nav light: steady level and flash peak. */
-export const NAV_STEADY = 0.45;
-export const NAV_FLASH = 3.0;
+export const NAV_STEADY = 1.4;
+export const NAV_FLASH = 7.0;
 /** Nav light blink period (s) and flash length (s). */
 export const NAV_PERIOD = 1.2;
 export const NAV_FLASH_LEN = 0.14;
@@ -118,27 +119,35 @@ fn nav_blink(t: f32, phase: f32, strobe: bool) -> f32 {
 fn shade_model(part: u32, n: vec3f, world_pos: vec3f, lp: vec3f, ln: vec3f, color: vec4f, glow: f32, blink: f32) -> vec3f {
   let v = normalize(frame.camera_pos.xyz - world_pos);
   let t = frame.camera_pos.w;
-  let lit = light(n, world_pos);
+  // PART_PLAIN and unknown parts: the pre-VQ4 instance look (lit once, below).
+  if (part > PART_LAMP) { return shade(color.rgb, color.a, n, world_pos); }
+  // Dynamic lights (VQ6) also leave a highlight; each material scales it.
+  var dspec = vec3f(0.0);
+  var lit = vec3f(0.0);
+  // Self-lit parts (engines, nav lights, lamps) skip the light loop.
+  if (part < PART_ENGINE || part == PART_SCORCH) {
+    lit = light_spec(n, world_pos, v, 40.0, &dspec);
+  }
   let fres = pow(1.0 - clamp(dot(n, v), 0.0, 1.0), 4.0);
   // Cool rim light lifts silhouettes off dark rock.
   let rim = ${lin(0.35, 0.45, 0.6)} * fres * 0.5;
   var out = vec3f(0.0);
   if (part == PART_HULL) {
     let base = mix(${lin(0.47, 0.49, 0.53)}, color.rgb, 0.2) * panel_tone(lp) * mix(0.62, 1.0, panel_mask(lp, ln));
-    out = base * lit + vec3f(model_spec(n, v, 40.0) * 0.35) + rim * base;
+    out = base * lit + vec3f(model_spec(n, v, 40.0) * 0.35) + dspec * 0.5 + rim * base;
   } else if (part == PART_LIVERY) {
     let base = color.rgb * mix(0.7, 1.0, panel_mask(lp, ln));
-    out = base * lit + vec3f(model_spec(n, v, 48.0) * 0.4) + base * 0.08 + rim * base;
+    out = base * lit + vec3f(model_spec(n, v, 48.0) * 0.4) + dspec * 0.5 + base * 0.08 + rim * base;
   } else if (part == PART_TRIM) {
     let base = ${lin(0.085, 0.09, 0.105)};
-    out = base * lit + vec3f(model_spec(n, v, 24.0) * 0.2) + rim * 0.3;
+    out = base * lit + vec3f(model_spec(n, v, 24.0) * 0.2) + dspec * 0.25 + rim * 0.3;
   } else if (part == PART_METAL) {
     let base = ${lin(0.6, 0.62, 0.66)};
-    out = base * lit * 0.8 + vec3f(model_spec(n, v, 70.0) * 0.9) + rim * base;
+    out = base * lit * 0.8 + vec3f(model_spec(n, v, 70.0) * 0.9) + dspec * 1.1 + rim * base;
   } else if (part == PART_CANOPY) {
     // Dark tinted glass: strong highlight, sky reflection at grazing angles, a faint lit cockpit.
     let refl = mix(frame.fog_color.rgb * 2.0 + ${lin(0.05, 0.08, 0.12)}, ${lin(0.5, 0.6, 0.7)}, fres);
-    out = ${lin(0.02, 0.035, 0.05)} * lit + refl * (0.15 + 0.6 * fres) + vec3f(model_spec(n, v, 120.0) * 1.4) + ${lin(0.04, 0.12, 0.16)};
+    out = ${lin(0.02, 0.035, 0.05)} * lit + refl * (0.15 + 0.6 * fres) + vec3f(model_spec(n, v, 120.0) * 1.4) + dspec * 1.2 + ${lin(0.04, 0.12, 0.16)};
   } else if (part == PART_ENGINE) {
     // Hot white centre (facing the viewer) fading to a coloured rim: orange idle, blue-white boost.
     let g = clamp(glow, 0.0, 1.0);
@@ -154,7 +163,7 @@ fn shade_model(part: u32, n: vec3f, world_pos: vec3f, lp: vec3f, ln: vec3f, colo
   } else if (part == PART_NAV_TAIL) {
     out = ${lin(1.0, 1.0, 0.95)} * nav_blink(t, blink + 0.6, true);
   } else if (part == PART_LAMP) {
-    out = ${lin(1.0, 0.95, 0.8)} * 1.6;
+    out = ${lin(1.0, 0.95, 0.8)} * 4.5;
   } else if (part == PART_GLOW) {
     out = color.rgb * (1.1 + 0.6 * color.a) + vec3f(0.15);
   } else if (part == PART_SCORCH) {

@@ -14,18 +14,20 @@ export interface RenderQuality {
   msaa: 1 | 4;
   /** Bloom mip levels (0 = no bloom). */
   bloomMips: number;
+  /** Dynamic point lights per frame (VQ6, renderer/lights.ts; at most MAX_LIGHTS = 128). */
+  maxLights: number;
 }
 
 /**
  * "medium" keeps MSAA 4x: WebGPU has no 2x (the plan's medium MSAA 2x), so it
- * saves on bloom (and, from later packages, particles, lights and shafts).
+ * saves on bloom and lights (and, from later packages, particles and shafts).
  * "low" renders without MSAA and bloom but still tonemaps (the HDR target
  * is core WebGPU, so every adapter runs the same shaders).
  */
 export const QUALITY_PRESETS: Readonly<Record<QualityLevel, RenderQuality>> = {
-  high: { level: "high", msaa: 4, bloomMips: 6 },
-  medium: { level: "medium", msaa: 4, bloomMips: 4 },
-  low: { level: "low", msaa: 1, bloomMips: 0 },
+  high: { level: "high", msaa: 4, bloomMips: 6, maxLights: 128 },
+  medium: { level: "medium", msaa: 4, bloomMips: 4, maxLights: 32 },
+  low: { level: "low", msaa: 1, bloomMips: 0, maxLights: 16 },
 };
 
 /** GPU frame budgets (ms) of "high" and "medium" (plan §3). */

@@ -11,12 +11,14 @@
 // `setScene(...)` with the instances built by game/scene.ts each frame.
 
 import * as mat4 from "../math/mat4.ts";
+import * as q from "../math/quat.ts";
 import type { Quat } from "../math/quat.ts";
 import type { Vec3 } from "../math/vec3.ts";
 import { CanvasSizer } from "./canvas.ts";
 import { Frustum } from "./frustum.ts";
 import { initGpu, type GpuContext } from "./gpu.ts";
 import { GpuTimer, type GpuTimings } from "./gpuTimer.ts";
+import { LightSystem, lightBindLayoutEntries, type PointLight } from "./lights.ts";
 import { GpuMesh, type MeshData } from "./mesh.ts";
 import { LEGACY_MESH_BUILDERS, MESH_BUILDERS, MESH_KINDS, type MeshKind } from "./models/index.ts";
 import { DEFAULT_POST, HDR_FORMAT, PostChain, type PostSettings } from "./post.ts";
@@ -243,6 +245,9 @@ export class Renderer {
     translucent: new Map(),
   };
   private readonly frustum = new Frustum();
+  /** Dynamic point lights (VQ6, lights.ts): this frame's lights from `setLights`. */
+  private readonly lightSystem: LightSystem;
+  private lights: readonly PointLight[] = [];
   private depthTexture: GPUTexture | null = null;
   private msaaTexture: GPUTexture | null = null;
   private startTime = performance.now();
@@ -309,11 +314,13 @@ export class Renderer {
           visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
           buffer: { type: "uniform" },
         },
+        ...lightBindLayoutEntries(),
       ],
     });
+    this.lightSystem = new LightSystem(device);
     this.bindGroup = device.createBindGroup({
       layout: bindGroupLayout,
-      entries: [{ binding: 0, resource: { buffer: this.frameBuffer } }],
+      entries: [{ binding: 0, resource: { buffer: this.frameBuffer } }, ...this.lightSystem.bindGroupEntries()],
     });
     this.pipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [bindGroupLayout] });
     this.modules = {
@@ -428,6 +435,7 @@ export class Renderer {
 
   /** Adds or replaces the terrain chunk `key`; `null` or an empty mesh removes it. */
   setChunk(key: string, mesh: MeshData | null): void {
+    this.lightSystem.setChunk(key, mesh);
     this.chunks.get(key)?.destroy();
     this.chunks.delete(key);
     if (mesh && mesh.indices.length > 0) {
@@ -436,6 +444,7 @@ export class Renderer {
   }
 
   clearChunks(): void {
+    this.lightSystem.clearChunks();
     for (const mesh of this.chunks.values()) mesh.destroy();
     this.chunks.clear();
   }
@@ -464,9 +473,24 @@ export class Renderer {
     }
   }
 
+  /**
+   * This frame's dynamic point lights (shots, explosions, engines, pickups,
+   * objectives; game/lightFx.ts builds them). Hot-rock lights come from the
+   * chunk meshes on their own. Kept until the next call.
+   */
+  setLights(lights: readonly PointLight[]): void {
+    this.lights = lights;
+  }
+
+  /** Lights uploaded in the last frame and the candidates they were chosen from. */
+  get lightStats(): { lights: number; candidates: number } {
+    return { lights: this.lightSystem.lastCount, candidates: this.lightSystem.lastCandidates };
+  }
+
   /** Removes every instance (before a new match). */
   clearInstances(): void {
     this.setScene(emptyScene());
+    this.lights = [];
   }
 
   /** View-projection matrix of `camera` at the current canvas aspect (screen-space labels). */
@@ -483,15 +507,20 @@ export class Renderer {
     this.ensureTargets(samples, quality.bloomMips);
     const pipelines = this.scenePipelinesFor(samples);
 
-    const viewProj = this.viewProjection(camera);
+    const view = mat4.viewFromPose(camera.position, camera.orientation);
+    const viewProj = mat4.multiply(mat4.perspective(camera.fovY, this.sizer.aspect, camera.near, camera.far), view);
     this.frustum.setFromViewProj(viewProj);
     const time = this.timeOverride ?? (performance.now() - this.startTime) / 1000;
     this.writeFrameUniforms(viewProj, camera.position, time);
+    const tanY = Math.tan(camera.fovY / 2);
+    const lightView = { view, tanX: tanY * this.sizer.aspect, tanY, forward: q.forward(camera.orientation) };
+    this.lightSystem.prepare(this.lights, camera.position, lightView, quality.maxLights, this.frustum, time);
 
     const fog = this.frameData.subarray(24, 27);
     const encoder = this.device.createCommandEncoder({ label: "frame" });
     const timer = this.timer;
     timer?.beginFrame();
+    this.lightSystem.encode(encoder, timer);
     const split = this.detailedTiming && timer !== null;
     // With MSAA the scene renders into the multisampled target and the last
     // scene pass resolves it into the post chain's HDR texture.
@@ -568,6 +597,7 @@ export class Renderer {
     this.depthTexture?.destroy();
     this.msaaTexture?.destroy();
     this.post.destroy();
+    this.lightSystem.destroy();
     this.timer?.destroy();
     this.frameBuffer.destroy();
     this.sizer.dispose();

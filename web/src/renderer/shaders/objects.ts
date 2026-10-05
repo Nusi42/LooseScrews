@@ -43,6 +43,8 @@ fn emissive_glow(albedo: vec3f, a: f32) -> vec3f {
 
 // Lit colour blended toward glowing radiance by the emissive amount.
 fn shade(albedo: vec3f, a: f32, n: vec3f, world_pos: vec3f) -> vec3f {
+  // Fully glowing (bolts, flashes, shells): no lighting to blend in.
+  if (a >= 0.999) { return emissive_glow(albedo, a); }
   let lit = albedo * light(n, world_pos);
   return mix(lit, emissive_glow(albedo, a), a);
 }

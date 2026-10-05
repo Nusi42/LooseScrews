@@ -163,7 +163,9 @@ coverage, falling to 0 at a wall along a slightly wandering line, and only for r
 terrain shader writes premultiplied colour and that coverage as alpha (the sky composite
 draws the sky under it; the shafts treat it as partly sky) and discards below 0.01.
 `Renderer.roomFade = false` (gallery `?roomfade=off`) cuts sharply as before. Cost: a few ALU
-per terrain fragment (no measurable change).
+per terrain fragment (no measurable change). Rock closer than `ROOM_CLIP` = 0.75 u to a hidden
+wall is cut at any distance (D5): stripping the wall's triangles (0.5 u) leaves the triangles
+that bridge rock and wall as a sawtooth, so the cut follows the plane instead.
 
 ## Sun occlusion (VQ9)
 
@@ -175,7 +177,20 @@ from the sun over the whole level (`depth16unorm`, 4096², about 0.09 u per texe
   hidden level-box walls do not cast), depth only, **back faces** as seen from the sun (cull
   "front"). A lit surface lies in front of its own rock's far side, so lit rock has no acne
   without a large bias, and a point is in shadow exactly when its ray toward the sun enters rock.
-  Ships do not cast (they receive).
+  Rock at or beyond The Squeeze's shell sphere (less than `SHELL_CASTER_MARGIN` = 0.75 u
+  inside it) casts nothing (D5, readability first): the caster pass has a fragment stage that
+  drops those fragments, and `Renderer.setModeVolumes` hands the wall volume's sphere to
+  `SunShadow.setShell` (a shrinking sphere needs no redraw, the remeshed chunks mark theirs
+  dirty; a new or moved one redraws the map). The shell still draws, glows and collides.
+- **Ship shadows** (D5): hulls and wrecks cast into a second, small map (`SHIP_SHADOW_SIZE`
+  1024², `depth16unorm`, 2 MB) from the sun over `SHIP_SHADOW_RANGE` = 40 u around the camera
+  (about 0.08 u per texel, centre snapped to whole texels so edges do not crawl), cleared and
+  redrawn every frame from the opaque ship and wreck instance batches (positions and the
+  instance transform only, every face, bias 0.04 u; `SunShadow.encodeShips`, timed as
+  `shadow`). Receivers multiply both maps (`sun_visibility` = `terrain_visibility` x
+  `ship_visibility`, a 4-tap PCF; binding 11). Cloaked hulls (refract batches) cast none.
+  Without ships near, a sealed level or `?shadows=off` the map is not sampled;
+  `?shipshadows=off` (`SunShadow.shipShadows`) turns only the hulls' shadows off.
 - **Updates**: terrain is static between edits, so the map is not redrawn per frame.
   `setChunk` reports a chunk's old and new extent (`chunkChanged`); their projected texel
   rectangles go into a dirty list (merged when they overlap, at most 6), and the next frame
@@ -187,7 +202,7 @@ from the sun over the whole level (`depth16unorm`, 4096², about 0.09 u per texe
   enclose everything, so the sun never gets in; `setSealed(true)` makes `sun_visibility`
   return 0 without a lookup and skips the map and the volumetric pass.
 - **Lookup** (`shaders/shadow.ts` `sun_visibility(p, n)`, group 0 bindings 8 uniform, 9 map,
-  10 comparison sampler): the receiver offset 0.12 u (plus half a texel) along the normal,
+  10 comparison sampler, 11 the ship map): the receiver offset 0.12 u (plus half a texel) along the normal,
   depth bias 0.06 u, an 8-tap Poisson PCF of bilinear compares over 1.6 texels, sharpened with a
   smoothstep (soft but defined edges). `static_light` stores the result in `sun_vis_last`, which
   the terrain's GGX sun highlight and the models' `model_spec` reuse (one lookup per fragment).
@@ -266,7 +281,7 @@ the half-FOV tangents) and the linear depth. Everything fades with the exp2 dist
 
 | Volume | Look | Used for |
 | --- | --- | --- |
-| `wall` (centre, radius, `warn`, `grind`) | Rock within a band of the sphere (the shell's terrain wall) glows: a slowly rising energy curtain (stretched value noise), 3D cell borders (Voronoi, 2x2x2 lookups) that light up under a scan band, rare flickering cells; a bright seam 0.85 u inside the sphere where cave rock meets the wall and a soft spill onto rock in front of it. Cyan while the walls only warn, amber with molten cracks in patches while they grind inward. Where the sphere lies in open space ahead of the rock (chunk meshes that have not caught up with the moving shell yet) a faint film with the same pattern | The Squeeze's shell |
+| `wall` (centre, radius, `warn`, `grind`) | Rock within a band of the sphere (the shell's terrain wall) glows: a slowly rising energy curtain (stretched value noise), 3D cell borders (Voronoi, 2x2x2 lookups) that light up under a scan band, rare flickering cells; a bright seam 0.85 u inside the sphere where cave rock meets the wall and a soft spill onto rock in front of it (faded in over the band, D5: a switch at the sphere drew the meshed wall's cell-to-cell offsets as rings). Cyan while the walls only warn, amber with molten cracks in patches while they grind inward. Where the sphere lies in open space ahead of the rock (chunk meshes that have not caught up with the moving shell yet) a faint film with the same pattern | The Squeeze's shell |
 | `zone` (centre, radius, film, grid, contour, ring, pulse) | Where the view ray crosses the sphere in open space: a fresnel film with a drifting latitude/longitude grid (no line on the equator) and a scan band; where the sphere cuts rock: a dashed, moving contour, its width measured along the surface (the depth-derived normal keeps walls nearly tangent to the sphere from smearing it); an optional equator ring lit up to a fill fraction | The Squeeze's next zone, extraction zones, the embedded Heist core's "dig here" outline, Hot Reactor's fuse radius (the ring shows the fuse left) |
 | `beam` (base, width, height) | A vertical light pillar (closest approach of the view ray to the vertical line, glow plus core, ripples), hidden behind rock, fading over its height, at least a pixel wide far away | Extraction zones, the Heist core and its carrier |
 | `halo` (centre, radius, power) | A rim-lit bubble (front and a fainter back half) | The core carrier, the reactor holder |
@@ -287,7 +302,10 @@ the scene subtracts at most 1/16 of the sky behind a kept ship) stay close to an
 translucent passes and smoke over a ship reduce the keep like coverage. `game/modeVisuals.ts`
 sets `monochromeGrade` (a little darker and more contrasty) on top of the world's grade, eased
 in over 1.2 s, and gives ships the share of their side colour their colour meter has left
-(`colourMeterStyle`) with keep 1.
+(`colourMeterStyle`) with keep 1. The own cockpit frame does the same (D5):
+`HullFrameState.keepColor` (main.ts sets it and the meter colour from `playerStyleFor`) and the
+frame's fragment shader writes the same alpha, so in Last Color Standing the own hull keeps its
+colour like everyone else's (gallery `last-color-cockpit`).
 
 **Props.** `models/modeProps.ts`: the Heist core (a faceted crystal in three gyroscope hoops)
 and the Hot Reactor (a glowing sphere in two containment rings with six vents), mesh kinds
@@ -426,8 +444,8 @@ sky 0.05, post 0.08, hull view `bay` 0.04), `lobby-flythrough` 0.26 ms, `ship-ba
 | --- | --- |
 | Rock texture array: 512², 2 layers, `rgba8unorm`, full mip chain, generated at start-up by two compute shaders (tiling gradient noise with integer hashes; layer 0 rock slope, height and vein ramp, layer 1 grain slope, height and speckle) | `rockTextures.ts` (`TerrainMaterial`, `ROCK_GEN_WGSL`, `ROCK_MIP_WGSL`) |
 | Per-world look: `TerrainParams` (strata axis tilted up to 28°, bands per u, texture offsets, strata contrast, vein amount) from `hashSeed(share code)`; set `Renderer.settings.terrainSeed` (main.ts and the gallery do) | `rockTextures.ts` `terrainParams` |
-| Vertex data: the packed `team` u32 (paint dilated next to paint) plus two `unorm8x4` per vertex: AO, weak, hard, paint coverage / hot, charged, glow, scorch, blurred over the mesh near borders (chunk-face vertices pinned) | `terrainBlend.ts` `terrainVertexData`, uploaded by `Renderer.setChunk` (`GpuMesh.extraBuffer`) |
-| Shading: triplanar rock and grain detail normals (surface gradient), macro blotch, strata, per-material albedo, roughness and F0, sharpened organic blends, paint picking and patterns, surface-state emission, GGX from the sun and the headlight, a normalised Blinn-Phong highlight from the dynamic lights (`light_spec`, power from the roughness, scaled by F0, capped at 3x), AO and cavity | `shaders/terrain.ts` (override `DETAIL` = `RenderQuality.terrainDetail`); the sun's diffuse and GGX highlight are shadowed (VQ9) |
+| Vertex data: the packed `team` u32 (paint dilated next to paint) plus two `unorm8x4` per vertex: AO, weak, hard, paint coverage / hot, charged, glow, scorch. Weak and hard are the mesher's display weights (`MeshData.materialWeights`, smooth in space and across chunk seams, D5); paint and states are blurred over the mesh near borders (chunk-face vertices pinned); meshes without weights blur the material ids too | `terrainBlend.ts` `terrainVertexData`, uploaded by `Renderer.setChunk` (`GpuMesh.extraBuffer`) |
+| Shading: triplanar rock and grain detail normals (surface gradient), macro blotch, strata, per-material albedo, roughness and F0, material borders resolved by a steep soft-max of the weights displaced by mostly low-frequency rock noise (`MATERIAL_EDGE_SHARPNESS`: one material wins almost everywhere, borders are crisp meandering curves), sharpened organic paint and state blends, paint picking and patterns, surface-state emission, GGX from the sun and the headlight, a normalised Blinn-Phong highlight from the dynamic lights (`light_spec`, power from the roughness, scaled by F0, capped at 3x), AO and cavity | `shaders/terrain.ts` (override `DETAIL` = `RenderQuality.terrainDetail`); the sun's diffuse and GGX highlight are shadowed (VQ9) |
 
 The terrain pipeline has its own layout: group 0 the frame uniforms, group 1 the texture
 array, an anisotropic (8x) trilinear repeat sampler and `TerrainParams`. Paint and state

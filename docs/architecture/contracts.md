@@ -264,7 +264,11 @@ number on the wire.
 `colors: Vec<u8>` (paint colour id per vertex, `PAINT_*`, 0 where unpainted),
 `states: Vec<u8>` (surface state bits per vertex: timed states active at the chunk store's
 display tick, `GameTerrain::advance_to`, plus scorch 8) and `materials: Vec<u8>` (material
-id per vertex; filled by the `ChunkStore` meshers) and `ao: Vec<u8>` (baked ambient occlusion
+id per vertex; filled by the `ChunkStore` meshers), `material_weights: Vec<[u8; 2]>` (display
+blend weights of weak and hard rock per vertex, 0..255, filled with `materials`:
+`MaterialRegion::blend_weights` = `0.5 + (d_other - d_m) / MATERIAL_BLEND_RAMP`, clamped, from the
+distances to the nearest material sites, so it is continuous across material borders and equal
+on vertices two chunks share; client visuals only, not hashed) and `ao: Vec<u8>` (baked ambient occlusion
 per vertex, 255 = open, 0 = fully occluded; surface nets only, empty for dual contouring).
 `Mesh::hash` covers colours and states only when a vertex has one, and occlusion when the mesh
 carries it.
@@ -279,12 +283,17 @@ up to 0.35 u into the rock by the chord sag, so the drawn bore is as wide as the
 vertices carry bit-identical positions, normals and occlusion in both chunks. A chunk's
 `SampleGrid` holds corner values with a 4-corner halo (`GRID_HALO`) read from the neighbouring
 chunks; meshing a chunk generates its in-level neighbours.
-Vertices are in world space and faces are counter-clockwise seen from open space. `ls-wasm`
+Vertices are in world space and faces are counter-clockwise seen from open space. Each
+surface-nets quad is split along the diagonal whose two triangles fold less against their
+vertex normals (`split_quad`; the fixed diagonal left folded, culled triangles at saddles,
+thin fins and bore rims). `ls-wasm`
 hands the client a `MeshData` (`web/src/renderer/mesh.ts`) by flattening only:
 `positions` and `normals` as `Float32Array` (xyz triples), `indices` as `Uint32Array`, and
 `teams` as the `Uint8Array` field `team` with values unchanged; `states` travel as the
 optional `surface` field, `materials` and `colors` through `ChunkMesh.materials()` and
-`ChunkMesh.paintColors()` (unknown colour ids become plain), occlusion through `ChunkMesh.ao()`
+`ChunkMesh.paintColors()` (unknown colour ids become plain), the material display weights
+through `ChunkMesh.materialWeights()` as the optional `MeshData.materialWeights` (two bytes per
+vertex), occlusion through `ChunkMesh.ao()`
 as the optional `MeshData.ao` (`Uint8Array`, one byte per vertex; the terrain shader darkens its
 light by it, VQ3b). The web client packs the first ones into
 one `u32` terrain vertex attribute (`web/src/renderer/shaders/frame.ts`): bits 0-7 paint team (255

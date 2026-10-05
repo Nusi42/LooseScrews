@@ -30,6 +30,60 @@ export function sunlit(meshes: readonly RayMesh[], p: Vec3, sun: Vec3): boolean 
 }
 
 /**
+ * Sunlit wall pose (D5, ship shadows): a sunlit camera looking at sunlit
+ * rock that faces the sun, 6-14 u away, with the sun from the side and a
+ * little behind, so hulls hovering in front of the rock throw their
+ * shadows onto it beside them. Null
+ * when no such view exists (the caller falls back to the plain pose).
+ */
+export function pickSunWallPose(
+  meshes: readonly RayMesh[],
+  probes: readonly Probe[],
+  origin: Vec3,
+  sun: Vec3,
+  room: { min: Vec3; max: Vec3 } | null,
+): { position: Vec3; orientation: Quat } | null {
+  const up = { x: 0, y: 1, z: 0 };
+  const inside = (p: Vec3): boolean =>
+    !room || (p.x > room.min.x + 3 && p.y > room.min.y + 3 && p.z > room.min.z + 3 && p.x < room.max.x - 3 && p.y < room.max.y - 3 && p.z < room.max.z - 3);
+  const cams: Vec3[] = [origin];
+  for (const p of probes) {
+    if (p.hit && p.hit.t > 10) cams.push(v3.addScaled(origin, p.dir, p.hit.t * 0.5));
+  }
+  // Toward the sun only up to the room box: the hidden walls of open levels are in the meshes too.
+  const lit = (p: Vec3): boolean => {
+    let t = SUN_RAY;
+    if (room) {
+      for (const a of ["x", "y", "z"] as const) {
+        if (sun[a] > 1e-6) t = Math.min(t, (room.max[a] - p[a]) / sun[a]);
+        else if (sun[a] < -1e-6) t = Math.min(t, (room.min[a] - p[a]) / sun[a]);
+      }
+    }
+    return raycast(meshes, p, sun, Math.max(0, t - 1)) === null;
+  };
+  const dirs = sphereDirections(64);
+  let best: { score: number; position: Vec3; dir: Vec3 } | null = null;
+  let tried = 0;
+  for (const cam of cams) {
+    if (tried >= 24) break;
+    if (!inside(cam) || !lit(cam)) continue;
+    if (!sphereDirections(12).every((d) => (raycast(meshes, cam, d, 2) ?? { t: 3 }).t > 1.8)) continue;
+    tried++;
+    for (const dir of dirs) {
+      if (v3.dot(dir, sun) > 0.1 || Math.abs(dir.y) > 0.85) continue;
+      const hit = raycast(meshes, cam, dir, 14);
+      if (!hit || hit.t < 6 || v3.dot(hit.normal, sun) < 0.4 || v3.dot(hit.normal, dir) > -0.5) continue;
+      if (!lit(v3.addScaled(v3.addScaled(cam, dir, hit.t), hit.normal, 0.3))) continue;
+      // The sun from the side (shadows fall beside the hulls, not behind them), the rock facing it.
+      const score = v3.dot(hit.normal, sun) - Math.abs(v3.dot(dir, sun) + 0.3) - Math.abs(hit.t - 9) * 0.05;
+      if (!best || score > best.score) best = { score, position: cam, dir };
+    }
+  }
+  if (!best) return null;
+  return { position: best.position, orientation: q.lookRotation(best.dir, Math.abs(best.dir.y) > 0.95 ? { x: 1, y: 0, z: 0 } : up) };
+}
+
+/**
  * Shade pose: null when no camera in shadow sees sunlit rock (the caller
  * falls back to the plain pose).
  */

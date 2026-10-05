@@ -271,7 +271,9 @@ fn bore_mouth_stays_on_the_surface() {
     println!("folded triangles at the mouth: {folds} of {tris}");
     // A few folded (culled) triangles where the bore meets the ball: the
     // grid cannot represent the rim, every vertex there is a compromise.
-    assert!(folds * 25 <= tris, "{folds} of {tris} triangles folded");
+    // Quads split along the diagonal that folds less (D5): 9 of 560, before
+    // 14 of 560 with the fixed diagonal.
+    assert!(folds * 50 <= tris, "{folds} of {tris} triangles folded");
 }
 
 /// The gated mesher (the game's Squeeze shell mesher) is the plain one where

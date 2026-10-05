@@ -13,6 +13,15 @@
 // feed their neighbours' blur), so both chunks agree on them and the drawn
 // weights stay continuous across the seam.
 //
+// Materials: when the mesh carries display weights (`materialWeights`,
+// ls_worldgen MaterialRegion::blend_weights) they are used as they are.
+// They are a smooth function of the position, continuous across chunk
+// seams, so material borders need no blur and no pinning: the border is
+// the 0.5 line of a ramp several vertices wide, a smooth curve however the
+// triangles lie (D5: the blurred one-hot ids still followed the 1 u vertex
+// grid in places and kept their staircase at chunk seams). Meshes without
+// them (tests, bare sample grids) blur the ids as before.
+//
 // Only the neighbourhood of borders is touched (vertices within
 // BLUR_PASSES edges of a triangle whose corners differ), so uniform rock
 // costs one pass over the triangles. Paint team and effect colour are
@@ -60,11 +69,12 @@ export function terrainVertexData(mesh: MeshData): TerrainVertexData {
   const surf = mesh.surface && mesh.surface.length === n ? mesh.surface : null;
   const ao = mesh.ao && mesh.ao.length === n ? mesh.ao : null;
   const raw = mesh.team;
+  const mw = mesh.materialWeights && mesh.materialWeights.length === n * 2 ? mesh.materialWeights : null;
 
   // Blended state per vertex as bits: weak, hard, paint, hot, charged, glow, scorch.
   const bits = new Uint8Array(n);
   for (let i = 0; i < n; i++) {
-    const m = mats ? (mats[i] ?? MATERIAL_ROCK) : MATERIAL_ROCK;
+    const m = mats && !mw ? (mats[i] ?? MATERIAL_ROCK) : MATERIAL_ROCK;
     const sv = surf ? (surf[i] ?? 0) : 0;
     bits[i] =
       (m === MATERIAL_WEAK ? 1 : 0) |
@@ -93,6 +103,7 @@ export function terrainVertexData(mesh: MeshData): TerrainVertexData {
   }
   if (!any) {
     for (let i = 0; i < n; i++) packed(i, bits[i] ?? 0);
+    if (mw) applyMaterialWeights(extra, mw);
     return { team: expandTeams(raw, mesh.surface, mesh.materials, mesh.paintColors), extra, blurred: 0 };
   }
   // Grow the rings; the last pass also collects the triangles that touch them.
@@ -201,5 +212,14 @@ export function terrainVertexData(mesh: MeshData): TerrainVertexData {
     extra[i * 2 + 1] =
       (unorm(weights[o + 3] ?? 0) | (unorm(weights[o + 4] ?? 0) << 8) | (unorm(weights[o + 5] ?? 0) << 16) | (unorm(weights[o + 6] ?? 0) << 24)) >>> 0;
   }
+  if (mw) applyMaterialWeights(extra, mw);
   return { team: expandTeams(team, mesh.surface, mesh.materials, colors), extra, blurred };
+}
+
+/** Writes the mesh's material display weights into extra0's y (weak) and z (hard) bytes. */
+function applyMaterialWeights(extra: Uint32Array, mw: Uint8Array): void {
+  const n = mw.length >> 1;
+  for (let i = 0; i < n; i++) {
+    extra[i * 2] = (((extra[i * 2] ?? 0) & 0xff0000ff) | ((mw[i * 2] ?? 0) << 8) | ((mw[i * 2 + 1] ?? 0) << 16)) >>> 0;
+  }
 }

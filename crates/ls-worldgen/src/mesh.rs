@@ -46,6 +46,11 @@ pub struct Mesh {
     /// 2 hard). Filled by the [`crate::ChunkStore`] meshers; empty for meshes
     /// built from a bare [`SampleGrid`].
     pub materials: Vec<u8>,
+    /// Display blend weights of weak and hard rock per vertex (0..255,
+    /// [`crate::MaterialRegion::blend_weights`]): smooth across material
+    /// borders and equal on vertices two chunks share. Filled with
+    /// `materials`; empty otherwise. Client visuals only (not hashed).
+    pub material_weights: Vec<[u8; 2]>,
     /// Baked ambient occlusion per vertex (255 = fully open, 0 = fully
     /// occluded; see [`surface_nets`]). Empty for dual-contouring meshes.
     pub ao: Vec<u8>,
@@ -461,19 +466,51 @@ fn build(
                     // Counter-clockwise when seen from +axis (b x c = axis).
                     let q = [cell(-1, -1), cell(0, -1), cell(0, 0), cell(-1, 0)];
                     debug_assert!(q.iter().all(|&v| v != u32::MAX));
-                    if solid0 {
-                        // Open space on the +axis side.
-                        mesh.indices
-                            .extend_from_slice(&[q[0], q[1], q[2], q[0], q[2], q[3]]);
-                    } else {
-                        mesh.indices
-                            .extend_from_slice(&[q[0], q[2], q[1], q[0], q[3], q[2]]);
-                    }
+                    // Counter-clockwise seen from open space (on the +axis
+                    // side when the lower corner is rock).
+                    let quad = if solid0 { q } else { [q[0], q[3], q[2], q[1]] };
+                    mesh.indices.extend_from_slice(&split_quad(&mesh, quad));
                 }
             }
         }
     }
     mesh
+}
+
+/// The two triangles of a surface-nets quad `[a, b, c, d]` (counter-
+/// clockwise seen from open space). Split along `a-c` unless one of those
+/// triangles faces into the rock (its winding against its vertex normals:
+/// a folded quad, culled as a hole on screen) and the `b-d` split folds
+/// less: the one whose worse triangle agrees better with its normals wins.
+fn split_quad(mesh: &Mesh, [a, b, c, d]: [u32; 4]) -> [u32; 6] {
+    let p = |i: u32| Vec3::from_array(mesh.positions[i as usize]);
+    let n = |i: u32| Vec3::from_array(mesh.normals[i as usize]);
+    // A triangle's winding normal and its summed vertex normals.
+    let tri = |i: u32, j: u32, k: u32| {
+        let (pi, pj, pk) = (p(i), p(j), p(k));
+        ((pj - pi).cross(pk - pi), n(i) + n(j) + n(k))
+    };
+    let ac = [a, b, c, a, c, d];
+    let (abc, acd) = (tri(a, b, c), tri(a, c, d));
+    // The common case (no fold) needs no square roots.
+    if abc.0.dot(abc.1) > 0.0 && acd.0.dot(acd.1) > 0.0 {
+        return ac;
+    }
+    // Cosine between the two (0 for a degenerate triangle).
+    let facing = |(f, m): (Vec3, Vec3)| {
+        let l2 = f.length_squared() * m.length_squared();
+        if l2 > 1e-24 {
+            f.dot(m) / l2.sqrt()
+        } else {
+            0.0
+        }
+    };
+    let bd = facing(tri(a, b, d)).min(facing(tri(b, c, d)));
+    if bd > facing(abc).min(facing(acd)) {
+        [a, b, d, b, c, d]
+    } else {
+        ac
+    }
 }
 
 /// A refined surface-nets vertex.

@@ -42,6 +42,12 @@ export interface MeshData {
   surface?: Uint8Array;
   /** Optional rock material per vertex (empty or absent = ordinary rock). */
   materials?: Uint8Array;
+  /**
+   * Optional display blend weights of weak and hard rock, two per vertex
+   * (0..255, smooth across material borders; ls_worldgen
+   * MaterialRegion::blend_weights). Empty or absent = from `materials`.
+   */
+  materialWeights?: Uint8Array;
   /** Optional paint effect colour per vertex (empty or absent = plain). */
   paintColors?: Uint8Array;
   /** Optional baked ambient occlusion per vertex (255 = open; empty or absent = open). */
@@ -69,6 +75,10 @@ export function validateMesh(mesh: MeshData): void {
     if (arr && arr.length > 0 && arr.length !== vertexCount) {
       throw new MeshError(`${name} must be empty or have one entry per vertex`);
     }
+  }
+  const mw = mesh.materialWeights;
+  if (mw && mw.length > 0 && mw.length !== vertexCount * 2) {
+    throw new MeshError("materialWeights must be empty or have two entries per vertex");
   }
   if (indices.length % 3 !== 0) throw new MeshError("indices length is not a multiple of 3");
   for (let i = 0; i < indices.length; i++) {

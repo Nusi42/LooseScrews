@@ -114,6 +114,7 @@ Rules for every package:
 | VQ7 Atmosphere and backdrop | Done (WIN6), merged on WIN1 in wave C round 1; see "VQ7 as built" below. Integration: the environment cube and its sampler moved to group 0 bindings 6-7 (VQ6 owns 1-3). Pillars at the hidden walls fade out since VQP. |
 | VQP Polish | Done (WIN4), merged on WIN1 in wave C round 2; see "VQP as built". Fusion Charger charge-up, cloak refraction, own Leech Arc beam drawn locally (M3 carried-over item), pillars fading at hidden walls, thin bores drawn at their true width, canopy frame. Mesh golden hashes re-blessed (sdf unchanged); reference-GPU timing open as for the other packages. |
 | M3 C1 Mode visuals (on the new pipeline, §4) | Done (WIN2), wave C round 2; see milestone-3-plan.md "C1 as built" and renderer.md "Mode effects". The Squeeze's walls and next zone, Heist's zones, beacons and carrier halo, Hot Reactor's fuse sphere and ring are a new analytic pass (`modeFx.ts`, timed `mode`); core and reactor are VQ4-kit props; events and ambience are VQ5 particles with VQ6 pulses; Last Color Standing is VQ2's monochrome grade with a per-pixel keep mask for the ships. The first-impression pass (live flythrough behind the start screen and lobby, rotating hulls in the ship bay) from §4 is not part of C1 (round 2 schedules it separately). Merged on WIN1 in wave C round 2. |
+| D5 Visual polish (M3 wave D) | Done (WIN6); see "D5 as built". Smooth material borders from mesher display weights, quads split against folds, hidden-wall clip, The Squeeze's shell lets the sun through and its wall is clean, ship shadows, own cockpit frame keeps its colour in Last Color Standing. Mesh golden hashes re-blessed. |
 | FI First impression (start screen, lobby, ship bay) | Done (WIN3), M3 wave C round 2; see "FI as built" below. Start screen over a live flythrough with a dogfight, lobby flythrough while the mouse is free, hulls turning in the ship picker and the in-game ship bay; reference-GPU timing and phone review open. Merged on WIN1 in wave C round 2; the ship-bay renderer is created without shadows (no second shadow map). |
 
 **VQ9 as built (WIN5):** see [architecture/renderer.md](architecture/renderer.md#sun-occlusion-vq9). The package asked for cheap sun visibility, baked per vertex in the mesher or a shadow map within budget. Chosen: a **shadow map**, because a per-vertex bake cannot stay correct under edits (a crater in a ceiling opens the sun onto floors in other chunks, far beyond `DIRTY_MARGIN`; the bake would need sun rays through the whole level per vertex and cross-chunk invalidation), its 1 u resolution gives blobs instead of shaft edges, and it would cost meshing time that VQ3a already doubled. The mesher is unchanged: no golden hash, no `GENERATOR_VERSION` and no replay hash changes, remesh CPU cost unchanged.
@@ -144,6 +145,64 @@ Rules for every package:
 | 8 | **VQ7 Atmosphere and backdrop** | Starfield plus procedural nebula skybox for open-sky worlds (seeded by share code); fog colour tinted toward the sun and a subtle height gradient; per-world-type grade (caves warm, mines sodium-orange, sky cold blue) through VQ2's grade hook; light shafts through cave openings (screen-space radial blur from the sun, high only) | new `web/src/renderer/sky.ts`, `web/src/renderer/shaders/sky.ts`, grade presets in `post.ts` | ≤ 0.6 ms | VQ2 |
 
 **VQ6 as built (WIN4):** see [architecture/renderer.md](architecture/renderer.md) "Dynamic lights". Clustered forward: a compute pass (`lights`) builds one 128-bit light mask per froxel of a 16x9x24 grid (screen tiles, exponential depth slices 0.5-240 u); terrain and objects look up their froxel from the clip position and loop over the set bits (`shaders/lighting.ts` `light()` and, for model materials, `light_spec()` with a Blinn-Phong highlight). Lights per frame: high 128, medium 32, low 16 (`RenderQuality.maxLights`), the best by intensity, range and distance to the camera after frustum culling. Sources (`web/src/game/lightFx.ts`): glowing projectiles by shape, engines (orange idle, blue-white boost, none while cloaked), muzzle pulses for new shots and impact or explosion pulses for vanished ones (white-hot fireballs cooling to orange and growing), ship deaths, the mechanics flashes (muzzle flashes, shockwaves, swaps, ...), Leech Arc beams, pickups, wreck embers, armed mines, mode objectives (reactor pulsing faster before detonation, core, extraction) and hot, charged or glowing rock (hot spots gathered from the chunk meshes per 6 u cell, breathing or crackling). The headlight is a soft spot along the view (full inside 14 degrees, 30 % beyond 40). Emitter API for VQ5 and C1: `LightFx.emit(preset or pulse, position, now, { color, scale })` with `LIGHT_PRESETS` (muzzle, spark, plasma, explosion, bigExplosion, shipDeath, pickup); an effect system that emits its own impacts sets `watchProjectiles = false`. VQ4 retune: engines 2.6 idle / 7.5 boost (were 0.9 / 2.6), nav lights 1.4 steady + 7.0 flash (0.45 + 3.0), lamps 4.5 (1.6). Gallery: new scenes `light-volley` (12 lights down a mine shaft) and `light-storm` (64 lights in the cave tunnel); `--lights off` renders the same frames unlit. Measured (RTX 5080, Chrome 154, 1920x1080, high, 300 frames, on vs off): 64 lights cost about 0.07 ms (terrain +0.06, objects +0.01, compute 0.01), 12 lights 0.01-0.02 ms; scaled by the 10-12x compute gap to the reference mid GPU that is about 0.7-0.85 ms for 64 lights (budget 1.0; a measurement on that class is still open). Tests: `web/src/renderer/lights.test.ts` (falloff and range, selection and culling, packing and the view transform, froxel maths: every point in its own froxel, the light assignment conservative, the light info, quality caps, hot spots, shader bindings), `web/src/game/lightFx.test.ts` (pulse curves, emit and expiry, projectile appear and vanish, ship deaths, scene lights, objectives). Browser smoke: the `light clusters` compute pipeline is required and validates. Deviations and notes: "low" keeps 16 lights instead of the pre-VQ6 path (the lights are cheap and carry gameplay information); the sun has no occlusion, so caves that the sun direction reaches stay evenly lit and the lights read strongest in shaded and dark rock (online smoke shots `online-laser.png`, `online-rocket.png`); occluding the sun and ambient (VQ3b's AO, or a sky-visibility bake) is the next big step for the cave look. Light lifetimes do not come from VQ5's presets yet: until VQ5 calls `emit`, `LightFx.observe` derives impacts from vanished projectiles (a projectile that leaves the interest range also flashes). `tools/browser-smoke/models.mjs` reports `in-flight: never ready` on `main` too (pre-existing).
+
+### D5 as built (M3 wave D, WIN6)
+
+Visual polish against the review list after wave C. Gallery labels `D5-before` and `D5-after`
+(`target/visual-gallery/index.html`; RTX 5080, Chrome, 1080p, high): all 42 scenes within
+budget, frames 0.15-0.61 ms.
+- **Staircase borders between rock materials** (`cave-sunbeam`, `material-border`): the
+  material id is a Voronoi field, but the client blurred one-hot ids over 2 mesh rings and kept
+  them one-hot within 1.5 u of chunk faces, so borders followed the 1 u vertex grid and stepped
+  at seams; the shader's two independent sharpens also left a grey rock seam or a mixed band
+  between weak and hard rock. Now the mesher emits **display weights** per vertex
+  (`Mesh.material_weights`, `MaterialRegion::blend_weights`: `0.5 + (d_other - d_m) / 6`,
+  clamped, from the distances to the nearest site of each material; continuous in space,
+  identical on shared seam vertices; ls-wasm `ChunkMesh.materialWeights()`), `terrainBlend.ts`
+  uses them as they are (paint and states still blur), and `shaders/terrain.ts` resolves them
+  by a steep soft-max of the weights displaced by mostly low-frequency rock noise
+  (`MATERIAL_EDGE_SHARPNESS` 60): exactly one material wins almost everywhere, borders are
+  crisp curves that meander with the rock. Mesher cost: one site scan per looked-up vertex as
+  before (`per_material`; the cache radius now comes from the gap to the nearest other-material
+  site), measured with The Squeeze's remesh benchmark on the same machine: p99 per chunk
+  1.81-2.03 ms vs 1.77-1.95 ms on main (budget 3 ms; a first version with a second scan per
+  border vertex was 2.0-2.5 ms). Not hashed (materials never were).
+- **Folded triangles** (bore mouths and saddles): surface-nets quads are now split along the
+  diagonal that folds less against the vertex normals (`mesh.rs` `split_quad`; the common case
+  costs two cross and dot products). Folded triangles at the gallery bore's mouth 14 -> 9 of 560
+  (`tests/thin_tunnels.rs` now asserts at most 1 in 50); over whole cavern levels the folded
+  share drops by about 8 % (0.89 -> 0.82 % of triangles, seed 7). Most remaining folds are rock
+  thinner than a cell (see open items). Mesh golden hashes (`surface_nets`, `dual_contouring`,
+  `edited`) re-blessed; `sdf`, `GENERATOR_VERSION` and the replay hashes unchanged.
+- **Sawtooth at hidden walls**: rock within `ROOM_CLIP` = 0.75 u of a hidden wall is cut at any
+  distance (`room_fade`), so the triangles bridging rock and the stripped wall no longer show.
+- **The Squeeze**: the shell casts no sun shadow (`SHELL_CASTER_MARGIN`, a fragment stage in the
+  caster pass; `Renderer.setModeVolumes` passes the wall sphere to `SunShadow.setShell`), so
+  the arena keeps its daylight (decision: "readability first" by default; pillars throw shadows onto
+  the lit wall in `squeeze-close`). The mottled wall was the mode pass, not the rock: its spill
+  light switched on at `s < 0`, and the meshed wall lies a little inside or outside the true
+  sphere from cell to cell, which drew rings and blotches all over the wall; the spill now
+  fades in over the band (`off_wall`). The wall reads as rock with a clean energy curtain.
+- **Ship shadows**: a second sun map (1024², 2 MB, 40 u around the camera, texel-snapped) redrawn
+  every frame from the ship and wreck instances; receivers multiply both maps (4-tap PCF,
+  binding 11). Cost below the timer's 0.01 ms in every scene (`shadow 0.00`). New gallery pose
+  `sunwall` and scene `ship-shadow` (three hulls before a sunlit cave wall);
+  `?shipshadows=off` for comparisons.
+- **Own cockpit frame in Last Color Standing**: `HullFrameState.keepColor` and the meter colour
+  (`playerStyleFor`, main.ts), the frame shader writes the keep mask; new scene
+  `last-color-cockpit`.
+- Tests: ls-worldgen `material_weights_are_smooth_across_borders` (weights equal the field,
+  every mesh edge changes them by at most 2/ramp per u), thin-tunnel fold bound; ls-wasm
+  chunk meshes carry the weights; web `terrain.test.ts` (weights used without blur or pinning,
+  soft-max and room clip in the shaders), `sunShadow.test.ts` (ship frame, texel snapping,
+  both maps, shell casters), `hullFrame.test.ts`, `modeFx.test.ts`, `modeVisuals.test.ts`.
+- **Open**: (1) rock blades thinner than a cell (cave lips, fin edges) keep a jagged outline
+  where the 1 u grid samples them only here and there (`cave-sunbeam`, left edge; the mesh is
+  watertight, the blade is just not sampled); a fix needs a thin-rock pass in the mesher
+  (promote open corners where the exact field finds rock inside their half-cell box), like
+  VQP's thin-air pass, with its own cost budget. (2) A few folded triangles at bore rims stay.
+  (3) Ship shadows only within 40 u of the camera; reference-GPU timing open as for the other
+  packages.
 
 ### VQP as built (WIN4)
 

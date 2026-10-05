@@ -18,6 +18,7 @@ import {
   monochromeGrade,
   REACTOR_STATE,
   SHELL_STEP,
+  playerStyleFor,
   shipStyleFor,
   snap,
   squeezeView,
@@ -160,6 +161,9 @@ test("Last Color Standing: monochrome grade and colour-meter ship tint", () => {
   assert.equal(style(ship(7, 7, 0))?.keepColor, 1);
   assert.equal(style(ship(8, 8, 0)), undefined, "unknown ships keep their side colour");
   assert.equal(shipStyleFor(mode({ mode: "team_brawl" }), 2), null);
+  // The own cockpit frame (D5): the same style by id and side.
+  assert.deepEqual(playerStyleFor(m, 0)?.(7, 7), style(ship(7, 7, 0)));
+  assert.equal(playerStyleFor(mode({ mode: "team_brawl" }), 2), null);
   const g = monochromeGrade(NEUTRAL_GRADE, 1);
   assert.equal(g.monochrome, 1);
   assert.equal(monochromeGrade(NEUTRAL_GRADE, 0), NEUTRAL_GRADE);

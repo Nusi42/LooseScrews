@@ -23,6 +23,13 @@ export const FRAME_UNIFORM_FLOATS = 60;
 export const ROOM_FADE = 3;
 export const ROOM_FADE_NEAR = 12;
 export const ROOM_FADE_FAR = 30;
+/**
+ * Rock this close (u) to a hidden wall is cut off at any distance (D5):
+ * stripping the wall triangles (atmosphere.ts stripRoomWalls, 0.5 u) leaves
+ * the triangles that bridge rock and wall as a sawtooth; the cut is the
+ * smooth line where the rock crosses this plane instead.
+ */
+export const ROOM_CLIP = 0.75;
 
 /** Mip of the environment cube the fog samples (16 texels per face: a smooth version of the sky; VQ7). */
 export const FOG_ENV_LOD = 5;
@@ -74,7 +81,7 @@ fn room_fade(world_pos: vec3f) -> f32 {
   let wobble = 0.33 * w * sin(world_pos.x * 0.61 + world_pos.z * 0.37) * sin(world_pos.z * 0.53 - world_pos.y * 0.29);
   let fade = smoothstep(0.0, w, d + wobble);
   let far = smoothstep(${ROOM_FADE_NEAR}.0, ${ROOM_FADE_FAR}.0, distance(world_pos, frame.camera_pos.xyz));
-  return mix(1.0, fade, far);
+  return mix(1.0, fade, far) * step(${ROOM_CLIP}, d);
 }
 
 // exp2-squared distance fog plus an exponential height fog (integrated

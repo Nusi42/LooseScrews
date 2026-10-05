@@ -50,6 +50,8 @@ export interface ChunkMeshHandle {
   surface?(): Uint8Array;
   /** Rock material per vertex (0 weak, 1 rock, 2 hard), or empty. */
   materials?(): Uint8Array;
+  /** Display blend weights of weak and hard rock, two per vertex (0..255), or empty. */
+  materialWeights?(): Uint8Array;
   /** Paint effect colour per vertex (0 plain, 1 red, 2 blue, 3 yellow), or empty. */
   paintColors?(): Uint8Array;
   /** Baked ambient occlusion per vertex (255 = open, 0 = fully occluded), or empty. */

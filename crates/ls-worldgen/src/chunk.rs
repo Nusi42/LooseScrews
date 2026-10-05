@@ -59,7 +59,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::generator::floor_i32;
 use crate::grid::{SampleGrid, GRID_HALO, HALO_CORNERS};
-use crate::material::{strengthen_edit, Material, MaterialField, MaterialRegion};
+use crate::material::{
+    blend_from, strengthen_edit, Material, MaterialField, MaterialRegion, MATERIAL_BLEND_RAMP,
+};
 use crate::mesh::{
     dual_contouring_with_sdf, surface_nets_with_sdf, surface_nets_with_sdf_thin_where, Mesh,
 };
@@ -663,23 +665,50 @@ impl ChunkStore {
         // Neighbouring vertices mostly share a material site: reuse the last
         // lookup while a vertex stays in its material cube and within its
         // radius (same result as `region.at`, see `at_with_radius`).
+        // One scan per lookup gives the material and the distance to the
+        // nearest site of every material. Where the nearest site of another
+        // material is at least half the blend ramp farther than the nearest
+        // one, the display weights are one-hot; that gap shrinks by at most
+        // 2 per u, so neighbouring vertices within the remaining margin (and
+        // in the same material cube, whose 27 sites the scan saw) reuse the
+        // lookup. Only vertices near a material border compute weights.
         let mut last: Option<([i32; 3], Vec3, f32, Material)> = None;
-        mesh.materials = mesh
-            .positions
-            .iter()
-            .map(|p| {
-                let p = Vec3::from_array(*p);
-                let cube = MaterialRegion::cube(p);
-                if let Some((lc, lp, r, m)) = last {
-                    if lc == cube && p.distance_squared(lp) < r * r {
-                        return m.id();
-                    }
+        let n = mesh.positions.len();
+        let mut materials = Vec::with_capacity(n);
+        let mut weights = Vec::with_capacity(n);
+        let one_hot = |m: Material| match m {
+            Material::Weak => [255, 0],
+            Material::Rock => [0, 0],
+            Material::Hard => [0, 255],
+        };
+        for p in &mesh.positions {
+            let p = Vec3::from_array(*p);
+            let cube = MaterialRegion::cube(p);
+            if let Some((lc, lp, r, m)) = last {
+                if lc == cube && p.distance_squared(lp) < r * r {
+                    materials.push(m.id());
+                    weights.push(one_hot(m));
+                    continue;
                 }
-                let (m, r) = region.at_with_radius(p);
+            }
+            let (m, d2) = region.per_material(p);
+            let near = d2[m as usize].sqrt();
+            let other = (0..3)
+                .filter(|&o| o != m as usize)
+                .fold(f32::INFINITY, |a, o| a.min(d2[o]))
+                .sqrt();
+            let r = ((other - near) - MATERIAL_BLEND_RAMP * 0.5) * 0.5 * 0.999 - 1e-3;
+            materials.push(m.id());
+            if r > 0.0 {
+                weights.push(one_hot(m));
                 last = Some((cube, p, r, m));
-                m.id()
-            })
-            .collect();
+            } else {
+                weights.push(blend_from(d2).map(|x| (x * 255.0 + 0.5) as u8));
+                last = None;
+            }
+        }
+        mesh.materials = materials;
+        mesh.material_weights = weights;
     }
 
     /// Finds an open point near `near` with at least `clearance` of free space
@@ -2409,6 +2438,49 @@ mod tests {
                 assert!(ch.is_surface_cell(i % m, (i / m) % m, i / (m * m)));
             }
         }
+    }
+
+    /// Display weights (D5): one per vertex, equal to the uncached field,
+    /// and smooth along every mesh edge (no one-hot jump at a border: a
+    /// weight changes by at most 2 / ramp per u of edge, plus rounding).
+    #[test]
+    fn material_weights_are_smooth_across_borders() {
+        let mut s = store(50, 50);
+        let field = *s.material_field();
+        let (mut borders, mut checked) = (0, 0);
+        for c in s.chunk_coords().into_iter().step_by(17) {
+            let m = s.mesh_surface_nets(c);
+            assert_eq!(m.material_weights.len(), m.vertex_count());
+            let region = field.region(c.aabb().expand(2.0));
+            for (p, w) in m.positions.iter().zip(&m.material_weights) {
+                let exact = region
+                    .blend_weights(Vec3::from_array(*p))
+                    .map(|x| (x * 255.0 + 0.5) as u8);
+                assert_eq!(*w, exact, "{p:?}");
+            }
+            for t in m.indices.chunks_exact(3) {
+                for (a, b) in [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
+                    let (a, b) = (a as usize, b as usize);
+                    let len =
+                        Vec3::from_array(m.positions[a]).distance(Vec3::from_array(m.positions[b]));
+                    let (wa, wb) = (m.material_weights[a], m.material_weights[b]);
+                    if m.materials[a] != m.materials[b] {
+                        borders += 1;
+                    }
+                    for k in 0..2 {
+                        let dw = (wa[k] as f32 - wb[k] as f32).abs() / 255.0;
+                        assert!(
+                            dw <= 2.0 * len / MATERIAL_BLEND_RAMP + 0.01,
+                            "{:?} {:?}: {wa:?} {wb:?}",
+                            m.positions[a],
+                            m.positions[b]
+                        );
+                    }
+                    checked += 1;
+                }
+            }
+        }
+        assert!(borders > 100 && checked > 10_000, "{borders} {checked}");
     }
 
     #[test]

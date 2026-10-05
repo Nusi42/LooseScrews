@@ -3,8 +3,8 @@ import { test } from "node:test";
 import { MATERIAL_HARD, MATERIAL_ROCK, MATERIAL_WEAK, NO_TEAM, PAINT_RED, SURFACE_HOT, type MeshData } from "./mesh.ts";
 import { QUALITY_PRESETS } from "./quality.ts";
 import { hashSeed, MAX_STRATA_TILT, mipLevelCount, ROCK_GEN_WGSL, ROCK_MIP_WGSL, terrainParams, TERRAIN_PARAM_FLOATS } from "./rockTextures.ts";
-import { TEAM_SLOTS } from "./shaders/frame.ts";
-import { TERRAIN_WGSL } from "./shaders/terrain.ts";
+import { FRAME_WGSL, ROOM_CLIP, ROOM_FADE, TEAM_SLOTS } from "./shaders/frame.ts";
+import { MATERIAL_EDGE_SHARPNESS, TERRAIN_WGSL } from "./shaders/terrain.ts";
 import { BLUR_PASSES, nearChunkFace, PIN_MARGIN, terrainVertexData } from "./terrainBlend.ts";
 
 /**
@@ -100,6 +100,33 @@ test("a material border becomes a symmetric ramp several vertices wide, crossing
   for (let x = 2; x <= 18; x++) assert.ok(Math.abs(weak(x) + hard(x) - 255) <= 2, `x ${x}`);
   // The ramp is monotonic across the border.
   for (let x = 3; x <= 18; x++) assert.ok(weak(x) <= weak(x - 1), `x ${x}`);
+});
+
+test("display weights from the mesher are used as they are, with no blur or pinning (D5)", () => {
+  // Hard rock from x = 10 on, but the mesher's smooth weights ramp across it,
+  // also over a chunk face (x = 32: pinned vertices would keep one-hot ids).
+  const n = 40;
+  const m = grid(n, 2, 8, (x) => ({ material: x < 10 ? MATERIAL_WEAK : MATERIAL_HARD, ao: 77, surface: x === 5 ? SURFACE_HOT : 0 }));
+  const count = m.team.length;
+  const mw = new Uint8Array(count * 2);
+  for (let v = 0; v < count; v++) {
+    const x = m.positions[v * 3] ?? 0;
+    mw[v * 2] = Math.round(255 * Math.min(1, Math.max(0, 0.5 - (x - 10) / 8)));
+    mw[v * 2 + 1] = Math.round(255 * Math.min(1, Math.max(0, 0.5 + (x - 33) / 8)));
+  }
+  const d = terrainVertexData({ ...m, materialWeights: mw });
+  for (let v = 0; v < count; v++) {
+    const w = weights(d.extra, v);
+    assert.equal(w[0], 77, "AO kept");
+    assert.equal(w[1], mw[v * 2], `weak at vertex ${v}`);
+    assert.equal(w[2], mw[v * 2 + 1], `hard at vertex ${v}`);
+  }
+  // The surface state still blurs around x = 5.
+  assert.ok(d.blurred > 0);
+  assert.ok((weights(d.extra, vertexAt(n, 4, 8))[4] ?? 0) > 0);
+  // Material ids alone no longer mark borders: without states nothing blurs.
+  const plain = grid(n, 2, 8, (x) => ({ material: x < 10 ? MATERIAL_WEAK : MATERIAL_HARD }));
+  assert.equal(terrainVertexData({ ...plain, materialWeights: mw }).blurred, 0);
 });
 
 test("blurring stays within BLUR_PASSES edges of the border", () => {
@@ -214,6 +241,16 @@ test("the terrain shader blends instead of switching per triangle and has no sin
   assert.equal(TEAM_SLOTS, 4);
   // WGSL reserved words that once slipped in.
   for (const src of [TERRAIN_WGSL, ROCK_GEN_WGSL]) assert.doesNotMatch(src, /\blet (patch|filter|meta|mod|self|target)\b/);
+});
+
+test("material borders: one material wins by a steep soft-max; rock is cut at hidden walls (D5)", () => {
+  // The mesher's display weights resolved per pixel: no grey seam between weak and hard rock.
+  assert.ok(TERRAIN_WGSL.includes(`* ${MATERIAL_EDGE_SHARPNESS}.0);`));
+  assert.ok(MATERIAL_EDGE_SHARPNESS >= 20);
+  assert.ok(TERRAIN_WGSL.includes("let mw = mat_e / (mat_e.x + mat_e.y + mat_e.z);"));
+  // Rock within ROOM_CLIP of a hidden wall is cut along a smooth line (no stripped-wall sawtooth).
+  assert.ok(FRAME_WGSL.includes(`* step(${ROOM_CLIP}, d);`));
+  assert.ok(ROOM_CLIP > 0.5 && ROOM_CLIP < ROOM_FADE);
 });
 
 test("quality: only low drops the terrain detail", () => {

@@ -6,6 +6,7 @@
 
 import { FRAME_WGSL } from "./frame.ts";
 import { LIGHTING_WGSL } from "./lighting.ts";
+import { MODEL_SHADING_WGSL } from "../models/shading.ts";
 
 /** HDR radiance of a fully emissive instance (emissive = 1), in multiples of its colour. */
 export const EMISSIVE_PEAK = 6;
@@ -22,6 +23,12 @@ struct VsOut {
   @location(1) normal: vec3f,
   @location(2) color: vec4f,
   @location(3) opacity: f32,
+  // VQ4 model materials: part (kit.ts PART_*), model-space position and
+  // normal (panel seams), x = engine glow, y = nav light phase.
+  @location(4) @interpolate(flat) part: u32,
+  @location(5) local_pos: vec3f,
+  @location(6) local_normal: vec3f,
+  @location(7) fx: vec2f,
 };
 
 fn quat_rotate(q: vec4f, v: vec3f) -> vec3f {
@@ -29,11 +36,15 @@ fn quat_rotate(q: vec4f, v: vec3f) -> vec3f {
   return v + q.w * t + cross(q.xyz, t);
 }
 
-// Lit colour blended toward glowing radiance by the emissive amount (see emissiveGain in objects.ts).
+// Glowing radiance of an instance with emissive amount a (see emissiveGain in objects.ts).
+fn emissive_glow(albedo: vec3f, a: f32) -> vec3f {
+  return albedo * (1.0 + ${EMISSIVE_PEAK - 1}.0 * a * a);
+}
+
+// Lit colour blended toward glowing radiance by the emissive amount.
 fn shade(albedo: vec3f, a: f32, n: vec3f, world_pos: vec3f) -> vec3f {
   let lit = albedo * light(n, world_pos);
-  let glow = albedo * (1.0 + ${EMISSIVE_PEAK - 1}.0 * a * a);
-  return mix(lit, glow, a);
+  return mix(lit, emissive_glow(albedo, a), a);
 }
 
 @vertex
@@ -43,7 +54,8 @@ fn vs_main(
   @location(2) offset_scale: vec4f, // xyz world position, w = uniform scale
   @location(3) rotation: vec4f,     // unit quaternion (x, y, z, w)
   @location(4) color: vec4f,        // rgb display colour, a = emissive amount 0..1
-  @location(5) extra: vec4f,        // x = stretch along local Z, y = opacity
+  @location(5) extra: vec4f,        // x = stretch along local Z, y = opacity, z = glow, w = blink phase
+  @location(6) part: u32,           // mesh vertex part (low byte; models/kit.ts PART_*)
 ) -> VsOut {
   var out: VsOut;
   let stretch = max(extra.x, 1e-3);
@@ -55,6 +67,10 @@ fn vs_main(
   out.normal = quat_rotate(rotation, normalize(vec3f(normal.xy, normal.z / stretch)));
   out.color = vec4f(srgb_to_linear(color.rgb), color.a);
   out.opacity = extra.y;
+  out.part = part & 0xffu;
+  out.local_pos = pos;
+  out.local_normal = normal;
+  out.fx = extra.zw;
   return out;
 }
 `;
@@ -63,11 +79,12 @@ export const INSTANCED_WGSL = /* wgsl */ `
 ${FRAME_WGSL}
 ${LIGHTING_WGSL}
 ${INSTANCED_VS}
+${MODEL_SHADING_WGSL}
 
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4f {
   let n = normalize(in.normal);
-  let color = shade(in.color.rgb, in.color.a, n, in.world_pos);
+  let color = shade_model(in.part, n, in.world_pos, in.local_pos, normalize(in.local_normal), in.color, in.fx.x, in.fx.y);
   return vec4f(apply_fog(color, in.world_pos), 1.0);
 }
 `;
@@ -81,6 +98,7 @@ export const TRANSLUCENT_WGSL = /* wgsl */ `
 ${FRAME_WGSL}
 ${LIGHTING_WGSL}
 ${INSTANCED_VS}
+${MODEL_SHADING_WGSL}
 
 @fragment
 fn fs_main(in: VsOut, @builtin(front_facing) front: bool) -> @location(0) vec4f {
@@ -88,7 +106,7 @@ fn fs_main(in: VsOut, @builtin(front_facing) front: bool) -> @location(0) vec4f 
   if (!front) { n = -n; }
   let v = normalize(frame.camera_pos.xyz - in.world_pos);
   let facing = abs(dot(n, v));
-  let color = shade(in.color.rgb, in.color.a, n, in.world_pos);
+  let color = shade_model(in.part, n, in.world_pos, in.local_pos, normalize(in.local_normal), in.color, in.fx.x, in.fx.y);
   let alpha = clamp(in.opacity * (0.2 + 0.8 * facing * facing), 0.0, 1.0);
   return vec4f(apply_fog(color, in.world_pos), alpha);
 }

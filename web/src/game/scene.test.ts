@@ -7,7 +7,7 @@ import { KEY_BINDINGS, WEAPON_ACTIONS, wheelStep, WHEEL_STEP } from "../input/bi
 import * as mat4 from "../math/mat4.ts";
 import * as q from "../math/quat.ts";
 import { expandTeams, SURFACE_CHARGED, SURFACE_HOT, validateMesh, MeshError } from "../renderer/mesh.ts";
-import { MESH_BUILDERS, MESH_KINDS } from "../renderer/primitives.ts";
+import { MESH_BUILDERS, MESH_KINDS } from "../renderer/models/index.ts";
 import { DEFAULT_SETTINGS } from "../renderer/renderer.ts";
 import { loadoutLines } from "../ui/hud.ts";
 import { nameTagModel, projectToScreen } from "../ui/nameTags.ts";
@@ -146,10 +146,10 @@ test("entities: pickups bob and spin, scrap grows, debris and dust use their rad
   const dust = a.translucent.sphere?.find((i) => Math.abs(i.scale - 12) < 1e-9);
   assert.ok(dust, "dust is a translucent volume of its diameter");
   assert.ok((dust.opacity ?? 1) < 1);
-  const ships = a.opaque.ship ?? [];
+  const ships = a.opaque.ship_tinker ?? [];
   assert.equal(ships.length, 1, "the decoy looks like a ship");
   assert.deepEqual(ships[0]!.color, TEAM_HULL[0], "in its team colour");
-  assert.equal(a.translucent.ship?.length, 1, "the ghost is translucent");
+  assert.equal(a.translucent.ship_tinker?.length, 1, "the ghost is translucent");
 });
 
 test("dust thickens the fog inside a cloud", () => {

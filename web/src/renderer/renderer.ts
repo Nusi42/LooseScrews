@@ -18,7 +18,7 @@ import { Frustum } from "./frustum.ts";
 import { initGpu, type GpuContext } from "./gpu.ts";
 import { GpuTimer, type GpuTimings } from "./gpuTimer.ts";
 import { GpuMesh, type MeshData } from "./mesh.ts";
-import { MESH_BUILDERS, MESH_KINDS, type MeshKind } from "./primitives.ts";
+import { LEGACY_MESH_BUILDERS, MESH_BUILDERS, MESH_KINDS, type MeshKind } from "./models/index.ts";
 import { DEFAULT_POST, HDR_FORMAT, PostChain, type PostSettings } from "./post.ts";
 import { QUALITY_PRESETS, QualityAuto, qualityFromSearch, type QualityLevel, type RenderQuality } from "./quality.ts";
 import { FRAME_UNIFORM_FLOATS, srgbToLinear, TEAM_SLOTS } from "./shaders/frame.ts";
@@ -77,11 +77,15 @@ export interface Instance {
   stretch?: number;
   /** Opacity in the translucent pass (ignored when opaque); default 1. */
   opacity?: number;
+  /** Engine glow of model meshes: 0 idle .. 1 full boost (VQ4); default 0. */
+  glow?: number;
+  /** Nav light blink phase in seconds (VQ4), so ships do not blink in lockstep; default 0. */
+  blink?: number;
 }
 
 /**
  * Floats per instance in the instance vertex buffer: offset+scale,
- * rotation, colour+emissive, stretch+opacity (+2 padding).
+ * rotation, colour+emissive, stretch+opacity+glow+blink.
  */
 export const INSTANCE_FLOATS = 16;
 
@@ -105,8 +109,8 @@ export function packInstances(instances: readonly Instance[], out?: Float32Array
     data[o + 11] = inst.emissive;
     data[o + 12] = inst.stretch ?? 1;
     data[o + 13] = inst.opacity ?? 1;
-    data[o + 14] = 0;
-    data[o + 15] = 0;
+    data[o + 14] = inst.glow ?? 0;
+    data[o + 15] = inst.blink ?? 0;
   });
   return data;
 }
@@ -150,6 +154,11 @@ const NORMAL_LAYOUT: GPUVertexBufferLayout = {
 const TEAM_LAYOUT: GPUVertexBufferLayout = {
   arrayStride: 4,
   attributes: [{ shaderLocation: 2, offset: 0, format: "uint32" }],
+};
+/** Per-vertex material part of instanced meshes (the mesh's expanded `team` buffer; models/kit.ts PART_*). */
+const PART_LAYOUT: GPUVertexBufferLayout = {
+  arrayStride: 4,
+  attributes: [{ shaderLocation: 6, offset: 0, format: "uint32" }],
 };
 const INSTANCE_LAYOUT: GPUVertexBufferLayout = {
   arrayStride: INSTANCE_FLOATS * 4,
@@ -202,6 +211,7 @@ class InstanceBatch {
     pass.setVertexBuffer(0, this.mesh.positionBuffer);
     pass.setVertexBuffer(1, this.mesh.normalBuffer);
     pass.setVertexBuffer(2, this.buffer);
+    pass.setVertexBuffer(3, this.mesh.teamBuffer);
     pass.setIndexBuffer(this.mesh.indexBuffer, "uint32");
     pass.drawIndexed(this.mesh.indexCount, this.count);
   }
@@ -253,14 +263,18 @@ export class Renderer {
   /**
    * Creates the renderer; throws GpuUnavailableError when WebGPU cannot be
    * used. `quality` forces a level (default: `?quality=`, else picked
-   * automatically from the GPU time of the first seconds).
+   * automatically from the GPU time of the first seconds). `legacyModels`
+   * draws the pre-VQ4 primitives (before/after shots).
    */
-  static async create(canvas: HTMLCanvasElement, quality?: QualityLevel): Promise<Renderer> {
-    const forced = quality ?? (typeof location === "undefined" ? null : qualityFromSearch(location.search));
-    return new Renderer(canvas, await initGpu(canvas), forced);
+  static async create(
+    canvas: HTMLCanvasElement,
+    options: { quality?: QualityLevel; legacyModels?: boolean } = {},
+  ): Promise<Renderer> {
+    const forced = options.quality ?? (typeof location === "undefined" ? null : qualityFromSearch(location.search));
+    return new Renderer(canvas, await initGpu(canvas), forced, options.legacyModels ?? false);
   }
 
-  private constructor(canvas: HTMLCanvasElement, gpu: GpuContext, forced: QualityLevel | null) {
+  private constructor(canvas: HTMLCanvasElement, gpu: GpuContext, forced: QualityLevel | null, legacyModels: boolean) {
     this.canvas = canvas;
     this.device = gpu.device;
     this.context = gpu.context;
@@ -313,7 +327,8 @@ export class Renderer {
     this.timer = GpuTimer.create(device);
 
     const meshes = {} as Record<MeshKind, GpuMesh>;
-    for (const kind of MESH_KINDS) meshes[kind] = new GpuMesh(device, MESH_BUILDERS[kind](), kind);
+    const builders = legacyModels ? LEGACY_MESH_BUILDERS : MESH_BUILDERS;
+    for (const kind of MESH_KINDS) meshes[kind] = new GpuMesh(device, builders[kind](), kind);
     this.meshes = meshes;
   }
 
@@ -339,7 +354,7 @@ export class Renderer {
       instanced: device.createRenderPipeline({
         label: "instanced",
         layout,
-        vertex: { module: instanced, entryPoint: "vs_main", buffers: [POSITION_LAYOUT, NORMAL_LAYOUT, INSTANCE_LAYOUT] },
+        vertex: { module: instanced, entryPoint: "vs_main", buffers: [POSITION_LAYOUT, NORMAL_LAYOUT, INSTANCE_LAYOUT, PART_LAYOUT] },
         fragment: { module: instanced, entryPoint: "fs_main", targets: [{ format: HDR_FORMAT }] },
         primitive: { topology: "triangle-list", cullMode: "back", frontFace: "ccw" },
         depthStencil,
@@ -348,7 +363,7 @@ export class Renderer {
       translucent: device.createRenderPipeline({
         label: "translucent",
         layout,
-        vertex: { module: translucent, entryPoint: "vs_main", buffers: [POSITION_LAYOUT, NORMAL_LAYOUT, INSTANCE_LAYOUT] },
+        vertex: { module: translucent, entryPoint: "vs_main", buffers: [POSITION_LAYOUT, NORMAL_LAYOUT, INSTANCE_LAYOUT, PART_LAYOUT] },
         fragment: {
           module: translucent,
           entryPoint: "fs_main",

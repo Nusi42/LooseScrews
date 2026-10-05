@@ -177,10 +177,16 @@ test("scene content: four hulls in the lineup, ships, shots and an explosion in 
     { shape: "bolt", color: [1, 0.8, 0.2] as const, scale: 1 },
     { shape: "rocket", color: [1, 0.5, 0.1] as const, scale: 1 },
   ];
+  // Ships draw the hull of their type (VQ4: mesh kinds ship_<hull>).
+  const hulls = (batches: Partial<Record<string, readonly unknown[]>>) =>
+    Object.entries(batches).filter(([kind]) => kind.startsWith("ship_"));
+  const ships = (batches: Partial<Record<string, readonly unknown[]>>) =>
+    hulls(batches).reduce((n, [, list]) => n + (list?.length ?? 0), 0);
   const lineup = sceneContent(sceneById("ship-lineup")!, cam, visuals);
-  assert.equal(lineup.opaque.ship?.length, LINEUP_RADII.length);
+  assert.equal(ships(lineup.opaque), LINEUP_RADII.length);
+  assert.equal(hulls(lineup.opaque).length, 4, "four distinct hulls");
   const fight = sceneContent(sceneById("fight")!, cam, visuals, { x: 3, y: 0, z: -15 });
-  assert.equal(fight.opaque.ship?.length, 2);
+  assert.equal(ships(fight.opaque), 2);
   assert.ok((fight.opaque.bolt?.length ?? 0) >= 2, "bolts");
   assert.ok((fight.opaque.rocket?.length ?? 0) >= 1, "rocket");
   // The shield bubble plus the explosion flash and the muzzle flash.

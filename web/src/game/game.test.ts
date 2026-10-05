@@ -80,7 +80,7 @@ test("views: flat arrays decode into poses, ships and projectiles", () => {
   assert.ok(Math.abs(ships[0]!.radius - 0.65) < 1e-6);
   assert.equal(ships[1]!.alive, false);
   const scene = buildScene(ships, [], [], [], () => undefined, 0);
-  const hulls = scene.opaque.ship ?? [];
+  const hulls = scene.opaque.ship_hauler ?? [];
   assert.equal(hulls.length, 1, "dead ships are not drawn");
   assert.deepEqual(hulls[0]!.color, TEAM_HULL[1]);
   assert.ok(Math.abs(hulls[0]!.scale - 1.3) < 1e-6, "Hauler hull drawn at its hitbox size");

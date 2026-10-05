@@ -67,3 +67,10 @@ attribute bit layout, sRGB helpers), `shaders/lighting.ts`, `shaders/terrain.ts`
 `shaders/objects.ts` (instanced and translucent), `shaders/post.ts`. Each package edits its own
 file (VQ3b terrain, VQ5 particles, VQ6 lighting, VQ7 sky); keep `FRAME_UNIFORM_FLOATS` and
 `Renderer.writeFrameUniforms` in sync with the `Frame` struct.
+
+The object shaders include `models/shading.ts` (VQ4): `shade_model` picks a material by the
+mesh vertex's part (`models/kit.ts` `PART_*`, uploaded as the mesh's `team` buffer at vertex
+buffer slot 3, location 6); instance floats 14 and 15 carry the engine glow (0 idle .. 1 boost)
+and the nav-light blink phase. `PART_PLAIN` (untagged meshes) keeps the generic `shade` look.
+Material colour literals are display values linearised at build time (`lin(...)`); the engine,
+nav-light and lamp strengths are HDR radiance constants in `models/shading.ts`.

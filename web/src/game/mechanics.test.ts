@@ -247,10 +247,10 @@ test("cloak shimmer, shield bubble, decoy return glow and ghost flicker", () => 
     0,
     { gadgetOf: (id) => gadgets.get(id) ?? "" },
   );
-  const translucentShips = scene.translucent.ship ?? [];
+  const translucentShips = scene.translucent.ship_tinker ?? [];
   assert.equal(translucentShips.length, 1, "the cloaked ship shimmers");
   assert.ok((translucentShips[0]!.opacity ?? 1) <= CLOAK_OPACITY);
-  assert.equal((scene.opaque.ship ?? []).length, 2, "shielded and plain ships are solid");
+  assert.equal((scene.opaque.ship_tinker ?? []).length, 2, "shielded and plain ships are solid");
   const bubbles = scene.translucent.sphere ?? [];
   assert.equal(bubbles.length, 1);
   assert.equal(bubbles[0]!.scale, SHIELD_SCALE);
@@ -263,7 +263,7 @@ test("cloak shimmer, shield bubble, decoy return glow and ghost flicker", () => 
   assert.equal((calm.translucent.sphere ?? []).length, 0);
   const back = buildScene([], [], [entity({ state: [100, 1 | DECOY_RETURNING, 0, 0] })], visuals, () => undefined, 0.1);
   assert.equal((back.translucent.sphere ?? []).length, 1, "a returning decoy glows");
-  const ghosts = [0.0, 0.12].map((t) => buildScene([], [], [entity({ kind: "ghost", visual: 1 })], visuals, () => undefined, t).translucent.ship?.[0]?.opacity ?? 0);
+  const ghosts = [0.0, 0.12].map((t) => buildScene([], [], [entity({ kind: "ghost", visual: 1 })], visuals, () => undefined, t).translucent.ship_tinker?.[0]?.opacity ?? 0);
   assert.notEqual(ghosts[0], ghosts[1], "ghosts flicker");
 });
 

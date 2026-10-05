@@ -60,6 +60,33 @@ pub fn random_share_code(entropy: u64, enclosure: u8, density: u8) -> Result<Str
         .map_err(|e| e.to_string())
 }
 
+/// Level archetypes this build generates, by share-code archetype id (the
+/// workshop's archetype switch, M4 A8). Generator version 4 (M4 A1) adds
+/// `Belt` = 1; until it is merged only classic levels exist.
+pub const ARCHETYPES: &[&str] = &["classic"];
+
+/// The share code of a world made in the workshop: `seed` as a decimal u64,
+/// the seven sliders in share-code order (each 0-100) and the archetype id
+/// (an index into [`ARCHETYPES`]).
+pub fn make_share_code(seed: &str, sliders: &[u8], archetype: u8) -> Result<String, String> {
+    let seed: u64 = seed.trim().parse().map_err(|_| {
+        format!("Seed {seed:?} is not a whole number from 0 to 18446744073709551615")
+    })?;
+    let array: [u8; 7] = sliders
+        .try_into()
+        .map_err(|_| format!("Expected 7 sliders, got {}", sliders.len()))?;
+    let sliders = Sliders::from_array(array).map_err(|e| capitalize(&e.to_string()))?;
+    if usize::from(archetype) >= ARCHETYPES.len() {
+        return Err(format!(
+            "Level archetype {archetype} needs a newer generator (this build has version {})",
+            ls_worldgen::GENERATOR_VERSION
+        ));
+    }
+    ShareCode::new(seed, sliders)
+        .encode()
+        .map_err(|e| capitalize(&e.to_string()))
+}
+
 fn capitalize(s: &str) -> String {
     let mut c = s.chars();
     match c.next() {
@@ -115,6 +142,38 @@ mod tests {
                 other => panic!("{bad:?} accepted: {other:?}"),
             }
         }
+    }
+
+    #[test]
+    fn workshop_codes_round_trip_every_slider() {
+        let sliders = [0, 100, 37, 63, 1, 99, 50];
+        for seed in ["0", "42", "18446744073709551615"] {
+            let code = make_share_code(seed, &sliders, 0).unwrap();
+            let CodeCheck::Valid {
+                seed: s,
+                sliders: back,
+                ..
+            } = check_share_code(&code)
+            else {
+                panic!("workshop code invalid: {code}");
+            };
+            assert_eq!(s.to_string(), seed);
+            assert_eq!(back, sliders);
+        }
+        let CodeCheck::Valid {
+            seed,
+            sliders: real,
+            ..
+        } = check_share_code(REAL)
+        else {
+            panic!("fixture code invalid");
+        };
+        assert_eq!(make_share_code(&seed.to_string(), &real, 0).unwrap(), REAL);
+        assert!(make_share_code("-1", &sliders, 0).is_err());
+        assert!(make_share_code("seed", &sliders, 0).is_err());
+        assert!(make_share_code("1", &sliders[..6], 0).is_err());
+        assert!(make_share_code("1", &[101, 0, 0, 0, 0, 0, 0], 0).is_err());
+        assert!(make_share_code("1", &sliders, ARCHETYPES.len() as u8).is_err());
     }
 
     #[test]

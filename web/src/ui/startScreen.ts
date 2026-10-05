@@ -5,10 +5,13 @@
 // controls fold away. First-impression pass (FI): the wordmark, a left-docked
 // glass panel over the live flythrough (attract/backdrop.ts, wired in
 // main.ts), the ship picker with the turning hulls (attract/shipBay.ts,
-// through `StartScreenHooks.ships`), fade in and out.
+// through `StartScreenHooks.ships`), fade in and out. "Make a world" opens
+// the world workshop (M4 A8, ui/workshop.ts through `StartScreenHooks.workshop`)
+// in place of the panel; "Fly it" there starts practice on its world.
 
 import { checkShareCode, SHARE_CODE_PRINTED_LEN, type ShareCodeCheck } from "./shareCode.ts";
 import { bindViewSettings, viewSettingsHtml } from "./viewSettings.ts";
+import type { WorkshopExit } from "./workshop.ts";
 
 export type PlayMode = "online" | "practice";
 
@@ -161,6 +164,14 @@ export interface StartScreenHooks {
    * (or null without one); `select` follows the picked ship.
    */
   ships?(host: HTMLElement, cards: readonly HTMLElement[]): { select(shipType: number): void; dispose(): void } | null;
+  /**
+   * The world workshop: shown inside `host` (the start screen) from `code`
+   * (the share-code field when it holds a code, else null); resolves when
+   * the player flies the world or goes back.
+   */
+  workshop?(host: HTMLElement, code: string | null): Promise<WorkshopExit>;
+  /** Open the workshop at once (`?workshop`); a string is the code to open. */
+  openWorkshop?: boolean | string;
 }
 
 /** Sets the line about the world behind the start screen ("" hides it). */
@@ -221,6 +232,11 @@ export function showStartScreen(parent: HTMLElement, validate?: CodeValidator, h
           <button type="submit" class="play secondary" value="practice"><span>Practice offline</span></button>
         </div>
         <p class="play-note">Online plays the world the server runs; a share code you enter is used for practice.</p>
+        <button type="button" class="workshop-open" hidden>
+          <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></svg>
+          <span class="workshop-open-text"><b>Make a world</b><small>Seven sliders, a seed, a live preview</small></span>
+          <span class="workshop-open-arrow" aria-hidden="true">›</span>
+        </button>
         <details class="start-more">
           <summary>Options</summary>
           <label class="check">
@@ -271,27 +287,16 @@ export function showStartScreen(parent: HTMLElement, validate?: CodeValidator, h
   });
 
   return new Promise((resolve) => {
-    form.addEventListener("submit", (e) => {
-      e.preventDefault();
-      if (root.classList.contains("leaving")) return;
-      const submitter = (e as SubmitEvent).submitter;
-      const mode: PlayMode = submitter instanceof HTMLButtonElement && submitter.value === "practice" ? "practice" : "online";
-      const check = readShareCode(codeInput.value, validate);
-      if (!check.ok) {
-        error.textContent = check.error;
-        codeInput.classList.add("invalid");
-        codeInput.focus();
-        return;
-      }
+    const go = (mode: PlayMode, code: string | null): void => {
       const options: StartOptions = {
         mode,
-        shareCode: check.code,
+        shareCode: code,
         horizonAssist: assistInput.checked,
         name: cleanName(nameInput.value),
         shipType: readShipType(Number(shipInput.value)),
       };
       saveStored({
-        shareCode: check.code ?? "",
+        shareCode: code ?? "",
         horizonAssist: options.horizonAssist,
         name: options.name,
         shipType: options.shipType,
@@ -302,7 +307,49 @@ export function showStartScreen(parent: HTMLElement, validate?: CodeValidator, h
       root.classList.remove("shown");
       setTimeout(() => root.remove(), START_FADE_MS);
       resolve(options);
+    };
+    form.addEventListener("submit", (e) => {
+      e.preventDefault();
+      if (root.classList.contains("leaving") || root.classList.contains("in-workshop")) return;
+      const submitter = (e as SubmitEvent).submitter;
+      const mode: PlayMode = submitter instanceof HTMLButtonElement && submitter.value === "practice" ? "practice" : "online";
+      const check = readShareCode(codeInput.value, validate);
+      if (!check.ok) {
+        error.textContent = check.error;
+        codeInput.classList.add("invalid");
+        codeInput.focus();
+        return;
+      }
+      go(mode, check.code);
     });
+
+    // The world workshop in place of the panel.
+    const openWorkshop = hooks.workshop;
+    const workshopButton = root.querySelector(".workshop-open") as HTMLButtonElement;
+    if (openWorkshop) {
+      workshopButton.hidden = false;
+      const enter = (code: string | null): void => {
+        if (root.classList.contains("in-workshop") || root.classList.contains("leaving")) return;
+        root.classList.add("in-workshop");
+        void openWorkshop(root, code).then((exit) => {
+          root.classList.remove("in-workshop");
+          if (exit.kind === "fly") {
+            codeInput.value = exit.code;
+            go("practice", exit.code);
+          } else {
+            if (exit.code) codeInput.value = exit.code;
+            error.textContent = "";
+            codeInput.classList.remove("invalid");
+            workshopButton.focus({ preventScroll: true });
+          }
+        });
+      };
+      workshopButton.addEventListener("click", () => {
+        const field = readShareCode(codeInput.value);
+        enter(field.ok ? field.code : null);
+      });
+      if (hooks.openWorkshop) enter(typeof hooks.openWorkshop === "string" ? hooks.openWorkshop : null);
+    }
   });
 }
 

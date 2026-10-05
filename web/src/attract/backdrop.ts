@@ -44,6 +44,8 @@ export const BACKDROP_WORLDS: ReadonlyArray<{ seed: number; enclosure: number; d
 /** Chunk meshing per frame while the backdrop loads and flies: well inside a frame, no long tasks. */
 export const BACKDROP_LOAD_BUDGET: ChunkBudget = { millis: 10, maxChunks: 12 };
 export const BACKDROP_FLY_BUDGET: ChunkBudget = { millis: 4, maxChunks: 6 };
+/** Meshing per frame while a quietly loaded level (nothing drawn yet, the workshop preview) waits for its chunks. */
+export const BACKDROP_QUIET_LOAD_BUDGET: ChunkBudget = { millis: 20, maxChunks: 32 };
 /** The camera starts once at most this many chunks around it are missing, or after HOLD_MAX_SECS. */
 const READY_PENDING = 0;
 const HOLD_MAX_SECS = 6;
@@ -66,6 +68,13 @@ export interface BackdropOptions {
   seed?: number;
   /** Fixed step (s) instead of the wall clock (the visual gallery). */
   fixedStep?: number;
+  /**
+   * Draw nothing until the scene is ready, so the canvas keeps showing the
+   * previous world's last frame while this one is built (the workshop preview).
+   */
+  quietLoad?: boolean;
+  /** Chunk generation per frame while the level is built (ms; default GENERATE_BUDGET_MS). */
+  generateBudgetMs?: number;
 }
 
 export class Backdrop {
@@ -90,6 +99,10 @@ export class Backdrop {
   private readonly exposure: number;
   /** Chunks still to generate (lazily built levels). */
   private generateLeft = Infinity;
+  /** Most chunks seen left to generate (the progress denominator). */
+  private generateTotal = 0;
+  private readonly quietLoad: boolean;
+  private readonly generateBudgetMs: number;
   /** Frames rendered. */
   frames = 0;
   /** Holds the current frame (camera, action and shader time stand still; the gallery). */
@@ -107,6 +120,8 @@ export class Backdrop {
     this.shareCode = options.code ?? api.randomShareCode(world.seed, 0, world.enclosure, world.density);
     this.renderer = renderer;
     this.fixedStep = options.fixedStep ?? null;
+    this.quietLoad = options.quietLoad ?? false;
+    this.generateBudgetMs = options.generateBudgetMs ?? GENERATE_BUDGET_MS;
     // Lazily generated (no long task); older cores generate the whole level here.
     this.game = api.Game.practicePreview?.(this.shareCode) ?? api.Game.practice(this.shareCode, 0);
     this.game.frame(0, new Float32Array(CONTROLS_LEN));
@@ -148,6 +163,14 @@ export class Backdrop {
     this.view = { ...pose, fovY: fovYFor(CINEMATIC_FOV_DEG, renderer.aspect), near: 0.05, far: 600 };
   }
 
+  /** Share of the level generated and the chunks around the camera meshed (0..1; 1 once flying). */
+  get progress(): number {
+    if (this.flying) return 1;
+    if (!Number.isFinite(this.generateLeft) || this.generateTotal === 0) return 0;
+    // Generation is most of the wait; meshing the chunks around the camera the rest.
+    return 0.9 * (1 - this.generateLeft / this.generateTotal);
+  }
+
   /** True once the camera flies (the scene is worth showing). */
   get ready(): boolean {
     return this.flying;
@@ -183,13 +206,19 @@ export class Backdrop {
     if (this.generateLeft > 0 && this.game.generateNearest) {
       const t0 = performance.now();
       const at = this.view.position;
-      do this.generateLeft = this.game.generateNearest(at.x, at.y, at.z);
-      while (this.generateLeft > 0 && performance.now() - t0 < GENERATE_BUDGET_MS);
+      do {
+        this.generateLeft = this.game.generateNearest(at.x, at.y, at.z);
+        this.generateTotal = Math.max(this.generateTotal, this.generateLeft + 1);
+      } while (this.generateLeft > 0 && performance.now() - t0 < this.generateBudgetMs);
       generating = this.generateLeft > 0;
     }
     const stats = generating
       ? { meshed: 0, removed: 0, pending: 1, shown: 0 }
-      : this.chunks.update(this.game, this.view.position, this.flying ? BACKDROP_FLY_BUDGET : BACKDROP_LOAD_BUDGET);
+      : this.chunks.update(
+          this.game,
+          this.view.position,
+          this.flying ? BACKDROP_FLY_BUDGET : this.quietLoad ? BACKDROP_QUIET_LOAD_BUDGET : BACKDROP_LOAD_BUDGET,
+        );
     if (!this.flying && !generating) {
       this.holding += dt;
       if (stats.pending <= READY_PENDING || this.holding >= HOLD_MAX_SECS) {
@@ -197,6 +226,7 @@ export class Backdrop {
         this.onReady?.();
       }
     }
+    if (this.quietLoad && !this.flying) return;
     const flyDt = this.flying ? dt : 0;
     this.clock += flyDt;
     const time = this.clock;

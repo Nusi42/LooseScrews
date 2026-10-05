@@ -1,0 +1,792 @@
+/* World workshop (ui/workshop.ts, M4 A8): a left-docked glass panel over the
+   live preview flythrough, in the start screen's look (startScreen.css).
+   Imported by style.css. `--ws-accent` turns ice blue on belt worlds. */
+
+.start-screen.in-workshop .start-layout {
+  display: none;
+}
+
+.workshop {
+  --ws-accent: #ffb347;
+  --ws-accent-soft: rgba(255, 179, 71, 0.18);
+  --ws-accent-text: #ffd08a;
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  transition: opacity 0.35s ease;
+}
+
+.workshop.shown {
+  opacity: 1;
+}
+
+.workshop[data-archetype="belt"] {
+  --ws-accent: #7fd6ff;
+  --ws-accent-soft: rgba(127, 214, 255, 0.18);
+  --ws-accent-text: #b8ebff;
+}
+
+.workshop-layout {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: min(560px, 100%);
+  height: 100%;
+  overflow-y: auto;
+  padding: clamp(14px, 3vh, 40px) clamp(16px, 3.4vw, 56px);
+  box-sizing: border-box;
+}
+
+/* ---- Head ---- */
+
+/* Centred while it fits, scrolls from the top when it does not (auto margins, not justify-content). */
+.workshop-head {
+  margin-top: auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  animation: start-rise 0.5s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+.workshop-back {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(10, 13, 20, 0.55);
+  color: #dfe3ea;
+  transition:
+    border-color 0.15s,
+    color 0.15s;
+}
+
+.workshop-back svg {
+  width: 20px;
+  height: 20px;
+}
+
+.workshop-back:hover,
+.workshop-back:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  color: #ffd08a;
+}
+
+.workshop-title {
+  margin: 0;
+  font: italic 700 clamp(30px, 3.6vw, 44px) / 0.95 var(--display);
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  background: var(--steel);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  filter: drop-shadow(0 2px 0 rgba(0, 0, 0, 0.6)) drop-shadow(0 8px 20px rgba(0, 0, 0, 0.5));
+}
+
+.workshop-sub {
+  margin: 4px 0 0;
+  color: #aab1c0;
+  font-size: 12.5px;
+  text-shadow: 0 1px 6px rgba(0, 0, 0, 0.9);
+}
+
+/* ---- Card ---- */
+
+.workshop-card {
+  padding: 16px 20px 18px;
+  border-radius: 16px;
+  background: linear-gradient(180deg, rgba(20, 25, 38, 0.7), rgba(8, 10, 17, 0.64));
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  box-shadow:
+    0 24px 60px rgba(0, 0, 0, 0.45),
+    inset 0 1px 0 rgba(255, 255, 255, 0.07);
+  backdrop-filter: blur(14px) saturate(1.3);
+  -webkit-backdrop-filter: blur(14px) saturate(1.3);
+  margin-bottom: auto;
+  animation: start-rise 0.6s cubic-bezier(0.2, 0.8, 0.2, 1) 0.06s both;
+}
+
+.workshop-top {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+/* Archetype switch: two segments. */
+.arch-switch {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  padding: 3px;
+  border-radius: 11px;
+  background: rgba(0, 0, 0, 0.32);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  min-width: 0;
+}
+
+.arch {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-width: 0;
+  padding: 8px 8px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: none;
+  color: #9aa3b5;
+  font: 700 14px var(--display);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  transition:
+    background 0.2s,
+    color 0.2s,
+    border-color 0.2s;
+}
+
+.arch svg {
+  flex: none;
+  width: 18px;
+  height: 18px;
+}
+
+.arch span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.arch:hover:not(:disabled) {
+  color: #e6e9ef;
+}
+
+.arch.selected {
+  border-color: color-mix(in srgb, var(--ws-accent) 70%, transparent);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.02), var(--ws-accent-soft));
+  color: var(--ws-accent-text);
+  box-shadow: 0 0 18px var(--ws-accent-soft);
+}
+
+.arch:focus-visible {
+  outline: 2px solid var(--ws-accent);
+  outline-offset: 1px;
+}
+
+.arch:disabled {
+  opacity: 0.38;
+  cursor: not-allowed;
+}
+
+/* Seed with the dice. */
+.seed-field {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 0 4px 0 11px;
+  border-radius: 11px;
+  background: rgba(0, 0, 0, 0.32);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  transition: border-color 0.15s;
+}
+
+.seed-field:focus-within {
+  border-color: var(--ws-accent);
+}
+
+.seed-field > span {
+  font: 600 11px var(--display);
+  color: #8b93a6;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.seed-field input {
+  flex: 1;
+  min-width: 0;
+  width: 100%;
+  padding: 8px 0;
+  border: 0;
+  background: none;
+  color: #eef0f4;
+  font: 600 14px ui-monospace, "Cascadia Mono", Consolas, monospace;
+}
+
+.seed-field input:focus {
+  outline: none;
+}
+
+.seed-field input.invalid {
+  color: var(--error);
+}
+
+.dice {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.06);
+  color: #dfe3ea;
+  transition:
+    background 0.15s,
+    color 0.15s;
+}
+
+.dice svg {
+  width: 20px;
+  height: 20px;
+}
+
+.dice:hover,
+.dice:focus-visible {
+  outline: none;
+  background: var(--ws-accent-soft);
+  color: var(--ws-accent-text);
+}
+
+.dice.rolling svg {
+  animation: dice-roll 0.45s cubic-bezier(0.3, 0.7, 0.3, 1);
+}
+
+@keyframes dice-roll {
+  from {
+    transform: rotate(-200deg) scale(0.7);
+  }
+  to {
+    transform: none;
+  }
+}
+
+/* ---- Sliders (SliderPanel; also The Architect's) ---- */
+
+.slider-panel {
+  display: flex;
+  flex-direction: column;
+}
+
+.slider-row {
+  display: grid;
+  grid-template-columns: 22px 1fr;
+  column-gap: 11px;
+  align-items: center;
+  padding: 5px 0 6px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.slider-row:last-child {
+  border-bottom: 0;
+}
+
+.slider-icon {
+  grid-row: 1 / span 3;
+  align-self: center;
+  width: 22px;
+  height: 22px;
+  color: color-mix(in srgb, var(--ws-accent, #ffb347) 75%, #8b93a6);
+  opacity: 0.85;
+}
+
+.slider-icon svg {
+  width: 100%;
+  height: 100%;
+}
+
+.slider-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+}
+
+.slider-name {
+  flex: none;
+  font: 700 13px var(--display);
+  color: #e3e6ec;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.slider-meaning {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ws-accent-text, #ffd08a);
+  font-size: 12px;
+}
+
+.slider-value {
+  flex: none;
+  width: 26px;
+  text-align: right;
+  font: 600 12px ui-monospace, "Cascadia Mono", Consolas, monospace;
+  color: #9aa3b5;
+}
+
+.slider-hint {
+  font-size: 11px;
+  line-height: 1.2;
+  color: #6f7890;
+}
+
+.slider-row input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 20px;
+  margin: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.slider-row input[type="range"]::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 2px;
+  background: linear-gradient(90deg, var(--ws-accent, #ffb347) 0 var(--fill, 50%), rgba(255, 255, 255, 0.13) var(--fill, 50%) 100%);
+}
+
+.slider-row input[type="range"]::-moz-range-track {
+  height: 4px;
+  border-radius: 2px;
+  background: linear-gradient(90deg, var(--ws-accent, #ffb347) 0 var(--fill, 50%), rgba(255, 255, 255, 0.13) var(--fill, 50%) 100%);
+}
+
+.slider-row input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 16px;
+  height: 16px;
+  margin-top: -6px;
+  border: 0;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 30%, #ffffff, color-mix(in srgb, var(--ws-accent, #ffb347) 55%, #ffffff) 45%, var(--ws-accent, #ffb347));
+  box-shadow:
+    0 0 0 3px var(--ws-accent-soft, rgba(255, 179, 71, 0.18)),
+    0 2px 6px rgba(0, 0, 0, 0.6);
+  transition: box-shadow 0.15s;
+}
+
+.slider-row input[type="range"]::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  border: 0;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 30%, #ffffff, var(--ws-accent, #ffb347));
+  box-shadow:
+    0 0 0 3px var(--ws-accent-soft, rgba(255, 179, 71, 0.18)),
+    0 2px 6px rgba(0, 0, 0, 0.6);
+}
+
+.slider-row input[type="range"]:hover::-webkit-slider-thumb,
+.slider-row input[type="range"]:focus-visible::-webkit-slider-thumb {
+  box-shadow:
+    0 0 0 6px var(--ws-accent-soft, rgba(255, 179, 71, 0.18)),
+    0 2px 6px rgba(0, 0, 0, 0.6);
+}
+
+.slider-row input[type="range"]:focus {
+  outline: none;
+}
+
+/* ---- Code box ---- */
+
+.code-box {
+  margin-top: 10px;
+  padding: 10px 10px 2px 12px;
+  border-radius: 11px;
+  background: rgba(0, 0, 0, 0.34);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.code-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  font: 600 11px var(--display);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: #8b93a6;
+}
+
+.code-status {
+  color: #8ee6a8;
+  opacity: 0;
+  transform: translateY(3px);
+  transition:
+    opacity 0.2s,
+    transform 0.2s;
+}
+
+.code-status.on {
+  opacity: 1;
+  transform: none;
+}
+
+.code-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+.code-text {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font: 600 14px ui-monospace, "Cascadia Mono", Consolas, monospace;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+  color: #f2f4f8;
+  user-select: all;
+}
+
+.save {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 12px;
+  border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--ws-accent) 55%, transparent);
+  background: var(--ws-accent-soft);
+  color: var(--ws-accent-text);
+  font: 700 13px var(--display);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  transition: filter 0.15s;
+}
+
+.save svg {
+  width: 16px;
+  height: 16px;
+}
+
+.save:hover,
+.save:focus-visible {
+  outline: none;
+  filter: brightness(1.25);
+}
+
+.workshop .code-error {
+  margin: 4px 0 6px;
+  font-size: 12px;
+}
+
+.workshop .code-error:empty {
+  margin: 0 0 8px;
+}
+
+/* ---- Actions and hosting ---- */
+
+.workshop-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.workshop-actions .play {
+  flex: 1;
+}
+
+.workshop-actions .play.secondary {
+  flex: 0.7;
+}
+
+.workshop.invalid .workshop-actions .play {
+  opacity: 0.45;
+  pointer-events: none;
+}
+
+.workshop.hosting .play.host {
+  filter: brightness(1.3);
+}
+
+.host-box {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  animation: start-rise 0.3s ease both;
+}
+
+.host-note {
+  margin: 0 0 8px;
+  color: #c3c8d3;
+  font-size: 12.5px;
+}
+
+.host-box .belt-up-check[hidden] {
+  display: none;
+}
+
+.host-box .belt-up-check {
+  margin: 0 0 8px;
+  font-size: 13px;
+}
+
+.host-row {
+  display: flex;
+  gap: 8px;
+}
+
+.host-link {
+  flex: 1;
+  min-width: 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(0, 0, 0, 0.32);
+  color: #dfe3ea;
+  font: 12px ui-monospace, "Cascadia Mono", Consolas, monospace;
+}
+
+.host-copy {
+  flex: none;
+  padding: 0 14px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(255, 255, 255, 0.08);
+  color: #e9ecf2;
+  font: 700 12px var(--display);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.host-copy:hover {
+  border-color: var(--accent);
+}
+
+.host-links {
+  display: flex;
+  gap: 16px;
+  margin: 8px 0 0;
+  font: 600 12px var(--display);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.host-links a {
+  color: var(--ws-accent-text);
+  text-decoration: none;
+}
+
+.host-links a:hover {
+  text-decoration: underline;
+}
+
+.host-cmd-label {
+  margin: 10px 0 3px;
+  font: 600 11px var(--display);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: #8b93a6;
+}
+
+.host-cmd {
+  display: block;
+  padding: 7px 9px;
+  border-radius: 7px;
+  background: rgba(0, 0, 0, 0.4);
+  color: #b9bfcc;
+  font: 11.5px ui-monospace, "Cascadia Mono", Consolas, monospace;
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+
+/* ---- Preview chip and the blur while a world is built ---- */
+
+.preview-chip {
+  position: fixed;
+  z-index: 2;
+  right: 18px;
+  top: 18px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 13px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(10, 13, 20, 0.6);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  color: #d5dae4;
+  font: 600 12px var(--display);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  pointer-events: none;
+}
+
+.preview-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #6ee08f;
+  box-shadow: 0 0 10px rgba(110, 224, 143, 0.8);
+}
+
+.preview-chip.busy .preview-dot {
+  background: var(--accent);
+  box-shadow: 0 0 10px rgba(255, 179, 71, 0.8);
+  animation: preview-pulse 0.9s ease-in-out infinite alternate;
+}
+
+@keyframes preview-pulse {
+  from {
+    opacity: 0.35;
+    transform: scale(0.8);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1.15);
+  }
+}
+
+#game {
+  transition: filter 0.7s ease;
+}
+
+body.preview-busy #game {
+  filter: blur(7px) brightness(0.72) saturate(0.85);
+  transition-duration: 0.25s;
+}
+
+/* The workshop has its own rule set link (Host it, Pick rules). */
+body:has(.start-screen.in-workshop) .rules-editor-link,
+body:has(.start-screen.in-workshop) .ls-server-list-link {
+  display: none;
+}
+
+/* ---- Entry on the start screen ---- */
+
+.workshop-open {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  margin-top: 12px;
+  padding: 10px 14px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: linear-gradient(90deg, rgba(255, 179, 71, 0.1), rgba(127, 214, 255, 0.06));
+  color: #e9ecf2;
+  text-align: left;
+  transition:
+    border-color 0.2s,
+    background 0.2s;
+}
+
+.workshop-open[hidden] {
+  display: none;
+}
+
+.workshop-open > svg {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  color: #ffb347;
+}
+
+.workshop-open-text {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+.workshop-open-text b {
+  font: 700 15px var(--display);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.workshop-open-text small {
+  color: #8b93a6;
+  font-size: 12px;
+}
+
+.workshop-open-arrow {
+  font-size: 26px;
+  line-height: 1;
+  color: #8b93a6;
+  transition:
+    transform 0.2s,
+    color 0.2s;
+}
+
+.workshop-open:hover,
+.workshop-open:focus-visible {
+  outline: none;
+  border-color: rgba(255, 179, 71, 0.6);
+  background: linear-gradient(90deg, rgba(255, 179, 71, 0.16), rgba(127, 214, 255, 0.1));
+}
+
+.workshop-open:hover .workshop-open-arrow,
+.workshop-open:focus-visible .workshop-open-arrow {
+  transform: translateX(3px);
+  color: #ffd08a;
+}
+
+/* ---- Narrow and short screens ---- */
+
+@media (max-width: 760px) {
+  /* The preview shows above the panel; the panel scrolls. */
+  .workshop-layout {
+    width: 100%;
+    justify-content: flex-start;
+    padding-top: 12px;
+  }
+  /* In the preview strip above the panel, scrolling with it. */
+  .preview-chip {
+    position: relative;
+    top: auto;
+    right: auto;
+    align-self: flex-end;
+    margin-top: 22vh;
+  }
+}
+
+@media (max-width: 420px) {
+  .code-text {
+    white-space: normal;
+  }
+  .workshop-sub {
+    display: none;
+  }
+  .slider-meaning {
+    font-size: 11px;
+  }
+}
+
+@media (max-height: 760px) and (min-width: 761px) {
+  .workshop-sub {
+    display: none;
+  }
+  .slider-row {
+    padding: 3px 0 4px;
+  }
+  .slider-hint {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .workshop-head,
+  .workshop-card,
+  .host-box,
+  .dice.rolling svg {
+    animation: none;
+  }
+  body.preview-busy #game {
+    filter: brightness(0.72);
+  }
+}

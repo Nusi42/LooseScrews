@@ -74,6 +74,8 @@ pub struct ShareCodeInfo {
     /// Sliders in share-code order (enclosure, density, verticality, gravity
     /// chaos, palette, absurdity, instability).
     pub sliders: Vec<u8>,
+    /// Level archetype id (`levelArchetypes()` index; 0 = classic).
+    pub archetype: u8,
 }
 
 /// Full share-code validation (checksum and generator version included).
@@ -91,6 +93,7 @@ pub fn check_share_code(text: &str) -> ShareCodeInfo {
             error: String::new(),
             seed: seed.to_string(),
             sliders: sliders.to_vec(),
+            archetype: 0,
         },
         CodeCheck::Invalid(error) => ShareCodeInfo {
             ok: false,
@@ -98,6 +101,7 @@ pub fn check_share_code(text: &str) -> ShareCodeInfo {
             error,
             seed: String::new(),
             sliders: Vec::new(),
+            archetype: 0,
         },
     }
 }
@@ -112,6 +116,22 @@ pub fn random_share_code(
 ) -> Result<String, JsError> {
     let entropy = (entropy_hi as u64) << 32 | entropy_lo as u64;
     sharecode::random_share_code(entropy, enclosure, density).map_err(|e| JsError::new(&e))
+}
+
+/// The share code of a workshop world (seed as a decimal u64, the seven
+/// sliders in share-code order, the archetype id).
+#[wasm_bindgen(js_name = makeShareCode)]
+pub fn make_share_code(seed: &str, sliders: &[u8], archetype: u8) -> Result<String, JsError> {
+    sharecode::make_share_code(seed, sliders, archetype).map_err(|e| JsError::new(&e))
+}
+
+/// Level archetype names this build generates, by archetype id.
+#[wasm_bindgen(js_name = levelArchetypes)]
+pub fn level_archetypes() -> Vec<String> {
+    sharecode::ARCHETYPES
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
 }
 
 /// Golden hashes of a share code (`ls_worldgen::golden::golden_hashes`) as

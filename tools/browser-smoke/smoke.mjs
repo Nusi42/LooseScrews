@@ -50,7 +50,10 @@
 // leader in the roster, and a duel challenged from the list is relayed through the directory, accepted in a
 // toast and played by both in a private two-player room with the challenger's seed; open the rule set editor
 // (?editor=rules), change the rules, read the generated code and check that
-// ls-server accepts it (--ruleset <code>). Fails on console errors, page
+// ls-server accepts it (--ruleset <code>); the world workshop (workshop.mjs,
+// M4 A8): Make a world, two sliders and the seed changed, the preview
+// regenerates, Save copies a code that decodes to them, Fly it practises on it
+// (and once more as an asteroid belt when the build has belts). Fails on console errors, page
 // errors, WebGPU validation or uncaptured errors, error screens, blank frames,
 // no confirmed shots online, or server errors. Screenshots go to --out-dir.
 // Exit codes: 0 passed (or skipped: no browser), 1 failed, 2 usage error,
@@ -63,6 +66,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { fakePointerLock } from "./fake-pointer-lock.mjs";
 import { socialPhase } from "./social.mjs";
+import { workshopPhase } from "./workshop.mjs";
 
 import { assertWorkFolder } from "../lib/work-folder.mjs";
 
@@ -893,6 +897,11 @@ async function main() {
       consoleCheck("editor", "editor");
       await page.close();
     }
+
+    // --- 8: world workshop (M4 A8) ---
+    phase = "workshop";
+    await workshopPhase({ opts, base, query, newPage: newGamePage, check, note, sleep, shot, gpuReport, sceneCheck, waitLoaded, overlayText });
+    consoleCheck("workshop", "workshop");
 
     // Server health over the whole run.
     const serverText = server.text;

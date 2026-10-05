@@ -195,12 +195,22 @@ export interface ShareCodeInfoHandle {
   readonly ok: boolean;
   readonly code: string;
   readonly error: string;
+  /** Seed as a decimal u64 (valid codes). */
+  readonly seed?: string;
+  /** The seven sliders in share-code order (valid codes). */
+  readonly sliders?: Uint8Array;
+  /** Level archetype id (`levelArchetypes()` index). */
+  readonly archetype?: number;
   free(): void;
 }
 
 export interface WasmApi {
   checkShareCode(text: string): ShareCodeInfoHandle;
   randomShareCode(entropyLo: number, entropyHi: number, enclosure: number, density: number): string;
+  /** A workshop world's share code: decimal u64 seed, seven sliders, archetype id (throws on bad input). */
+  makeShareCode?(seed: string, sliders: Uint8Array, archetype: number): string;
+  /** Level archetypes this build generates, by archetype id ("classic", "belt"). */
+  levelArchetypes?(): string[];
   helloPacket(name: string, preferredTeam: number): Uint8Array;
   /** Hello asking for a ship type (ls-sim ShipType index). */
   helloPacketAs?(name: string, preferredTeam: number, shipType: number): Uint8Array;

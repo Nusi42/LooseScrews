@@ -9,6 +9,8 @@
 
 import { checkShareCode, SHARE_CODE_PRINTED_LEN, type ShareCodeCheck } from "./shareCode.ts";
 import { bindViewSettings, viewSettingsHtml } from "./viewSettings.ts";
+import { audioSettingsHtml, bindAudioSettings } from "../audio/settings.ts";
+import { previewBus } from "../audio/index.ts";
 
 export type PlayMode = "online" | "practice";
 
@@ -228,6 +230,7 @@ export function showStartScreen(parent: HTMLElement, validate?: CodeValidator, h
             <span>Horizon assist (slowly levels your roll)</span>
           </label>
           ${viewSettingsHtml()}
+          ${audioSettingsHtml()}
         </details>
         <details class="start-more">
           <summary>Controls</summary>
@@ -246,6 +249,7 @@ export function showStartScreen(parent: HTMLElement, validate?: CodeValidator, h
   const assistInput = form.elements.namedItem("assist") as HTMLInputElement;
   const shipInput = form.elements.namedItem("ship") as RadioNodeList;
   bindViewSettings(form);
+  bindAudioSettings(form, previewBus);
   const cards = [...root.querySelectorAll<HTMLElement>(".ship-pick-card")];
   const shipHost = root.querySelector(".ship-pick-cards") as HTMLElement;
   const bay = hooks.ships?.(shipHost, cards) ?? null;

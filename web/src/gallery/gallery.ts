@@ -47,6 +47,9 @@ import { chargeLight } from "../game/chargeFx.ts";
 import { modeMoment, modeScene } from "./modeScenes.ts";
 import { colourMeterStyle, monochromeGrade } from "../game/modeVisuals.ts";
 import { runPageScene } from "../attract/galleryPages.ts";
+import { Announcer } from "../ui/announcer.ts";
+import { packById } from "../audio/announcer/packs.ts";
+import type { Trigger } from "../audio/announcer/lines.ts";
 
 /** Frames rendered before the page reports ready. */
 const WARMUP_FRAMES = 20;
@@ -569,6 +572,9 @@ export async function runGallery(canvas: HTMLCanvasElement, ui: HTMLElement, loc
       if (!renderer.isLost) requestAnimationFrame(frame);
     };
     requestAnimationFrame(frame);
+    // M4 A6: an announcer caption over the frame (no sound; the first line of the trigger).
+    const pack = scene.caption ? packById(scene.caption.pack) : undefined;
+    if (scene.caption && pack) new Announcer(ui, null, pack, () => 0).still(scene.caption.trigger as Trigger, { killer: "Rivet", victim: "Sprocket", target: "Gasket" });
   } catch (err) {
     status.phase = "error";
     status.error = err instanceof Error ? err.message : String(err);

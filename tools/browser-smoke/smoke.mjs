@@ -50,7 +50,10 @@
 // leader in the roster, and a duel challenged from the list is relayed through the directory, accepted in a
 // toast and played by both in a private two-player room with the challenger's seed; open the rule set editor
 // (?editor=rules), change the rules, read the generated code and check that
-// ls-server accepts it (--ruleset <code>). Fails on console errors, page
+// ls-server accepts it (--ruleset <code>); audio (M4 A6): no AudioContext before
+// a user gesture (practice and the ?audio=demo page, audio-probe.mjs), the
+// sound check page lists every sound, starts on a click, holds the 32-voice
+// cap under a 64-sound burst and speaks an announcer line. Fails on console errors, page
 // errors, WebGPU validation or uncaptured errors, error screens, blank frames,
 // no confirmed shots online, or server errors. Screenshots go to --out-dir.
 // Exit codes: 0 passed (or skipped: no browser), 1 failed, 2 usage error,
@@ -62,6 +65,7 @@ import { createServer } from "node:net";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { fakePointerLock } from "./fake-pointer-lock.mjs";
+import { audioProbe } from "./audio-probe.mjs";
 import { socialPhase } from "./social.mjs";
 
 import { assertWorkFolder } from "../lib/work-folder.mjs";
@@ -536,6 +540,7 @@ async function main() {
       await page.evaluateOnNewDocument(gpuInstrumentation);
       // Never lock the real OS cursor (hidden headless windows still grab it on Windows).
       await page.evaluateOnNewDocument(fakePointerLock);
+      await page.evaluateOnNewDocument(audioProbe);
       watchPage(page, consoleLog, () => phase);
       return page;
     };
@@ -662,6 +667,9 @@ async function main() {
         check("practice: frames render", fps > 0, `${fps} fps`);
         await shot(page, "practice");
         await sceneCheck(page, "practice", "practice");
+        const audio = await page.evaluate(() => ({ created: window.__audioProbe?.created ?? [], stats: window.__lsAudio?.stats() ?? null }));
+        check("practice: no AudioContext before a user gesture", audio.created.every((c) => c.activated !== false), JSON.stringify(audio.created));
+        check("practice: sound starts after the Play click", audio.created.length >= 1 && audio.stats?.state === "running", `${audio.created.length} contexts, ${JSON.stringify(audio.stats)}`);
         await gpuReport(page, "practice");
       }
       consoleCheck("practice", "practice");
@@ -891,6 +899,41 @@ async function main() {
         if (code) await serverAccepts(opts, code, banned);
       }
       consoleCheck("editor", "editor");
+      await page.close();
+    }
+
+    // --- 8: sound check page (M4 A6) ---
+    phase = "audio";
+    {
+      const page = await browser.newPage();
+      if (summary.mode === "headful") await page.setViewport({ width: 1280, height: 900 });
+      await page.evaluateOnNewDocument(fakePointerLock); // never lock the OS cursor
+      await page.evaluateOnNewDocument(audioProbe);
+      watchPage(page, consoleLog, () => phase);
+      await page.goto(`${base}/?audio=demo`, { waitUntil: "load" });
+      const shown = await page
+        .waitForSelector(".snd-row", { timeout: 15_000 })
+        .then(() => true)
+        .catch(() => false);
+      if (check("audio: the sound check page opens", shown)) {
+        await sleep(500);
+        const before = await page.evaluate(() => ({ created: window.__audioProbe.created.length, demo: { expected: window.__lsAudioDemo.expected, listed: window.__lsAudioDemo.listed } }));
+        check("audio: no AudioContext before a user gesture", before.created === 0, `${before.created} contexts`);
+        check("audio: every sound is listed", before.demo.listed === before.demo.expected && before.demo.expected > 0, `${before.demo.listed} of ${before.demo.expected}`);
+        await page.click('[data-sound="explosion.small"]');
+        await page.waitForFunction(() => window.__lsAudio.stats().state === "running", { timeout: 5000 }).catch(() => {});
+        const after = await page.evaluate(() => ({ created: window.__audioProbe.created, stats: window.__lsAudio.stats() }));
+        check("audio: a click starts the sound", after.created.length === 1 && after.created[0].activated !== false && after.stats.state === "running" && after.stats.started >= 1, JSON.stringify(after));
+        await page.click("[data-burst]");
+        const burst = await page.evaluate(() => ({ burst: window.__lsAudioDemo.burst, stats: window.__lsAudio.stats() }));
+        check("audio: the voice cap holds under a 64-sound burst", burst.burst && burst.burst.voices <= 32 && burst.stats.peakVoices <= 32, JSON.stringify(burst));
+        await page.click('.ad-pack[data-pack="overexcited"] [data-say="firstBlood"]');
+        await sleep(1500);
+        const said = await page.evaluate(() => window.__lsAudioDemo.said());
+        check("audio: the announcer speaks a line", said.length === 1, said.join(" | "));
+        await shot(page, "audio-demo");
+      }
+      consoleCheck("audio", "audio");
       await page.close();
     }
 

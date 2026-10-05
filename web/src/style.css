@@ -1,5 +1,7 @@
 @import "./ui/startScreen.css";
 @import "./attract/attract.css";
+@import "./ui/announcer.css";
+@import "./audio/audio.css";
 
 :root {
   --bg: #0b0d12;

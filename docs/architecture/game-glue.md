@@ -258,8 +258,9 @@ catch-up sends only the newest 8 `Input` messages (older ones would be late anyw
    once its first `Input` arrived: until then it is still generating its level (~0.25 s for a
    bot, longer in WASM), nothing can be acknowledged, and every snapshot would be full and
    handled in one burst later (M1 issue B: ~8 full snapshots, starvation reports and
-   prediction snaps per join). So a join costs one full snapshot, plus one per snapshot
-   interval of round trip until the first acknowledgement arrives;
+   prediction snaps per join). So a join costs one full snapshot: after it the client gets
+   no snapshot until it acknowledges one or `FULL_SNAPSHOT_RETRY_TICKS` (30) passed
+   (test `one_full_snapshot_until_acknowledged_or_retry`); the inventory still goes out;
 4. sends `take_outgoing()` (`Outgoing { client, channel, bytes }`; a host may send a too-large
    unreliable packet reliably, as `ls_net::send_message` does).
 

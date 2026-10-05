@@ -278,6 +278,7 @@ async fn play_session(
         Ok(b) => b,
         Err(e) => return protocol_error(stats, format!("cannot encode Hello: {e}")),
     };
+    let hello_at = Instant::now();
     let sent = async {
         ws.send(bytes, hello.channel()).await?;
         ws.flush().await
@@ -289,6 +290,8 @@ async fn play_session(
         Ok(b) => b,
         Err(e) => return SessionEnd::ConnectFailed(e),
     };
+    // Hello sent to Welcome received (tools/e2e.mjs checks it during next-match builds).
+    let welcome_ms = hello_at.elapsed().as_secs_f64() * 1000.0;
     let welcome = match Message::decode(&first) {
         Ok(Message::Reject(r)) => {
             return match r.reason {
@@ -320,6 +323,7 @@ async fn play_session(
         room = %welcome.room_code,
         transport = cfg.transport.name(),
         edits = welcome.edit_log.len(),
+        welcome_ms = %format!("{welcome_ms:.1}"),
         "joined"
     );
 
@@ -358,7 +362,9 @@ async fn play_session(
             incoming = ws.recv() => match incoming {
                 Recv::Packet(bytes) => {
                     last_rx = Instant::now();
-                    match core.handle_packet(&bytes, stats) {
+                    let handled = core.handle_packet(&bytes, stats);
+                    slow_step(&cfg.name, "packet", last_rx, &core);
+                    match handled {
                         Ok(Flow::Continue) => {}
                         Ok(Flow::Disconnected(reason)) if reason == MATCH_RESTART_REASON => {
                             break SessionEnd::MatchRestart;
@@ -394,6 +400,7 @@ async fn play_session(
                 let due = target.saturating_sub(ticks_done).min(MAX_CATCH_UP_TICKS);
                 ticks_done = target;
                 let mut sent = false;
+                let think_start = Instant::now();
                 for _ in 0..due {
                     for m in core.tick(stats) {
                         let bytes = match m.encode() {
@@ -412,6 +419,7 @@ async fn play_session(
                         sent = true;
                     }
                 }
+                slow_step(&cfg.name, "tick", think_start, &core);
                 if sent {
                     if let Err(e) = write_within(cfg.write_timeout, ws.flush()).await {
                         core.finish(stats);
@@ -441,6 +449,24 @@ async fn play_session(
     }
     core.finish(stats);
     end
+}
+
+/// A bot step (one packet, or the ticks of one loop turn) longer than this
+/// is logged: every bot thread that stalls sends its inputs late, which the
+/// server reports as input starvation.
+const SLOW_STEP: Duration = Duration::from_millis(50);
+
+fn slow_step(bot: &str, what: &str, since: Instant, core: &BotCore) {
+    let took = since.elapsed();
+    if took >= SLOW_STEP {
+        tracing::warn!(
+            bot,
+            step = what,
+            ms = took.as_millis() as u64,
+            mode = ?core.brain().mode(),
+            "slow bot step"
+        );
+    }
 }
 
 /// Sends a `Disconnect` and closes the link (both within

@@ -5,7 +5,18 @@ import { dirname, join, resolve } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { QUICK_ENTRIES, botTotals, matchLength, parseFields, quickRuleSet, rotationFromLog, setRonField } from "../e2e.mjs";
+import {
+  QUICK_ENTRIES,
+  botTotals,
+  matchLength,
+  parseFields,
+  parsePrivateRooms,
+  quickRuleSet,
+  roomLines,
+  rotationFromLog,
+  setRonField,
+  welcomeTimes,
+} from "../e2e.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const ruleset = (id) => readFileSync(join(root, "data", "rulesets", `${id}.ron`), "utf8");
@@ -62,4 +73,30 @@ test("bot totals parse, with and without snapshot kinds", () => {
   assert.equal(old.full, null);
   assert.equal(botTotals("nothing"), null);
   assert.deepEqual(parseFields('a=1 b="x y" c=z'), { a: "1", b: "x y", c: "z" });
+});
+
+test("private rooms parse from rules:bots pairs", () => {
+  assert.deepEqual(parsePrivateRooms(""), []);
+  assert.deepEqual(parsePrivateRooms("duel:2, team_brawl:4"), [
+    { rules: "duel", bots: 2 },
+    { rules: "team_brawl", bots: 4 },
+  ]);
+  assert.throws(() => parsePrivateRooms("duel"), /bad entry/);
+  assert.throws(() => parsePrivateRooms("duel:0"), /bad entry/);
+});
+
+test("welcome times and a private room's lines are read from the logs", () => {
+  const bots = [
+    "INFO ls_bots::net: joined bot=probe1-1 player=8 team=0 code=LS0C room= transport=\"websocket\" edits=12 welcome_ms=3.4",
+    "INFO ls_bots::net: joined bot=bot1 player=0 team=0 code=LS0C room= transport=\"websocket\" edits=0",
+    "INFO ls_bots::net: progress bot=bot1",
+  ].join("\n");
+  assert.deepEqual(welcomeTimes(bots), [3.4]);
+  const server = [
+    "INFO ls_server::sim: tick stats room=public players=8 p99_us=300",
+    "INFO ls_server::sim: tick stats room=R-ABC players=2 p99_us=200",
+  ].join("\n");
+  const lines = roomLines(server, "R-ABC", "tick stats");
+  assert.equal(lines.length, 1);
+  assert.equal(lines[0].p99_us, "200");
 });

@@ -1,6 +1,12 @@
 //! Bot runner: connects one bot to a server over WebSocket or WebTransport
 //! ([`crate::transport`]) and drives its [`BotCore`] at 60 Hz until told to
 //! stop, reconnecting after lost connections.
+//!
+//! With [`BotConfig::directory`] the server is picked from an `ls-directory`
+//! before every connection ([`crate::social::pick_server`]); with
+//! [`BotConfig::accept_duels`] the bot accepts duel challenges, plays the
+//! duel in the challenger's private room and then returns to its server
+//! ([`crate::social::spawn_duel_watcher`]).
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -11,6 +17,7 @@ use ls_game::ls_net::{check_welcome, Message, RejectReason};
 use ls_game::MATCH_RESTART_REASON;
 
 use crate::bot::{BotCore, Flow};
+use crate::social::{self, DuelMove, Identity};
 use crate::stats::BotStats;
 use crate::transport::{Link, Recv, TransportKind};
 
@@ -47,6 +54,13 @@ pub struct BotConfig {
     /// A session in which nothing arrives for this long is lost (the server
     /// hangs or the connection is half open).
     pub silence_timeout: Duration,
+    /// Private room to join (`Hello::room`; `None` = the public room).
+    pub room: Option<String>,
+    /// Directory URL (`http://host:port`): pick the server from its list
+    /// before every connection instead of using [`BotConfig::server`].
+    pub directory: Option<String>,
+    /// Accept duel challenges (presence on the server, inbox polling).
+    pub accept_duels: bool,
 }
 
 impl BotConfig {
@@ -62,6 +76,9 @@ impl BotConfig {
             connect_timeout: Duration::from_secs(15),
             write_timeout: Duration::from_secs(5),
             silence_timeout: Duration::from_secs(5),
+            room: None,
+            directory: None,
+            accept_duels: false,
         }
     }
 }
@@ -98,6 +115,19 @@ enum SessionEnd {
     /// The server finished the match and asked everyone to rejoin
     /// ([`MATCH_RESTART_REASON`]).
     MatchRestart,
+    /// The bot accepted a duel: reconnect into its room.
+    Duel(DuelMove),
+    /// The duel match is over: back to the home server.
+    DuelOver,
+}
+
+/// Where a session connects to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Target {
+    url: String,
+    room: Option<String>,
+    /// A duel room (left after its match).
+    duel: bool,
 }
 
 /// Runs a bot on the current thread with its own single-threaded tokio
@@ -125,13 +155,63 @@ pub async fn run_bot(cfg: BotConfig, stop: StopSignal) -> BotStats {
         return stats;
     }
     let mut attempt: u64 = 0;
+    let mut duel: Option<DuelMove> = None;
     while !stop.should_stop() {
         let seed = cfg
             .seed
             .wrapping_add(attempt.wrapping_mul(0x9e37_79b9_7f4a_7c15));
-        match play_session(&cfg, seed, &stop, &mut stats).await {
+        let target = match &duel {
+            Some(d) => Target {
+                url: social::ws_url(&d.address),
+                room: Some(d.room.clone()),
+                duel: true,
+            },
+            None => match &cfg.directory {
+                Some(dir) => match social::pick_server(dir).await {
+                    Ok(url) => Target {
+                        url,
+                        room: cfg.room.clone(),
+                        duel: false,
+                    },
+                    Err(e) => {
+                        stats.connect_failures += 1;
+                        tracing::warn!(bot = %cfg.name, "no server from the directory: {e}");
+                        if stats.connect_failures <= 3 {
+                            stats.note_error(format!("no server from the directory: {e}"));
+                        }
+                        attempt += 1;
+                        if !cfg.reconnect || !sleep_unless_stopped(cfg.reconnect_delay, &stop).await
+                        {
+                            break;
+                        }
+                        continue;
+                    }
+                },
+                None => Target {
+                    url: cfg.server.clone(),
+                    room: cfg.room.clone(),
+                    duel: false,
+                },
+            },
+        };
+        match play_session(&cfg, &target, seed, &stop, &mut stats).await {
             SessionEnd::Stopped => break,
+            SessionEnd::Duel(m) => {
+                stats.duels += 1;
+                tracing::info!(bot = %cfg.name, room = %m.room, from = %m.from, "joining a duel");
+                duel = Some(m);
+                attempt += 1;
+                continue;
+            }
+            SessionEnd::DuelOver => {
+                tracing::info!(bot = %cfg.name, "duel over; back to the server");
+                duel = None;
+                attempt += 1;
+                continue;
+            }
             SessionEnd::ConnectFailed(e) => {
+                // A duel room that is gone (closed, full) is given up.
+                duel = None;
                 stats.connect_failures += 1;
                 tracing::warn!(bot = %cfg.name, "connection failed: {e}");
                 if stats.connect_failures <= 3 {
@@ -139,6 +219,7 @@ pub async fn run_bot(cfg: BotConfig, stop: StopSignal) -> BotStats {
                 }
             }
             SessionEnd::Lost(e) => {
+                duel = None;
                 stats.disconnects += 1;
                 tracing::warn!(bot = %cfg.name, "disconnected: {e}");
                 stats.note_error(format!("disconnected: {e}"));
@@ -178,18 +259,21 @@ async fn sleep_unless_stopped(d: Duration, stop: &StopSignal) -> bool {
 
 async fn play_session(
     cfg: &BotConfig,
+    target: &Target,
     seed: u64,
     stop: &StopSignal,
     stats: &mut BotStats,
 ) -> SessionEnd {
     // --- connect and handshake ---------------------------------------------
-    let connect = Link::connect(cfg.transport, cfg.server.as_str());
+    let connect = Link::connect(cfg.transport, target.url.as_str());
     let mut ws = match tokio::time::timeout(cfg.connect_timeout, connect).await {
         Ok(Ok(link)) => link,
         Ok(Err(e)) => return SessionEnd::ConnectFailed(e),
         Err(_) => return SessionEnd::ConnectFailed("connect timed out".into()),
     };
-    let hello = Message::Hello(crate::bot::bot_hello(cfg.name.as_str(), seed));
+    let hello = Message::Hello(
+        crate::bot::bot_hello(cfg.name.as_str(), seed).with_room(target.room.clone()),
+    );
     let bytes = match hello.encode() {
         Ok(b) => b,
         Err(e) => return protocol_error(stats, format!("cannot encode Hello: {e}")),
@@ -233,10 +317,28 @@ async fn play_session(
         player = welcome.player_id,
         team = welcome.team,
         code = %welcome.share_code,
+        room = %welcome.room_code,
         transport = cfg.transport.name(),
         edits = welcome.edit_log.len(),
         "joined"
     );
+
+    // Duels: a watcher on the home server (not inside a duel), and the end
+    // of the duel's match.
+    let (duel_tx, mut duel_rx) = tokio::sync::mpsc::unbounded_channel::<DuelMove>();
+    let watcher = (cfg.accept_duels && !target.duel)
+        .then(|| social::host_port(&target.url))
+        .flatten()
+        .map(|address| {
+            social::spawn_duel_watcher(
+                Identity::for_bot(&cfg.name, cfg.seed),
+                address,
+                cfg.directory.clone(),
+                duel_tx.clone(),
+            )
+        });
+    drop(duel_tx);
+    let matches_at_join = stats.matches_over;
 
     // --- 60 Hz loop -------------------------------------------------------------
     let tick_period = Duration::from_secs_f64(1.0 / TICK_HZ as f64);
@@ -249,6 +351,10 @@ async fn play_session(
 
     let end = loop {
         tokio::select! {
+            Some(m) = duel_rx.recv() => {
+                goodbye(&mut ws, "off to a duel").await;
+                break SessionEnd::Duel(m);
+            }
             incoming = ws.recv() => match incoming {
                 Recv::Packet(bytes) => {
                     last_rx = Instant::now();
@@ -271,16 +377,12 @@ async fn play_session(
             },
             _ = interval.tick() => {
                 if stop.should_stop() {
-                    let bye = Message::Disconnect { reason: "bot stopping".into() };
-                    if let Ok(bytes) = bye.encode() {
-                        let send = async {
-                            ws.send(bytes, bye.channel()).await?;
-                            ws.flush().await
-                        };
-                        let _ = tokio::time::timeout(GOODBYE_TIMEOUT, send).await;
-                    }
-                    let _ = tokio::time::timeout(GOODBYE_TIMEOUT, ws.close()).await;
+                    goodbye(&mut ws, "bot stopping").await;
                     break SessionEnd::Stopped;
+                }
+                if target.duel && stats.matches_over > matches_at_join {
+                    goodbye(&mut ws, "duel over").await;
+                    break SessionEnd::DuelOver;
                 }
                 if last_rx.elapsed() > cfg.silence_timeout {
                     break SessionEnd::Lost(format!(
@@ -334,8 +436,27 @@ async fn play_session(
             }
         }
     };
+    if let Some(w) = watcher {
+        w.abort();
+    }
     core.finish(stats);
     end
+}
+
+/// Sends a `Disconnect` and closes the link (both within
+/// [`GOODBYE_TIMEOUT`]).
+async fn goodbye(ws: &mut Link, reason: &str) {
+    let bye = Message::Disconnect {
+        reason: reason.into(),
+    };
+    if let Ok(bytes) = bye.encode() {
+        let send = async {
+            ws.send(bytes, bye.channel()).await?;
+            ws.flush().await
+        };
+        let _ = tokio::time::timeout(GOODBYE_TIMEOUT, send).await;
+    }
+    let _ = tokio::time::timeout(GOODBYE_TIMEOUT, ws.close()).await;
 }
 
 /// Runs a socket write with a time limit: a server that stops reading must

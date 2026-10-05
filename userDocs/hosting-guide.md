@@ -535,6 +535,14 @@ flees Tectonic Charge zones, collects pickups (also mid-fight when one is close)
 scavenging when its hull is low. Bots appear in the game as regular pilots and take up player
 slots.
 
+Bots play every mode for its objective: in The Squeeze they stay inside the safe zone (flying
+to the next zone as soon as it is announced); in Heist about half of them head for the core and
+dig it out with rockets, a free core is grabbed, the carrier flies it home while its team
+escorts it, and the other team hunts the carrier; in Hot Reactor the holder rams the nearest
+ship and everyone else keeps away from the holder and never shoots it; in Last Color Standing
+they go for the most colourful players first. An eliminated bot spectates until the next match.
+In the lobby the bots press Ready, so with only bots on the server the countdown starts at once.
+
 ```sh
 # 7 bots on a local server until Ctrl+C
 ls-bots
@@ -544,6 +552,9 @@ ls-bots --server ws://192.168.1.20:7777/ws --count 4 --duration 600
 
 # bots over WebTransport
 ls-bots --transport wt
+
+# bots that find a server through a directory and accept duel challenges
+ls-bots --directory http://127.0.0.1:7780 --count 4 --accept-duels
 ```
 
 Verified against `ls-bots --help` of this build:
@@ -557,6 +568,9 @@ Verified against `ls-bots --help` of this build:
 | `--stagger-ms <MS>` | `750` | Delay between two bots joining |
 | `--seed <N>` | `1` | Base seed for the bots' behaviour (different seeds, different flying and ship choices) |
 | `--name-prefix <TEXT>` | `bot` | Bot names are this plus a number (`bot1`, `bot2`, …). Players see the names in game. |
+| `--directory <URL>` | none | Pick the server from this directory (`http://host:port`) instead of `--server`: among the servers of the same build with a free slot, the fullest |
+| `--room <CODE>` | public room | Join this private room (`R-...`) |
+| `--accept-duels` | off | Accept duel challenges: the bots appear in the server's player list, accept every challenge, play the duel in the challenger's private room and come back afterwards |
 | `--no-reconnect` | off | Don't reconnect after losing the connection |
 | `--allow-disconnects` | off | A lost connection doesn't count as a failure (exit code 3) |
 | `--verbose` | off | Log debug output |
@@ -694,6 +708,8 @@ Without `--playlist` and `--ruleset`, the server rotates through the default pla
 Brawl (4 players or more), The Squeeze, Paint the Void, Hot Reactor, Heist and Last Color
 Standing, each on a new random world (or on `--code`'s world). Modes whose rule set isn't in
 this build yet are left out. `--ruleset` plays one rule set on one world in every match.
+A team Heist with fewer than 4 players plays its free-for-all variant (every extraction zone
+counts for everyone).
 
 A playlist file lists the matches in order (RON, like rule sets):
 

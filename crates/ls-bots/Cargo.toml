@@ -17,6 +17,10 @@ futures-util.workspace = true
 tracing.workspace = true
 wtransport.workspace = true
 tracing-subscriber.workspace = true
+# Server list (`--directory`) and duel relay client; JSON for the game
+# server's lobby API (`/api/presence`, `/api/duel/answer`).
+ls-directory = { path = "../ls-directory" }
+serde_json.workspace = true
 
 [dev-dependencies]
 # The end-to-end tests host an authoritative `Room` in-process.

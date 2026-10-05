@@ -9,7 +9,7 @@ use std::time::Duration;
 use ls_game::client::{ClientSession, Incoming, Reconcile};
 use ls_game::ls_math::terrain::TerrainQuery;
 use ls_game::ls_math::{Pcg32, Vec3};
-use ls_game::ls_net::{ship_flags, Hello, Message, NetEvent, Welcome};
+use ls_game::ls_net::{ship_flags, Hello, LobbyPhase, Message, NetEvent, Welcome};
 use ls_game::ls_sim::{Buttons, CueKind, InputCmd, ShipTuning, ShipType, WeaponId, WeaponTable};
 use ls_game::ls_worldgen::ShareCode;
 use ls_game::{match_setup, GameError, GameTerrain};
@@ -29,6 +29,10 @@ const STARVATION_WINDOW: u64 = 180;
 /// Time) before it counts as a desync: events arrive after the snapshot
 /// that shows the new position.
 const TELEPORT_GRACE: u64 = 60;
+
+/// Ticks between two `Ready` presses while the lobby still shows the bot
+/// as not ready (the answer takes a round trip).
+const READY_RETRY_TICKS: u64 = 60;
 
 /// Stream id of the RNG that picks a bot's ship type ("BOT_SHIP").
 const RNG_STREAM_SHIP: u64 = 0x424f_545f_5348_4950;
@@ -97,8 +101,13 @@ pub struct BotCore {
     own_projectiles: Vec<u16>,
     /// Alive in the previous tick (lives per ship type).
     was_alive: bool,
-    /// Behavior seed (kept for the next match on the same connection).
+    /// Behavior seed and brain settings (kept for the next match on the
+    /// same connection).
     seed: u64,
+    cfg: BrainConfig,
+    /// Ticks run on this connection, and the tick of the last `Ready`.
+    ticks: u64,
+    last_ready: Option<u64>,
 }
 
 impl BotCore {
@@ -110,9 +119,19 @@ impl BotCore {
     /// the session computes them while it builds the match setup. The bot
     /// derives the spawn points the same way (hunting near enemy spawns).
     pub fn from_welcome(welcome: &Welcome, seed: u64) -> Result<BotCore, GameError> {
+        BotCore::from_welcome_with(welcome, seed, BrainConfig::default())
+    }
+
+    /// [`BotCore::from_welcome`] with a brain configuration (kept for the
+    /// following matches on the same connection).
+    pub fn from_welcome_with(
+        welcome: &Welcome,
+        seed: u64,
+        cfg: BrainConfig,
+    ) -> Result<BotCore, GameError> {
         let session =
             ClientSession::from_welcome(welcome, WeaponTable::builtin(), ShipTuning::tinker())?;
-        let (brain, pending_ship) = Self::brain_for(&session, seed)?;
+        let (brain, pending_ship) = Self::brain_for(&session, seed, cfg)?;
         let edits_seen = session.terrain().edit_log().len();
         Ok(BotCore {
             session,
@@ -129,6 +148,9 @@ impl BotCore {
             own_projectiles: Vec::new(),
             was_alive: false,
             seed,
+            cfg,
+            ticks: 0,
+            last_ready: None,
         })
     }
 
@@ -138,11 +160,11 @@ impl BotCore {
     fn brain_for(
         session: &ClientSession,
         seed: u64,
+        cfg: BrainConfig,
     ) -> Result<(Brain, Option<ShipType>), GameError> {
         let code = ShareCode::decode(session.share_code())?;
         let pristine = GameTerrain::from_code(&code)?;
         let setup = match_setup(&code, session.rules(), &pristine)?;
-        let cfg = BrainConfig::default();
         let nav_cfg = cfg.nav;
         let mut brain = Brain::new(
             cfg,
@@ -220,6 +242,12 @@ impl BotCore {
         if let Some(t) = self.pending_ship.take() {
             msgs.push(self.session.select_ship(t));
         }
+        if self.wants_ready() {
+            msgs.push(self.session.ready(true));
+            self.last_ready = Some(self.ticks);
+            stats.ready_presses += 1;
+        }
+        self.ticks += 1;
         msgs.extend(self.session.frame(1, cmd));
         for m in &msgs {
             match m {
@@ -229,6 +257,26 @@ impl BotCore {
             }
         }
         msgs
+    }
+
+    /// Whether to press Ready now: the lobby (warm-up or countdown) lists
+    /// this bot as not ready, and no press is still on its way.
+    fn wants_ready(&self) -> bool {
+        let Some(l) = self.session.lobby() else {
+            return false;
+        };
+        if !matches!(l.phase, LobbyPhase::Lobby | LobbyPhase::Countdown) {
+            return false;
+        }
+        let me = self.session.player();
+        let not_ready = l
+            .players
+            .iter()
+            .any(|q| q.id == me && !q.ready && !q.spectator);
+        not_ready
+            && self
+                .last_ready
+                .is_none_or(|t| self.ticks >= t + READY_RETRY_TICKS)
     }
 
     /// Handles one packet from the server. `Err` means the session must end
@@ -298,7 +346,7 @@ impl BotCore {
         for (tick, error) in std::mem::take(&mut self.pending_corrections) {
             self.judge_correction(tick, error, stats);
         }
-        match BotCore::brain_for(&self.session, self.seed) {
+        match BotCore::brain_for(&self.session, self.seed, self.cfg) {
             Ok((brain, pending_ship)) => {
                 self.brain = brain;
                 self.pending_ship = pending_ship;

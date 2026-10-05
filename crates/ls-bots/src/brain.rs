@@ -40,6 +40,7 @@
 //! says; in narrow passages the route lowers the wall clearance and speed.
 
 mod combat;
+mod objective;
 
 use ls_game::client::{ClientSession, GUIDED_STATE_BIT};
 use ls_game::ls_math::terrain::{TerrainEdit, TerrainQuery};
@@ -59,6 +60,7 @@ use crate::steering::{
 };
 
 use self::combat::{Danger, EyeballGuide, SecondaryIntent};
+pub use self::objective::{CoreSense, ExtractionSense, ModeSense, ReactorSense, ZoneSense};
 
 /// Another ship the bot can see (alive only).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -158,6 +160,9 @@ pub struct Perception {
     pub pickups: Vec<PickupSeen>,
     /// Scrap piles, wrecks and debris holding scrap (position, scrap).
     pub scrap_sources: Vec<(Vec3, f32)>,
+    /// The mode's objectives as far as the bot cares (see
+    /// [`objective`](self::objective)).
+    pub mode: ModeSense,
 }
 
 impl Perception {
@@ -270,6 +275,7 @@ impl Perception {
             projectiles,
             pickups,
             scrap_sources,
+            mode: ModeSense::from_mode(s.mode(), s.player()),
         })
     }
 
@@ -324,6 +330,9 @@ pub struct BrainConfig {
     /// Button that cycles the Paint Thrower's colour (see
     /// [`PAINT_COLOUR_BUTTON`]; `None` never cycles).
     pub paint_colour_button: Option<Buttons>,
+    /// Play the mode's objectives (see [`objective`](self::objective));
+    /// false plays every mode like a deathmatch (for comparisons).
+    pub objectives: bool,
 }
 
 /// The Paint Thrower colour cycle button (M2 plan: the V key cycles red
@@ -353,6 +362,7 @@ impl Default for BrainConfig {
             combat_collect_range: 30.0,
             collect_secs: 15.0,
             paint_colour_button: PAINT_COLOUR_BUTTON,
+            objectives: true,
         }
     }
 }
@@ -374,6 +384,12 @@ pub enum Mode {
     Flee,
     /// Steering an Eyeball (the ship drifts).
     Guide,
+    /// Working on the mode's objective (Squeeze zone, Heist core, Hot
+    /// Reactor ramming or keeping away).
+    Objective,
+    /// Out of the match (eliminated or a late joiner): no ship, waits for
+    /// the next match.
+    Spectate,
 }
 
 /// Highest weapon id the per-weapon counters track.
@@ -394,6 +410,12 @@ pub struct BrainCounters {
     pub flee_ticks: u64,
     pub guide_ticks: u64,
     pub dead_ticks: u64,
+    /// Ticks spent on a mode objective ([`Mode::Objective`]).
+    pub objective_ticks: u64,
+    /// Ticks out of the match ([`Mode::Spectate`]).
+    pub spectate_ticks: u64,
+    /// Crater ordnance fired at an embedded Heist core.
+    pub dig_shots: u64,
     pub laser_triggers: u64,
     pub rivet_triggers: u64,
     pub rocket_triggers: u64,
@@ -422,6 +444,9 @@ impl Default for BrainCounters {
             flee_ticks: 0,
             guide_ticks: 0,
             dead_ticks: 0,
+            objective_ticks: 0,
+            spectate_ticks: 0,
+            dig_shots: 0,
             laser_triggers: 0,
             rivet_triggers: 0,
             rocket_triggers: 0,
@@ -446,6 +471,9 @@ impl BrainCounters {
         self.flee_ticks += o.flee_ticks;
         self.guide_ticks += o.guide_ticks;
         self.dead_ticks += o.dead_ticks;
+        self.objective_ticks += o.objective_ticks;
+        self.spectate_ticks += o.spectate_ticks;
+        self.dig_shots += o.dig_shots;
         self.laser_triggers += o.laser_triggers;
         self.rivet_triggers += o.rivet_triggers;
         self.rocket_triggers += o.rocket_triggers;
@@ -569,11 +597,25 @@ pub struct Brain {
     /// Tick the current hunt (without a fight) started.
     hunt_since: Option<u64>,
     hunt_break_until: u64,
+
+    // ----- mode objectives (see `objective`) -----
+    /// Flying back into the Squeeze's safe zone.
+    zone_return: bool,
+    /// Where the bot keeps away from the Hot Reactor's holder.
+    reactor_flee_goal: Option<Vec3>,
+    /// Next tick a digging shot at the Heist core may go.
+    next_dig: u64,
+    /// Digging at the Heist core this tick.
+    digging: bool,
+    /// Heads for the Heist core even under fire (about half the bots).
+    miner: bool,
 }
 
 const TICKS_PER_SEC: f32 = TICK_HZ as f32;
 /// Stream id of the bot's own (non-simulation) RNG.
 const RNG_STREAM_BRAIN: u64 = 0x424f_545f_4252_4e31; // "BOT_BRN1"
+/// Stream id of the RNG that picks a bot's mode role ("BOT_ROLE").
+const RNG_STREAM_ROLE: u64 = 0x424f_545f_524f_4c45;
 /// Wrecks stay interesting for this many ticks.
 const WRECK_TICKS: u64 = 45 * TICK_HZ as u64;
 /// A scrap source that yielded nothing is skipped for this many ticks.
@@ -638,6 +680,8 @@ impl Brain {
         let gadget_pref =
             [GadgetKind::Shield, GadgetKind::Cloak, GadgetKind::Decoy][rng.below(3) as usize];
         let used = vec![0; arsenal.len()];
+        // Own stream, so the behaviour stream stays as before.
+        let miner = Pcg32::from_seed(seed, RNG_STREAM_ROLE).next_bool();
         Brain {
             cfg,
             arsenal,
@@ -690,6 +734,11 @@ impl Brain {
             hunt_spawn: None,
             hunt_since: None,
             hunt_break_until: 0,
+            zone_return: false,
+            reactor_flee_goal: None,
+            next_dig: 0,
+            digging: false,
+            miner,
         }
     }
 
@@ -773,10 +822,24 @@ impl Brain {
         terrain: &T,
         counters: &mut BrainCounters,
     ) -> InputCmd {
+        if !self.cfg.objectives && p.mode != ModeSense::default() {
+            let blind = Perception {
+                mode: ModeSense::default(),
+                ..p.clone()
+            };
+            return self.think(&blind, terrain, counters);
+        }
         let mut cmd = InputCmd::idle(p.tick);
         cmd.buttons = Buttons::HORIZON_ASSIST;
         // The grid builds (and follows edits) in the background, dead or alive.
         self.nav.update(terrain);
+        if p.mode.out && !p.alive {
+            // Eliminated (or a late joiner): spectating until the next match.
+            self.on_death();
+            self.mode = Mode::Spectate;
+            counters.spectate_ticks += 1;
+            return cmd;
+        }
         if !p.alive {
             self.on_death();
             counters.dead_ticks += 1;
@@ -797,6 +860,7 @@ impl Brain {
         }
 
         let mut plan = Plan::new();
+        self.digging = false;
         let target = self.update_target(p, terrain);
         let hull_frac = p.hull / self.tuning.hull_max.max(1.0);
         let wants_scrap = if self.scavenge.is_some() {
@@ -820,9 +884,19 @@ impl Brain {
         }
         self.mode = if self.plan_flee(p, terrain, &mut plan) {
             Mode::Flee
+        } else if self.plan_zone(p, terrain, &mut plan) || self.plan_reactor(p, terrain, &mut plan)
+        {
+            Mode::Objective
+        } else if p.mode.carrier
+            && self.plan_heist(p, terrain, target.as_ref(), &mut plan, counters)
+        {
+            // The core goes home before anything else (hull included).
+            Mode::Objective
         } else if self.scavenge.is_some() {
             self.plan_scavenge(p, terrain, &mut plan);
             Mode::Scavenge
+        } else if self.plan_heist(p, terrain, target.as_ref(), &mut plan, counters) {
+            Mode::Objective
         } else if let Some(t) = target {
             // A wanted pickup close by is grabbed mid-fight (the bot keeps
             // aiming and firing at its target); secondaries mostly come
@@ -847,19 +921,22 @@ impl Brain {
             }
         };
 
-        if let Some(t) = target {
+        if let Some(t) = target.filter(|_| !self.digging) {
             self.plan_fire(p, &t, terrain, &mut plan);
             self.paint = None;
         } else {
             self.charge_started = None;
-            if !matches!(self.mode, Mode::Scavenge | Mode::Flee) {
+            if !matches!(self.mode, Mode::Scavenge | Mode::Flee | Mode::Objective) {
                 self.plan_paint(p, terrain, &mut plan);
                 if self.paint.is_some() && self.mode == Mode::Wander {
                     self.mode = Mode::Paint;
                 }
             }
         }
-        self.plan_secondary(p, target.as_ref(), terrain, &mut plan);
+        // Digging at the Heist core picks its own secondary.
+        if !self.digging {
+            self.plan_secondary(p, target.as_ref(), terrain, &mut plan);
+        }
         self.plan_gadget(p, target.as_ref(), &mut plan);
 
         match self.mode {
@@ -871,6 +948,8 @@ impl Brain {
             Mode::Collect => counters.collect_ticks += 1,
             Mode::Flee => counters.flee_ticks += 1,
             Mode::Guide => counters.guide_ticks += 1,
+            Mode::Objective => counters.objective_ticks += 1,
+            Mode::Spectate => counters.spectate_ticks += 1,
             Mode::Dead => counters.dead_ticks += 1,
         }
 
@@ -963,7 +1042,7 @@ impl Brain {
         p: &Perception,
         terrain: &T,
     ) -> Option<Contact> {
-        let enemy = |c: &&Contact| c.team != p.team;
+        let enemy = |c: &&Contact| p.is_hostile(c);
         let range = self.engage_range(p);
         let current = self
             .target
@@ -979,10 +1058,12 @@ impl Brain {
         self.next_target_scan = p.tick + 6;
         let mut best: Option<(f32, Contact)> = None;
         for c in p.contacts.iter().filter(enemy) {
-            let mut d = c.pos.distance(p.pos);
-            if d > range {
+            if c.pos.distance(p.pos) > range {
                 continue;
             }
+            // Mode weighting: the Heist's enemy carrier and colourful Last
+            // Color Standing players first.
+            let mut d = p.target_weight(c);
             // Hysteresis: prefer the current target unless another is much closer.
             if Some(c.id) == self.target {
                 d *= 0.7;
@@ -1181,8 +1262,8 @@ impl Brain {
     /// Where to hunt: the current or a much closer enemy, else an enemy
     /// spawn point (`true` in the second field).
     fn hunt_goal(&mut self, p: &Perception) -> Option<(Vec3, bool)> {
-        let dist = |c: &Contact| c.pos.distance(p.pos);
-        let enemies = || p.contacts.iter().filter(|c| c.team != p.team);
+        let dist = |c: &Contact| p.target_weight(c);
+        let enemies = || p.contacts.iter().filter(|c| p.is_hostile(c));
         let current = self
             .hunt_target
             .and_then(|id| enemies().find(|c| c.id == id));
@@ -1217,6 +1298,19 @@ impl Brain {
         p: &Perception,
         terrain: &T,
     ) -> Option<Vec3> {
+        // The Squeeze: only points well inside the safe zone.
+        if let Some(z) = p.mode.zone {
+            let inside = |q: Vec3| q.distance(z.centre) <= 0.6 * z.comfort();
+            if self.nav.is_ready() {
+                for _ in 0..24 {
+                    let q = self.nav.grid().random_node(&mut self.rng)?;
+                    if inside(q) {
+                        return Some(q);
+                    }
+                }
+            }
+            return Some(z.centre);
+        }
         // Now and then visit a pickup point (weapons, rockets, scrap).
         if !self.scrap_spots.is_empty() && self.rng.chance(0.3) {
             let i = self.rng.below(self.scrap_spots.len() as u32) as usize;
@@ -1385,6 +1479,11 @@ impl Brain {
                 .pickups
                 .iter()
                 .filter(|q| !self.skipped_pickups.iter().any(|(id, _)| *id == q.id))
+                .filter(|q| {
+                    p.mode
+                        .zone
+                        .is_none_or(|z| z.contains(q.pos, z.radius - z.comfort()))
+                })
                 .filter(|q| weight(q) <= range)
                 .filter(|q| self.wants_pickup(p, &owned, q.item))
                 .min_by(|a, b| weight(a).total_cmp(&weight(b)))

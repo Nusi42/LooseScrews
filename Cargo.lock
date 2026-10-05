@@ -661,8 +661,10 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "futures-util",
+ "ls-directory",
  "ls-game",
  "ls-server",
+ "serde_json",
  "thiserror",
  "tokio",
  "tokio-tungstenite",

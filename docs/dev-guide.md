@@ -186,6 +186,7 @@ practice works without one. Rust changes need `npm run build:wasm` and a page re
 cargo run -p ls-bots --release -- --count 7                       # ws://127.0.0.1:7777/ws, until Ctrl+C
 cargo run -p ls-bots --release -- --count 7 --duration 600        # 10-minute soak
 cargo run -p ls-bots --release -- --server ws://127.0.0.1:7791/ws --transport wt --count 2 --duration 30
+cargo run -p ls-bots --release -- --directory http://127.0.0.1:7780 --count 4 --accept-duels   # server from a directory; accept duels
 ```
 
 With `--transport wt` the bots fetch `/cert-hash` from the `--server` host and port and connect
@@ -222,7 +223,7 @@ Invites, parties and duels go through the game server's JSON API (`/api/...`,
 | What | Command | Notes |
 | --- | --- | --- |
 | All Rust tests | `cargo test --workspace` | Debug; `ls-game` alone takes about 40 s (level generation) |
-| Bot end-to-end tests | `cargo test -p ls-bots --release` | Ignored in debug builds (too slow); part of CI. Includes `tests/nav_sweep.rs` (10 worlds plus a 5-minute soak-world match) `tests/nav_cache.rs` (8 bots of one world start one grid build; navigation CPU per bot at least 5x lower than a build per bot) and `tests/arsenal_match.rs` (8 bots, 240 s of `sandbox_all_weapons`: at least 15 distinct combat weapons incl. a mine and the Tectonic Charge, 0 desyncs, reconciliation error under 1 u); one file: `cargo test -p ls-bots --release --test arsenal_match -- --nocapture` |
+| Bot end-to-end tests | `cargo test -p ls-bots --release` | Ignored in debug builds (too slow); part of CI. Includes `tests/nav_sweep.rs` (10 worlds plus a 5-minute soak-world match) `tests/nav_cache.rs` (8 bots of one world start one grid build; navigation CPU per bot at least 5x lower than a build per bot) and `tests/arsenal_match.rs` (8 bots, 240 s of `sandbox_all_weapons`: at least 15 distinct combat weapons incl. a mine and the Tectonic Charge, 0 desyncs, reconciliation error under 1 u), `tests/mode_matches.rs` (every mode's built-in rule set played to a result by 8 bots playing its objective, about 60 s) and `tests/social.rs` (lobby Ready, `--directory` join, duel acceptance against a real server); one file: `cargo test -p ls-bots --release --test arsenal_match -- --nocapture` |
 | Weapon and gadget scenario tests | `cargo test -p ls-sim --lib weapons` / `cargo test -p ls-sim --lib gadgets` | One test module per weapon and gadget module (bonus, malus, lasting effect), plus the registry checks in `weapons::tests`; world-level framework tests in `tests_arsenal` |
 | Mode scenario tests | `cargo test -p ls-sim --lib modes` | Framework tests in `modes::tests`; one test module per implemented mode (Hot Reactor: `modes::hot_reactor::tests`, incl. a 60 s replay golden hash checked on wasm32 too). Headless 8-bot match: `cargo test -p ls-game --test hot_reactor_match` (short-fuse variant; the full default rule set match runs only with `--release`) |
 | Rule set codes and the web catalog | `cargo test -p ls-sim --lib rulecode` | Includes `web_catalog_is_current`; regenerate with `LS_BLESS_RULES_CATALOG=1` ([section 9](#rule-set-codes-and-the-editor)) |

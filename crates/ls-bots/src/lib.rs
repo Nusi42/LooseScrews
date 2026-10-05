@@ -18,7 +18,9 @@
 //! - [`brain`]: the behavior (guide / flee / scavenge / combat / collect /
 //!   hunt / paint and wander) with weapon, gadget and threat handling.
 //! - [`bot`]: [`BotCore`], one bot's session + brain + desync checks, no I/O.
-//! - [`net`]: the runner with reconnects.
+//! - [`net`]: the runner with reconnects, directory join and duels.
+//! - [`social`]: server list (`--directory`) and duel acceptance over the
+//!   game server's and the directory's HTTP APIs.
 //! - [`transport`]: WebSocket (`tokio-tungstenite`) and WebTransport
 //!   (`wtransport`, trusting the server's self-signed certificate by the hash
 //!   from `/cert-hash`) behind one connection type.
@@ -31,6 +33,7 @@ pub mod brain;
 pub mod nav;
 pub mod nav_cache;
 pub mod net;
+pub mod social;
 pub mod stats;
 pub mod steering;
 pub mod transport;

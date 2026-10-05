@@ -2937,7 +2937,7 @@ impl World {
             MatchPhase::Running => h.write_u8(0),
             MatchPhase::Ended { winner } => {
                 h.write_u8(1);
-                h.write_u8(winner.map_or(u8::MAX, |w| w));
+                h.write_u8(winner.unwrap_or(u8::MAX));
             }
         }
         // Everything else of the mode state and the deferred edits, only

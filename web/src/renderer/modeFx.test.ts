@@ -87,3 +87,10 @@ test("Last Color Standing keep mask: instances, object shader and composite agre
   // 64 keep levels fit in rgba16float's mantissa just above 1.
   assert.ok(KEEP_ALPHA <= 1 / 16 && KEEP_ALPHA >= 1 / 64);
 });
+
+test("Squeeze wall: the spill light fades in off the wall instead of switching at the sphere (D5)", () => {
+  // A hard switch at s = 0 drew the meshed wall's cell-to-cell offsets as rings all over the wall.
+  const wgsl = modeFxWgsl(false);
+  assert.ok(wgsl.includes("let off_wall = smoothstep(0.0, 1.0, -s / band_w);"));
+  assert.ok(wgsl.includes("* off_wall * pulse * gain"));
+});

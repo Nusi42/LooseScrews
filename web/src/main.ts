@@ -86,7 +86,7 @@ import { WreckTypes } from "./game/wrecks.ts";
 import { LightFx, sceneLights } from "./game/lightFx.ts";
 import { Vfx } from "./game/vfx.ts";
 import { chargeLight, ChargeTracker } from "./game/chargeFx.ts";
-import { addModeProps, easeMonochrome, isMonochrome, modeLights, ModeVfx, modeVolumes, monochromeGrade, shipStyleFor, type ModeSceneInput } from "./game/modeVisuals.ts";
+import { addModeProps, easeMonochrome, isMonochrome, modeLights, ModeVfx, modeVolumes, monochromeGrade, playerStyleFor, shipStyleFor, type ModeSceneInput } from "./game/modeVisuals.ts";
 import { NEUTRAL_GRADE } from "./renderer/post.ts";
 import { parseInvite } from "./rules/model.ts";
 import type { WasmApi } from "./wasm/api.ts";
@@ -604,7 +604,10 @@ function runGame(
       renderer.settings.terrainSeed = hashSeed(session.game.shareCode); // per-world rock look (VQ3b)
       // Inside dust the flat dust colour replaces the sky's haze.
       renderer.settings.skyHaze = renderer.atmosphere ? 1 - Math.min(1, dust) : 0;
-      renderer.hullFrame.state = cues.hullFrame(cueFrame, own?.shipType ?? 1, game.shipRadius ?? TINKER_RADIUS, teamHull(game.team, r.mode.teams));
+      // Last Color Standing: the own cockpit frame keeps its meter's colour like the other hulls (D5).
+      const ownStyle = playerStyleFor(r.mode, r.mode.teams)?.(game.player, game.team);
+      const frameState = cues.hullFrame(cueFrame, own?.shipType ?? 1, game.shipRadius ?? TINKER_RADIUS, ownStyle?.color ?? teamHull(game.team, r.mode.teams));
+      renderer.hullFrame.state = frameState && ownStyle ? { ...frameState, keepColor: ownStyle.keepColor } : frameState;
       hud.fitRing.update(cues.fitRing(cueFrame, game, r.pose?.position ?? view.position, view.orientation, view.fovY));
       // Per-pass GPU timing (separate terrain/objects passes) while the overlay shows.
       renderer.detailedTiming = overlay.visible;

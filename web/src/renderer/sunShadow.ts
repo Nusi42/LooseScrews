@@ -32,10 +32,23 @@ export const SHADOW_NORMAL_OFFSET = 0.12;
 export const SHADOW_BIAS = 0.06;
 /** PCF radius in texels. */
 export const SHADOW_PCF_TEXELS = 1.6;
+/**
+ * Ship shadows (D5): a SHIP_SHADOW_SIZE² map from the sun over a square
+ * SHIP_SHADOW_RANGE u to each side of the camera (about 0.08 u per texel),
+ * redrawn every frame from the ship and wreck instances. Hulls farther away
+ * cast none (their shadow would be a few pixels).
+ */
+export const SHIP_SHADOW_SIZE = 1024;
+export const SHIP_SHADOW_RANGE = 40;
+/** Ship map depth bias (u) and PCF radius (texels). */
+export const SHIP_SHADOW_BIAS = 0.04;
+export const SHIP_SHADOW_PCF_TEXELS = 1.2;
 /** Dirty rectangles kept apart before they are merged into one. */
 export const MAX_DIRTY_RECTS = 6;
 
 export const SHADOW_FORMAT: GPUTextureFormat = "depth16unorm";
+/** Bytes per instance of the objects pass (renderer.ts INSTANCE_FLOATS x 4); the ship caster reads its transform. */
+export const SHIP_INSTANCE_STRIDE = 64;
 
 /** Pixel rectangle [x0, y0, x1, y1) in the shadow map. */
 export type Rect = [number, number, number, number];
@@ -101,6 +114,25 @@ export function shadowFrame(sun: Vec3, box: Aabb, size: number): ShadowFrame {
   m[2] = -s.x / dz; m[6] = -s.y / dz; m[10] = -s.z / dz; m[14] = s1 / dz;
   m[15] = 1;
   return { clip: m, depthRange: dz, texel: [(2 * hx) / size, (2 * hy) / size] };
+}
+
+/**
+ * The ship map's sun view: SHIP_SHADOW_RANGE u to each side of `center`
+ * across the sun and along it, the centre snapped to whole texels in light
+ * space so shadow edges do not crawl as the camera moves.
+ */
+export function shipShadowFrame(sun: Vec3, center: Vec3, size = SHIP_SHADOW_SIZE, range = SHIP_SHADOW_RANGE): ShadowFrame {
+  const { r, u, s } = sunAxes(sun);
+  const texel = (2 * range) / size;
+  const snap = (v: number): number => Math.round(v / texel) * texel;
+  const cx = snap(dot(r, center)), cy = snap(dot(u, center)), cs = dot(s, center);
+  const s0 = cs - range, s1 = cs + range, dz = s1 - s0;
+  const m = new Float32Array(16);
+  m[0] = r.x / range; m[4] = r.y / range; m[8] = r.z / range; m[12] = -cx / range;
+  m[1] = u.x / range; m[5] = u.y / range; m[9] = u.z / range; m[13] = -cy / range;
+  m[2] = -s.x / dz; m[6] = -s.y / dz; m[10] = -s.z / dz; m[14] = s1 / dz;
+  m[15] = 1;
+  return { clip: m, depthRange: dz, texel: [texel, texel] };
 }
 
 /** Shadow clip coordinates of a world point (CPU mirror of the shader's `sun_shadow.clip * p`). */
@@ -171,13 +203,14 @@ export function boxUnion(a: Aabb, b: Aabb): Aabb {
   };
 }
 
-/** Group 0 layout entries 8-10 of the scene pipelines (shaders/shadow.ts SUN_SHADOW_WGSL). */
+/** Group 0 layout entries 8-11 of the scene pipelines (shaders/shadow.ts SUN_SHADOW_WGSL). */
 export function sunShadowBindLayoutEntries(): GPUBindGroupLayoutEntry[] {
   const vf = GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT;
   return [
     { binding: 8, visibility: vf, buffer: { type: "uniform" } },
     { binding: 9, visibility: vf, texture: { sampleType: "depth" } },
     { binding: 10, visibility: vf, sampler: { type: "comparison" } },
+    { binding: 11, visibility: vf, texture: { sampleType: "depth" } },
   ];
 }
 
@@ -213,19 +246,35 @@ export class SunShadow {
   private dirty: Rect[] = [];
   private full = false;
   private volumetric: [number, number, number, number] = [0, 0, 0, 0];
+  private shell: [number, number, number, number] = [0, 0, 0, 0];
+  private readonly shipTexture: GPUTexture;
+  private readonly shipView: GPUTextureView;
+  private readonly shipPipeline: GPURenderPipeline;
+  private readonly shipSize: number;
+  /** The ship map's view this frame; null = no ship casts (the map is not sampled). */
+  private shipFrame: ShadowFrame | null = null;
   /**
    * Cost measurement (`?shadowbench=full|chunk`, the gallery): redraw the
    * whole map, or the rectangles of two chunks near the map's centre (what
    * one crater remesh costs), every frame.
    */
   bench: "full" | "chunk" | null = null;
+  /** Ships and wrecks cast sun shadows (the ship map, D5); false = only rock does. */
+  shipShadows = true;
   readonly stats: ShadowStats = { size: 0, rects: 0, draws: 0, updates: 0, full: 0 };
 
+  /**
+   * `size`: the terrain map (1 = no shadows: a placeholder); the ship map is
+   * SHIP_SHADOW_SIZE then, else a placeholder too.
+   */
   constructor(device: GPUDevice, size: number) {
     this.device = device;
     this.size = size;
     this.texture = this.createTexture(size);
     this.view = this.texture.createView();
+    this.shipSize = size > 1 ? Math.min(SHIP_SHADOW_SIZE, size) : 1;
+    this.shipTexture = this.createTexture(this.shipSize, "ship shadow map");
+    this.shipView = this.shipTexture.createView();
     this.stats.size = size;
     this.sampler = device.createSampler({
       label: "sun shadow",
@@ -243,7 +292,7 @@ export class SunShadow {
     this.writeUniform();
     this.casterLayout = device.createBindGroupLayout({
       label: "sun shadow caster",
-      entries: [{ binding: 0, visibility: GPUShaderStage.VERTEX, buffer: { type: "uniform" } }],
+      entries: [{ binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } }],
     });
     this.casterBindGroup = device.createBindGroup({
       layout: this.casterLayout,
@@ -255,8 +304,35 @@ export class SunShadow {
       label: "sun shadow caster",
       layout,
       vertex: { module, entryPoint: "vs_caster", buffers: [{ arrayStride: 12, attributes: [{ shaderLocation: 0, offset: 0, format: "float32x3" }] }] },
+      // Only drops the shell's fragments (fs_caster); depth comes from the rasteriser.
+      fragment: { module, entryPoint: "fs_caster", targets: [] },
       // Back faces seen from the sun: lit rock lies in front of its own rock's far side.
       primitive: { topology: "triangle-list", cullMode: "front", frontFace: "ccw" },
+      depthStencil: { format: SHADOW_FORMAT, depthWriteEnabled: true, depthCompare: "less" },
+    });
+    // Ships: instanced hulls (renderer.ts INSTANCE_LAYOUT; positions and the
+    // instance transform only), every face (thin fins and open hull parts
+    // cast too; SHIP_SHADOW_BIAS keeps hulls off their own shadow).
+    this.shipPipeline = device.createRenderPipeline({
+      label: "ship shadow caster",
+      layout,
+      vertex: {
+        module,
+        entryPoint: "vs_ship",
+        buffers: [
+          { arrayStride: 12, attributes: [{ shaderLocation: 0, offset: 0, format: "float32x3" }] },
+          {
+            arrayStride: SHIP_INSTANCE_STRIDE,
+            stepMode: "instance",
+            attributes: [
+              { shaderLocation: 2, offset: 0, format: "float32x4" },
+              { shaderLocation: 3, offset: 16, format: "float32x4" },
+              { shaderLocation: 5, offset: 48, format: "float32x4" },
+            ],
+          },
+        ],
+      },
+      primitive: { topology: "triangle-list", cullMode: "none" },
       depthStencil: { format: SHADOW_FORMAT, depthWriteEnabled: true, depthCompare: "less" },
     });
     this.clearPipeline = device.createRenderPipeline({
@@ -268,21 +344,22 @@ export class SunShadow {
     });
   }
 
-  private createTexture(size: number): GPUTexture {
+  private createTexture(size: number, label = "sun shadow map"): GPUTexture {
     return this.device.createTexture({
-      label: "sun shadow map",
+      label,
       size: { width: size, height: size },
       format: SHADOW_FORMAT,
       usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
     });
   }
 
-  /** Scene bind group entries 8-10 (layout: sunShadowBindLayoutEntries). */
+  /** Scene bind group entries 8-11 (layout: sunShadowBindLayoutEntries). */
   bindGroupEntries(): GPUBindGroupEntry[] {
     return [
       { binding: 8, resource: { buffer: this.uniform } },
       { binding: 9, resource: this.view },
       { binding: 10, resource: this.sampler },
+      { binding: 11, resource: this.shipView },
     ];
   }
 
@@ -320,6 +397,22 @@ export class SunShadow {
     const v: [number, number, number, number] = [scatter, g, length, steps];
     if (v.every((x, i) => x === this.volumetric[i])) return;
     this.volumetric = v;
+    this.writeUniform();
+  }
+
+  /**
+   * The Squeeze's shell sphere (null: none). Rock at and beyond it casts no
+   * shadow (shaders/shadow.ts SHELL_CASTER_MARGIN), so the arena keeps the
+   * sun. A shrinking sphere needs no redraw (the remeshed chunks mark
+   * theirs dirty); a new, moved or growing one redraws the whole map.
+   */
+  setShell(center: Vec3 | null, radius = 0): void {
+    const next: [number, number, number, number] = center && radius > 0 ? [center.x, center.y, center.z, radius] : [0, 0, 0, 0];
+    const cur = this.shell;
+    if (next.every((x, i) => x === cur[i])) return;
+    const shrinkOnly = cur[3] > 0 && next[3] > 0 && next[0] === cur[0] && next[1] === cur[1] && next[2] === cur[2] && next[3] < cur[3];
+    this.shell = next;
+    if (!shrinkOnly) this.full = true;
     this.writeUniform();
   }
 
@@ -383,7 +476,43 @@ export class SunShadow {
     const texelU = f ? Math.max(f.texel[0], f.texel[1]) : 1;
     d.set([mode, SHADOW_PCF_TEXELS / this.size, SHADOW_NORMAL_OFFSET + texelU * 0.5, f ? SHADOW_BIAS / f.depthRange : 0], 16);
     d.set(this.volumetric, 20);
+    d.set(this.shell, 24);
+    const ship = this.shipFrame;
+    if (ship) d.set(ship.clip, 28);
+    d.set([ship ? 1 : 0, SHIP_SHADOW_PCF_TEXELS / this.shipSize, ship ? SHIP_SHADOW_BIAS / ship.depthRange : 0, 0], 44);
     this.device.queue.writeBuffer(this.uniform, 0, d);
+  }
+
+  /**
+   * Ship shadows for this frame (D5): `draw` draws the casters (the ship
+   * and wreck batches, positions in vertex buffer 0 and instances in 1) into
+   * the ship map around `center` (the camera). Without casters (null), with
+   * shadows off or in a sealed level the map is not sampled.
+   */
+  encodeShips(encoder: GPUCommandEncoder, center: Vec3, draw: ((pass: GPURenderPassEncoder) => void) | null, timer: PassTimer): void {
+    const wasOn = this.shipFrame !== null;
+    if (!draw || !this.shipShadows || !this.enabled || this.sealed || this.shipSize <= 1) {
+      if (wasOn) {
+        this.shipFrame = null;
+        this.writeUniform();
+      }
+      return;
+    }
+    const frame = shipShadowFrame(this.sun, center, this.shipSize);
+    // The pipeline needs the matrix before the pass runs: write it first.
+    this.shipFrame = frame;
+    this.writeUniform();
+    const timestampWrites = timer?.pass("shadow");
+    const pass = encoder.beginRenderPass({
+      label: "ship shadow",
+      ...(timestampWrites ? { timestampWrites } : {}),
+      colorAttachments: [],
+      depthStencilAttachment: { view: this.shipView, depthClearValue: 1, depthLoadOp: "clear", depthStoreOp: "store" },
+    });
+    pass.setBindGroup(0, this.casterBindGroup);
+    pass.setPipeline(this.shipPipeline);
+    draw(pass);
+    pass.end();
   }
 
   /** Redraws the dirty parts of the map (or all of it) before the scene pass. */
@@ -447,6 +576,7 @@ export class SunShadow {
 
   destroy(): void {
     this.texture.destroy();
+    this.shipTexture.destroy();
     this.uniform.destroy();
   }
 }

@@ -3,7 +3,7 @@ import { test } from "node:test";
 import type { Vec3 } from "../math/vec3.ts";
 import { QUALITY_PRESETS } from "./quality.ts";
 import { LIGHTING_WGSL } from "./shaders/lighting.ts";
-import { SHADOW_CASTER_WGSL, SUN_SHADOW_UNIFORM_FLOATS, SUN_SHADOW_WGSL } from "./shaders/shadow.ts";
+import { SHADOW_CASTER_WGSL, SHELL_CASTER_MARGIN, SUN_SHADOW_UNIFORM_FLOATS, SUN_SHADOW_WGSL } from "./shaders/shadow.ts";
 import { TERRAIN_WGSL } from "./shaders/terrain.ts";
 import { INSTANCED_WGSL } from "./shaders/objects.ts";
 import { VOLUMETRIC_UNIFORM_FLOATS, volumetricWgsl } from "./shaders/volumetric.ts";
@@ -15,6 +15,9 @@ import {
   rectsOverlap,
   shadowClip,
   shadowFrame,
+  SHIP_SHADOW_RANGE,
+  SHIP_SHADOW_SIZE,
+  shipShadowFrame,
   snapBox,
   sunAxes,
   texelRect,
@@ -148,7 +151,7 @@ test("uniform sizes match the WGSL structs; scene shaders take the sun's visibil
   assert.equal(structFloats(SUN_SHADOW_WGSL, "SunShadow"), SUN_SHADOW_UNIFORM_FLOATS);
   assert.equal(structFloats(SHADOW_CASTER_WGSL, "SunShadow"), SUN_SHADOW_UNIFORM_FLOATS);
   assert.equal(structFloats(volumetricWgsl(true), "Volumetric"), VOLUMETRIC_UNIFORM_FLOATS);
-  for (const b of [8, 9, 10]) assert.match(LIGHTING_WGSL, new RegExp(`@group\\(0\\) @binding\\(${b}\\)`));
+  for (const b of [8, 9, 10, 11]) assert.match(LIGHTING_WGSL, new RegExp(`@group\\(0\\) @binding\\(${b}\\)`));
   assert.match(LIGHTING_WGSL, /sun_vis_last = sun_visibility\(world_pos, n\)/);
   // Terrain's GGX sun highlight and the models' sun highlight are shadowed too.
   assert.match(TERRAIN_WGSL, /sun_rad \* sun_vis_last/);
@@ -169,4 +172,36 @@ test("volumetric look: no dust in open space, dusty caves; off at low quality", 
   assert.ok(QUALITY_PRESETS.high.volumetric.steps >= QUALITY_PRESETS.medium.volumetric.steps);
   assert.deepEqual(marchSize(1920, 1080, 2), { width: 960, height: 540 });
   assert.deepEqual(marchSize(1919, 1081, 3), { width: 640, height: 361 });
+});
+
+test("ship shadows (D5): the ship map spans the range around the camera, snapped to texels", () => {
+  for (const sun of SUNS) {
+    const s = norm(sun);
+    const cam = { x: 101.3, y: 47.9, z: 88.2 };
+    const f = shipShadowFrame(s, cam);
+    assert.ok(Math.abs(f.texel[0] - (2 * SHIP_SHADOW_RANGE) / SHIP_SHADOW_SIZE) < 1e-9);
+    const [x, y, z] = shadowClip(f.clip, cam);
+    // The camera sits within a texel of the centre, halfway down the depth range.
+    assert.ok(Math.abs(x) <= 1 / SHIP_SHADOW_SIZE + 1e-6 && Math.abs(y) <= 1 / SHIP_SHADOW_SIZE + 1e-6, `${x} ${y}`);
+    assert.ok(Math.abs(z - 0.5) < 1e-6);
+    // Toward the sun is nearer (smaller depth); a point RANGE across the sun lies at the map's edge.
+    assert.ok(shadowClip(f.clip, along(cam, s, 10))[2] < z);
+    const { r } = sunAxes(s);
+    assert.ok(Math.abs(shadowClip(f.clip, along(cam, r, SHIP_SHADOW_RANGE))[0] - 1) < 2 / SHIP_SHADOW_SIZE + 1e-6);
+    // The map moves in whole texels only (no crawling shadow edges).
+    const moved = shipShadowFrame(s, along(cam, r, f.texel[0] * 3.4));
+    const shift = ((moved.clip[12] ?? 0) - (f.clip[12] ?? 0)) * (SHIP_SHADOW_SIZE / 2);
+    assert.ok(Math.abs(shift - Math.round(shift)) < 1e-3, `${shift}`);
+  }
+});
+
+test("ship shadows multiply the rock's; the Squeeze shell casts none (D5)", () => {
+  // Receivers: both maps, the ship map only around the camera.
+  assert.ok(SUN_SHADOW_WGSL.includes("return terrain_visibility(p, n) * ship_visibility(p, n);"));
+  assert.ok(SUN_SHADOW_WGSL.includes("var ship_shadow_map: texture_depth_2d;"));
+  // Casters: hull instances into the ship map; rock beyond the shell sphere is dropped.
+  assert.ok(SHADOW_CASTER_WGSL.includes("fn vs_ship("));
+  assert.ok(SHADOW_CASTER_WGSL.includes("return sun_shadow.ship_clip * vec4f(world, 1.0);"));
+  assert.ok(SHADOW_CASTER_WGSL.includes(`distance(in.world, s.xyz) > s.w - ${SHELL_CASTER_MARGIN}) { discard; }`));
+  assert.ok(SHELL_CASTER_MARGIN > 0 && SHELL_CASTER_MARGIN < 2);
 });

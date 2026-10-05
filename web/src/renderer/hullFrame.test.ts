@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { KEEP_ALPHA } from "./shaders/post.ts";
 import * as q from "../math/quat.ts";
 import { FRAME_EYES, frameModel, hullFit } from "./hullFrameModels.ts";
 import { FRAME_DEPTH_RANGE, FRAME_FAR, FRAME_NEAR, HULL_FRAME_UNIFORM_FLOATS, HULL_FRAME_WGSL, packHullFrameUniforms } from "./hullFrame.ts";
@@ -69,4 +70,13 @@ test("hull frame uniforms: projection, camera, colour and scale by radius", () =
   assert.ok(Math.abs((u[28] ?? 0) - 1.3) < 1e-6);
   assert.equal(u[29], 1);
   assert.ok(HULL_FRAME_WGSL.includes(`clip.z * ${FRAME_DEPTH_RANGE}`));
+  assert.equal(u[27], 0, "no colour kept outside Last Color Standing");
+});
+
+test("Last Color Standing: the own cockpit frame writes the keep mask like the other hulls (D5)", () => {
+  const view = { position: { x: 0, y: 0, z: 0 }, orientation: q.identity(), fovY: 1.2 };
+  const state = { shipType: 1, radius: 0.5, color: [1, 0.5, 0] as const };
+  assert.equal(packHullFrameUniforms(view, 1, { ...state, keepColor: 1 })[27], 1);
+  assert.equal(packHullFrameUniforms(view, 1, { ...state, keepColor: 3 })[27], 1, "clamped");
+  assert.ok(HULL_FRAME_WGSL.includes(`1.0 + clamp(hull.color.w, 0.0, 1.0) * ${KEEP_ALPHA}`));
 });

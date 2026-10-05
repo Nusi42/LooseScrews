@@ -27,6 +27,11 @@ pub const MATERIAL_CELL: f32 = 24.0;
 pub const WEAK_SHARE: f32 = 0.3;
 /// Share of sites that are hard rock (the rest is ordinary rock).
 pub const HARD_SHARE: f32 = 0.25;
+/// Display blend between materials ([`MaterialRegion::blend_weights`]): the
+/// difference of the site distances (u) over which a weight goes from 0.5
+/// to 1. Across a border, straight between two sites, the difference grows
+/// by 2 per u, so the weights ramp over about +-ramp/4 u around it.
+pub const MATERIAL_BLEND_RAMP: f32 = 6.0;
 /// Salt mixed into the world seed for the material sites.
 const MATERIAL_SALT: u64 = 0x4d41_5445_5249_414c; // "MATERIAL"
 
@@ -168,6 +173,51 @@ impl MaterialRegion {
         (m, r.max(0.0))
     }
 
+    /// Display blend weights of weak and hard rock at `p` (0..1 each,
+    /// [`MATERIAL_BLEND_RAMP`]): `0.5 + (d_other - d_m) / ramp`, clamped,
+    /// where `d_m` is the distance to the nearest site of material `m` and
+    /// `d_other` to the nearest site of any other material. Continuous over
+    /// space (a min of distances), exactly 0.5 on the Voronoi border between
+    /// the material and the rest, and nearly linear across it, so weights
+    /// interpolated over a mesh's triangles draw the border as a smooth
+    /// curve instead of the vertex grid's staircase, and chunks agree on
+    /// shared vertices. Client visuals only (not hashed).
+    pub fn blend_weights(&self, p: Vec3) -> [f32; 2] {
+        blend_from(self.per_material(p).1)
+    }
+
+    /// Material at `p` (as [`MaterialRegion::at`]) and the squared
+    /// distances to the nearest site of each material (by id; infinite when
+    /// none is among the 27 around `p`), in one scan.
+    pub fn per_material(&self, p: Vec3) -> (Material, [f32; 3]) {
+        let c = cube_of(p);
+        let mut best = [f32::INFINITY; 3];
+        let (mut nearest, mut nearest_m) = (f32::INFINITY, Material::Rock);
+        for dz in -1..=1 {
+            for dy in -1..=1 {
+                for dx in -1..=1 {
+                    let cc = [c[0] + dx, c[1] + dy, c[2] + dz];
+                    let l = [0, 1, 2].map(|a| cc[a] - self.lo[a]);
+                    let (pos, m) = if (0..3).all(|a| l[a] >= 0 && l[a] < self.dims[a]) {
+                        self.sites[(l[0] + self.dims[0] * (l[1] + self.dims[1] * l[2])) as usize]
+                    } else {
+                        self.field.site(cc)
+                    };
+                    let d = p.distance_squared(pos);
+                    if d < nearest {
+                        nearest = d;
+                        nearest_m = m;
+                    }
+                    let slot = &mut best[m as usize];
+                    if d < *slot {
+                        *slot = d;
+                    }
+                }
+            }
+        }
+        (nearest_m, best)
+    }
+
     /// [`nearest_site`] over the cached sites, with the squared distances
     /// of the nearest and the second-nearest site.
     fn nearest(&self, p: Vec3) -> (Material, f32, f32) {
@@ -203,6 +253,24 @@ impl MaterialRegion {
     pub fn cube(p: Vec3) -> [i32; 3] {
         cube_of(p)
     }
+}
+
+/// Display weights of weak and hard rock from the squared distances to the
+/// nearest site of each material ([`MaterialRegion::blend_weights`]).
+pub fn blend_from(d2: [f32; 3]) -> [f32; 2] {
+    let d = d2.map(f32::sqrt);
+    let weight = |m: usize| {
+        let other = (0..3)
+            .filter(|&o| o != m)
+            .fold(f32::INFINITY, |a, o| a.min(d[o]));
+        // inf - inf (no site of either kind nearby) cannot happen: the
+        // nearest site is always among the 27.
+        (0.5 + (other - d[m]) / MATERIAL_BLEND_RAMP).clamp(0.0, 1.0)
+    };
+    [
+        weight(Material::Weak as usize),
+        weight(Material::Hard as usize),
+    ]
 }
 
 /// Material cube containing `p`.

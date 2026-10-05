@@ -123,6 +123,7 @@ export class VolumetricShafts {
         { binding: 8, visibility: GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } },
         { binding: 9, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "depth" } },
         { binding: 10, visibility: GPUShaderStage.FRAGMENT, sampler: { type: "comparison" } },
+        { binding: 11, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "depth" } },
       ],
     });
     const module = device.createShaderModule({ label: "volumetric march", code: volumetricWgsl(ms) });

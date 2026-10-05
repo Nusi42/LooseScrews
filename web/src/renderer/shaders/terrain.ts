@@ -26,6 +26,8 @@ export const ROCK_SCALE_U = 9;
 export const MACRO_SCALE_U = 31;
 /** World units per repeat of the grain layer (fine normals, pits, veins). */
 export const GRAIN_SCALE_U = 2.7;
+/** Soft-max steepness of material borders (per unit of blend weight): higher is crisper. */
+export const MATERIAL_EDGE_SHARPNESS = 60;
 
 export const TERRAIN_WGSL = /* wgsl */ `
 ${FRAME_WGSL}
@@ -201,11 +203,15 @@ fn fs_main(in: VsOut) -> @location(0) vec4f {
   }
   let noise = (rock.h - 0.5) * 0.55 + (grain.h - 0.5) * 0.35 + (macro_h - 0.5) * 0.5;
 
-  // Material weights, sharpened with noise (borders follow the rock).
-  let weak = sharpen(in.mat.x, noise);
-  let hard = sharpen(in.mat.y, -noise * 0.8);
-  let mats = vec3f(weak, max(0.0, 1.0 - weak - hard), hard);
-  let mw = mats / max(mats.x + mats.y + mats.z, 1e-4);
+  // Material weights (D5): the mesher's smooth display weights (weak,
+  // hard; rock the rest), displaced by mostly low-frequency rock noise and
+  // resolved by a steep soft-max, so exactly one material wins almost
+  // everywhere and borders are crisp organic curves that meander with the
+  // rock (no grey seam or mixed band between weak and hard rock).
+  let mat_noise = (macro_h - 0.5) * 0.7 + (rock.h - 0.5) * 0.2 + (grain.h - 0.5) * 0.05;
+  let mat_s = vec3f(in.mat.x + mat_noise, max(0.0, 1.0 - in.mat.x - in.mat.y), in.mat.y - mat_noise * 0.8);
+  let mat_e = exp((mat_s - vec3f(max(mat_s.x, max(mat_s.y, mat_s.z)))) * ${MATERIAL_EDGE_SHARPNESS}.0);
+  let mw = mat_e / (mat_e.x + mat_e.y + mat_e.z);
 
   // Strata: bands along the per-world tilted axis, warped by the relief.
   let s = dot(p, tp.strata.xyz) * tp.strata.w + (rock.h - 0.5) * 0.25 + (macro_h - 0.5) * 0.8;

@@ -41,11 +41,11 @@ import { pickCloseup, pickLongest, pickVista, probeAround, raycast, rayMesh, sph
 import { FIT_TUNNEL_RADIUS, sceneById, type GalleryScene } from "./scenes.ts";
 import { applyDecor, decorSpots, pickBorder, type DecorSpot } from "./decor.ts";
 import { explosionAt, simulateVfx } from "./vfxScenes.ts";
-import { pickShadePose } from "./shadePose.ts";
+import { pickShadePose, pickSunWallPose } from "./shadePose.ts";
 import { chargeAt, cloakAt, CLOAKED } from "./vqpScenes.ts";
 import { chargeLight } from "../game/chargeFx.ts";
 import { modeMoment, modeScene } from "./modeScenes.ts";
-import { monochromeGrade } from "../game/modeVisuals.ts";
+import { colourMeterStyle, monochromeGrade } from "../game/modeVisuals.ts";
 import { runPageScene } from "../attract/galleryPages.ts";
 
 /** Frames rendered before the page reports ready. */
@@ -211,6 +211,7 @@ export function sceneContent(
   impact: Vec3 | null = null,
   lights: PointLight[] = [],
   vfx = false,
+  wallAhead = 12,
 ): SceneInstances {
   const f = q.forward(cam.orientation);
   const r = q.right(cam.orientation);
@@ -225,7 +226,27 @@ export function sceneContent(
   let flashes: readonly Flash[] = [];
   const lightFx = new LightFx();
   lightFx.random = () => 0.5;
-  if (scene.content === "lineup") {
+  if (scene.content === "shadow") {
+    // Ship shadows (D5): three hulls hovering 1.2-2.4 u in front of the sunlit rock ahead.
+    const d = Math.max(4, wallAhead);
+    [
+      { type: 2, at: at(d - 1.6, -1.2, 0.2), team: 0 },
+      { type: 0, at: at(d - 1.2, 1.3, -0.7), team: 1 },
+      { type: 1, at: at(d - 2.4, 0.4, 1.0), team: 0 },
+    ].forEach((s, i) => {
+      ships.push({
+        id: 200 + i,
+        team: s.team,
+        alive: true,
+        boosting: false,
+        position: s.at,
+        orientation: q.lookRotation(v3.normalize(v3.add(r, v3.scale(f, 0.35 - 0.3 * i))), u),
+        shipType: s.type,
+        radius: LINEUP_RADII[s.type] ?? 0.5,
+        gadgetActive: false,
+      });
+    });
+  } else if (scene.content === "lineup") {
     LINEUP_RADII.forEach((radius, i) => {
       // Three-quarter view: noses toward the camera and to the right.
       const nose = v3.normalize(v3.add(v3.scale(f, -1), v3.scale(r, 0.9)));
@@ -436,7 +457,8 @@ export async function runGallery(canvas: HTMLCanvasElement, ui: HTMLElement, loc
     const border = scene.pose === "border" ? pickBorder(probes, near, origin) : null;
     const sunPose = scene.pose === "sun" ? pickSunPose(near, probes, origin, atmosphere.sunDirection, atmosphere.room) : null;
     const shadePose = scene.pose === "shade" ? pickShadePose([...rayMeshes.values()], probes, origin, atmosphere.sunDirection, atmosphere.room) : null;
-    const pose = sunPose ?? shadePose ?? pickPose(scene, origin, view.orientation, probes, border, { sun: atmosphere.sunDirection, planet: atmosphere.planet?.direction ?? null });
+    const wallPose = scene.pose === "sunwall" ? pickSunWallPose([...rayMeshes.values()], probes, origin, atmosphere.sunDirection, atmosphere.room) : null;
+    const pose = sunPose ?? shadePose ?? wallPose ?? pickPose(scene, origin, view.orientation, probes, border, { sun: atmosphere.sunDirection, planet: atmosphere.planet?.direction ?? null });
     if (scene.belowCeiling !== undefined && atmosphere.room) {
       pose.position = { ...pose.position, y: atmosphere.room.max.y - scene.belowCeiling };
     }
@@ -510,9 +532,15 @@ export async function runGallery(canvas: HTMLCanvasElement, ui: HTMLElement, loc
       renderer.setModeVolumes(m.volumes);
       lights.push(...m.lights);
       if (m.monochrome) renderer.settings.post.grade = monochromeGrade(renderer.settings.post.grade, 1);
+      // The own cockpit frame keeps its meter's colour too (D5; main.ts does the same in play).
+      const own = renderer.hullFrame.state;
+      if (m.monochrome && own) {
+        const style = colourMeterStyle(own.color, 80);
+        renderer.hullFrame.state = { ...own, color: style.color, keepColor: style.keepColor };
+      }
       if (particles) status.particles = particles.liveCount();
     } else {
-      renderer.setScene(sceneContent(scene, pose, visuals, impact, lights, particles !== null && scene.content !== "lights"));
+      renderer.setScene(sceneContent(scene, pose, visuals, impact, lights, particles !== null && scene.content !== "lights", wallAhead));
     }
     if (particles && scene.content !== "mode") {
       // VQ5: the particles of the scene's synthetic history up to its time (vfxScenes.ts).

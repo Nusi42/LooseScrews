@@ -26,7 +26,7 @@ import { LightSystem, lightBindLayoutEntries, type PointLight } from "./lights.t
 import { HullFrame } from "./hullFrame.ts";
 import { ModeFxPass, type ModeVolume } from "./modeFx.ts";
 import { GpuMesh, type MeshData } from "./mesh.ts";
-import { LEGACY_MESH_BUILDERS, MESH_BUILDERS, MESH_KINDS, type MeshKind } from "./models/index.ts";
+import { LEGACY_MESH_BUILDERS, MESH_BUILDERS, MESH_KINDS, SHIP_MESH_KINDS, WRECK_MESH_KINDS, type MeshKind } from "./models/index.ts";
 import { ParticleSystem } from "./particles.ts";
 import { DEFAULT_POST, HDR_FORMAT, PostChain, type PostSettings } from "./post.ts";
 import { TerrainMaterial } from "./rockTextures.ts";
@@ -180,6 +180,9 @@ const SUN_SHADOW_SIZE = 4096;
  */
 const TERRAIN_CULL_MODE: GPUCullMode = "back";
 
+/** Instanced meshes that cast sun shadows (D5): hulls and wrecks. */
+const SHADOW_CASTER_KINDS: ReadonlySet<MeshKind> = new Set<MeshKind>(["ship", ...SHIP_MESH_KINDS, "wreck", ...WRECK_MESH_KINDS]);
+
 const POSITION_LAYOUT: GPUVertexBufferLayout = {
   arrayStride: 12,
   attributes: [{ shaderLocation: 0, offset: 0, format: "float32x3" }],
@@ -249,6 +252,15 @@ class InstanceBatch {
     }
     packInstances(instances, this.scratch);
     device.queue.writeBuffer(this.buffer, 0, this.scratch.buffer, 0, this.count * INSTANCE_FLOATS * 4);
+  }
+
+  /** Positions and instances only (vertex buffers 0 and 1): the ship shadow casters (sunShadow.ts). */
+  drawPositions(pass: GPURenderPassEncoder): void {
+    if (this.count === 0 || !this.buffer) return;
+    pass.setVertexBuffer(0, this.mesh.positionBuffer);
+    pass.setVertexBuffer(1, this.buffer);
+    pass.setIndexBuffer(this.mesh.indexBuffer, "uint32");
+    pass.drawIndexed(this.mesh.indexCount, this.count);
   }
 
   draw(pass: GPURenderPassEncoder): void {
@@ -351,6 +363,8 @@ export class Renderer {
     const renderer = new Renderer(canvas, gpu, forced, options.legacyModels ?? false, particles, shadows);
     renderer.ownsDevice = !options.device;
     renderer.sunShadow.setEnabled(shadows);
+    // `?shipshadows=off`: hulls cast no sun shadows (D5 before shots, cost comparisons).
+    renderer.sunShadow.shipShadows = params.get("shipshadows") !== "off";
     const bench = params.get("shadowbench");
     if (bench === "full" || bench === "chunk") renderer.sunShadow.bench = bench;
     return renderer;
@@ -627,6 +641,9 @@ export class Renderer {
    */
   setModeVolumes(volumes: readonly ModeVolume[]): void {
     this.modeVolumes = volumes;
+    // The Squeeze's shell lets the sun through (D5: readability first).
+    const wall = volumes.find((v) => v.kind === "wall");
+    this.sunShadow.setShell(wall?.center ?? null, wall?.radius ?? 0);
   }
 
   /** Lights uploaded in the last frame and the candidates they were chosen from. */
@@ -671,6 +688,10 @@ export class Renderer {
     this.lightSystem.encode(encoder, timer);
     this.sunShadow.setSun(this.settings.sunDirection);
     this.sunShadow.encode(encoder, this.chunks, timer);
+    // Ships and wrecks cast sun shadows too (D5; the ship map around the camera).
+    const casters: InstanceBatch[] = [];
+    for (const [kind, batch] of this.batches.opaque) if (batch.count > 0 && SHADOW_CASTER_KINDS.has(kind)) casters.push(batch);
+    this.sunShadow.encodeShips(encoder, camera.position, casters.length > 0 ? (p) => { for (const b of casters) b.drawPositions(p); } : null, timer);
     const split = this.detailedTiming && timer !== null;
     // With MSAA the scene renders into the multisampled target and the last
     // scene pass resolves it into the post chain's HDR texture.

@@ -302,6 +302,7 @@ export async function showShowcase(canvas: HTMLCanvasElement, ui: HTMLElement, l
         team: m.teams(),
         surface: m.surface?.() ?? new Uint8Array(0),
         materials: m.materials?.() ?? new Uint8Array(0),
+        materialWeights: m.materialWeights?.() ?? new Uint8Array(0),
         paintColors: m.paintColors?.() ?? new Uint8Array(0),
       });
     } finally {

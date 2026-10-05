@@ -347,6 +347,7 @@ pub struct ChunkMesh {
     teams: Vec<u8>,
     surface: Vec<u8>,
     materials: Vec<u8>,
+    material_weights: Vec<u8>,
     colors: Vec<u8>,
     ao: Vec<u8>,
     aabb: Vec<f32>,
@@ -383,6 +384,13 @@ impl ChunkMesh {
     /// 1 rock, 2 hard), or empty when the mesh carries none.
     pub fn materials(&self) -> Vec<u8> {
         self.materials.clone()
+    }
+    /// Display blend weights of weak and hard rock, two bytes per vertex
+    /// (0..255; `ls_worldgen::MaterialRegion::blend_weights`: smooth across
+    /// material borders), or empty when the mesh carries none.
+    #[wasm_bindgen(js_name = materialWeights)]
+    pub fn material_weights(&self) -> Vec<u8> {
+        self.material_weights.clone()
     }
     /// Paint effect colour per vertex (`ls_math::terrain::PAINT_*`: 0 plain,
     /// 1 red, 2 blue, 3 yellow), or empty when the mesh carries none.
@@ -1063,9 +1071,11 @@ impl Game {
         let b = out.aabb;
         let surface = game::surface_flags(&out.mesh);
         let materials = game::material_ids(&out.mesh);
+        let material_weights = game::material_weights(&out.mesh);
         let colors = game::paint_colors(&out.mesh);
         Some(ChunkMesh {
             materials,
+            material_weights,
             colors,
             key: stream::chunk_key(out.coord),
             positions: out.mesh.positions.iter().flatten().copied().collect(),

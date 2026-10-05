@@ -2201,6 +2201,15 @@ pub fn material_ids(mesh: &Mesh) -> Vec<u8> {
     mesh.materials.clone()
 }
 
+/// Display blend weights of weak and hard rock, two bytes per vertex, or
+/// empty when the mesh carries none.
+pub fn material_weights(mesh: &Mesh) -> Vec<u8> {
+    if mesh.material_weights.len() != mesh.positions.len() {
+        return Vec::new();
+    }
+    mesh.material_weights.iter().flatten().copied().collect()
+}
+
 /// Paint effect colour per vertex (`ls_math::terrain::PAINT_*`, unknown
 /// ids read as plain), or empty when the mesh carries none.
 pub fn paint_colors(mesh: &Mesh) -> Vec<u8> {

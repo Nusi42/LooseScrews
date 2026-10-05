@@ -129,6 +129,9 @@ fn chunks_stream_and_edits_remesh_dirty_chunks_first() {
         assert_eq!(m.mesh.teams.len(), v);
         assert!(m.mesh.indices.iter().all(|&i| (i as usize) < v));
         assert_eq!(m.aabb, m.coord.aabb());
+        // Material ids and the display weights (D5), two bytes per vertex.
+        assert_eq!(super::material_ids(&m.mesh).len(), v);
+        assert_eq!(super::material_weights(&m.mesh).len(), 2 * v);
         meshed.push(m.coord);
     }
     assert_eq!(meshed.len(), 8, "2x2x2 level fully in range");

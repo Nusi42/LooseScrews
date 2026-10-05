@@ -236,9 +236,13 @@ fn fs_main(in: VsOut) -> @location(0) vec4f {
         let s = length(q) - r;
         let band = exp(-(s * s) / (band_w * band_w));
         // Light the wall spills onto the rock in front of it, and a bright seam where the cave rock meets it.
+        // Faded in over the band (D5): the meshed wall lies a little inside
+        // or outside the true sphere from cell to cell, and a hard switch at
+        // s = 0 drew that as rings of spill light all over the wall.
         if (s < 0.0 && s > -6.0) {
           let seam = exp(-(s + 0.85) * (s + 0.85) / 0.09);
-          acc += col * ((0.05 + 0.08 * grind) * exp(s / 1.8) + seam * (0.9 + 0.8 * grind)) * pulse * gain * fog_at(t_scene);
+          let off_wall = smoothstep(0.0, 1.0, -s / band_w);
+          acc += col * ((0.05 + 0.08 * grind) * exp(s / 1.8) + seam * (0.9 + 0.8 * grind)) * off_wall * pulse * gain * fog_at(t_scene);
         }
         if (band > 0.003) {
           let pat = wall_pattern(p, t_scene * px_per_t, grind, t);

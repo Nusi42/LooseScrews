@@ -47,6 +47,7 @@ export function takeMesh(m: ChunkMeshHandle): { key: string; mesh: MeshData } {
         surface: m.surface?.() ?? new Uint8Array(0),
         // Rock materials and paint effect colours (tolerated when absent).
         materials: m.materials?.() ?? new Uint8Array(0),
+        materialWeights: m.materialWeights?.() ?? new Uint8Array(0),
         paintColors: m.paintColors?.() ?? new Uint8Array(0),
         // Baked ambient occlusion (255 = open), for the terrain shading.
         ao: m.ao?.() ?? new Uint8Array(0),

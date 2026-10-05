@@ -15,6 +15,7 @@ import { GpuMesh } from "./mesh.ts";
 import { frameModel } from "./hullFrameModels.ts";
 import { MODEL_SHADING_WGSL } from "./models/shading.ts";
 import { HDR_FORMAT } from "./post.ts";
+import { KEEP_ALPHA } from "./shaders/post.ts";
 import { FRAME_WGSL } from "./shaders/frame.ts";
 import { LIGHTING_WGSL } from "./shaders/lighting.ts";
 import { EMISSIVE_PEAK } from "./shaders/objects.ts";
@@ -39,6 +40,11 @@ export interface HullFrameState {
   /** Livery colour (display value) and engine glow 0..1. */
   color: readonly [number, number, number];
   glow?: number;
+  /**
+   * 0..1: share of the frame's colour a monochrome grade keeps (Last Color
+   * Standing, post.ts KEEP_ALPHA; D5), like the other hulls' keepColor.
+   */
+  keepColor?: number;
 }
 
 export interface HullFrameView {
@@ -61,7 +67,7 @@ export function packHullFrameUniforms(
   const q = view.orientation;
   out.set([q.x, q.y, q.z, q.w], 16);
   out.set([view.position.x, view.position.y, view.position.z, 0], 20);
-  out.set([state.color[0], state.color[1], state.color[2], 0], 24);
+  out.set([state.color[0], state.color[1], state.color[2], Math.min(1, Math.max(0, state.keepColor ?? 0))], 24);
   out.set([state.radius / 0.5, state.glow ?? 0, 0.37, 0], 28);
   return out;
 }
@@ -74,7 +80,7 @@ struct HullFrame {
   proj: mat4x4f,
   cam_rot: vec4f,   // camera orientation (view -> world), quaternion
   cam_pos: vec4f,
-  color: vec4f,     // livery colour (display value)
+  color: vec4f,     // livery colour (display value), w = colour kept by the monochrome grade (0..1)
   params: vec4f,    // x = scale, y = engine glow, z = nav blink phase
 };
 @group(1) @binding(0) var<uniform> hull: HullFrame;
@@ -134,7 +140,8 @@ fn fs_main(in: VsOut) -> @location(0) vec4f {
     let d = length(in.view_pos) / max(hull.params.x, 1e-3);
     c = c * mix(${COCKPIT_SHADE_NEAR}, ${COCKPIT_SHADE_FAR}, smoothstep(0.18, 0.5, d));
   }
-  return vec4f(c, 1.0);
+  // Alpha above 1 marks colour the monochrome grade keeps (objects.ts, post.ts KEEP_ALPHA).
+  return vec4f(c, 1.0 + clamp(hull.color.w, 0.0, 1.0) * ${KEEP_ALPHA});
 }
 `;
 

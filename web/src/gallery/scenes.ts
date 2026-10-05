@@ -23,7 +23,7 @@ export interface GalleryWorld {
  * `shade` stands in rock's shadow and looks at rock the sun reaches through
  * an opening (shadePose.ts, VQ9; falls back to `tunnel`).
  */
-export type PoseKind = "closeup" | "tunnel" | "vista" | "border" | "sun" | "planet" | "shade";
+export type PoseKind = "closeup" | "tunnel" | "vista" | "border" | "sun" | "planet" | "shade" | "sunwall";
 
 /**
  * What is placed in front of the camera besides terrain. `fit` carves a
@@ -32,7 +32,7 @@ export type PoseKind = "closeup" | "tunnel" | "vista" | "border" | "sun" | "plan
  * charging the Fusion Charger (with `ship`: the own charge at the nose),
  * `cloak` cloaked ships bending the scene (vqpScenes.ts).
  */
-export type SceneContent = "none" | "lineup" | "fight" | "lights" | "explosion" | "stress" | "fit" | "charge" | "cloak" | "mode";
+export type SceneContent = "none" | "lineup" | "fight" | "lights" | "explosion" | "stress" | "fit" | "charge" | "cloak" | "mode" | "shadow";
 
 /** Radius of the `fit` scene's tunnel (u): 1.2 u across. */
 export const FIT_TUNNEL_RADIUS = 0.6;
@@ -247,6 +247,15 @@ export const SCENES: readonly GalleryScene[] = [
     pitch: 14,
     belowCeiling: 16,
   },
+  {
+    id: "ship-shadow",
+    title: "Hulls in the sun cast shadows on the rock and on each other (D5)",
+    covers: "ships, lighting",
+    world: SUNLIT_CAVES,
+    pose: "sunwall",
+    content: "shadow",
+    time: 1.0,
+  },
   { id: "charge-up", title: "Fusion Charger charge-up: full, 45 %, overcharge", covers: "effects", world: CAVES, pose: "tunnel", content: "charge", time: 3.0 },
   { id: "charge-cockpit", title: "Own Fusion Charger charging (75 %) from the cockpit", covers: "effects", world: CAVES, pose: "tunnel", content: "charge", time: 3.0, ship: 1 },
   { id: "cloak", title: "Cloaked ships bending the rock behind them", covers: "effects, ships", world: CAVES, pose: "tunnel", content: "cloak", time: 1.0 },
@@ -257,6 +266,7 @@ export const SCENES: readonly GalleryScene[] = [
   { id: "heist-dig", title: "Heist: the embedded core marked on the rock", covers: "modes, effects", world: CAVES, pose: "closeup", content: "mode", mode: "heist-dig", time: 4.0 },
   { id: "reactor", title: "Hot Reactor: holder, fuse radius and ring", covers: "modes, effects", world: CAVES, pose: "vista", content: "mode", mode: "reactor", time: 4.0 },
   { id: "last-color", title: "Last Color Standing: monochrome world, colour meters on hulls", covers: "modes, ships", world: CAVES, pose: "tunnel", content: "mode", mode: "last-color", time: 4.0 },
+  { id: "last-color-cockpit", title: "Last Color Standing from the cockpit: the own frame keeps its colour (D5)", covers: "modes, ships", world: CAVES, pose: "tunnel", content: "mode", mode: "last-color", time: 4.0, ship: 1 },
   { id: "teams4", title: "Four team colours: liveries and paint", covers: "modes, ships, paint", world: CAVES, pose: "closeup", content: "mode", mode: "teams4", decor: "teams4", time: 4.0 },
   // First-impression pass (FI): the pages over the live flythrough (caverns open to the sky).
   { id: "start-screen", title: "Start screen over the live flythrough", covers: "first impression", world: BACKDROP, pose: "tunnel", content: "none", time: 9.0, page: "start" },

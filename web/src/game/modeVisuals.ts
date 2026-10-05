@@ -402,12 +402,22 @@ export function easeMonochrome(current: number, target: number, dt: number): num
 
 /** Ship style for the scene builder in Last Color Standing (null elsewhere). */
 export function shipStyleFor(m: ModeState, teams: number): ((s: ShipState) => { color: Rgb; keepColor: number } | undefined) | null {
+  const style = playerStyleFor(m, teams);
+  return style ? (s) => style(s.id, s.team) : null;
+}
+
+/**
+ * Style of a player's hull by id and side in Last Color Standing (null
+ * elsewhere): other ships through `shipStyleFor`, the own cockpit frame
+ * (D5) directly, so it keeps its meter's colour in the monochrome world too.
+ */
+export function playerStyleFor(m: ModeState, teams: number): ((id: number, team: number) => { color: Rgb; keepColor: number } | undefined) | null {
   if (!isMonochrome(m)) return null;
   const meters = new Map(m.players.map((p) => [p.id, p]));
-  return (s) => {
-    const p = meters.get(s.id);
+  return (id, team) => {
+    const p = meters.get(id);
     if (!p || (p.flags & PLAYER_FLAG.spectator) !== 0) return undefined;
-    return colourMeterStyle(sideColor(s.team, teams), p.meter);
+    return colourMeterStyle(sideColor(team, teams), p.meter);
   };
 }
 

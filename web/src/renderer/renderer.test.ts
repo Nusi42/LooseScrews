@@ -58,6 +58,8 @@ test("validateMesh rejects inconsistent meshes", () => {
   assert.throws(() => validateMesh({ ...m, team: new Uint8Array(3) }), MeshError);
   assert.throws(() => validateMesh({ ...m, normals: new Float32Array(3) }), MeshError);
   assert.throws(() => validateMesh({ ...m, indices: new Uint32Array([0, 1, 999]) }), MeshError);
+  assert.throws(() => validateMesh({ ...m, ao: new Uint8Array(3) }), MeshError);
+  validateMesh({ ...m, ao: new Uint8Array(24) });
   assert.equal(computeAabb(new Float32Array(0)), null);
 });
 

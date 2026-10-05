@@ -154,14 +154,54 @@ impl MaterialRegion {
     /// Material at `p`; bit-identical to [`MaterialField::at`] (points
     /// outside the region fall back to hashing).
     pub fn at(&self, p: Vec3) -> Material {
-        nearest_site(p, |cc| {
-            let l = [0, 1, 2].map(|a| cc[a] - self.lo[a]);
-            if (0..3).all(|a| l[a] >= 0 && l[a] < self.dims[a]) {
-                self.sites[(l[0] + self.dims[0] * (l[1] + self.dims[1] * l[2])) as usize]
-            } else {
-                self.field.site(cc)
+        self.nearest(p).0
+    }
+
+    /// Material at `p` and a radius around `p` within which every point of
+    /// the same material cube has that material too (0 when unsure): the
+    /// gap between the nearest and second-nearest site distances, halved,
+    /// minus a safety margin for rounding. Lets meshing reuse one lookup
+    /// for neighbouring vertices.
+    pub fn at_with_radius(&self, p: Vec3) -> (Material, f32) {
+        let (m, d1, d2) = self.nearest(p);
+        let r = (d2.sqrt() - d1.sqrt()) * 0.5 * 0.999 - 1e-3;
+        (m, r.max(0.0))
+    }
+
+    /// [`nearest_site`] over the cached sites, with the squared distances
+    /// of the nearest and the second-nearest site.
+    fn nearest(&self, p: Vec3) -> (Material, f32, f32) {
+        let c = cube_of(p);
+        let (mut best, mut second) = (f32::INFINITY, f32::INFINITY);
+        let mut best_m = Material::Rock;
+        for dz in -1..=1 {
+            for dy in -1..=1 {
+                for dx in -1..=1 {
+                    let cc = [c[0] + dx, c[1] + dy, c[2] + dz];
+                    let l = [0, 1, 2].map(|a| cc[a] - self.lo[a]);
+                    let (pos, m) = if (0..3).all(|a| l[a] >= 0 && l[a] < self.dims[a]) {
+                        self.sites[(l[0] + self.dims[0] * (l[1] + self.dims[1] * l[2])) as usize]
+                    } else {
+                        self.field.site(cc)
+                    };
+                    let d = p.distance_squared(pos);
+                    if d < best {
+                        second = best;
+                        best = d;
+                        best_m = m;
+                    } else if d < second {
+                        second = d;
+                    }
+                }
             }
-        })
+        }
+        (best_m, best, second)
+    }
+
+    /// The material cube holding `p` (a lookup's radius from
+    /// [`MaterialRegion::at_with_radius`] holds only inside it).
+    pub fn cube(p: Vec3) -> [i32; 3] {
+        cube_of(p)
     }
 }
 
@@ -293,6 +333,27 @@ mod tests {
             assert_eq!(r.at(p), f.at(p), "{p:?}");
         }
         assert_eq!(r.at(Vec3::splat(24.0)), f.at(Vec3::splat(24.0)));
+    }
+
+    /// The region lookup skips cubes that cannot win; it must still give
+    /// the full scan's answer everywhere (dense random points, several seeds,
+    /// points on cube planes included).
+    #[test]
+    fn pruned_region_lookup_matches_the_full_scan() {
+        let mut rng = ls_math::rng::SplitMix64::new(3);
+        let mut unit = || (rng.next_u64() >> 40) as f32 / (1u64 << 24) as f32;
+        for seed in [1u64, 0xC0FFEE, 0xDEAD_BEEF] {
+            let f = MaterialField::new(seed);
+            let r = f.region(Aabb::new(Vec3::splat(-10.0), Vec3::splat(140.0)));
+            for i in 0..20_000 {
+                let mut p = Vec3::new(unit(), unit(), unit()) * 150.0 - Vec3::splat(5.0);
+                if i % 4 == 0 {
+                    // Snap one axis onto a cube plane.
+                    p.x = ls_math::det::floor(p.x / MATERIAL_CELL) * MATERIAL_CELL;
+                }
+                assert_eq!(r.at(p), f.at(p), "seed {seed} {p:?}");
+            }
+        }
     }
 
     #[test]

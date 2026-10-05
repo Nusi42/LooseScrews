@@ -3,16 +3,26 @@
 //! A chunk owns cells `0..32` on each axis. To emit every face whose edge
 //! starts inside the chunk, the mesher also needs the vertices of the cells
 //! at local index `-1` (owned by the neighbouring chunks), so the grid holds
-//! corners `-1..=32` (34 per axis) and paint teams, paint colours and surface
-//! state bits for cells `-1..=31` (33 per axis). Neighbouring chunks compute the shared vertices from
-//! bit-identical samples, which is what makes the meshes seam-free.
+//! paint teams, paint colours and surface state bits for cells `-1..=31` (33
+//! per axis). Corner values cover a wider halo, `-GRID_HALO..=32 + GRID_HALO`
+//! ([`GRID_HALO`] = 4, 41 per axis): the surface-nets mesher reads it for
+//! continuous vertex normals (central differences one corner beyond the
+//! cell) and for baked ambient occlusion (probes up to 2.5 u out along the
+//! normal). Neighbouring chunks compute the shared vertices,
+//! normals and occlusion from bit-identical samples, which is what makes
+//! the meshes seam-free.
 
 use ls_math::Vec3;
 
 use crate::{CHUNK_CELLS, NO_TEAM};
 
-/// Corners per axis in a padded grid (`-1..=32`).
+/// Corners per axis that vertex placement reads (`-1..=32`).
 pub const GRID_CORNERS: usize = CHUNK_CELLS as usize + 2;
+/// Extra corners stored beyond the chunk on every side (corner values cover
+/// `-GRID_HALO..=32 + GRID_HALO`).
+pub const GRID_HALO: i32 = 4;
+/// Corners per axis stored in a padded grid (`-GRID_HALO..=32 + GRID_HALO`).
+pub const HALO_CORNERS: usize = CHUNK_CELLS as usize + 1 + 2 * GRID_HALO as usize;
 /// Cells per axis in a padded grid (`-1..=31`).
 pub const GRID_CELLS: usize = CHUNK_CELLS as usize + 1;
 
@@ -30,13 +40,15 @@ pub struct SampleGrid {
 }
 
 impl SampleGrid {
-    /// A grid filled by evaluating `f` at every corner position; no paint or states.
+    /// A grid filled by evaluating `f` at every corner position (halo
+    /// included); no paint or states.
     pub fn from_fn(origin: [i32; 3], f: impl Fn(Vec3) -> f32) -> Self {
-        let n = GRID_CORNERS;
+        let n = HALO_CORNERS;
+        let (lo, hi) = (-GRID_HALO, CHUNK_CELLS + GRID_HALO);
         let mut values = Vec::with_capacity(n * n * n);
-        for k in -1..=CHUNK_CELLS {
-            for j in -1..=CHUNK_CELLS {
-                for i in -1..=CHUNK_CELLS {
+        for k in lo..=hi {
+            for j in lo..=hi {
+                for i in lo..=hi {
                     values.push(f(Self::corner_pos(origin, i, j, k)));
                 }
             }
@@ -44,13 +56,13 @@ impl SampleGrid {
         Self::from_values(origin, values)
     }
 
-    /// A grid from raw corner values (`GRID_CORNERS³`, x fastest) with no
-    /// paint or states.
+    /// A grid from raw corner values (`HALO_CORNERS³` for corners
+    /// `-GRID_HALO..=32 + GRID_HALO`, x fastest) with no paint or states.
     ///
     /// # Panics
     /// If `values` has the wrong length.
     pub fn from_values(origin: [i32; 3], values: Vec<f32>) -> Self {
-        assert_eq!(values.len(), GRID_CORNERS * GRID_CORNERS * GRID_CORNERS);
+        assert_eq!(values.len(), HALO_CORNERS * HALO_CORNERS * HALO_CORNERS);
         SampleGrid {
             origin,
             values,
@@ -72,8 +84,9 @@ impl SampleGrid {
 
     #[inline]
     fn corner_index(i: i32, j: i32, k: i32) -> usize {
-        let n = GRID_CORNERS;
-        (i + 1) as usize + n * ((j + 1) as usize + n * (k + 1) as usize)
+        let n = HALO_CORNERS;
+        let h = GRID_HALO;
+        (i + h) as usize + n * ((j + h) as usize + n * (k + h) as usize)
     }
 
     #[inline]
@@ -82,7 +95,8 @@ impl SampleGrid {
         (i + 1) as usize + n * ((j + 1) as usize + n * (k + 1) as usize)
     }
 
-    /// Sample at local corner `(i, j, k)`, each in `-1..=32`.
+    /// Sample at local corner `(i, j, k)`, each in
+    /// `-GRID_HALO..=32 + GRID_HALO`.
     #[inline]
     pub fn value(&self, i: i32, j: i32, k: i32) -> f32 {
         self.values[Self::corner_index(i, j, k)]
@@ -124,14 +138,18 @@ impl SampleGrid {
         self.states[Self::cell_index(i, j, k)] = bits;
     }
 
-    /// All corner values (x fastest, then y, then z).
+    /// All corner values, halo included (x fastest, then y, then z).
     pub fn values(&self) -> &[f32] {
         &self.values
     }
 
-    /// True if every corner is on the same side of the surface (no mesh).
+    /// True if every corner the mesher places vertices from (`-1..=32`) is
+    /// on the same side of the surface (no mesh).
     pub fn is_uniform_sign(&self) -> bool {
-        let first = self.values[0] < 0.0;
-        self.values.iter().all(|v| (*v < 0.0) == first)
+        let first = self.value(-1, -1, -1) < 0.0;
+        (-1..=CHUNK_CELLS).all(|k| {
+            (-1..=CHUNK_CELLS)
+                .all(|j| (-1..=CHUNK_CELLS).all(|i| (self.value(i, j, k) < 0.0) == first))
+        })
     }
 }

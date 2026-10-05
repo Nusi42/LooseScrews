@@ -44,6 +44,8 @@ export interface MeshData {
   materials?: Uint8Array;
   /** Optional paint effect colour per vertex (empty or absent = plain). */
   paintColors?: Uint8Array;
+  /** Optional baked ambient occlusion per vertex (255 = open; empty or absent = open). */
+  ao?: Uint8Array;
 }
 
 export class MeshError extends Error {
@@ -61,6 +63,7 @@ export function validateMesh(mesh: MeshData): void {
     ["surface", mesh.surface],
     ["materials", mesh.materials],
     ["paintColors", mesh.paintColors],
+    ["ao", mesh.ao],
   ];
   for (const [name, arr] of optional) {
     if (arr && arr.length > 0 && arr.length !== vertexCount) {

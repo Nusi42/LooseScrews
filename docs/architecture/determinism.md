@@ -81,7 +81,12 @@ cargo test -p ls-worldgen --release --test golden
 
 A mismatch names the share code and which of the four hashes changed, which narrows the cause:
 `sdf` means the generator, `surface_nets`/`dual_contouring` only the mesher, `edited` only the
-edit and paint path.
+edit and paint path (or the surface-nets mesher). A mesher-only change keeps `sdf`, so it needs
+no `GENERATOR_VERSION` bump: re-bless the fixture (`LS_BLESS_GOLDEN=1`) and say why in the
+commit. VQ3a (snapped vertices, continuous normals, baked ambient occlusion) did that for
+`surface_nets` and `edited`; `Mesh::hash` covers the per-vertex occlusion when a mesh carries
+it. The mesher's square roots use `f32::sqrt` (correctly rounded, the same bits as
+`ls_math::det::sqrt`).
 
 The rock material field (`ls_worldgen::material`) is not part of the SDF, so it is not in the
 golden fixture: `material::tests::material_field_hash_is_pinned` pins it with a constant and

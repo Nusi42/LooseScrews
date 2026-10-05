@@ -335,6 +335,7 @@ pub struct ChunkMesh {
     surface: Vec<u8>,
     materials: Vec<u8>,
     colors: Vec<u8>,
+    ao: Vec<u8>,
     aabb: Vec<f32>,
 }
 
@@ -375,6 +376,11 @@ impl ChunkMesh {
     #[wasm_bindgen(js_name = paintColors)]
     pub fn paint_colors(&self) -> Vec<u8> {
         self.colors.clone()
+    }
+    /// Baked ambient occlusion per vertex (255 = open, 0 = fully occluded;
+    /// `ls_worldgen::surface_nets`), or empty when the mesh carries none.
+    pub fn ao(&self) -> Vec<u8> {
+        self.ao.clone()
     }
     /// Chunk box `[minX, minY, minZ, maxX, maxY, maxZ]`.
     pub fn aabb(&self) -> Vec<f32> {
@@ -1009,6 +1015,7 @@ impl Game {
             indices: out.mesh.indices,
             surface,
             teams: out.mesh.teams,
+            ao: out.mesh.ao,
             aabb: vec![b.min.x, b.min.y, b.min.z, b.max.x, b.max.y, b.max.z],
         })
     }

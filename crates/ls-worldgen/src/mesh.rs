@@ -9,7 +9,9 @@
 //! bit-for-bit and there are no seams.
 //!
 //! They differ in where the vertex goes:
-//! - **Surface nets** averages the edge crossing points (smooth, fast).
+//! - **Surface nets** averages the edge crossing points (smooth, fast), then
+//!   refines each vertex (see [`surface_nets`]): one Newton step onto the
+//!   surface, a continuous normal and baked ambient occlusion.
 //! - **Dual contouring** minimizes a quadratic error function (QEF) built
 //!   from the crossing points and their normals, which keeps sharp edges and
 //!   corners (mine shafts, faceted rocks).
@@ -21,7 +23,7 @@ use sha2::{Digest, Sha256};
 
 use ls_math::Vec3;
 
-use crate::grid::{SampleGrid, GRID_CELLS, GRID_CORNERS};
+use crate::grid::{SampleGrid, GRID_CELLS, GRID_CORNERS, GRID_HALO, HALO_CORNERS};
 use crate::CHUNK_CELLS;
 
 /// A triangle mesh for one chunk.
@@ -44,6 +46,9 @@ pub struct Mesh {
     /// 2 hard). Filled by the [`crate::ChunkStore`] meshers; empty for meshes
     /// built from a bare [`SampleGrid`].
     pub materials: Vec<u8>,
+    /// Baked ambient occlusion per vertex (255 = fully open, 0 = fully
+    /// occluded; see [`surface_nets`]). Empty for dual-contouring meshes.
+    pub ao: Vec<u8>,
     /// Triangle list (counter-clockwise from outside).
     pub indices: Vec<u32>,
 }
@@ -61,11 +66,12 @@ impl Mesh {
         self.indices.len() / 3
     }
 
-    /// SHA-256 over the geometry, paint and surface states (little-endian
-    /// bit patterns), for golden tests. States and paint colours are hashed
-    /// only when a vertex has one, so meshes without them hash as they did
-    /// before they existed. Materials are a pure function of the vertex positions and the
-    /// seed and are not hashed.
+    /// SHA-256 over the geometry, paint, surface states and ambient
+    /// occlusion (little-endian bit patterns), for golden tests. States and
+    /// paint colours are hashed only when a vertex has one, and occlusion
+    /// only when the mesh carries it, so meshes without them hash as they
+    /// did before they existed. Materials are a pure function of the vertex
+    /// positions and the seed and are not hashed.
     pub fn hash(&self) -> [u8; 32] {
         let mut h = Sha256::new();
         h.update((self.positions.len() as u32).to_le_bytes());
@@ -92,14 +98,67 @@ impl Mesh {
             h.update(b"colors");
             h.update(&self.colors);
         }
+        if !self.ao.is_empty() {
+            h.update(b"ao");
+            h.update(&self.ao);
+        }
         h.finalize().into()
     }
 }
 
-/// Meshes a chunk with surface nets.
+/// Meshes a chunk with surface nets and refines every vertex from the grid
+/// alone (see [`surface_nets_with_sdf`] for the variant the game uses):
+///
+/// 1. **Snap**: the mass point `v` of the edge crossings (which lies up to a
+///    few tenths of a unit inside curved rock) moves by one Newton step
+///    `v -= d(v) g / |g|²` (at most [`SNAP_MAX_STEP`]) towards the surface,
+///    with `g` the smooth gradient below and `d` the tricubic
+///    (Catmull-Rom) interpolant of the grid. Where that disagrees with the
+///    trilinear interpolant by [`SNAP_KINK`] or more (a crease or a feature
+///    finer than a cell, where the grid cannot be trusted), `d` is the exact
+///    field ([`surface_nets_with_sdf`]) or, from the grid alone, the
+///    trilinear value (the vertex barely moves).
+/// 2. **Normal**: the smooth gradient `g` at the snapped vertex, the
+///    trilinear interpolation of central-difference gradients at the grid
+///    corners. Unlike the gradient of one cell's interpolant it is
+///    continuous across cells and chunks, so smooth rock shades smoothly.
+/// 3. **Ambient occlusion** (one byte per vertex, 255 = open): at the
+///    [`AO_PROBES`] along the normal the trilinear field (scaled to a
+///    distance by `|g|`) is compared with the distance an open half-space
+///    would give (classic SDF occlusion: flat rock stays at 255, creases,
+///    pockets and narrow tunnels darken).
+///
+/// Every step reads the grid by world position, so a vertex shared by two
+/// chunks gets the same bits in both. Square roots use `f32::sqrt`
+/// (correctly rounded, the same bits as `ls_math::det::sqrt`, which is a
+/// software routine on wasm32).
 pub fn surface_nets(grid: &SampleGrid) -> Mesh {
-    build(grid, Placement::Average)
+    build(grid, Placement::Smooth(None))
 }
+
+/// [`surface_nets`] with the exact field `sdf` for the snap at creases
+/// (world units, negative in rock; must agree with the grid at the corners
+/// and be a pure function of the position, so neighbouring chunks agree).
+/// `tests/mesh_quality.rs`: in cavern worlds the vertices lie a median
+/// 0.003 u (p95 0.07 u) from the collision surface, was 0.012 u (p95 0.2 u)
+/// with plain surface nets; about a quarter of the vertices need `sdf`.
+pub fn surface_nets_with_sdf(grid: &SampleGrid, sdf: &dyn Fn(Vec3) -> f32) -> Mesh {
+    build(grid, Placement::Smooth(Some(sdf)))
+}
+
+/// Largest distance (u) the surface-nets snap moves a vertex.
+pub const SNAP_MAX_STEP: f32 = 0.5;
+/// Where the tricubic and trilinear interpolants differ by this much or
+/// more (as a distance, u) at a vertex, the snap reads the exact field.
+pub const SNAP_KINK: f32 = 0.1;
+/// Ambient-occlusion probes along the normal: `(distance (u), weight)`;
+/// the weights sum to 1.
+pub const AO_PROBES: [(f32, f32); 3] = [(0.6, 0.3), (1.4, 0.35), (2.5, 0.35)];
+/// Occlusion strength: `ao = 1 - AO_STRENGTH * occlusion`, clamped to 0..1.
+pub const AO_STRENGTH: f32 = 1.6;
+/// Lower bound on `|g|` when field values are scaled to distances (as in
+/// `ls_sim::terrain::surface_estimate`).
+const MIN_GRADIENT: f32 = 0.2;
 
 /// Meshes a chunk with dual contouring from the grid alone: crossings are
 /// linearly interpolated and normals are trilinear gradients inside each
@@ -124,7 +183,8 @@ pub const CROSSING_ITERATIONS: u32 = 8;
 
 #[derive(Clone, Copy)]
 enum Placement<'a> {
-    Average,
+    /// Surface nets; the snap distance comes from the grid (`None`) or `sdf`.
+    Smooth(Option<&'a dyn Fn(Vec3) -> f32>),
     Qef(Option<&'a dyn Fn(Vec3) -> f32>),
 }
 
@@ -244,6 +304,7 @@ fn build(grid: &SampleGrid, placement: Placement<'_>) -> Mesh {
         return mesh;
     }
     let n = GRID_CELLS;
+    let field = Field::new(grid);
     let mut vert_index = vec![u32::MAX; n * n * n];
     let cell_idx =
         |i: i32, j: i32, k: i32| (i + 1) as usize + n * ((j + 1) as usize + n * (k + 1) as usize);
@@ -261,22 +322,40 @@ fn build(grid: &SampleGrid, placement: Placement<'_>) -> Mesh {
         _ => None,
     };
 
+    // Corner row `(j, k)` for x in `-1..=32` (contiguous in the halo array).
+    let values = grid.values();
+    let row = |j: i32, k: i32| {
+        let start = corner_index(-1, j, k);
+        &values[start..start + GRID_CORNERS]
+    };
     // Pass 1: one vertex per sign-changing cell in -1..32.
     for k in -1..CHUNK_CELLS {
         for j in -1..CHUNK_CELLS {
+            let rows = [row(j, k), row(j + 1, k), row(j, k + 1), row(j + 1, k + 1)];
+            // Rock bits of the four corners of each x column.
+            let mut column = [0u8; GRID_CORNERS];
+            for (x, col) in column.iter_mut().enumerate() {
+                *col = (rows[0][x] < 0.0) as u8
+                    | ((rows[1][x] < 0.0) as u8) << 1
+                    | ((rows[2][x] < 0.0) as u8) << 2
+                    | ((rows[3][x] < 0.0) as u8) << 3;
+            }
             for i in -1..CHUNK_CELLS {
-                let mut c = [0.0f32; 8];
-                let mut mask = 0u8;
-                for (ci, off) in CORNERS.iter().enumerate() {
-                    let v = grid.value(i + off[0], j + off[1], k + off[2]);
-                    c[ci] = v;
-                    if v < 0.0 {
-                        mask |= 1 << ci;
-                    }
-                }
-                if mask == 0 || mask == 0xff {
+                let x = (i + 1) as usize;
+                let cols = column[x] | column[x + 1] << 4;
+                if cols == 0 || cols == 0xff {
                     continue;
                 }
+                let c = [
+                    rows[0][x],
+                    rows[0][x + 1],
+                    rows[1][x],
+                    rows[1][x + 1],
+                    rows[2][x],
+                    rows[2][x + 1],
+                    rows[3][x],
+                    rows[3][x + 1],
+                ];
                 let (local, normal) = match (placement, cache.as_mut()) {
                     (Placement::Qef(_), Some(cache)) => {
                         // Vertex normal: sum of the Hermite normals.
@@ -295,18 +374,24 @@ fn build(grid: &SampleGrid, placement: Placement<'_>) -> Mesh {
                         });
                         (l, trilinear_gradient(&c, l))
                     }
-                    (Placement::Average, _) => {
-                        let l = mass_point(&c);
-                        (l, trilinear_gradient(&c, l))
-                    }
+                    // Refined below; the cell's gradient is only a fallback.
+                    (Placement::Smooth(_), _) => (mass_point(&c), [0.0; 3]),
                 };
                 vert_index[cell_idx(i, j, k)] = mesh.positions.len() as u32;
-                mesh.positions.push([
+                let world = [
                     (origin[0] + i) as f32 + local[0],
                     (origin[1] + j) as f32 + local[1],
                     (origin[2] + k) as f32 + local[2],
-                ]);
-                mesh.normals.push(normalize_or_up(normal));
+                ];
+                if let Placement::Smooth(sdf) = placement {
+                    let v = refine_vertex(&field, world, sdf, || trilinear_gradient(&c, local));
+                    mesh.positions.push(v.position);
+                    mesh.normals.push(v.normal);
+                    mesh.ao.push(v.ao);
+                } else {
+                    mesh.positions.push(world);
+                    mesh.normals.push(normalize_or_up(normal));
+                }
                 mesh.teams.push(grid.team(i, j, k));
                 mesh.colors.push(grid.color(i, j, k));
                 mesh.states.push(grid.states(i, j, k));
@@ -317,12 +402,15 @@ fn build(grid: &SampleGrid, placement: Placement<'_>) -> Mesh {
     // Pass 2: one quad per sign-changing edge whose lower corner is owned.
     for k in 0..CHUNK_CELLS {
         for j in 0..CHUNK_CELLS {
+            let (r0, ry, rz) = (row(j, k), row(j + 1, k), row(j, k + 1));
             for i in 0..CHUNK_CELLS {
-                let solid0 = grid.value(i, j, k) < 0.0;
-                for axis in 0..3usize {
-                    let mut hi = [i, j, k];
-                    hi[axis] += 1;
-                    let solid1 = grid.value(hi[0], hi[1], hi[2]) < 0.0;
+                let x = (i + 1) as usize;
+                let solid0 = r0[x] < 0.0;
+                let ends = [r0[x + 1] < 0.0, ry[x] < 0.0, rz[x] < 0.0];
+                if ends == [solid0; 3] {
+                    continue;
+                }
+                for (axis, &solid1) in ends.iter().enumerate() {
                     if solid0 == solid1 {
                         continue;
                     }
@@ -350,6 +438,253 @@ fn build(grid: &SampleGrid, placement: Placement<'_>) -> Mesh {
         }
     }
     mesh
+}
+
+/// A refined surface-nets vertex.
+struct Refined {
+    position: [f32; 3],
+    normal: [f32; 3],
+    ao: u8,
+}
+
+/// Snap, normal and occlusion of the surface-nets vertex at world position
+/// `v` (see [`surface_nets`]); `cell_gradient` gives the gradient of the
+/// cell's own trilinear interpolant, used only where the smooth gradient
+/// vanishes.
+fn refine_vertex(
+    field: &Field<'_>,
+    v: [f32; 3],
+    sdf: Option<&dyn Fn(Vec3) -> f32>,
+    cell_gradient: impl FnOnce() -> [f32; 3],
+) -> Refined {
+    let v0 = Vec3::from_array(v);
+    let (cell0, t0) = field.locate(v0, 1);
+    let grads = field.corner_gradients(cell0);
+    let g0 = Field::interpolate(&grads, t0);
+    let g2 = g0.dot(g0);
+    let mut p = v0;
+    if g2 > 1e-12 && g2.is_finite() {
+        // The tricubic interpolant follows the field's curvature between
+        // the corners; where it disagrees with the trilinear one the field
+        // has a crease or a feature finer than a cell, and only the exact
+        // field (or, from the grid alone, no snap) is trusted.
+        let cubic = field.cubic(cell0, t0);
+        let linear = trilinear(field.values, cell0, t0);
+        let d = if (cubic - linear).abs() < SNAP_KINK * g2.sqrt() {
+            cubic
+        } else {
+            match sdf {
+                Some(f) => f(v0),
+                None => linear,
+            }
+        };
+        let mut step = g0 * (d / g2);
+        let len2 = step.dot(step);
+        if len2 > SNAP_MAX_STEP * SNAP_MAX_STEP {
+            step *= SNAP_MAX_STEP / len2.sqrt();
+        }
+        if step.x.is_finite() && step.y.is_finite() && step.z.is_finite() {
+            p = v0 - step;
+        }
+    }
+    let (cell, t) = field.locate(p, 1);
+    let g = if cell == cell0 {
+        Field::interpolate(&grads, t)
+    } else {
+        Field::interpolate(&field.corner_gradients(cell), t)
+    };
+    let glen2 = g.dot(g);
+    let (n, glen) = if glen2 > 1e-24 && glen2.is_finite() {
+        let l = glen2.sqrt();
+        (g * (1.0 / l), l)
+    } else {
+        (Vec3::from_array(normalize_or_up(cell_gradient())), 0.0)
+    };
+    Refined {
+        position: p.to_array(),
+        normal: n.to_array(),
+        ao: field.ambient_occlusion(p, n, glen.max(MIN_GRADIENT)),
+    }
+}
+
+/// The grid's corner values as a continuous field over world positions
+/// (trilinear values and smooth gradients), read by world position so a
+/// point shared by two chunks gives the same bits in both.
+struct Field<'a> {
+    values: &'a [f32],
+    origin: [i32; 3],
+}
+
+/// Index of local corner `(i, j, k)` in the halo corner array.
+#[inline]
+fn corner_index(i: i32, j: i32, k: i32) -> usize {
+    (i + GRID_HALO) as usize + SY * (j + GRID_HALO) as usize + SZ * (k + GRID_HALO) as usize
+}
+
+/// Strides of the halo corner array.
+const SY: usize = HALO_CORNERS;
+const SZ: usize = HALO_CORNERS * HALO_CORNERS;
+/// The `4³` corners from `(-1, -1, -1)` to `(2, 2, 2)` of a cell span this
+/// many entries of the halo array, starting `WINDOW_LOW` before the cell's
+/// low corner.
+const WINDOW: usize = 3 * SZ + 3 * SY + 4;
+const WINDOW_LOW: usize = SZ + SY + 1;
+
+/// `floor(x)` as an integer (exact for |x| < 2^31; plain conversions only).
+#[inline]
+fn floor_i32(x: f32) -> i32 {
+    let c = x as i32;
+    if (c as f32) > x {
+        c - 1
+    } else {
+        c
+    }
+}
+
+#[inline]
+fn lerp(a: f32, b: f32, t: f32) -> f32 {
+    a + (b - a) * t
+}
+
+/// Trilinear interpolation in the halo array `x` at the cell with low
+/// corner index `b`.
+#[inline]
+fn trilinear(x: &[f32], b: usize, [u, v, w]: [f32; 3]) -> f32 {
+    let c: &[f32; SZ + SY + 2] = x[b..b + SZ + SY + 2]
+        .try_into()
+        .expect("window inside the halo");
+    lerp(
+        lerp(lerp(c[0], c[1], u), lerp(c[SY], c[SY + 1], u), v),
+        lerp(
+            lerp(c[SZ], c[SZ + 1], u),
+            lerp(c[SZ + SY], c[SZ + SY + 1], u),
+            v,
+        ),
+        w,
+    )
+}
+
+impl<'a> Field<'a> {
+    fn new(grid: &'a SampleGrid) -> Self {
+        Field {
+            values: grid.values(),
+            origin: grid.origin,
+        }
+    }
+
+    /// Index of the corner at the low end of the cell holding `p` (clamped
+    /// so that the cell's corners and `margin` more on each side stay inside
+    /// the halo) and the position inside that cell.
+    #[inline]
+    fn locate(&self, p: Vec3, margin: i32) -> (usize, [f32; 3]) {
+        let lo = -GRID_HALO + margin;
+        let hi = CHUNK_CELLS + GRID_HALO - 1 - margin;
+        let axis = |x: f32, origin: i32| {
+            let f = floor_i32(x);
+            let c = f - origin;
+            let frac = x - f as f32;
+            let (c, frac) = if c < lo || !frac.is_finite() {
+                (lo, 0.0)
+            } else if c > hi {
+                (hi, 1.0)
+            } else {
+                (c, frac)
+            };
+            ((c + GRID_HALO) as usize, frac)
+        };
+        let (i, u) = axis(p.x, self.origin[0]);
+        let (j, v) = axis(p.y, self.origin[1]);
+        let (k, w) = axis(p.z, self.origin[2]);
+        (i + SY * j + SZ * k, [u, v, w])
+    }
+
+    /// Trilinear interpolation of the corner values at `p`.
+    #[inline]
+    fn value(&self, p: Vec3) -> f32 {
+        let (b, t) = self.locate(p, 0);
+        trilinear(self.values, b, t)
+    }
+
+    /// Central-difference gradients at the 8 corners of the cell with low
+    /// corner index `b` (located with margin 1).
+    fn corner_gradients(&self, b: usize) -> [Vec3; 8] {
+        let x: &[f32; WINDOW] = self.values[b - WINDOW_LOW..b - WINDOW_LOW + WINDOW]
+            .try_into()
+            .expect("window inside the halo");
+        let g = |o: usize| {
+            let o = WINDOW_LOW + o;
+            Vec3::new(
+                (x[o + 1] - x[o - 1]) * 0.5,
+                (x[o + SY] - x[o - SY]) * 0.5,
+                (x[o + SZ] - x[o - SZ]) * 0.5,
+            )
+        };
+        [
+            g(0),
+            g(1),
+            g(SY),
+            g(SY + 1),
+            g(SZ),
+            g(SZ + 1),
+            g(SZ + SY),
+            g(SZ + SY + 1),
+        ]
+    }
+
+    /// Tricubic (Catmull-Rom) interpolation of the corner values in the cell
+    /// with low corner index `b` (located with margin 1) at `t`.
+    fn cubic(&self, b: usize, [u, v, w]: [f32; 3]) -> f32 {
+        let x: &[f32; WINDOW] = self.values[b - WINDOW_LOW..b - WINDOW_LOW + WINDOW]
+            .try_into()
+            .expect("window inside the halo");
+        let weights = |t: f32| {
+            let t2 = t * t;
+            let t3 = t2 * t;
+            [
+                (2.0 * t2 - t3 - t) * 0.5,
+                (3.0 * t3 - 5.0 * t2 + 2.0) * 0.5,
+                (4.0 * t2 - 3.0 * t3 + t) * 0.5,
+                (t3 - t2) * 0.5,
+            ]
+        };
+        let (wx, wy, wz) = (weights(u), weights(v), weights(w));
+        let mut sum = 0.0f32;
+        for (kz, fz) in wz.into_iter().enumerate() {
+            let mut plane = 0.0f32;
+            for (jy, fy) in wy.into_iter().enumerate() {
+                let r = &x[kz * SZ + jy * SY..kz * SZ + jy * SY + 4];
+                plane += fy * (wx[0] * r[0] + wx[1] * r[1] + wx[2] * r[2] + wx[3] * r[3]);
+            }
+            sum += fz * plane;
+        }
+        sum
+    }
+
+    /// Smooth gradient: trilinear interpolation of a cell's corner
+    /// gradients (continuous across cells and chunks).
+    #[inline]
+    fn interpolate(c: &[Vec3; 8], [u, v, w]: [f32; 3]) -> Vec3 {
+        let l = |a: Vec3, b: Vec3, t: f32| a + (b - a) * t;
+        l(
+            l(l(c[0], c[1], u), l(c[2], c[3], u), v),
+            l(l(c[4], c[5], u), l(c[6], c[7], u), v),
+            w,
+        )
+    }
+
+    /// Baked ambient occlusion at `p` with unit normal `n`; `scale` turns
+    /// field values into distances. Each probe at `p + n h` expects the open
+    /// half-space distance `h` and counts the relative shortfall.
+    fn ambient_occlusion(&self, p: Vec3, n: Vec3, scale: f32) -> u8 {
+        let inv_scale = 1.0 / scale;
+        let mut occlusion = 0.0f32;
+        for (h, w) in AO_PROBES {
+            let d = self.value(p + n * h) * inv_scale;
+            occlusion += w * ((h - d) / h).clamp(0.0, 1.0);
+        }
+        let ao = (1.0 - AO_STRENGTH * occlusion).clamp(0.0, 1.0);
+        (ao * 255.0 + 0.5) as u8
+    }
 }
 
 /// Crossing point on the edge between corners `a` and `b` (local cell coords).
@@ -476,7 +811,7 @@ fn trilinear_gradient(c: &[f32; 8], p: [f32; 3]) -> [f32; 3] {
 fn normalize_or_up(g: [f32; 3]) -> [f32; 3] {
     let len2 = g[0] * g[0] + g[1] * g[1] + g[2] * g[2];
     if len2 > 1e-24 && len2.is_finite() {
-        let len = ls_math::det::sqrt(len2);
+        let len = len2.sqrt();
         [g[0] / len, g[1] / len, g[2] / len]
     } else {
         [0.0, 1.0, 0.0]
@@ -556,14 +891,21 @@ mod tests {
         assert!(surface_nets(&g).is_empty());
     }
 
-    /// Two neighbouring chunks share their border vertices exactly.
+    /// Two neighbouring chunks share their border vertices exactly, with
+    /// the same normals and occlusion.
     #[test]
     fn seam_free_across_chunks() {
         let center = Vec3::new(32.2, 20.4, 16.7);
-        let f = |p: Vec3| p.distance(center) - 11.3;
+        // A bumpy sphere (bound field, slope 0.5) so snapping, normals and
+        // occlusion all have work to do at the seam.
+        let f = |p: Vec3| {
+            let q = p - center;
+            (q.length() - 10.0 + 0.8 * (q.x * 0.7).sin() * (q.y * 0.5).cos()) * 0.5
+        };
         let exact_dc = |g: &SampleGrid| dual_contouring_with_sdf(g, &f);
-        let meshers: [&dyn Fn(&SampleGrid) -> Mesh; 3] =
-            [&surface_nets, &dual_contouring, &exact_dc];
+        let exact_sn = |g: &SampleGrid| surface_nets_with_sdf(g, &f);
+        let meshers: [&dyn Fn(&SampleGrid) -> Mesh; 4] =
+            [&surface_nets, &exact_sn, &dual_contouring, &exact_dc];
         for mesher in meshers {
             let a = mesher(&SampleGrid::from_fn([0, 0, 0], f));
             let b = mesher(&SampleGrid::from_fn([32, 0, 0], f));
@@ -585,11 +927,29 @@ mod tests {
             // Vertices B uses from its cell -1 are A's cell-31 vertices, bit for bit.
             let all_a: std::collections::BTreeSet<[u32; 3]> =
                 a.positions.iter().map(|p| p.map(f32::to_bits)).collect();
-            let shared: Vec<_> = bb.iter().filter(|p| f32::from_bits(p[0]) < 32.0).collect();
+            let shared: Vec<_> = bb.iter().filter(|p| f32::from_bits(p[0]) < 31.5).collect();
             assert!(!shared.is_empty());
             for p in shared {
                 assert!(all_a.contains(p), "vertex {p:?} missing in neighbour");
             }
+            // Shared vertices carry bit-identical normals and occlusion.
+            let attrs = |m: &Mesh, i: usize| {
+                (
+                    m.normals[i].map(f32::to_bits),
+                    m.ao.get(i).copied().unwrap_or(0),
+                )
+            };
+            let in_a: std::collections::BTreeMap<[u32; 3], _> = (0..a.vertex_count())
+                .map(|i| (a.positions[i].map(f32::to_bits), attrs(&a, i)))
+                .collect();
+            let mut matched = 0;
+            for i in 0..b.vertex_count() {
+                if let Some(at) = in_a.get(&b.positions[i].map(f32::to_bits)) {
+                    assert_eq!(*at, attrs(&b, i), "vertex {:?}", b.positions[i]);
+                    matched += 1;
+                }
+            }
+            assert!(matched > 20, "{matched} shared vertices");
             // Union of both meshes is closed: every edge used exactly twice.
             let mut edges = std::collections::BTreeMap::new();
             for m in [&a, &b] {
@@ -643,5 +1003,207 @@ mod tests {
         let a = [[2.0, 0.0, 0.0], [0.0, 4.0, 0.0], [0.0, 0.0, 8.0]];
         assert_eq!(solve3(&a, &[2.0, 4.0, 8.0]), Some([1.0, 1.0, 1.0]));
         assert_eq!(solve3(&[[0.0; 3]; 3], &[1.0, 1.0, 1.0]), None);
+    }
+
+    /// Plain surface-nets vertices (mass points of the edge crossings) of a
+    /// grid, for comparison with the refined ones.
+    fn mass_points(grid: &SampleGrid) -> Vec<Vec3> {
+        let mut out = Vec::new();
+        for k in -1..CHUNK_CELLS {
+            for j in -1..CHUNK_CELLS {
+                for i in -1..CHUNK_CELLS {
+                    let c: [f32; 8] = std::array::from_fn(|ci| {
+                        let o = CORNERS[ci];
+                        grid.value(i + o[0], j + o[1], k + o[2])
+                    });
+                    if c.iter().all(|v| *v < 0.0) || c.iter().all(|v| *v >= 0.0) {
+                        continue;
+                    }
+                    let l = mass_point(&c);
+                    out.push(Vec3::new(i as f32 + l[0], j as f32 + l[1], k as f32 + l[2]));
+                }
+            }
+        }
+        out
+    }
+
+    /// A bumpy rock blob whose field is a bound with slope 0.5 (like the
+    /// cavern fields).
+    fn bumpy(p: Vec3) -> f32 {
+        let q = p - Vec3::new(16.2, 15.9, 16.4);
+        (q.length() - 10.0 + 1.2 * (q.x * 0.45).sin() * (q.z * 0.35).cos()) * 0.5
+    }
+
+    fn bumpy_gradient(p: Vec3) -> Vec3 {
+        let e = 1e-3;
+        Vec3::new(
+            bumpy(p + Vec3::X * e) - bumpy(p - Vec3::X * e),
+            bumpy(p + Vec3::Y * e) - bumpy(p - Vec3::Y * e),
+            bumpy(p + Vec3::Z * e) - bumpy(p - Vec3::Z * e),
+        ) * (0.5 / e)
+    }
+
+    /// First-order distance from `p` to the bumpy surface.
+    fn surface_error(p: Vec3) -> f32 {
+        bumpy(p).abs() / bumpy_gradient(p).length()
+    }
+
+    fn mean(v: impl Iterator<Item = f32>) -> f32 {
+        let (s, n) = v.fold((0.0, 0), |(s, n), x| (s + x, n + 1));
+        s / n as f32
+    }
+
+    /// The snap puts vertices onto the surface: from the grid alone (cubic
+    /// interpolation) and with the exact field at creases.
+    #[test]
+    fn snapped_vertices_lie_on_the_surface() {
+        let grid = SampleGrid::from_fn([0, 0, 0], bumpy);
+        let plain = mean(mass_points(&grid).into_iter().map(surface_error));
+        let grid_only = surface_nets(&grid);
+        let exact = surface_nets_with_sdf(&grid, &bumpy);
+        let err = |m: &Mesh| {
+            mean(
+                m.positions
+                    .iter()
+                    .map(|p| surface_error(Vec3::from_array(*p))),
+            )
+        };
+        let (e_grid, e_exact) = (err(&grid_only), err(&exact));
+        println!("mean surface error: plain {plain:.4} u, grid snap {e_grid:.4} u, exact snap {e_exact:.4} u");
+        assert!(plain > 0.02, "plain surface nets error {plain}");
+        assert!(e_grid < plain * 0.5, "grid snap {e_grid} vs plain {plain}");
+        assert!(
+            e_exact < plain * 0.25,
+            "exact snap {e_exact} vs plain {plain}"
+        );
+        assert!(e_exact < 0.01, "exact snap {e_exact}");
+        // A smooth sphere with an exact field: on the surface to 0.01 u.
+        let center = Vec3::new(16.3, 15.7, 16.1);
+        let m = surface_nets(&sphere_grid([0, 0, 0], center, 9.4));
+        for p in &m.positions {
+            let d = Vec3::from_array(*p).distance(center) - 9.4;
+            assert!(d.abs() < 0.01, "{d}");
+        }
+        // Never more than SNAP_MAX_STEP from the mass point.
+        let mp = mass_points(&grid);
+        assert_eq!(mp.len(), exact.vertex_count());
+        for (a, b) in mp.iter().zip(&exact.positions) {
+            assert!(a.distance(Vec3::from_array(*b)) <= SNAP_MAX_STEP + 1e-4);
+        }
+    }
+
+    /// Normals follow the field's gradient more closely than the old
+    /// per-cell gradients, and turn smoothly between neighbouring vertices.
+    #[test]
+    fn normals_are_smooth_and_follow_the_field() {
+        let grid = SampleGrid::from_fn([0, 0, 0], bumpy);
+        let m = surface_nets_with_sdf(&grid, &bumpy);
+        let angle = |a: Vec3, b: Vec3| a.dot(b).clamp(-1.0, 1.0).acos().to_degrees();
+        // The old normal of each vertex (same order): gradient of the cell's
+        // own trilinear interpolant at the mass point.
+        let old: Vec<Vec3> = mass_points(&grid)
+            .into_iter()
+            .map(|p| {
+                let cell = [p.x.floor(), p.y.floor(), p.z.floor()];
+                let c: [f32; 8] = std::array::from_fn(|ci| {
+                    let o = CORNERS[ci];
+                    let i = |a: usize| cell[a] as i32 + o[a];
+                    grid.value(i(0), i(1), i(2))
+                });
+                let l = [p.x - cell[0], p.y - cell[1], p.z - cell[2]];
+                Vec3::from_array(normalize_or_up(trilinear_gradient(&c, l)))
+            })
+            .collect();
+        assert_eq!(old.len(), m.vertex_count());
+        let field = |i: usize| bumpy_gradient(Vec3::from_array(m.positions[i])).normalize();
+        let new_n = |i: usize| Vec3::from_array(m.normals[i]);
+        let new_err = mean((0..m.vertex_count()).map(|i| angle(new_n(i), field(i))));
+        let old_err = mean((0..m.vertex_count()).map(|i| angle(old[i], field(i))));
+        assert!(new_err < 1.0, "normal error {new_err} deg");
+        assert!(
+            new_err < old_err * 0.8,
+            "new {new_err} deg vs old {old_err} deg"
+        );
+        // Facets: along a mesh edge, how much more the normals turn than the
+        // field does. The continuous normals turn about as much as the
+        // field; the per-cell ones jump between cells.
+        let excess = |n: &dyn Fn(usize) -> Vec3| {
+            let mut v = Vec::new();
+            for t in m.indices.chunks_exact(3) {
+                for e in 0..3 {
+                    let (a, b) = (t[e] as usize, t[(e + 1) % 3] as usize);
+                    v.push((angle(n(a), n(b)) - angle(field(a), field(b))).max(0.0));
+                }
+            }
+            v.sort_by(f32::total_cmp);
+            (mean(v.iter().copied()), v[v.len() * 99 / 100])
+        };
+        let (new_mean, new_p99) = excess(&new_n);
+        let (old_mean, old_p99) = excess(&|i| old[i]);
+        println!(
+            "normal error {new_err:.2} deg (per-cell normals {old_err:.2}); excess turn per edge mean/p99 {new_mean:.2}/{new_p99:.2} deg (per-cell {old_mean:.2}/{old_p99:.2})"
+        );
+        assert!(
+            new_mean < old_mean * 0.6 && new_p99 < old_p99 * 0.6,
+            "excess turn new {new_mean}/{new_p99} deg vs old {old_mean}/{old_p99} deg"
+        );
+    }
+
+    fn ao_at(m: &Mesh, near: impl Fn(Vec3) -> bool) -> Vec<u8> {
+        m.positions
+            .iter()
+            .zip(&m.ao)
+            .filter(|(p, _)| near(Vec3::from_array(**p)))
+            .map(|(_, a)| *a)
+            .collect()
+    }
+
+    /// Flat and convex rock stays fully lit; an inside corner darkens
+    /// towards the crease; a narrow slot is dark.
+    #[test]
+    fn ambient_occlusion_darkens_creases_only() {
+        // Floor (rock below y = 10.3), seen from above.
+        let flat = surface_nets(&SampleGrid::from_fn([0, 0, 0], |p| p.y - 10.3));
+        assert_eq!(flat.ao.len(), flat.vertex_count());
+        assert!(flat.ao.iter().all(|&a| a == 255));
+        // The same with a bound field (slope 0.3): scaled back to distances.
+        let flat = surface_nets(&SampleGrid::from_fn([0, 0, 0], |p| (p.y - 10.3) * 0.3));
+        assert!(flat.ao.iter().all(|&a| a >= 254));
+        // Inside corner: floor plus a wall (rock beyond x = 20.4).
+        let corner = surface_nets(&SampleGrid::from_fn([0, 0, 0], |p| {
+            (p.y - 10.3).min(20.4 - p.x)
+        }));
+        let floor_at = |x0: f32, x1: f32| {
+            let v = ao_at(&corner, |p| {
+                (p.y - 10.3).abs() < 0.1 && p.x > x0 && p.x < x1
+            });
+            assert!(!v.is_empty());
+            mean(v.iter().map(|&a| a as f32))
+        };
+        let (crease, near, far) = (
+            floor_at(19.5, 20.0),
+            floor_at(18.5, 19.5),
+            floor_at(10.0, 16.0),
+        );
+        assert!(crease < near && near < far, "{crease} {near} {far}");
+
+        assert!(crease < 215.0, "crease ao {crease}");
+        assert!(far >= 254.0, "open floor ao {far}");
+        // Outside corner (a block): fully lit.
+        let block = surface_nets(&SampleGrid::from_fn([0, 0, 0], |p| {
+            (10.3 - p.y).max(p.x - 20.4)
+        }));
+        assert!(block.ao.iter().all(|&a| a >= 254));
+        // A slot 1.6 u high between a floor and a ceiling.
+        let slot = surface_nets(&SampleGrid::from_fn([0, 0, 0], |p| {
+            (p.y - 10.3).min(11.9 - p.y)
+        }));
+        assert!(slot.ao.iter().all(|&a| a < 160), "{:?}", &slot.ao[..8]);
+        // Dual contouring carries none.
+        assert!(
+            dual_contouring(&SampleGrid::from_fn([0, 0, 0], |p| p.y - 10.3))
+                .ao
+                .is_empty()
+        );
     }
 }

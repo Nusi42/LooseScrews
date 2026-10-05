@@ -51,6 +51,8 @@ export interface ChunkMeshHandle {
   materials?(): Uint8Array;
   /** Paint effect colour per vertex (0 plain, 1 red, 2 blue, 3 yellow), or empty. */
   paintColors?(): Uint8Array;
+  /** Baked ambient occlusion per vertex (255 = open, 0 = fully occluded), or empty. */
+  ao?(): Uint8Array;
   aabb(): Float32Array;
   free(): void;
 }

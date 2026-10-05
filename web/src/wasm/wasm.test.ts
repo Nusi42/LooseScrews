@@ -186,6 +186,9 @@ test("WASM mechanics API: ship choice, cues, gadget, charge, paint colour, mesh 
     assert.ok([...materials].every((m) => m <= 2));
     const colors = mesh.paintColors?.() ?? new Uint8Array(0);
     assert.ok(colors.length === 0 || colors.length === n);
+    const ao = mesh.ao?.() ?? new Uint8Array(0);
+    assert.equal(ao.length, n, "baked ambient occlusion per vertex");
+    assert.ok(ao.some((a) => a < 255) && ao.some((a) => a > 200), "occlusion varies");
     mesh.free();
   } finally {
     game.free();

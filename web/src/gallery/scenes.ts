@@ -21,7 +21,7 @@ export interface GalleryWorld {
 export type PoseKind = "closeup" | "tunnel" | "vista" | "border";
 
 /** What is placed in front of the camera besides terrain. */
-export type SceneContent = "none" | "lineup" | "fight";
+export type SceneContent = "none" | "lineup" | "fight" | "lights";
 
 export interface GalleryScene {
   id: string;
@@ -35,6 +35,8 @@ export interface GalleryScene {
   decor?: SceneDecor;
   /** Shader and effect time (s) the frame is rendered at. */
   time: number;
+  /** "lights" content: number of glowing shots (each a dynamic light). */
+  lights?: number;
 }
 
 const CAVES: GalleryWorld = { seed: 7, enclosure: 50, density: 50 };
@@ -83,6 +85,26 @@ export const SCENES: readonly GalleryScene[] = [
   },
   { id: "ship-lineup", title: "The four hulls", covers: "ships", world: CAVES, pose: "tunnel", content: "lineup", time: 1.0 },
   { id: "fight", title: "Fight frame with an explosion", covers: "effects", world: CAVES, pose: "tunnel", content: "fight", time: 2.15 },
+  {
+    id: "light-volley",
+    title: "Dynamic lights: a volley down a mine shaft",
+    covers: "effects, lighting",
+    world: { seed: 7, enclosure: 100, density: 30 },
+    pose: "tunnel",
+    content: "lights",
+    time: 1.0,
+    lights: 12,
+  },
+  {
+    id: "light-storm",
+    title: "64 dynamic lights (VQ6 budget)",
+    covers: "effects, lighting",
+    world: CAVES,
+    pose: "tunnel",
+    content: "lights",
+    time: 1.0,
+    lights: 61,
+  },
 ];
 
 export function sceneById(id: string): GalleryScene | undefined {

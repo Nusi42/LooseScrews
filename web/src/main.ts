@@ -70,6 +70,7 @@ import { runGallery, wantsGallery } from "./gallery/gallery.ts";
 import { addRuleEditorLink, showRuleEditor, wantsRuleEditor } from "./rules/editor.ts";
 import { showShowcase, wantsShowcase } from "./renderer/models/showcase.ts";
 import { WreckTypes } from "./game/wrecks.ts";
+import { LightFx, sceneLights } from "./game/lightFx.ts";
 import { parseInvite } from "./rules/model.ts";
 import type { WasmApi } from "./wasm/api.ts";
 
@@ -258,6 +259,8 @@ function runGame(
     const shipPanel = new ShipPanel(ui);
     let effects = new EffectsState();
     let wrecks = new WreckTypes();
+    // Dynamic lights (VQ6): timed pulses (muzzle, impacts, explosions); effect systems emit into it too.
+    const lightFx = new LightFx();
     let shipBayOpen = false;
     let shipError = "";
     let dead = false;
@@ -384,6 +387,7 @@ function runGame(
         initialLoad = true;
         effects = new EffectsState();
         wrecks = new WreckTypes();
+        lightFx.clear();
         spectator = null;
         lobbyClock.reset();
         shipBayOpen = false;
@@ -449,6 +453,25 @@ function runGame(
           teams: r.mode.teams,
         }),
       );
+      const gadgetOf = (id: number): string => {
+        for (const p of players) if (p.id === id) return gadgetKey(session.gadgetIds, p.gadget);
+        return "";
+      };
+      lightFx.observe(r.projectiles, session.visuals, time);
+      lightFx.observeShips(r.ships, time);
+      const lights = sceneLights({
+        ships: r.ships,
+        shots: r.projectiles,
+        entities: r.entities,
+        visuals: session.visuals,
+        flashes: fx.flashes,
+        beams: fx.beams,
+        objectives: r.mode.objectives,
+        gadgetOf,
+        nowTick: game.nowTick?.() ?? 0,
+        time,
+      });
+      renderer.setLights(lightFx.frame(time, lights));
       // Inside a dust cloud the fog closes in (visibility is cut).
       const fog = dustFog(DEFAULT_SETTINGS, dustDensityAt(view.position, r.entities, session.visuals));
       renderer.settings.fogDensity = fog.fogDensity;

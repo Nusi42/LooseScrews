@@ -22,12 +22,14 @@ import type { Vec3 } from "../math/vec3.ts";
 import { boundsCenter, DEFAULT_CAMERA } from "../game/camera.ts";
 import { ChunkLoader, LOADING_BUDGET } from "../game/chunks.ts";
 import { CUE, EffectsState, NO_SHIP, type Cue, type EffectsContext, type Flash } from "../game/mechanics.ts";
+import { LightFx, sceneLights } from "../game/lightFx.ts";
 import { buildScene } from "../game/scene.ts";
+import type { PointLight } from "../renderer/lights.ts";
 import { parsePose, parseVisuals, type ProjectileState, type ShipState, type VisualDef } from "../game/views.ts";
 import type { GpuTimings } from "../renderer/gpuTimer.ts";
 import { GRADE_PRESETS } from "../renderer/post.ts";
 import { hashSeed } from "../renderer/rockTextures.ts";
-import { Renderer, type CameraView, type SceneInstances } from "../renderer/renderer.ts";
+import { Renderer, type CameraView, type Rgb, type SceneInstances } from "../renderer/renderer.ts";
 import { CONTROLS_LEN, type GameHandle } from "../wasm/api.ts";
 import { loadWasm } from "../wasm/load.ts";
 import { pickCloseup, pickLongest, pickVista, probeAround, raycast, rayMesh, sphereDirections, type Probe, type RayMesh } from "./raycast.ts";
@@ -52,6 +54,8 @@ export interface GalleryStatus {
   triangles: number;
   instances: number;
   canTime: boolean;
+  /** Dynamic lights drawn and offered (VQ6). */
+  lights: { lights: number; candidates: number } | null;
   gpu: GpuTimings | null;
   gpuError: string | null;
 }
@@ -102,12 +106,16 @@ function shapeId(visuals: readonly VisualDef[], shape: string): number {
 /** Hitbox radius per ship type (Skitter, Tinker, Hauler, Tug), data/ships. */
 export const LINEUP_RADII: readonly number[] = [0.4, 0.5, 0.65, 0.55];
 
-/** Synthetic ships, shots and effects in front of `cam` for the scene's content. */
+/**
+ * Synthetic ships, shots and effects in front of `cam` for the scene's
+ * content; their dynamic lights (VQ6, game/lightFx.ts) go into `lights`.
+ */
 export function sceneContent(
   scene: GalleryScene,
   cam: { position: Vec3; orientation: Quat },
   visuals: readonly VisualDef[],
   impact: Vec3 | null = null,
+  lights: PointLight[] = [],
 ): SceneInstances {
   const f = q.forward(cam.orientation);
   const r = q.right(cam.orientation);
@@ -119,6 +127,8 @@ export function sceneContent(
   const time = scene.time;
   let gadgets = new Set<number>();
   let flashes: readonly Flash[] = [];
+  const lightFx = new LightFx();
+  lightFx.random = () => 0.5;
   if (scene.content === "lineup") {
     LINEUP_RADII.forEach((radius, i) => {
       // Three-quarter view: noses toward the camera and to the right.
@@ -177,7 +187,49 @@ export function sceneContent(
     effects.apply([cue(CUE.shockwave, 0, blast, 5)], time - 0.15, ctx);
     effects.apply([cue(CUE.muzzleFlash, 1, v3.addScaled(a, toCam, 0.7), 0)], time - 0.06, ctx);
     flashes = effects.frame(time, ctx).flashes;
+    lightFx.emit("explosion", blast, time - 0.15);
+    lightFx.emit("muzzle", v3.addScaled(a, toCam, 0.7), time - 0.03);
+  } else if (scene.content === "lights") {
+    // A volley down the tunnel: bolts, orbs and pellets in every colour,
+    // two rockets, one bursting against the rock, and two ships' engines.
+    const shapes = ["bolt", "orb", "pellet", "spike", "arc", "blob"];
+    const colors: Rgb[] = [
+      [0.3, 1, 0.4], [1, 0.3, 0.2], [0.3, 0.6, 1], [1, 0.8, 0.2], [0.8, 0.3, 1], [0.2, 1, 1],
+    ];
+    const ids = shapes.map((shape) => shapeId(visuals, shape)).filter((i) => i >= 0);
+    let n = 0;
+    const count = scene.lights ?? 32;
+    for (let k = 0; ids.length > 0 && n < count; k++) {
+      // A loose spiral down the tunnel, 4-60 u ahead.
+      const d = 4 + (k * 56) / count;
+      const ang = k * 2.4;
+      const rad = 1.2 + 0.25 * (k % 5);
+      const pos = at(d, Math.cos(ang) * rad * 1.6, Math.sin(ang) * rad);
+      const vis = ids[k % ids.length]!;
+      shots.push({ kind: 0, owner: 1 + (k % 3), position: pos, velocity: v3.scale(f, 70), visual: vis, state: 0 });
+      n++;
+    }
+    // Override the shot colours so the cave lights in many hues (the visual
+    // table only has the weapons' own colours).
+    const tinted = visuals.map((v) => ({ ...v }));
+    shots.forEach((s, i) => {
+      const c = colors[i % colors.length]!;
+      tinted.push({ ...visuals[s.visual]!, color: c });
+      s.visual = tinted.length - 1;
+    });
+    visuals = tinted;
+    ships.push({
+      id: 7, team: 0, alive: true, boosting: true, position: at(6, -1.3, -0.6),
+      orientation: q.lookRotation(f, u), shipType: 0, radius: 0.4, gadgetActive: false,
+    });
+    ships.push({
+      id: 8, team: 1, alive: true, boosting: false, position: at(9, 1.5, 0.5),
+      orientation: q.lookRotation(v3.add(f, v3.scale(r, 0.4)), u), shipType: 3, radius: 0.55, gadgetActive: false,
+    });
+    lightFx.emit("explosion", impact ?? at(18, 3, -1), time - 0.12);
   }
+  sceneLights({ ships, shots, visuals, flashes, time, gadgetOf: (id) => (gadgets.has(id) ? "shield" : "") }, lights);
+  lightFx.frame(time, lights);
   const teamOf = (id: number): number | undefined => (id === 0 ? 0 : ships.find((s) => s.id === id)?.team);
   return buildScene(ships, shots, [], visuals, teamOf, time, {
     gadgetOf: (id) => (gadgets.has(id) ? "shield" : ""),
@@ -215,6 +267,7 @@ export async function runGallery(canvas: HTMLCanvasElement, ui: HTMLElement, loc
     triangles: 0,
     instances: 0,
     canTime: false,
+    lights: null,
     gpu: null,
     gpuError: null,
   };
@@ -279,7 +332,10 @@ export async function runGallery(canvas: HTMLCanvasElement, ui: HTMLElement, loc
     const impactDir = v3.normalize(v3.add(f, v3.add(v3.scale(rt, 0.35), v3.scale(q.up(pose.orientation), -0.08))));
     const hit = raycast(rayMeshes.values(), pose.position, impactDir, 40);
     const impact = hit ? v3.addScaled(pose.position, impactDir, Math.max(4, hit.t - 0.6)) : null;
-    renderer.setScene(sceneContent(scene, pose, visuals, impact));
+    const lights: PointLight[] = [];
+    renderer.setScene(sceneContent(scene, pose, visuals, impact, lights));
+    // `?lights=0`: the same frame without dynamic lights (cost comparison).
+    renderer.setLights(new URLSearchParams(loc.search).get("lights") === "0" ? [] : lights);
 
     const frame = (): void => {
       const stats = renderer.render(view);
@@ -288,6 +344,7 @@ export async function runGallery(canvas: HTMLCanvasElement, ui: HTMLElement, loc
       status.triangles = stats.triangles;
       status.instances = stats.instances;
       status.gpu = renderer.gpuTimings();
+      status.lights = renderer.lightStats;
       status.gpuError = renderer.lastError;
       if (status.frames === WARMUP_FRAMES) status.phase = "ready";
       if (!renderer.isLost) requestAnimationFrame(frame);

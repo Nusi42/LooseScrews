@@ -16,18 +16,20 @@ export interface RenderQuality {
   bloomMips: number;
   /** Terrain detail (VQ3b): macro, grain and vein samples on top of the rock layer (9 vs 3 texture samples). */
   terrainDetail: boolean;
+  /** Dynamic point lights per frame (VQ6, renderer/lights.ts; at most MAX_LIGHTS = 128). */
+  maxLights: number;
 }
 
 /**
  * "medium" keeps MSAA 4x: WebGPU has no 2x (the plan's medium MSAA 2x), so it
- * saves on bloom (and, from later packages, particles, lights and shafts).
+ * saves on bloom and lights (and, from later packages, particles and shafts).
  * "low" renders without MSAA and bloom but still tonemaps (the HDR target
  * is core WebGPU, so every adapter runs the same shaders).
  */
 export const QUALITY_PRESETS: Readonly<Record<QualityLevel, RenderQuality>> = {
-  high: { level: "high", msaa: 4, bloomMips: 6, terrainDetail: true },
-  medium: { level: "medium", msaa: 4, bloomMips: 4, terrainDetail: true },
-  low: { level: "low", msaa: 1, bloomMips: 0, terrainDetail: false },
+  high: { level: "high", msaa: 4, bloomMips: 6, terrainDetail: true, maxLights: 128 },
+  medium: { level: "medium", msaa: 4, bloomMips: 4, terrainDetail: true, maxLights: 32 },
+  low: { level: "low", msaa: 1, bloomMips: 0, terrainDetail: false, maxLights: 16 },
 };
 
 /** GPU frame budgets (ms) of "high" and "medium" (plan §3). */

@@ -83,6 +83,34 @@ export function emptyInput(): InputState {
   };
 }
 
+/** What `controlOwnsKey` reads of a key event's target (an Element in the browser). */
+export interface KeyTarget {
+  tagName?: string;
+  type?: string;
+  isContentEditable?: boolean;
+}
+
+/** Input types one types text into (they take every key). */
+const TEXT_INPUTS = new Set(["", "text", "search", "url", "email", "password", "number", "tel"]);
+/** Keys a focused button, link, checkbox or slider acts on (activate, move focus). */
+const CONTROL_KEYS = new Set(["Enter", "NumpadEnter", "Tab", "Space"]);
+
+/**
+ * Whether a focused page control gets the key `code` instead of the game's
+ * overlay keys while the pointer is free (lobby card, party panel, toasts):
+ * Enter activates the focused button rather than toggling Ready, Tab moves
+ * the focus rather than holding the scoreboard, and text fields take every
+ * key (T and O type letters). F3 always stays the debug overlay.
+ */
+export function controlOwnsKey(target: KeyTarget | null | undefined, code: string): boolean {
+  if (!target || typeof target.tagName !== "string" || code === "F3") return false;
+  const tag = target.tagName.toUpperCase();
+  if (target.isContentEditable === true || tag === "TEXTAREA" || tag === "SELECT") return true;
+  if (tag === "INPUT" && TEXT_INPUTS.has((target.type ?? "").toLowerCase())) return true;
+  if (tag === "INPUT" || tag === "BUTTON" || tag === "A" || tag === "SUMMARY") return CONTROL_KEYS.has(code);
+  return false;
+}
+
 type KeyboardLock = { lock?: (codes?: string[]) => Promise<void>; unlock?: () => void };
 
 export class InputController {
@@ -183,6 +211,11 @@ export class InputController {
 
   private onKey(e: KeyboardEvent, down: boolean): void {
     const action = KEY_BINDINGS[e.code];
+    if (!this.locked && controlOwnsKey(e.target as KeyTarget | null, e.code)) {
+      // The focused control handles it (browser default); nothing stays held.
+      if (!down && action) this.held.delete(action);
+      return;
+    }
     if (action && UI_ACTIONS.has(action)) {
       // Overlay keys work without pointer lock too; keep Tab from moving
       // focus and F3 from opening the browser's find bar.

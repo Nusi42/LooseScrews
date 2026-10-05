@@ -440,6 +440,9 @@ function toast(text: string, ms: number, actions: HTMLElement[] = []): HTMLEleme
   let box = document.querySelector<HTMLElement>(".ls-toasts");
   if (!box) {
     box = el("div", "ls-toasts");
+    // Screen readers announce challenges and errors as they arrive.
+    box.setAttribute("role", "status");
+    box.setAttribute("aria-live", "polite");
     document.body.appendChild(box);
   }
   const t = el("div", "ls-toast");
@@ -536,7 +539,10 @@ function mountSocial(o: MountOptions): void {
   const btn = el("button", "ls-social-btn", "Party & duels");
   btn.type = "button";
   const panel = el("div", "ls-social-panel");
+  panel.id = "ls-social-panel";
   panel.style.display = "none";
+  btn.setAttribute("aria-controls", panel.id);
+  btn.setAttribute("aria-expanded", "false");
   document.body.append(btn, panel);
   // The last party invite (or error), kept across re-renders: the roster
   // fetch re-renders the panel and used to wipe a link created meanwhile.
@@ -551,6 +557,7 @@ function mountSocial(o: MountOptions): void {
       const link = invite.link;
       out.replaceChildren(el("div", "", `Party ${invite.party}`));
       const input = el("input");
+      input.setAttribute("aria-label", "Party invite link");
       input.value = link;
       input.readOnly = true;
       out.append(input, button("Copy link", () => copy(link)));
@@ -592,6 +599,7 @@ function mountSocial(o: MountOptions): void {
   btn.addEventListener("click", () => {
     const open = panel.style.display === "none";
     panel.style.display = open ? "block" : "none";
+    btn.setAttribute("aria-expanded", String(open));
     if (open) {
       render();
       o.server

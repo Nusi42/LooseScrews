@@ -52,10 +52,31 @@ export function readShipType(v: unknown): number {
   return typeof v === "number" && Number.isInteger(v) && v >= 0 && v < START_SHIPS.length ? v : DEFAULT_SHIP;
 }
 
+/**
+ * The stored start preferences from their JSON (null, unparsable or not an
+ * object: none). Fields of the wrong type are dropped, so a damaged entry
+ * (another build, a hand edit, `null`) never breaks the start screen.
+ */
+export function readStored(raw: string | null): Stored {
+  let v: unknown;
+  try {
+    v = raw ? JSON.parse(raw) : null;
+  } catch {
+    return {};
+  }
+  if (typeof v !== "object" || v === null || Array.isArray(v)) return {};
+  const o = v as Record<string, unknown>;
+  const out: Stored = {};
+  if (typeof o["shareCode"] === "string") out.shareCode = o["shareCode"];
+  if (typeof o["horizonAssist"] === "boolean") out.horizonAssist = o["horizonAssist"];
+  if (typeof o["name"] === "string") out.name = o["name"];
+  if (typeof o["shipType"] === "number") out.shipType = o["shipType"];
+  return out;
+}
+
 function loadStored(): Stored {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    return raw ? (JSON.parse(raw) as Stored) : {};
+    return readStored(localStorage.getItem(STORAGE_KEY));
   } catch {
     return {};
   }

@@ -72,3 +72,35 @@ export async function initGpu(canvas: HTMLCanvasElement): Promise<GpuContext> {
   context.configure({ device, format, alphaMode: "opaque" });
   return { device, context, format };
 }
+
+/** What `watchDevice` reports about a device. */
+export interface DeviceWatch {
+  /** True once the device is lost. */
+  lost: boolean;
+  /** Stops listening for uncaptured errors (the device may outlive the watcher). */
+  stop(): void;
+}
+
+/**
+ * Listens for a device's uncaptured errors (`onError` gets the message) and
+ * its loss. A renderer on another renderer's device (the FI ship bay) calls
+ * `stop` when it is destroyed: the shared device would otherwise keep the
+ * listener, and through it the destroyed renderer, for the page's lifetime
+ * (and log each error once per renderer ever created on it). The loss flag
+ * lives in the returned object, not in the caller, for the same reason.
+ */
+export function watchDevice(device: Pick<GPUDevice, "addEventListener" | "lost">, onError: (message: string) => void): DeviceWatch {
+  const abort = new AbortController();
+  const watch: DeviceWatch = { lost: false, stop: () => abort.abort() };
+  device.addEventListener(
+    "uncapturederror",
+    (event) => onError((event as GPUUncapturedErrorEvent).error.message),
+    { signal: abort.signal },
+  );
+  device.lost
+    .then(() => {
+      watch.lost = true;
+    })
+    .catch(() => {});
+  return watch;
+}

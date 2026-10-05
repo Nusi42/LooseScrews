@@ -108,3 +108,12 @@ test("view settings round-trip through storage", () => {
   assert.deepEqual(JSON.parse(store.data[VIEW_STORAGE_KEY] ?? ""), { fov: 87, hullFrame: false, fitRing: false });
   assert.deepEqual(loadViewSettings(store), { fov: 87, hullFrame: false, fitRing: false });
 });
+
+test("view settings chosen without localStorage still reach the game on this page", () => {
+  // Node has no localStorage, like a browser with site data blocked: the
+  // start screen saves, the game's ScaleCues loads with the default store.
+  assert.equal(typeof (globalThis as { localStorage?: unknown }).localStorage, "undefined");
+  const chosen = { fov: DEFAULT_VIEW.fov + 7, hullFrame: !DEFAULT_VIEW.hullFrame, fitRing: !DEFAULT_VIEW.fitRing };
+  saveViewSettings(chosen);
+  assert.deepEqual(loadViewSettings(), readViewSettings(chosen));
+});

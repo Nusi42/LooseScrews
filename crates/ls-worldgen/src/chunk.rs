@@ -720,6 +720,33 @@ impl ChunkStore {
         mesh
     }
 
+    /// [`ChunkStore::mesh_surface_nets`] of a caller-modified sample grid of
+    /// chunk `c` (from [`ChunkStore::sample_grid`]) whose field is
+    /// `min(terrain, extra)`: the snap reads `min(exact field, extra(p))`,
+    /// and materials come from the store. Where `extra` stays above the
+    /// terrain the vertices are bit-identical to the plain mesh (the game's
+    /// shell layer, The Squeeze).
+    pub fn mesh_surface_nets_min(
+        &self,
+        c: ChunkCoord,
+        grid: &SampleGrid,
+        extra: &dyn Fn(Vec3) -> f32,
+    ) -> Mesh {
+        if !self.contains_chunk(c) || grid.is_uniform_sign() {
+            return Mesh::default();
+        }
+        let b = c.aabb();
+        let sampler = self.gen.sparse_region_sampler(Aabb::new(
+            b.min - Vec3::splat(2.0),
+            b.max + Vec3::splat(2.0),
+        ));
+        let mut mesh = surface_nets_with_sdf(grid, &|p| {
+            self.eval_with(p, |q| sampler.terrain(q)).min(extra(p))
+        });
+        self.mesh_materials(c, &mut mesh);
+        mesh
+    }
+
     /// Dual-contouring mesh of a chunk (empty for chunks outside the level),
     /// with exact Hermite data from [`ChunkStore::eval`] (terrain read
     /// through a [`RegionSampler`]).
@@ -1863,6 +1890,19 @@ mod tests {
         }
         assert_eq!(s.sample_grid(c), g);
         assert!(s.mesh_surface_nets(c).is_empty());
+    }
+
+    /// `mesh_surface_nets_min` with an `extra` field that never reaches the
+    /// terrain is the plain mesh, bit for bit (the shell layer's seams).
+    #[test]
+    fn mesh_min_without_reach_is_the_plain_mesh() {
+        let mut s = store(50, 50);
+        let (hit, _) = surface_point(&s);
+        let c = s.chunk_at(hit).unwrap();
+        let plain = s.mesh_surface_nets(c);
+        assert!(!plain.positions.is_empty());
+        let grid = s.sample_grid(c);
+        assert_eq!(s.mesh_surface_nets_min(c, &grid, &|_| 1.0e6), plain);
     }
 
     /// The halo of a sample grid holds the world SDF: stored samples of the

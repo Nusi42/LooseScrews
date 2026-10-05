@@ -637,6 +637,11 @@ impl World {
     pub fn mode(&self) -> &ModeState {
         &self.mode
     }
+    /// The mode's terrain shell at the current tick (what the last
+    /// [`World::step`] handed the terrain; The Squeeze's walls).
+    pub fn terrain_shell(&self) -> Option<crate::ShellSphere> {
+        self.config.mode_module.terrain_shell(&self.mode, self.tick)
+    }
     /// Mutable mode state (admin commands such as ending a match early,
     /// host tests). Bypasses the rules.
     pub fn mode_mut(&mut self) -> &mut ModeState {
@@ -1050,6 +1055,8 @@ impl World {
             self.run_mode_hook(&cfg, terrain, &mut events, |module, m| module.on_start(m));
         }
         self.apply_deferred_edits(&cfg, terrain, now, &mut events);
+        // The mode's terrain shell for this tick (The Squeeze's walls).
+        terrain.set_shell(cfg.mode_module.terrain_shell(&self.mode, now));
 
         // 1. Respawns.
         for &id in &ids {

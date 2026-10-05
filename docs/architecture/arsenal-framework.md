@@ -381,6 +381,7 @@ damage, let weapons fire without paying their cost (`unlimited_ammo`, resolved i
 | `view` | `World::mode_view` | `ModeState` |
 | `move_limits` | a ship moves (stage 2) | the rules + the player's replicated mode flags; returns `MoveLimits` (speed cap scale, no boost). The client predictor applies the same limits from the flags in each snapshot (`Predictor::set_limits`) |
 | `material_at` | a hook asks for the rock material (`Ctx::material_at`, `Ctx::crater`) | `ModeState` + tick + point; `Some(id)` overrides the terrain's material |
+| `terrain_shell` | start of every tick, before anything moves: the shell the terrain adds (`SimTerrain::set_shell`) | `ModeState` + tick |
 
 The world keeps the generic `mode::ModeState` (part of the state hash: kind, teams, phase,
 timer, stage and stage end tick, paint coverage, team scores, score target, per-player
@@ -421,6 +422,13 @@ objectives 1 and 2 the extraction zones (`team` the owner, `NO_SIDE` in free-for
 knot is hard rock and the collapsing chamber weak rock through `material_at`; the carrier has
 `player_flags::CARRIER` and moves under `move_limits`. Without a Heist site (test rooms) the
 core lies free between the spawn points and each team's zone is at its spawns.
+
+The Squeeze (`modes/the_squeeze.rs`, `data/rulesets/squeeze.ron`) is implemented: phases on a
+fixed timeline (warning with a `NEXT_ZONE` marker, then the close), safe zones from the
+`RNG_STREAM_SQUEEZE` stream, a solid shell the world hands the terrain every tick
+(`terrain_shell`, see [contracts.md](contracts.md#shell-layer-the-squeeze)), crushing through
+shields while touching a moving wall, wall scrap debris, one life and the last ship flying;
+the module docs have the rules and the replicated schedule.
 
 Teams are per match: `teams` 2-4 (the smallest team gets a joining player; a team without
 spawn points of its own uses any spawn point) or 0 = free-for-all, where every ship is its own

@@ -65,7 +65,8 @@ pub use ruleset::{
 };
 pub use ship::{simulate_movement, ChargeState, MovementReport, PlayerId, ShipState, WeaponState};
 pub use terrain::{
-    paint_team_id, team_from_paint_id, PaintCoverage, PaintedTerrain, SimTerrain, NO_PAINT,
+    paint_team_id, team_from_paint_id, PaintCoverage, PaintedTerrain, ShellSphere, ShelledTerrain,
+    SimTerrain, NO_PAINT,
 };
 pub use tuning::{ShipTable, ShipTuning, ShipType};
 pub use visual::{BuiltinVisual, Shape, Visual, VisualId, VisualTable};

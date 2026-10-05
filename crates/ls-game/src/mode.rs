@@ -8,7 +8,9 @@ use ls_net::mode::NONE;
 use ls_net::{
     mode_phase, MatchResultsMsg, NetModePlayer, NetModeState, NetObjective, ResultRow, MAX_SHIPS,
 };
-use ls_sim::{MatchPhase, MatchResults, ModeView, PlayerId};
+use ls_sim::mode::ObjectiveView;
+use ls_sim::modes::the_squeeze;
+use ls_sim::{MatchPhase, MatchResults, ModeKind, ModeView, PlayerId, ShellSphere};
 
 fn tick32(t: u64) -> u32 {
     t.min(u32::MAX as u64) as u32
@@ -128,6 +130,32 @@ pub fn results_to_net(
             .take(MAX_SHIPS as usize)
             .collect(),
     }
+}
+
+/// The Squeeze's wall at tick `tick` from a replicated mode state (`None`
+/// in other modes or before the walls rise). Zone centres are whole units
+/// on the server (`ls_sim::modes::the_squeeze`), so snapping the quantized
+/// marker positions recovers them exactly and the client's shell equals the
+/// server's at the same tick.
+pub fn squeeze_shell(mode: &NetModeState, tick: u64) -> Option<ShellSphere> {
+    if mode.kind != ModeKind::TheSqueeze.index() || mode == &NetModeState::default() {
+        return None;
+    }
+    let views: Vec<ObjectiveView> = mode
+        .objectives
+        .iter()
+        .map(|o| ObjectiveView {
+            id: o.id,
+            kind: o.kind,
+            pos: the_squeeze::snap(o.pos),
+            radius: o.radius,
+            holder: None,
+            timer_end: o.timer_end as u64,
+            team: o.team,
+            state: o.state,
+        })
+        .collect();
+    the_squeeze::ShellSchedule::from_objectives(&views)?.shell_at(tick)
 }
 
 fn truncate_utf8(s: &mut String, max: usize) {

@@ -88,6 +88,101 @@ pub trait SimTerrain: TerrainQuery {
     fn material_at(&self, _p: Vec3) -> u8 {
         MATERIAL_ROCK
     }
+
+    /// Sets the solid shell a mode adds to the terrain (The Squeeze), or
+    /// removes it (`None`). The world calls it at the start of every tick
+    /// with the mode's shell for that tick
+    /// (`modes::ModeModule::terrain_shell`). A terrain that supports it
+    /// answers `sdf` as `min(terrain, shell.sdf)` from then on
+    /// ([`ShelledTerrain`], `ls_game::GameTerrain`); the default ignores it
+    /// (the mode's own crushing rules still apply).
+    fn set_shell(&mut self, _shell: Option<ShellSphere>) {}
+}
+
+/// The Squeeze's wall: solid rock everywhere outside a sphere (the safe
+/// zone). Its field is `radius - |p - center|` (negative in rock, exact,
+/// 1-Lipschitz); a terrain with a shell answers `min(terrain, shell)`.
+/// See `docs/architecture/contracts.md` (Shell layer).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ShellSphere {
+    pub center: Vec3,
+    pub radius: f32,
+}
+
+impl ShellSphere {
+    /// Signed distance of the shell (negative in its rock).
+    #[inline]
+    pub fn sdf(&self, p: Vec3) -> f32 {
+        self.radius - p.distance(self.center)
+    }
+
+    /// Whether the shell can change `min(terrain, shell)` anywhere in
+    /// `region` for a terrain whose field never exceeds `clamp` (false: the
+    /// whole region lies deeper than `clamp` inside the safe sphere).
+    pub fn touches(&self, region: Aabb, clamp: f32) -> bool {
+        farthest_distance(region, self.center) > self.radius - clamp
+    }
+}
+
+/// Distance from `p` to the farthest corner of `b`.
+pub fn farthest_distance(b: Aabb, p: Vec3) -> f32 {
+    let far = |v: f32, lo: f32, hi: f32| (v - lo).abs().max((hi - v).abs());
+    Vec3::new(
+        far(p.x, b.min.x, b.max.x),
+        far(p.y, b.min.y, b.max.y),
+        far(p.z, b.min.z, b.max.z),
+    )
+    .length()
+}
+
+/// Any [`SimTerrain`] plus a [`ShellSphere`] layer (`sdf = min(inner,
+/// shell)`): the reference implementation of [`SimTerrain::set_shell`] for
+/// tests and tools (the game's terrain, `ls_game::GameTerrain`, has its
+/// own). Everything else is forwarded to `inner`.
+#[derive(Debug, Clone)]
+pub struct ShelledTerrain<T> {
+    pub inner: T,
+    pub shell: Option<ShellSphere>,
+}
+
+impl<T> ShelledTerrain<T> {
+    pub fn new(inner: T) -> Self {
+        ShelledTerrain { inner, shell: None }
+    }
+}
+
+impl<T: SimTerrain> TerrainQuery for ShelledTerrain<T> {
+    fn sdf(&self, p: Vec3) -> f32 {
+        let d = self.inner.sdf(p);
+        match self.shell {
+            Some(s) => d.min(s.sdf(p)),
+            None => d,
+        }
+    }
+    fn bounds(&self) -> Aabb {
+        self.inner.bounds()
+    }
+    fn paint_colors_near(&self, center: Vec3, radius: f32) -> u8 {
+        self.inner.paint_colors_near(center, radius)
+    }
+}
+
+impl<T: SimTerrain> SimTerrain for ShelledTerrain<T> {
+    fn apply_edit(&mut self, edit: &TerrainEdit) {
+        self.inner.apply_edit(edit);
+    }
+    fn paint_coverage(&self) -> Option<PaintCoverage> {
+        self.inner.paint_coverage()
+    }
+    fn surface_states_near(&self, center: Vec3, radius: f32, now: u64) -> SurfaceStates {
+        self.inner.surface_states_near(center, radius, now)
+    }
+    fn material_at(&self, p: Vec3) -> u8 {
+        self.inner.material_at(p)
+    }
+    fn set_shell(&mut self, shell: Option<ShellSphere>) {
+        self.shell = shell;
+    }
 }
 
 /// The read-only terrain layers hook code sees through `View::layers`

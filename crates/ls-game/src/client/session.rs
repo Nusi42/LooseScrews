@@ -584,6 +584,9 @@ impl ClientSession {
         } else {
             cmd
         };
+        // The Squeeze's walls at the predicted tick (from the mode state).
+        let shell = crate::mode::squeeze_shell(self.mode(), cmd.tick);
+        self.terrain.set_shell(shell);
         self.predictor.predict(predicted, &self.terrain);
         let ack = self.newest_tick();
         let mut msg = self.inputs.message(ack).expect("a command was just added");

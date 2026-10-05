@@ -471,6 +471,7 @@ pub struct RuleSet {
 }
 
 const PAINT_THE_VOID_RON: &str = include_str!("../../../data/rulesets/paint_the_void.ron");
+const SQUEEZE_RON: &str = include_str!("../../../data/rulesets/squeeze.ron");
 const SANDBOX_ALL_WEAPONS_RON: &str =
     include_str!("../../../data/rulesets/sandbox_all_weapons.ron");
 const TEAM_BRAWL_RON: &str = include_str!("../../../data/rulesets/team_brawl.ron");
@@ -482,7 +483,7 @@ const LAST_COLOR_STANDING_RON: &str =
 const HEIST_RON: &str = include_str!("../../../data/rulesets/heist.ron");
 
 /// Embedded rule set files (data hash).
-pub const BUILTIN_RULESETS: [(&str, &str); 8] = [
+pub const BUILTIN_RULESETS: [(&str, &str); 9] = [
     ("rulesets/paint_the_void.ron", PAINT_THE_VOID_RON),
     ("rulesets/sandbox_all_weapons.ron", SANDBOX_ALL_WEAPONS_RON),
     ("rulesets/team_brawl.ron", TEAM_BRAWL_RON),
@@ -491,6 +492,7 @@ pub const BUILTIN_RULESETS: [(&str, &str); 8] = [
     ("rulesets/hot_reactor.ron", HOT_REACTOR_RON),
     ("rulesets/last_color_standing.ron", LAST_COLOR_STANDING_RON),
     ("rulesets/heist.ron", HEIST_RON),
+    ("rulesets/squeeze.ron", SQUEEZE_RON),
 ];
 
 impl RuleSet {

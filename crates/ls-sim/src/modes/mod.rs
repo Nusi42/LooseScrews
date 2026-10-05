@@ -23,6 +23,7 @@
 //! | `view` | `World::mode_view`: mode-specific view fields | [`ModeState`] |
 //! | `move_limits` | a ship moves: speed cap scale, boost off (Heist carrier) | the player's replicated mode flags |
 //! | `material_at` | a hook asks for the rock strength (craters): override it in a region | [`ModeState`] + the point |
+//! | `terrain_shell` | start of every tick: the solid shell the terrain adds (The Squeeze) | [`ModeState`] + tick |
 //!
 //! A module that does not override a hook gets the generic behaviour of
 //! this file ("generic fallback", like M2's weapon stubs): kills score for
@@ -314,6 +315,15 @@ pub trait ModeModule: Send + Sync + Debug {
         _now: u64,
         _p: Vec3,
     ) -> Option<u8> {
+        None
+    }
+
+    /// The solid shell the mode adds to the terrain at tick `now` (The
+    /// Squeeze's walls); the world hands it to the terrain at the start of
+    /// every tick ([`crate::SimTerrain::set_shell`]). A pure function of the
+    /// state and the tick, so clients derive the same shell from the
+    /// replicated view.
+    fn terrain_shell(&self, _state: &ModeState, _now: u64) -> Option<crate::ShellSphere> {
         None
     }
 }

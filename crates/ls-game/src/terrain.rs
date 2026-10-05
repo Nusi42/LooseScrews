@@ -2,13 +2,16 @@
 //! network layer and the renderer.
 
 use std::cell::{Cell, RefCell};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use ls_math::terrain::{SurfaceStates, TerrainEdit, TerrainQuery};
 use ls_math::{Aabb, Vec3};
 use ls_net::TerrainEditBits;
-use ls_sim::{SimTerrain, StateHasher};
-use ls_worldgen::{ChunkCoord, ChunkStore, Generator, Material, Mesh, ShareCode};
+use ls_sim::{ShellSphere, SimTerrain, StateHasher};
+use ls_worldgen::{
+    grid::GRID_HALO, ChunkCoord, ChunkStore, Generator, Material, Mesh, SampleGrid, ShareCode,
+    CHUNK_CELLS,
+};
 
 use crate::GameError;
 
@@ -33,6 +36,16 @@ use crate::GameError;
 ///   ([`GameTerrain::edit_count`]) but cannot serve its log to others.
 /// - Tracks chunks whose meshes changed since the last
 ///   [`GameTerrain::take_dirty_chunks`].
+/// - **Shell layer** (The Squeeze): an optional [`ShellSphere`]
+///   ([`SimTerrain::set_shell`], set by the world every tick, or by a client
+///   session from the replicated mode state) makes everything outside the
+///   safe sphere solid: `sdf` and meshes use `min(terrain, shell)`. It is a
+///   runtime layer, not an edit: it is not logged and stays out of the
+///   state hashes (they hash the chunk store), so peers compare terrain at
+///   any time. [`GameTerrain::take_dirty_chunks`] adds the chunks whose
+///   meshes the shell's movement since the last call changed, and only
+///   those with open space near the wall (bounded remeshing, see
+///   `docs/architecture/contracts.md`, Shell layer).
 ///
 /// The store sits in a `RefCell` because `SimTerrain::paint_coverage` takes
 /// `&self` while the chunk store generates missing chunks on demand. The type
@@ -46,6 +59,14 @@ pub struct GameTerrain {
     pruned: u32,
     dirty: BTreeSet<ChunkCoord>,
     coverage: Cell<Option<ls_sim::PaintCoverage>>,
+    /// The Squeeze's wall (see the type docs).
+    shell: Option<ShellSphere>,
+    /// The shell the dirty set last accounted for.
+    meshed_shell: Option<ShellSphere>,
+    /// Per chunk: which of its 4 x 4 x 4 blocks of 8 u hold corners near
+    /// open space (terrain above [`SHELL_OPEN_BAND`]), one bit each;
+    /// dropped on edits.
+    open_blocks: BTreeMap<ChunkCoord, u64>,
 }
 
 impl GameTerrain {
@@ -59,6 +80,9 @@ impl GameTerrain {
             pruned: 0,
             dirty: BTreeSet::new(),
             coverage: Cell::new(None),
+            shell: None,
+            meshed_shell: None,
+            open_blocks: BTreeMap::new(),
         }
     }
 
@@ -176,6 +200,9 @@ impl GameTerrain {
         self.log.push(edit);
         let dirty = self.store.get_mut().apply(edit);
         self.dirty.extend(dirty.iter().copied());
+        for c in &dirty {
+            self.open_blocks.remove(c);
+        }
         self.coverage.set(None);
         dirty
     }
@@ -250,14 +277,139 @@ impl GameTerrain {
         self.store.borrow().material_at(p)
     }
 
-    /// Chunks whose meshes changed since the last call (sorted, unique).
+    /// Chunks whose meshes changed since the last call (sorted, unique):
+    /// by edits, surface states expiring, and the shell moving.
     pub fn take_dirty_chunks(&mut self) -> Vec<ChunkCoord> {
+        self.mark_shell_dirty();
         std::mem::take(&mut self.dirty).into_iter().collect()
     }
 
-    /// Chunks currently marked dirty, without clearing them.
+    /// Chunks currently marked dirty by edits and expiring states, without
+    /// clearing them (shell movement is only added by
+    /// [`GameTerrain::take_dirty_chunks`]).
     pub fn dirty_chunks(&self) -> impl Iterator<Item = &ChunkCoord> {
         self.dirty.iter()
+    }
+
+    // ----- shell layer (The Squeeze) ------------------------------------------
+
+    /// The current shell (see the type docs).
+    pub fn shell(&self) -> Option<ShellSphere> {
+        self.shell
+    }
+
+    /// Sets the shell (the same as [`SimTerrain::set_shell`]).
+    pub fn set_shell(&mut self, shell: Option<ShellSphere>) {
+        self.shell = shell.filter(|s| s.center.is_finite() && s.radius.is_finite());
+    }
+
+    /// Adds the chunks whose meshes the shell changed since the dirty set
+    /// last accounted for it.
+    fn mark_shell_dirty(&mut self) {
+        let (a, b) = (self.meshed_shell, self.shell);
+        if a == b {
+            return;
+        }
+        self.meshed_shell = b;
+        for c in self.chunk_coords() {
+            if self.dirty.contains(&c) {
+                continue;
+            }
+            if !shell_band_hits(a, b, c.aabb().expand(1.0)) {
+                continue;
+            }
+            let mask = self.open_blocks(c);
+            let o = c.origin();
+            let hit = (0..64).filter(|i| mask & (1 << i) != 0).any(|i| {
+                let min = Vec3::new(
+                    (o[0] + (i % 4) * SHELL_BLOCK) as f32,
+                    (o[1] + (i / 4 % 4) * SHELL_BLOCK) as f32,
+                    (o[2] + (i / 16) * SHELL_BLOCK) as f32,
+                );
+                let block = Aabb::new(min, min + Vec3::splat(SHELL_BLOCK as f32));
+                shell_band_hits(a, b, block.expand(2.0))
+            });
+            if hit {
+                self.dirty.insert(c);
+            }
+        }
+    }
+
+    /// The blocks of chunk `c` (4 x 4 x 4 of [`SHELL_BLOCK`] cells, x
+    /// fastest) holding corners near open space (see `open_blocks`).
+    fn open_blocks(&mut self, c: ChunkCoord) -> u64 {
+        if let Some(m) = self.open_blocks.get(&c) {
+            return *m;
+        }
+        let store = self.store.get_mut();
+        store.ensure_generated(c);
+        let samples = store.chunk_samples(c).unwrap_or_default();
+        let n = CHUNK_CELLS as usize + 1;
+        let block = |l: usize| (l / SHELL_BLOCK as usize).min(3);
+        let mut mask = 0u64;
+        for (idx, v) in samples.iter().enumerate() {
+            if *v > SHELL_OPEN_BAND {
+                let (x, y, z) = (idx % n, (idx / n) % n, idx / (n * n));
+                mask |= 1 << (block(x) + 4 * block(y) + 16 * block(z));
+            }
+        }
+        self.open_blocks.insert(c, mask);
+        mask
+    }
+
+    /// Mesh of a chunk with the shell: the chunk's padded samples combined
+    /// with the shell (`min`) and meshed like
+    /// [`ChunkStore::mesh_surface_nets`] (paint, states and materials
+    /// included).
+    fn mesh_chunk_with_shell(&mut self, c: ChunkCoord, shell: ShellSphere) -> Mesh {
+        let store = self.store.get_mut();
+        if !store.contains_chunk(c) {
+            return Mesh::default();
+        }
+        let grid = store.sample_grid(c);
+        let o = grid.origin;
+        let n = CHUNK_CELLS;
+        // Corners deeper inside the safe sphere than the terrain clamp keep
+        // their value (no square root needed).
+        let inner = (shell.radius - SHELL_TERRAIN_CLAMP).max(0.0);
+        let inner2 = inner * inner;
+        let mut values = Vec::with_capacity(grid.values().len());
+        // Every stored corner, halo included (`-GRID_HALO..=32 + GRID_HALO`):
+        // the mesher reads the halo for normals and occlusion.
+        let (lo, hi) = (-GRID_HALO, n + GRID_HALO);
+        let mut src = grid.values().iter();
+        for k in lo..=hi {
+            for j in lo..=hi {
+                for i in lo..=hi {
+                    let v = *src.next().expect("grid corner");
+                    let p = SampleGrid::corner_pos(o, i, j, k);
+                    let d2 = p.distance_squared(shell.center);
+                    values.push(if d2 < inner2 {
+                        v
+                    } else {
+                        v.min(shell.radius - d2.sqrt())
+                    });
+                }
+            }
+        }
+        let mut shelled = SampleGrid::from_values(o, values);
+        if shelled.is_uniform_sign() {
+            return Mesh::default();
+        }
+        for k in -1..n {
+            for j in -1..n {
+                for i in -1..n {
+                    shelled.set_team(i, j, k, grid.team(i, j, k));
+                    shelled.set_color(i, j, k, grid.color(i, j, k));
+                    shelled.set_states(i, j, k, grid.states(i, j, k));
+                }
+            }
+        }
+        // The same mesher as `ChunkStore::mesh_surface_nets` (snap with the
+        // exact field at creases, cached materials) on `min(terrain,
+        // shell)`, so a shelled chunk's vertices match its unshelled
+        // neighbours' bit for bit where the shell does not reach.
+        store.mesh_surface_nets_min(c, &shelled, &|p| shell.radius - p.distance(shell.center))
     }
 
     /// All chunk coordinates of the level, ascending.
@@ -265,8 +417,15 @@ impl GameTerrain {
         self.store.borrow().chunk_coords()
     }
 
-    /// Surface-nets mesh of one chunk.
+    /// Surface-nets mesh of one chunk (with the shell layer where it
+    /// reaches the chunk).
     pub fn mesh_chunk(&mut self, c: ChunkCoord) -> Mesh {
+        if let Some(shell) = self
+            .shell
+            .filter(|s| s.touches(c.aabb().expand(1.0), SHELL_TERRAIN_CLAMP))
+        {
+            return self.mesh_chunk_with_shell(c, shell);
+        }
         self.store.get_mut().mesh_surface_nets(c)
     }
 
@@ -324,7 +483,8 @@ impl GameTerrain {
     }
 
     /// FNV-1a hash of the SDF sampled on a lattice with spacing `step` (cell
-    /// centres, offset by `step / 2`) over the level bounds.
+    /// centres, offset by `step / 2`) over the level bounds. The chunk
+    /// store's field: the shell layer is not part of it.
     pub fn sdf_hash(&self, step: f32) -> u64 {
         let store = self.store.borrow();
         let b = self.bounds;
@@ -419,8 +579,13 @@ impl GameTerrain {
 }
 
 impl TerrainQuery for GameTerrain {
+    /// The chunk store's field, combined with the shell layer if set.
     fn sdf(&self, p: Vec3) -> f32 {
-        self.store.borrow().eval(p)
+        let d = self.store.borrow().eval(p);
+        match self.shell {
+            Some(s) => d.min(s.sdf(p)),
+            None => d,
+        }
     }
 
     fn bounds(&self) -> Aabb {
@@ -436,11 +601,41 @@ impl TerrainQuery for GameTerrain {
 /// (conservative: a larger margin only keeps more edits).
 const CELL_OVERLAP_EPS: f32 = 0.01;
 
+/// Upper bound of the chunk store's stored field (its clamp is 6 u): where
+/// the shell is above it, `min(terrain, shell)` is the terrain.
+const SHELL_TERRAIN_CLAMP: f32 = 8.0;
+/// Meshes only read corners of cells with a sign change, whose values lie
+/// within a cell diagonal (< 2 u) of zero (the fields are 1-Lipschitz). So
+/// the shell changes a mesh only where one of the two shells is within
+/// this band of its surface: [`SHELL_OPEN_BAND`] below, this above.
+const SHELL_MESH_BAND: f32 = 2.5;
+/// Corners whose terrain value is above this (u) count as near open space
+/// for shell remeshing (see [`SHELL_MESH_BAND`]).
+const SHELL_OPEN_BAND: f32 = -2.5;
+/// Edge (cells) of the blocks a chunk's open space is tracked in.
+const SHELL_BLOCK: i32 = 8;
+
+/// Whether moving the shell from `a` to `b` can change meshes in `region`:
+/// the region reaches where either shell is below [`SHELL_MESH_BAND`] and
+/// where either is above [`SHELL_OPEN_BAND`] (no shell: never solid).
+fn shell_band_hits(a: Option<ShellSphere>, b: Option<ShellSphere>, region: Aabb) -> bool {
+    let solid = |s: Option<ShellSphere>| s.is_some_and(|s| s.touches(region, SHELL_MESH_BAND));
+    let open = |s: Option<ShellSphere>| match s {
+        Some(s) => region.intersects_sphere(s.center, s.radius - SHELL_OPEN_BAND),
+        None => true,
+    };
+    (solid(a) || solid(b)) && (open(a) || open(b))
+}
+
 impl SimTerrain for GameTerrain {
     /// Applies and logs the edit verbatim (craters come already scaled by
     /// rock strength, see the type docs).
     fn apply_edit(&mut self, edit: &TerrainEdit) {
         self.apply(*edit);
+    }
+
+    fn set_shell(&mut self, shell: Option<ShellSphere>) {
+        GameTerrain::set_shell(self, shell);
     }
 
     fn surface_states_near(&self, center: Vec3, radius: f32, now: u64) -> SurfaceStates {
@@ -832,6 +1027,119 @@ mod tests {
         let (ea2, eb2) = (w.ship(a).unwrap().energy, w.ship(b).unwrap().energy);
         assert!((ea2 - ea - 5.0).abs() < 0.05, "{ea} -> {ea2}");
         assert!((eb2 - eb - 5.0).abs() < 0.05, "{eb} -> {eb2}");
+    }
+
+    /// The Squeeze's shell layer: `sdf` is `min(terrain, shell)`, meshes
+    /// show the wall, and the state hashes ignore it.
+    #[test]
+    fn shell_layer_is_solid_meshed_and_not_hashed() {
+        let mut t = small_terrain(7);
+        let c = t.bounds().center();
+        let hash = t.state_hash();
+        let before: Vec<Mesh> = t.chunk_coords().iter().map(|&k| t.mesh_chunk(k)).collect();
+        let shell = ShellSphere {
+            center: c,
+            radius: 20.0,
+        };
+        t.set_shell(Some(shell));
+        assert_eq!(t.shell(), Some(shell));
+        assert_eq!(t.state_hash(), hash, "the shell is not terrain state");
+        let open = open_point(&t);
+        assert!(t.sdf(c + Vec3::X * 25.0) <= -5.0);
+        assert_eq!(
+            t.sdf(open),
+            t.with_store(|s| s.eval(open)).min(shell.sdf(open))
+        );
+        let after: Vec<Mesh> = t.chunk_coords().iter().map(|&k| t.mesh_chunk(k)).collect();
+        assert_ne!(before, after);
+        // Wall vertices lie on the sphere, inside the level's open space.
+        let on_wall = after
+            .iter()
+            .flat_map(|m| m.positions.iter())
+            .filter(|p| (Vec3::from_array(**p).distance(c) - 20.0).abs() < 0.05)
+            .count();
+        assert!(on_wall > 100, "{on_wall}");
+        // Every vertex is inside the sphere (nothing is meshed in the shell).
+        // Where the wall meets rock (a crease of `min(terrain, shell)`) the
+        // surface-nets snap (VQ3a) places a vertex up to a fraction of a cell
+        // off the crease, as it does at any crease of the rock itself.
+        let far = after
+            .iter()
+            .flat_map(|m| m.positions.iter())
+            .map(|p| Vec3::from_array(*p).distance(c))
+            .fold(0.0f32, f32::max);
+        assert!(far <= 20.0 + 0.3, "farthest vertex {far}");
+        // Materials are filled like the store's mesher does.
+        assert!(after.iter().all(|m| m.materials.len() == m.positions.len()));
+        // Removing it restores the store's meshes.
+        t.set_shell(None);
+        let again: Vec<Mesh> = t.chunk_coords().iter().map(|&k| t.mesh_chunk(k)).collect();
+        assert_eq!(before, again);
+    }
+
+    /// A moving shell marks dirty exactly enough chunks: remeshing only the
+    /// dirty ones step by step gives the same meshes as meshing everything
+    /// at the last shell; a shell that does not reach the level dirties
+    /// nothing.
+    #[test]
+    fn moving_shell_dirties_the_chunks_it_changes() {
+        let mut t = small_terrain(11);
+        let c = t.bounds().center() + Vec3::new(3.0, -2.0, 1.0);
+        let coords = t.chunk_coords();
+        let mut meshes: BTreeMap<ChunkCoord, Mesh> =
+            coords.iter().map(|&k| (k, t.mesh_chunk(k))).collect();
+        assert!(t.take_dirty_chunks().is_empty());
+        // Far outside the level: no chunk changes.
+        t.set_shell(Some(ShellSphere {
+            center: c,
+            radius: 400.0,
+        }));
+        assert!(t.take_dirty_chunks().is_empty());
+        let mut total = 0;
+        let mut radius = 60.0;
+        while radius > 4.0 {
+            t.set_shell(Some(ShellSphere { center: c, radius }));
+            let dirty = t.take_dirty_chunks();
+            total += dirty.len();
+            for k in dirty {
+                meshes.insert(k, t.mesh_chunk(k));
+            }
+            radius -= 3.5;
+        }
+        // Close steps as The Squeeze makes them: 0.5 u, the centre moving.
+        for k in 0..8 {
+            let f = k as f32 * 0.25;
+            t.set_shell(Some(ShellSphere {
+                center: c + Vec3::new(f, -f * 0.5, f * 0.25),
+                radius: radius + 4.0 - f,
+            }));
+            let dirty = t.take_dirty_chunks();
+            total += dirty.len();
+            for k in dirty {
+                meshes.insert(k, t.mesh_chunk(k));
+            }
+        }
+        assert!(total > 0);
+        assert!(t.take_dirty_chunks().is_empty(), "nothing moved");
+        for &k in &coords {
+            assert_eq!(meshes[&k], t.mesh_chunk(k), "{k:?}");
+        }
+        // Edits and the shell together.
+        let p = rock_point(&t);
+        t.apply(TerrainEdit::SubtractSphere {
+            center: p,
+            radius: 3.0,
+        });
+        t.set_shell(Some(ShellSphere {
+            center: c,
+            radius: 9.0,
+        }));
+        for k in t.take_dirty_chunks() {
+            meshes.insert(k, t.mesh_chunk(k));
+        }
+        for &k in &coords {
+            assert_eq!(meshes[&k], t.mesh_chunk(k), "{k:?}");
+        }
     }
 
     #[test]

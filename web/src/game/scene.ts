@@ -145,11 +145,13 @@ export function addShips(
   time = 0,
   teams = 2,
   vfx = false,
+  style?: ShipStyleFn,
 ): void {
   for (const s of ships) {
     if (!s.alive) continue;
     const scale = (s.radius || TINKER_RADIUS) / TINKER_RADIUS;
-    const color = teamHull(s.team, teams);
+    const styled = style?.(s);
+    const color = styled?.color ?? teamHull(s.team, teams);
     const gadget = s.gadgetActive ? gadgetOf(s.id) : "";
     const mesh = shipMeshKind(s.shipType);
     // The hull's livery takes the team colour; engines glow brighter while boosting.
@@ -162,6 +164,7 @@ export function addShips(
       glow: s.boosting ? 1 : 0,
       blink: phase(s.id),
     };
+    if (styled?.keepColor) hull.keepColor = styled.keepColor;
     if (gadget === "cloak") {
       // A lighter shade of the team hull colour, so a cloaked teammate and a
       // cloaked enemy still read apart.
@@ -394,6 +397,9 @@ export interface EntityHulls {
   wreckTypeOf?: ((e: EntityState) => number) | undefined;
 }
 
+/** Per-ship colour override (Last Color Standing's colour meter, game/modeVisuals.ts); undefined = the side colour. */
+export type ShipStyleFn = (s: ShipState) => { color?: Rgb; keepColor?: number } | undefined;
+
 /** Optional extras for `buildScene` (M2 wave C mechanics). */
 export interface SceneExtras extends EntityHulls {
   /** Gadget kind of a ship id ("shield", "cloak", "decoy", ""). */
@@ -410,6 +416,8 @@ export interface SceneExtras extends EntityHulls {
    * false (the pre-VQ5 mesh effects, e.g. with `?vfx=off`).
    */
   vfx?: boolean;
+  /** Ship colour override (M3 C1: Last Color Standing). */
+  shipStyle?: ShipStyleFn | null;
 }
 
 /** Builds the whole instance scene for one frame. */
@@ -425,7 +433,7 @@ export function buildScene(
   const scene = emptyScene();
   const teams = extras.teams ?? 2;
   const vfx = extras.vfx ?? false;
-  addShips(scene, ships, extras.gadgetOf, time, teams, vfx);
+  addShips(scene, ships, extras.gadgetOf, time, teams, vfx, extras.shipStyle ?? undefined);
   const hide = extras.hideShot;
   addProjectiles(scene, hide ? shots.filter((p) => !hide(p)) : shots, visuals, teamOf, time, teams, vfx);
   // Ship types of the ships in view, unless the caller knows every player's.

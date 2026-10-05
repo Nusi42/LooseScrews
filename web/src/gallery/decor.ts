@@ -21,7 +21,7 @@ import {
 import type { Probe, RayMesh } from "./raycast.ts";
 
 /** What a scene paints onto the terrain around the point the camera looks at. */
-export type SceneDecor = "none" | "paint" | "states";
+export type SceneDecor = "none" | "paint" | "states" | "teams4";
 
 /** One sphere of decor: vertices within `radius` of `center` get the marks. */
 export interface DecorSpot {
@@ -57,6 +57,15 @@ export function decorSpots(decor: SceneDecor, target: Vec3, normal: Vec3): Decor
       spot(at(-1.6, 0.2), 1.9, 0, PAINT_PLAIN),
       spot(at(1.3, 0.7), 1.6, 1, PAINT_RED),
       spot(at(0.2, -1.7), 1.4, 1, PAINT_YELLOW),
+    ];
+  }
+  if (decor === "teams4") {
+    // M3 C1: plain paint of all four teams side by side.
+    return [
+      spot(at(-2.4, 0.9), 1.5, 0, PAINT_PLAIN),
+      spot(at(-0.8, -0.6), 1.5, 1, PAINT_PLAIN),
+      spot(at(0.8, 0.9), 1.5, 2, PAINT_PLAIN),
+      spot(at(2.4, -0.6), 1.5, 3, PAINT_PLAIN),
     ];
   }
   if (decor === "states") {

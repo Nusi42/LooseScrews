@@ -766,6 +766,17 @@ impl GameCore {
         }
     }
 
+    /// Practice only: sets the terrain's shell layer (see `Game::practice_shell`).
+    pub fn practice_shell(&mut self, shell: Option<ls_sim::ShellSphere>) -> bool {
+        match &mut self.mode {
+            Mode::Online(_) => false,
+            Mode::Practice(p) => {
+                p.terrain.set_shell(shell);
+                true
+            }
+        }
+    }
+
     // ----- network -------------------------------------------------------------
 
     /// Handles one packet from the server. Returns the reason if the server

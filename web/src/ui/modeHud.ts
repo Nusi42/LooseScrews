@@ -21,8 +21,10 @@ import {
   type Objective,
 } from "../game/modeState.ts";
 import type { FlowStage } from "../game/matchFlow.ts";
+import { CORE_STATE, REACTOR_STATE, squeezeView } from "../game/modeVisuals.ts";
 import { sideCss, teamName } from "../game/sides.ts";
 import { formatTimer } from "./hud.ts";
+import { iconSvg, type ModeIcon } from "./modeIcons.ts";
 
 export interface ScoreChip {
   side: number;
@@ -37,6 +39,13 @@ export interface ScoreChip {
 }
 
 export type AlertLevel = "info" | "warning" | "danger";
+
+export interface ModeAlert {
+  text: string;
+  level: AlertLevel;
+  /** modeIcons.ts icon; absent = none. */
+  icon?: ModeIcon;
+}
 
 export interface ModeHudModel {
   /** Mode name ("Team Brawl"), or "Warm-up". */
@@ -56,7 +65,7 @@ export interface ModeHudModel {
   lives: number;
   /** Own colour meter 0..100, -1 hides it. */
   meter: number;
-  alerts: Array<{ text: string; level: AlertLevel }>;
+  alerts: ModeAlert[];
   /** Instagib: the HUD hides hull and energy. */
   instagib: boolean;
 }
@@ -109,7 +118,8 @@ export function modeHudModel(i: ModeHudInput): ModeHudModel {
   const paint = (m.flags & VIEW_FLAG.paintScores) !== 0;
   const warmup = i.stage === "warmup" || i.stage === "countdown";
   const own = ownModePlayer(m, i.own);
-  const alerts: ModeHudModel["alerts"] = [];
+  const alerts: ModeAlert[] = [];
+  const instagib = (m.flags & VIEW_FLAG.instagib) !== 0;
 
   const chips: ScoreChip[] = [];
   let ownLine = "";
@@ -146,34 +156,22 @@ export function modeHudModel(i: ModeHudInput): ModeHudModel {
     if (rank >= 0 && own) ownLine = `You · ${ordinal(rank + 1)} of ${ranked.length} · ${own.score}`;
   }
 
-  let target = "";
-  if (!warmup && m.scoreTarget > 0) target = `First to ${m.scoreTarget}`;
+  const target = warmup ? "" : modeTarget(m);
 
   let stage = "";
+  const sq = squeezeView(m, i.nowTick);
   if (!warmup && info.stageLabel && m.stage > 0) {
-    const left = secsUntil(m.stageEndTick, i.nowTick);
-    stage = `${info.stageLabel} ${m.stage}${left > 0 ? ` · ${formatTimer(left)}` : ""}`;
+    if (sq?.warning) stage = `${info.stageLabel} ${m.stage} · walls close in ${formatTimer(secsUntil(sq.start, i.nowTick))}`;
+    else if (sq?.closing) stage = `${info.stageLabel} ${m.stage} · walls closing · ${formatTimer(secsUntil(sq.end, i.nowTick))}`;
+    else {
+      const left = secsUntil(m.stageEndTick, i.nowTick);
+      stage = `${info.stageLabel} ${m.stage}${left > 0 ? ` · ${formatTimer(left)}` : ""}`;
+    }
   }
+  if (!warmup && m.mode === "last_color_standing" && m.stage > 0) stage = "Stalemate · every pilot's colour drains";
 
   // Objectives that concern the own ship.
-  if (!warmup && m.running && !i.spectating) {
-    const zone = m.objectives.find((o) => o.kind === OBJECTIVE.safeZone);
-    if (zone && i.ownPos && zone.radius > 0 && dist(i.ownPos, zone.pos) > zone.radius) {
-      alerts.push({ text: "Outside the safe zone: get back in!", level: "danger" });
-    }
-    for (const o of m.objectives) {
-      if (o.holder !== i.own) continue;
-      if (o.kind === OBJECTIVE.core) {
-        alerts.push({ text: "You carry the core: no boost · fly it to an extraction zone", level: "warning" });
-      } else if (o.kind === OBJECTIVE.reactor) {
-        const fuse = secsUntil(o.timerEnd, i.nowTick);
-        alerts.push({
-          text: `You hold the reactor! Hit someone to pass it${fuse > 0 ? ` · ${fuse.toFixed(1)} s` : ""}`,
-          level: "danger",
-        });
-      }
-    }
-  }
+  if (!warmup && m.running && !i.spectating) alerts.push(...objectiveAlerts(i, sq));
   if (i.spectating && !warmup) {
     const out = own && (own.flags & PLAYER_FLAG.eliminated) !== 0;
     const who = i.following !== null ? `Following ${nameOf(i.names, i.following)}` : "Free camera";
@@ -187,7 +185,7 @@ export function modeHudModel(i: ModeHudInput): ModeHudModel {
   const showMeter = !warmup && (m.flags & VIEW_FLAG.meter) !== 0 && own !== undefined && !isOut(own);
   const timerSecs = Math.max(0, i.timeLeft);
   return {
-    title: warmup ? "Warm-up" : info.name,
+    title: warmup ? "Warm-up" : instagib ? `${info.name} · Instagib` : info.name,
     timer: warmup || !m.running ? "" : formatTimer(timerSecs),
     timerUrgent: !warmup && m.running && timerSecs > 0 && timerSecs <= 30,
     target,
@@ -197,8 +195,87 @@ export function modeHudModel(i: ModeHudInput): ModeHudModel {
     lives: showLives ? own.lives : -1,
     meter: showMeter ? Math.max(0, Math.min(100, own.meter)) : -1,
     alerts,
-    instagib: (m.flags & VIEW_FLAG.instagib) !== 0,
+    instagib,
   };
+}
+
+/** What wins, per mode ("First to 15 kills", "3 deliveries win", "Last ship flying wins"). */
+export function modeTarget(m: ModeState): string {
+  if (m.scoreTarget > 0) {
+    if (m.mode === "heist") return `${m.scoreTarget} ${m.scoreTarget === 1 ? "delivery wins" : "deliveries win"}`;
+    if (m.mode === "team_brawl") return `First to ${m.scoreTarget} kills`;
+    return `First to ${m.scoreTarget}`;
+  }
+  switch (m.mode) {
+    case "the_squeeze":
+      return "Last ship flying wins";
+    case "hot_reactor":
+      return "Last pilot with lives wins";
+    case "last_color_standing":
+      return "Last pilot with colour wins";
+    default:
+      return "";
+  }
+}
+
+/** Side of a player id in the mode state (-1 unknown). */
+function sideOf(m: ModeState, id: number): number {
+  return m.players.find((p) => p.id === id)?.side ?? -1;
+}
+
+/** Alerts from the objectives for the own ship (in play, not spectating). */
+function objectiveAlerts(i: ModeHudInput, sq: ReturnType<typeof squeezeView>): ModeAlert[] {
+  const m = i.mode;
+  const out: ModeAlert[] = [];
+  const zone = m.objectives.find((o) => o.kind === OBJECTIVE.safeZone);
+  if (zone && i.ownPos && zone.radius > 0 && dist(i.ownPos, zone.pos) > zone.radius) {
+    out.push({ text: "Outside the safe zone: get back in!", level: "danger", icon: "zone" });
+  }
+  if (sq && i.ownPos) {
+    if (sq.closing && sq.shell && dist(i.ownPos, sq.shell.center) > sq.shell.radius - 1.6) {
+      out.push({ text: "The wall is crushing you! Get away from it", level: "danger", icon: "wall" });
+    } else if (sq.next && dist(i.ownPos, sq.next.center) > sq.next.radius) {
+      const secs = sq.warning ? secsUntil(sq.start, i.nowTick) : secsUntil(sq.end, i.nowTick);
+      out.push({
+        text: sq.warning ? `Walls close in ${formatTimer(secs)}: reach the next zone` : `Walls closing: get inside the next zone · ${formatTimer(secs)}`,
+        level: sq.warning ? "warning" : "danger",
+        icon: "nextZone",
+      });
+    }
+  }
+  for (const o of m.objectives) {
+    if (o.kind === OBJECTIVE.core) {
+      if (o.holder === i.own) {
+        out.push({ text: "You carry the core: no boost · deliver it to your extraction zone", level: "warning", icon: "carrier" });
+      } else if (o.state === CORE_STATE.carried && o.holder >= 0) {
+        const mate = m.teams > 0 && i.ownSide >= 0 && sideOf(m, o.holder) === i.ownSide;
+        out.push(
+          mate
+            ? { text: `${nameOf(i.names, o.holder)} carries the core: escort them home`, level: "info", icon: "carrier" }
+            : { text: `${nameOf(i.names, o.holder)} has the core: stop them`, level: "warning", icon: "carrier" },
+        );
+      } else if (o.state === CORE_STATE.dropped) {
+        const left = secsUntil(o.timerEnd, i.nowTick);
+        out.push({ text: `Core dropped: grab it${left > 0 ? ` · returns in ${Math.ceil(left)} s` : ""}`, level: "warning", icon: "core" });
+      }
+    } else if (o.kind === OBJECTIVE.reactor && (o.state === REACTOR_STATE.held || o.holder >= 0)) {
+      const fuse = secsUntil(o.timerEnd, i.nowTick);
+      if (o.holder === i.own) {
+        out.push({
+          text: `You hold the reactor! Hit someone to pass it${fuse > 0 ? ` · ${fuse.toFixed(1)} s` : ""}`,
+          level: "danger",
+          icon: "reactor",
+        });
+      } else if (i.ownPos && o.radius > 0 && dist(i.ownPos, o.pos) < o.radius) {
+        out.push({ text: `Too close to the reactor: you speed up its fuse${fuse > 0 ? ` · ${fuse.toFixed(1)} s` : ""}`, level: "warning", icon: "reactor" });
+      }
+    }
+  }
+  const own = ownModePlayer(m, i.own);
+  if ((m.flags & VIEW_FLAG.meter) !== 0 && own && !isOut(own) && own.meter > 0 && own.meter <= 34) {
+    out.push({ text: "Last of your colour: one more death and you are out", level: "danger", icon: "colour" });
+  }
+  return out;
 }
 
 // ---- Objective markers ----------------------------------------------------
@@ -217,6 +294,8 @@ export interface Marker {
   edge: boolean;
   /** Arrow direction (radians, screen space, 0 = right, clockwise) when on the edge. */
   angle: number;
+  /** modeIcons.ts icon. */
+  icon: ModeIcon;
 }
 
 /** Screen fraction (of the half-extent) markers keep from the edge. */
@@ -254,20 +333,52 @@ export function projectMarker(
   return { x, y, edge, angle: Math.atan2(-ny, nx) };
 }
 
-function markerStyle(o: Objective, m: ModeState, names: ReadonlyMap<number, string>, nowTick: number): { label: string; color: string } | null {
-  const held = o.holder >= 0 ? ` · ${nameOf(names, o.holder)}` : "";
+const CORE_CSS = "rgb(255, 205, 80)";
+
+function markerStyle(
+  o: Objective,
+  m: ModeState,
+  names: ReadonlyMap<number, string>,
+  nowTick: number,
+  own: number,
+  ownSide: number,
+): { label: string; color: string; icon: ModeIcon } | null {
+  const holder = o.holder >= 0 ? nameOf(names, o.holder) : "";
   switch (o.kind) {
     case OBJECTIVE.safeZone:
-      return { label: "Safe zone", color: "rgb(120, 230, 255)" };
-    case OBJECTIVE.nextZone:
-      return { label: "Next zone", color: "rgb(255, 214, 90)" };
-    case OBJECTIVE.core:
-      return { label: `Core${held}`, color: "rgb(255, 205, 80)" };
-    case OBJECTIVE.extraction:
-      return { label: "Extraction", color: o.team >= 0 ? sideCss(o.team, m.teams) : "rgb(150, 255, 170)" };
+      return { label: "Safe zone", color: "rgb(120, 230, 255)", icon: "zone" };
+    case OBJECTIVE.nextZone: {
+      const sq = squeezeView(m, nowTick);
+      const when = sq?.warning ? ` · ${formatTimer(secsUntil(sq.start, nowTick))}` : sq?.closing ? " · closing" : "";
+      return { label: `Next zone${when}`, color: "rgb(255, 214, 90)", icon: "nextZone" };
+    }
+    case OBJECTIVE.core: {
+      if (o.state === CORE_STATE.respawning) return null;
+      if (o.holder >= 0) {
+        const mate = m.teams > 0 && ownSide >= 0 && sideOf(m, o.holder) === ownSide;
+        const side = sideOf(m, o.holder);
+        const color = m.teams > 0 && side >= 0 ? sideCss(side, m.teams) : CORE_CSS;
+        return { label: mate ? `Escort ${holder}` : `Core · ${holder}`, color, icon: "carrier" };
+      }
+      if (o.state === CORE_STATE.embedded) return { label: "Core · dig it out", color: CORE_CSS, icon: "core" };
+      if (o.state === CORE_STATE.dropped) {
+        const left = secsUntil(o.timerEnd, nowTick);
+        return { label: `Core dropped${left > 0 ? ` · ${Math.ceil(left)} s` : ""}`, color: CORE_CSS, icon: "core" };
+      }
+      return { label: "Core · take it", color: CORE_CSS, icon: "core" };
+    }
+    case OBJECTIVE.extraction: {
+      const color = o.team >= 0 && m.teams > 0 ? sideCss(o.team, m.teams) : "rgb(150, 255, 170)";
+      const carrying = own >= 0 && m.objectives.some((c) => c.kind === OBJECTIVE.core && c.holder === own);
+      const ours = m.teams === 0 || o.team < 0 || o.team === ownSide;
+      if (carrying && ours) return { label: "Deliver here", color, icon: "extraction" };
+      if (m.teams > 0 && o.team >= 0 && ownSide >= 0) return { label: ours ? "Your extraction" : `${teamName(o.team)} extraction`, color, icon: "extraction" };
+      return { label: "Extraction", color, icon: "extraction" };
+    }
     case OBJECTIVE.reactor: {
+      if (o.state !== REACTOR_STATE.held && o.holder < 0) return null;
       const fuse = secsUntil(o.timerEnd, nowTick);
-      return { label: `Reactor${fuse > 0 ? ` ${fuse.toFixed(1)} s` : ""}${held}`, color: "rgb(255, 90, 70)" };
+      return { label: `Reactor${fuse > 0 ? ` ${fuse.toFixed(1)} s` : ""}${holder ? ` · ${holder}` : ""}`, color: "rgb(255, 90, 70)", icon: "reactor" };
     }
     default:
       return null;
@@ -287,12 +398,13 @@ export function objectiveMarkers(
   camera: Vec3,
   width: number,
   height: number,
+  ownSide = -1,
 ): Marker[] {
   if (!m.running) return [];
   const out: Marker[] = [];
   for (const o of m.objectives) {
     if (o.holder === own && own >= 0) continue;
-    const style = markerStyle(o, m, names, nowTick);
+    const style = markerStyle(o, m, names, nowTick, own, ownSide);
     if (!style) continue;
     const s = projectMarker(viewProj, o.pos, width, height);
     const d = dist(camera, o.pos);
@@ -303,6 +415,7 @@ export function objectiveMarkers(
       label: style.label,
       detail: inside ? "inside" : `${Math.round(d)} u`,
       color: style.color,
+      icon: style.icon,
       ...s,
     });
   }
@@ -405,7 +518,8 @@ export class ModeHud {
     this.alerts.replaceChildren(
       ...model.alerts.filter((a) => a.level !== "info").map((a) => {
         const d = el("div", `mode-alert ${a.level}`);
-        d.textContent = a.text;
+        if (a.icon) el("span", "mode-alert-icon", d).innerHTML = iconSvg(a.icon);
+        el("span", "mode-alert-text", d).textContent = a.text;
         return d;
       }),
     );
@@ -433,7 +547,13 @@ export class ModeHud {
       node.style.setProperty("--side", mk.color);
       node.style.transform = `translate(${mk.x.toFixed(1)}px, ${mk.y.toFixed(1)}px)`;
       const arrow = node.children[0] as HTMLElement | undefined;
-      if (arrow) arrow.style.transform = `translate(-50%, -50%) rotate(${mk.angle.toFixed(3)}rad)`;
+      // The arrow sits outside the icon badge, pointing toward the objective.
+      if (arrow) arrow.style.transform = `rotate(${mk.angle.toFixed(3)}rad) translate(15px, -7px)`;
+      const dot = node.children[1] as HTMLElement | undefined;
+      if (dot && dot.dataset["icon"] !== mk.icon) {
+        dot.dataset["icon"] = mk.icon;
+        dot.innerHTML = iconSvg(mk.icon);
+      }
       const text = node.children[2];
       const label = text?.children[0];
       const detail = text?.children[1];

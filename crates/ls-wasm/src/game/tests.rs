@@ -197,6 +197,26 @@ fn surface_states_reach_the_mesh_flags_and_expire() {
 }
 
 #[test]
+fn practice_shell_puts_the_squeeze_wall_on_the_terrain() {
+    // The visual gallery's Squeeze scenes (M3 C1): the shell is solid outside the sphere.
+    let mut g = small_practice(0);
+    let center = g.terrain().bounds().center();
+    let shell = ls_sim::ShellSphere {
+        center,
+        radius: 12.0,
+    };
+    assert!(g.practice_shell(Some(shell)));
+    assert_eq!(g.terrain().shell(), Some(shell));
+    let outside = center + Vec3::new(30.0, 0.0, 0.0);
+    assert!(
+        ls_math::terrain::TerrainQuery::sdf(g.terrain(), outside) < 0.0,
+        "rock beyond the shell"
+    );
+    assert!(g.practice_shell(None));
+    assert_eq!(g.terrain().shell(), None);
+}
+
+#[test]
 fn practice_rejects_bad_share_codes() {
     assert!(GameCore::practice("LS00-nope", 1).is_err());
     let typo = "LS0C-0000-0000-000A-K4M7-8001-8F1Y";

@@ -273,7 +273,7 @@ test("mode HUD model: team scoreline, free-for-all leaders, stage, lives, meter,
   let h = modeHudModel(hudInput({ mode: mode({ mode: "team_brawl", teams: 4, teamScores: [3, 9, 1, 0], scoreTarget: 15 }), ownSide: 1 }));
   assert.equal(h.title, "Team Brawl");
   assert.equal(h.timer, "2:05");
-  assert.equal(h.target, "First to 15");
+  assert.equal(h.target, "First to 15 kills");
   assert.deepEqual(h.chips.map((c) => [c.name, c.score, Math.round(c.fill), c.yours, c.leading]), [
     ["Orange", "3", 20, false, false],
     ["Blue", "9", 60, true, true],
@@ -547,4 +547,84 @@ test("session: practice has no lobby and sends nothing", () => {
   assert.equal(r.transition, false);
   assert.deepEqual(r.mode, emptyModeState(), "a core without modeState gives the empty state");
   assert.equal(s.setReady(true), false);
+});
+
+test("mode HUD wording per mode (C1): walls, Heist, Hot Reactor, Last Color Standing, Instagib, icons", () => {
+  const o = (id: number, kind: number, extra: Partial<ModeState["objectives"][number]> = {}) => ({
+    id,
+    kind,
+    team: -1,
+    holder: -1,
+    state: 0,
+    timerEnd: 0,
+    radius: 0,
+    pos: { x: 0, y: 0, z: 0 },
+    ...extra,
+  });
+  // The Squeeze: walls warn (9 s), then close.
+  const sq = (now: number) =>
+    hudInput({
+      nowTick: now,
+      ownPos: { x: 0, y: 0, z: 0 },
+      mode: mode({
+        mode: "the_squeeze",
+        teams: 0,
+        stage: 2,
+        objectives: [o(0, OBJECTIVE.safeZone, { radius: 60, timerEnd: 1540, state: 1 }), o(1, OBJECTIVE.nextZone, { radius: 10, timerEnd: 3340, pos: { x: 40, y: 0, z: 0 } })],
+      }),
+    });
+  let h = modeHudModel(sq(1000));
+  assert.equal(h.stage, "Phase 2 · walls close in 0:09");
+  assert.equal(h.target, "Last ship flying wins");
+  assert.deepEqual(h.alerts.map((a) => [a.level, a.icon]), [["warning", "nextZone"]]);
+  assert.match(h.alerts[0]!.text, /Walls close in 0:09: reach the next zone/);
+  h = modeHudModel(sq(2000));
+  assert.match(h.stage, /walls closing/);
+  assert.equal(h.alerts[0]!.level, "danger");
+
+  // Heist: carrier markers by side, extraction labels, dropped core.
+  const proj = mat4.perspective(Math.PI / 2, 1, 0.1, 1000);
+  const vp = mat4.multiply(proj, mat4.viewFromPose({ x: 0, y: 0, z: 0 }, q.identity()));
+  const heist = (state: number, holder: number) =>
+    mode({
+      mode: "heist",
+      teams: 2,
+      scoreTarget: 3,
+      players: [
+        { id: 3, side: 0, score: 0, lives: -1, meter: 0, flags: 0 },
+        { id: 5, side: 1, score: 0, lives: -1, meter: 0, flags: 0 },
+      ],
+      objectives: [
+        o(0, OBJECTIVE.core, { state, holder, timerEnd: 1000 + 600, pos: { x: 0, y: 0, z: -20 } }),
+        o(1, OBJECTIVE.extraction, { team: 0, radius: 7, pos: { x: 0, y: 0, z: -40 } }),
+        o(2, OBJECTIVE.extraction, { team: 1, radius: 7, pos: { x: 0, y: 0, z: -60 } }),
+      ],
+    });
+  const labels = (m: ModeState, own = 0, side = 0) => objectiveMarkers(m, own, new Map([[3, "Ada"], [5, "Bo"]]), 1000, vp, { x: 0, y: 0, z: 0 }, 800, 800, side).map((k) => [k.label, k.icon]);
+  assert.deepEqual(labels(heist(2, 3)), [["Escort Ada", "carrier"], ["Your extraction", "extraction"], ["Blue extraction", "extraction"]]);
+  assert.deepEqual(labels(heist(2, 5))[0], ["Core · Bo", "carrier"]);
+  assert.deepEqual(labels(heist(0, -1))[0], ["Core · dig it out", "core"]);
+  assert.deepEqual(labels(heist(3, -1))[0], ["Core dropped · 10 s", "core"]);
+  assert.deepEqual(labels(heist(2, 0), 0, 0).map((l) => l[0]), ["Deliver here", "Blue extraction"], "own carrier: no core marker, deliver home");
+  assert.equal(modeHudModel(hudInput({ mode: heist(2, 3) })).target, "3 deliveries win");
+  assert.match(modeHudModel(hudInput({ mode: heist(2, 5) })).alerts[0]!.text, /Bo has the core: stop them/);
+  assert.equal(modeHudModel(hudInput({ mode: heist(2, 3) })).alerts[0]!.level, "info", "a teammate carries it");
+
+  // Hot Reactor: close to someone else's reactor.
+  const reactor = mode({ mode: "hot_reactor", teams: 0, objectives: [o(0, OBJECTIVE.reactor, { state: 1, holder: 3, radius: 15, timerEnd: 1300, pos: { x: 5, y: 0, z: 0 } })] });
+  h = modeHudModel(hudInput({ mode: reactor }));
+  assert.equal(h.target, "Last pilot with lives wins");
+  assert.match(h.alerts[0]!.text, /Too close to the reactor/);
+  assert.equal(modeHudModel(hudInput({ mode: reactor, ownPos: { x: 40, y: 0, z: 0 } })).alerts.length, 0);
+
+  // Last Color Standing: last drop of colour, stalemate stage.
+  const lcs = mode({ mode: "last_color_standing", teams: 0, stage: 1, flags: VIEW_FLAG.meter, players: [{ id: 0, side: 0, score: 0, lives: -1, meter: 30, flags: 0 }] });
+  h = modeHudModel(hudInput({ mode: lcs }));
+  assert.match(h.stage, /Stalemate/);
+  assert.deepEqual(h.alerts.map((a) => a.icon), ["colour"]);
+
+  // Instagib: the title says so; hull and energy hide.
+  h = modeHudModel(hudInput({ mode: mode({ mode: "team_brawl", flags: VIEW_FLAG.instagib }) }));
+  assert.equal(h.title, "Team Brawl · Instagib");
+  assert.equal(h.instagib, true);
 });

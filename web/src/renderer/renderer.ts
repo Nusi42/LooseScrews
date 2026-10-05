@@ -23,6 +23,7 @@ import { initGpu, type GpuContext } from "./gpu.ts";
 import { GpuTimer, type GpuTimings } from "./gpuTimer.ts";
 import { LightSystem, lightBindLayoutEntries, type PointLight } from "./lights.ts";
 import { HullFrame } from "./hullFrame.ts";
+import { ModeFxPass, type ModeVolume } from "./modeFx.ts";
 import { GpuMesh, type MeshData } from "./mesh.ts";
 import { LEGACY_MESH_BUILDERS, MESH_BUILDERS, MESH_KINDS, type MeshKind } from "./models/index.ts";
 import { ParticleSystem } from "./particles.ts";
@@ -99,6 +100,12 @@ export interface Instance {
   glow?: number;
   /** Nav light blink phase in seconds (VQ4), so ships do not blink in lockstep; default 0. */
   blink?: number;
+  /**
+   * Opaque pass only: 0..1 how much of its colour survives a monochrome
+   * grade (Last Color Standing, M3 C1; post.ts KEEP_ALPHA). Shares the
+   * opacity slot, which the opaque pass does not use; default 0.
+   */
+  keepColor?: number;
 }
 
 /**
@@ -126,7 +133,7 @@ export function packInstances(instances: readonly Instance[], out?: Float32Array
     data[o + 10] = inst.color[2];
     data[o + 11] = inst.emissive;
     data[o + 12] = inst.stretch ?? 1;
-    data[o + 13] = inst.opacity ?? 1;
+    data[o + 13] = inst.keepColor ? 1 + Math.min(1, Math.max(0, inst.keepColor)) : (inst.opacity ?? 1);
     data[o + 14] = inst.glow ?? 0;
     data[o + 15] = inst.blink ?? 0;
   });
@@ -277,6 +284,9 @@ export class Renderer {
   /** Dynamic point lights (VQ6, lights.ts): this frame's lights from `setLights`. */
   private readonly lightSystem: LightSystem;
   private lights: readonly PointLight[] = [];
+  /** Mode effects (M3 C1, modeFx.ts): this frame's volumes from `setModeVolumes`. */
+  private readonly modeFx: ModeFxPass;
+  private modeVolumes: readonly ModeVolume[] = [];
   private depthTexture: GPUTexture | null = null;
   private msaaTexture: GPUTexture | null = null;
   private startTime = performance.now();
@@ -376,6 +386,7 @@ export class Renderer {
     this.scenePipelinesFor(this.qualityLevel);
     this.post = new PostChain(device, gpu.format);
     this.particles = particles ? new ParticleSystem(device, this.frameBuffer, this.qualityLevel.particles) : null;
+    this.modeFx = new ModeFxPass(device);
 
     this.timer = GpuTimer.create(device);
 
@@ -560,6 +571,14 @@ export class Renderer {
     this.lights = lights;
   }
 
+  /**
+   * This frame's mode effect volumes (glowing Squeeze walls, zones, beams,
+   * halos; game/modeVisuals.ts builds them). Kept until the next call.
+   */
+  setModeVolumes(volumes: readonly ModeVolume[]): void {
+    this.modeVolumes = volumes;
+  }
+
   /** Lights uploaded in the last frame and the candidates they were chosen from. */
   get lightStats(): { lights: number; candidates: number } {
     return { lights: this.lightSystem.lastCount, candidates: this.lightSystem.lastCandidates };
@@ -569,6 +588,7 @@ export class Renderer {
   clearInstances(): void {
     this.setScene(emptyScene());
     this.lights = [];
+    this.modeVolumes = [];
   }
 
   /** View-projection matrix of `camera` at the current canvas aspect (screen-space labels). */
@@ -625,8 +645,8 @@ export class Renderer {
           view: depthView,
           depthClearValue: 1,
           depthLoadOp: first ? "clear" : "load",
-          // The particle pass reads the depth after the scene (soft particles).
-          depthStoreOp: last && !this.particles ? "discard" : "store",
+          // The particle and mode passes read the depth after the scene (soft particles).
+          depthStoreOp: last && !this.particles && this.modeVolumes.length === 0 ? "discard" : "store",
         },
       });
       pass.setBindGroup(0, this.bindGroup);
@@ -670,6 +690,9 @@ export class Renderer {
 
     if (sky) this.sky.composite(encoder, this.post.sceneHdr, camera, time, timer);
     if (quality.shafts) this.sky.encodeShafts(encoder, this.post.sceneHdr, viewProj, timer);
+    // Mode effects (walls, zones, beams) over the backdrop, under the particles.
+    const size = { width: this.canvas.width, height: this.canvas.height };
+    this.modeFx.encode(encoder, sceneView, this.depthTexture!, camera, size, this.modeVolumes, time, this.settings.fogDensity, timer);
     // Particles after the sky and shafts: smoke and glows draw over the finished backdrop.
     this.particles?.encode(encoder, sceneView, this.depthTexture!, camera, { width: this.canvas.width, height: this.canvas.height }, timer);
     this.post.encode(encoder, this.context.getCurrentTexture().createView(), this.settings.post, time, timer);
@@ -690,6 +713,7 @@ export class Renderer {
     this.terrainMaterial.destroy();
     this.lightSystem.destroy();
     this.particles?.destroy();
+    this.modeFx.destroy();
     this.sky.destroy();
     this.timer?.destroy();
     this.frameBuffer.destroy();

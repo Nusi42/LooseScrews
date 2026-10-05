@@ -7,6 +7,7 @@
 import { FRAME_WGSL } from "./frame.ts";
 import { LIGHTING_WGSL } from "./lighting.ts";
 import { MODEL_SHADING_WGSL } from "../models/shading.ts";
+import { KEEP_ALPHA } from "./post.ts";
 
 /** HDR radiance of a fully emissive instance (emissive = 1), in multiples of its colour. */
 export const EMISSIVE_PEAK = 6;
@@ -87,7 +88,8 @@ ${MODEL_SHADING_WGSL}
 fn fs_main(in: VsOut) -> @location(0) vec4f {
   let n = normalize(in.normal);
   let color = shade_model(in.part, n, in.world_pos, in.local_pos, normalize(in.local_normal), in.color, in.fx.x, in.fx.y);
-  return vec4f(apply_fog(color, in.world_pos), 1.0);
+  // Alpha above 1 marks colour a monochrome grade keeps (Last Color Standing; the opacity slot carries 1 + keep).
+  return vec4f(apply_fog(color, in.world_pos), 1.0 + clamp(in.opacity - 1.0, 0.0, 1.0) * ${KEEP_ALPHA});
 }
 `;
 

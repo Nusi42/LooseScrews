@@ -1,0 +1,32 @@
+// Browser smoke test rule set (tools/browser-smoke/smoke.mjs, "lobby" phase, M3 C1): Instagib
+// Brawl with four teams and a 12 s match (four team colours, the Instagib HUD). Not a gameplay
+// rule set. Based on data/rulesets/instagib_brawl.ron.
+RuleSet(
+    name: "Browser smoke - Instagib 4 teams",
+    mode: TeamBrawl((
+        teams: 4,
+        match_secs: 12.0,
+        respawn_secs: 3.0,
+        kill_target: 0,
+        team_kill_penalty: 1,
+    )),
+    weapons: {
+        "railspike": LoadoutOnly,
+    },
+    gadgets: {},
+    starting_loadout: (
+        primaries: ["railspike"],
+        secondaries: [],
+        gadget: None,
+    ),
+    pickups: {},
+    upgrade_pickups: {},
+    gadget_pickups: {},
+    scrap_pickup: None,
+    shield_overrides: {},
+    tuning: {},
+    friendly_fire_percent: 50,
+    allowed_ship_types: [Skitter, Tinker, Hauler, Tug],
+    absurdity: 20,
+    mutators: [Instagib],
+)

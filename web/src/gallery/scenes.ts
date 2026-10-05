@@ -3,6 +3,7 @@
 // (gallery.ts) and by tools/browser-smoke/gallery.mjs (Node strips the types).
 
 import type { SceneDecor } from "./decor.ts";
+import type { ModeSceneKind } from "./modeScenes.ts";
 
 /** World of a scene: the share code is `randomShareCode(seed, 0, enclosure, density)`. */
 export interface GalleryWorld {
@@ -27,7 +28,7 @@ export type PoseKind = "closeup" | "tunnel" | "vista" | "border" | "sun" | "plan
  * fixed test shape (VQ1): a rock ball ahead with a dead-end tunnel of
  * FIT_TUNNEL_RADIUS bored along the view.
  */
-export type SceneContent = "none" | "lineup" | "fight" | "lights" | "explosion" | "stress" | "fit";
+export type SceneContent = "none" | "lineup" | "fight" | "lights" | "explosion" | "stress" | "fit" | "mode";
 
 /** Radius of the `fit` scene's tunnel (u): 1.2 u across. */
 export const FIT_TUNNEL_RADIUS = 0.6;
@@ -51,6 +52,8 @@ export interface GalleryScene {
    * show (VQ1); absent = no cockpit, the plain camera.
    */
   ship?: number;
+  /** "mode" content: which mode's visuals (M3 C1, modeScenes.ts). */
+  mode?: ModeSceneKind;
 }
 
 const CAVES: GalleryWorld = { seed: 7, enclosure: 50, density: 50 };
@@ -186,6 +189,14 @@ export const SCENES: readonly GalleryScene[] = [
   },
   { id: "cockpit-skitter", title: "Skitter cockpit", covers: "fit, ships", world: CAVES, pose: "tunnel", content: "none", time: 1.0, ship: 0 },
   { id: "cockpit-tug", title: "Tug cockpit", covers: "fit, ships", world: CAVES, pose: "tunnel", content: "none", time: 1.0, ship: 3 },
+  // M3 C1 mode visuals.
+  { id: "squeeze-warn", title: "The Squeeze: walls glowing before a close, next zone", covers: "modes, effects", world: { seed: 7, enclosure: 20, density: 70 }, pose: "vista", content: "mode", mode: "squeeze-warn", time: 4.0 },
+  { id: "squeeze-close", title: "The Squeeze: walls grinding inward, a ship scraping", covers: "modes, effects", world: { seed: 7, enclosure: 20, density: 70 }, pose: "vista", content: "mode", mode: "squeeze-close", time: 4.0 },
+  { id: "heist-carrier", title: "Heist: core carrier and extraction zones", covers: "modes, effects", world: { seed: 7, enclosure: 100, density: 30 }, pose: "tunnel", content: "mode", mode: "heist-carrier", time: 4.0 },
+  { id: "heist-dig", title: "Heist: the embedded core marked on the rock", covers: "modes, effects", world: CAVES, pose: "closeup", content: "mode", mode: "heist-dig", time: 4.0 },
+  { id: "reactor", title: "Hot Reactor: holder, fuse radius and ring", covers: "modes, effects", world: CAVES, pose: "vista", content: "mode", mode: "reactor", time: 4.0 },
+  { id: "last-color", title: "Last Color Standing: monochrome world, colour meters on hulls", covers: "modes, ships", world: CAVES, pose: "tunnel", content: "mode", mode: "last-color", time: 4.0 },
+  { id: "teams4", title: "Four team colours: liveries and paint", covers: "modes, ships, paint", world: CAVES, pose: "closeup", content: "mode", mode: "teams4", decor: "teams4", time: 4.0 },
 ];
 
 export function sceneById(id: string): GalleryScene | undefined {
@@ -204,6 +215,8 @@ export const PASS_BUDGETS_MS: Readonly<Record<string, number>> = {
   lights: 1.0,
   sky: 0.6,
   post: 1.2,
+  // M3 C1 mode effects (modeFx.ts): zones, beams and halos cost little; a Squeeze wall filling the screen is the worst case.
+  mode: 1.0,
 };
 
 /** Whole frame (sum of the passes) at "high" on the reference mid GPU. */

@@ -1,6 +1,6 @@
 # Visual quality plan: first impression
 
-Status: proposal. Trigger: review findings after M2: the FOV feels wrong; openings look passable up close, but the ship does not fit through; the ships look too basic; the effects look dated and sparse; the textures are too simple and switch hard between polygons. Requirement: the first impression must be strong, because players rarely give a game a second chance.
+Status: in progress (package status in §3 "Package status"). Trigger: review findings after M2: the FOV feels wrong; openings look passable up close, but the ship does not fit through; the ships look too basic; the effects look dated and sparse; the textures are too simple and switch hard between polygons. Requirement: the first impression must be strong, because players rarely give a game a second chance.
 
 This plan treats visual quality as a first-class track that runs alongside the M3 waves (`docs/milestone-3-plan.md`). It has three parts: findings with evidence (§1), the immediate fix for openings that look passable but block the ship (§2), and a prioritized overhaul as work packages (§3–§5).
 
@@ -96,6 +96,21 @@ Rules for every package:
 - Tests: pure TS logic (packing, maths, effect timelines, presets) gets `node --test` unit tests. Shaders are compiled in the browser smoke run, and the smoke run fails on any WebGPU validation error.
 
 ### Priority order and ownership
+
+### Package status
+
+| Package | Status |
+| --- | --- |
+| VQ0 Contact distance | Done, on `main` since wave A (see §2). |
+| VQ8 Visual QA harness | Done (WIN9), merged on WIN1 with wave B. GPU timings only measured on an RTX 5080; reference-GPU and integrated-GPU (`--power low`) runs are open; material-border and paint-edge scenes wait for VQ3b. |
+| VQ2 HDR core and post | Done (WIN9), merged on WIN1 with wave B. Exposure, bloom and AgX look tuned by eye; phone review open. |
+| VQ3a Terrain mesh data | Done (WIN11), merged on WIN1 before B3; worldgen goldens re-blessed together with B3's generator version 3. Meshing costs about 2x per chunk (plan: +40 %). Integration: The Squeeze's shell mesher uses the same snap through `ChunkStore::mesh_surface_nets_min` (milestone-3-plan.md "Wave B integration"). |
+| VQ4 Ships and props | Done (WIN10), merged on WIN1 after VQ2. Integration: the object shader edits moved into `shaders/objects.ts`; `shade_model` follows VQ2's colour convention (material literals linearised at build time, the plain part and the instance emissive wash use `emissive_glow`); `Renderer.create(canvas, { quality, legacyModels })`. Engine and nav-light strengths are still the LDR-tuned values (pending review); the wreck's hull type is still inferred on the client. |
+| VQ1 Camera and scale cues | Open (not merged yet). |
+| VQ3b Terrain shading (uses VQ3a's AO) | Open (not merged yet). |
+| VQ5 Particles and VFX | Open (not merged yet). |
+| VQ6 Dynamic lights | Open (not merged yet). |
+| VQ7 Atmosphere and backdrop | Open (not merged yet). |
 
 **VQ2 as built (WIN9):** see [architecture/renderer.md](architecture/renderer.md). Scene into `rgba16float` with MSAA 4x (resolve), bloom (6 mips at "high", 13-tap down with Karis average and a soft-knee threshold at scene radiance 1.0, tent up, added), exposure 1.4, colour grade hook (`Renderer.settings.post.grade`: ASC CDL plus saturation and a monochrome blend that can keep one hue; `GRADE_PRESETS` neutral, caves, mines, sky, lastColor), vignette 0.35, AgX with a look (power 1.3, saturation 1.25), sRGB encode in the composite shader, half-LSB dither, film grain off. Display-authored colours are linearised (frame uniforms in TS, instance colours and shader literals in WGSL); emissive instances reach 6x their colour (`emissiveGain`). `shaders.ts` is split into `shaders/frame.ts`, `lighting.ts`, `terrain.ts`, `objects.ts`, `post.ts`. `RenderQuality` in `renderer/quality.ts` (high: MSAA 4x, 6 bloom mips; medium: MSAA 4x, 4 mips; low: no MSAA, no bloom, still tonemapped), `?quality=` forces one, otherwise one automatic step down after 5 s of GPU-timed frames (median > 8 ms medium, > 14 ms low). Measured with the gallery (RTX 5080, Chrome 154, 1920x1080, "high"): post 0.08 ms, MSAA 4x about +0.03 ms on the terrain pass (high vs low: terrain 0.10 vs 0.07-0.08 ms), whole frame 0.12-0.21 ms; at 3840x2160 post 0.22 ms and MSAA about +0.11 ms. The reference mid GPU (GTX 1660 class) has about 1/5 of that bandwidth and 1/10 of the compute, so post is estimated at 0.4-0.9 ms (budget 1.2) and MSAA at 0.15-0.3 ms (budget 0.8); a measurement on that class is still open. Deviations: medium keeps MSAA 4x (WebGPU supports only 1 and 4 samples); "low" is HDR without MSAA and bloom rather than the pre-VQ2 LDR path (one cheap composite pass, same shaders on every adapter). The browser smoke now requires the six pipelines terrain, instanced, translucent, bloom down, bloom up, composite (not exactly three).
 

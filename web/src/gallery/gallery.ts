@@ -48,6 +48,7 @@ import { chargeLight } from "../game/chargeFx.ts";
 import { modeMoment, modeScene } from "./modeScenes.ts";
 import { colourMeterStyle, monochromeGrade } from "../game/modeVisuals.ts";
 import { runPageScene } from "../attract/galleryPages.ts";
+import { shipMeshKind } from "../renderer/models/index.ts";
 
 /** Frames rendered before the page reports ready. */
 const WARMUP_FRAMES = 20;
@@ -449,7 +450,10 @@ export async function runGallery(canvas: HTMLCanvasElement, ui: HTMLElement, loc
     renderer.settings.terrainSeed = hashSeed(status.shareCode);
     // The world's sky, fog and grade (VQ7) before its chunks arrive.
     // `?atmosphere=off`: the pre-VQ7 look (flat fog, no sky, neutral grade) for before shots.
-    const atmosphere = atmosphereFor(status.shareCode, game.bounds());
+    // `palette` (M4 A7) is render only: the scene's Palette step, or `?palette=<0..100>` for any scene.
+    const paletteParam = new URLSearchParams(loc.search).get("palette");
+    const palette = paletteParam !== null && paletteParam !== "" ? Number(paletteParam) : w.palette;
+    const atmosphere = atmosphereFor(status.shareCode, game.bounds(), palette !== undefined && Number.isFinite(palette) ? { palette } : {});
     if (new URLSearchParams(loc.search).get("atmosphere") !== "off") renderer.setAtmosphere(atmosphere);
     // `?grade=<preset>`: try a colour grade (post.ts GRADE_PRESETS).
     const grade = new URLSearchParams(loc.search).get("grade");
@@ -570,7 +574,13 @@ export async function runGallery(canvas: HTMLCanvasElement, ui: HTMLElement, loc
       }
       if (particles) status.particles = particles.liveCount();
     } else {
-      renderer.setScene(sceneContent(scene, pose, visuals, impact, lights, particles !== null && scene.content !== "lights", wallAhead));
+      const content = sceneContent(scene, pose, visuals, impact, lights, particles !== null && scene.content !== "lights", wallAhead);
+      // Pigmented hulls (M4 A7 keep mask): their colour survives the monochrome ink.
+      for (const t of scene.keepShips ?? []) {
+        const kind = shipMeshKind(t);
+        content.opaque[kind] = (content.opaque[kind] ?? []).map((inst) => ({ ...inst, keepColor: 1 }));
+      }
+      renderer.setScene(content);
     }
     if (particles && scene.content !== "mode") {
       // VQ5: the particles of the scene's synthetic history up to its time (vfxScenes.ts).

@@ -12,12 +12,15 @@
 // - The seed picks the sky (nebula palette, sun, planet, galactic band), so a
 //   share code always shows the same sky.
 // - The Palette slider (game design doc: "Full color" .. "black-and-white ink
-//   style, via desaturated") lowers the grade's saturation.
+//   style, via desaturated"; milestone-4-plan.md §3.3) lowers the grade's
+//   saturation to 50 % at 49, fades the ink look in from 50 and makes a
+//   monochrome ink level from 80 (ink.ts `inkForPalette`).
 //
 // Colours are display (sRGB) values like every other authored colour.
 
 import type { Vec3 } from "../math/vec3.ts";
 import type { MeshData } from "./mesh.ts";
+import { inkForPalette, paletteSaturation, type InkLook } from "./ink.ts";
 import { GRADE_PRESETS, type ColorGrade } from "./post.ts";
 
 type Rgb = readonly [number, number, number];
@@ -37,7 +40,7 @@ export interface WorldCode {
   version: number;
   seed: bigint;
   sliders: WorldSliders;
-  /** Level archetype (ls-math `Archetype` index): 0 classic, 1 asteroid belt. */
+  /** Level archetype (ls-math `Archetype` index, generator version 4+): 0 classic, 1 asteroid belt (0 for older codes). */
   archetype: number;
 }
 
@@ -198,6 +201,8 @@ export interface Atmosphere {
   /** Height fog: density at `baseY`, falling off by `falloff` per u upwards. */
   heightFog: { density: number; falloff: number; baseY: number };
   grade: ColorGrade;
+  /** The Palette slider's ink look (M4 A7, ink.ts). */
+  ink: InkLook;
   /** Light shaft strength (screen-space, from the sun; 0 = off). */
   shafts: number;
 }
@@ -226,7 +231,7 @@ function pick<T>(xs: readonly T[], r: number): T {
   return xs[Math.min(xs.length - 1, Math.floor(r * xs.length))] as T;
 }
 
-/** The colour grade of a world: the presets blended by world type, desaturated by the Palette slider. */
+/** The colour grade of a world: the presets blended by world type, desaturated by the Palette slider (ink.ts `paletteSaturation`). */
 export function worldGrade(weights: { sky: number; cave: number; mine: number }, palette: number): ColorGrade {
   const { sky, caves, mines } = GRADE_PRESETS;
   const p = Math.min(Math.max(palette, 0), 100) / 100;
@@ -234,7 +239,7 @@ export function worldGrade(weights: { sky: number; cave: number; mine: number },
     slope: blend3(weights, sky.slope, caves.slope, mines.slope),
     offset: blend3(weights, sky.offset, caves.offset, mines.offset),
     power: blend3(weights, sky.power, caves.power, mines.power),
-    saturation: blend(weights, sky.saturation, caves.saturation, mines.saturation) * (1 - 0.9 * p),
+    saturation: blend(weights, sky.saturation, caves.saturation, mines.saturation) * paletteSaturation(p * 100),
     monochrome: 0,
     monoTint: [1, 1, 1],
     monoKeep: 0,
@@ -245,8 +250,9 @@ export function worldGrade(weights: { sky: number; cave: number; mine: number },
  * The atmosphere of the world with share code `code` (any string; an
  * undecodable one gets the caverns look from a hash of the text) and level
  * box `bounds` ([minX, minY, minZ, maxX, maxY, maxZ], ls-wasm `Game.bounds()`).
+ * `overrides.palette` replaces the code's Palette slider (gallery scenes).
  */
-export function atmosphereFor(code: string, bounds?: ArrayLike<number>): Atmosphere {
+export function atmosphereFor(code: string, bounds?: ArrayLike<number>, overrides: { palette?: number } = {}): Atmosphere {
   const world = decodeShareCode(code);
   let seed32: number;
   if (world) {
@@ -258,7 +264,7 @@ export function atmosphereFor(code: string, bounds?: ArrayLike<number>): Atmosph
   const rnd = seededRandom(seed32 ^ 0x5b7c1a93);
   // Asteroid belts are open space whatever their Enclosure (it sizes the asteroids).
   const weights = world?.archetype === ARCHETYPE_BELT ? worldWeights(0) : worldWeights(world?.sliders.enclosure ?? 50);
-  const palette = world?.sliders.palette ?? 0;
+  const palette = overrides.palette ?? world?.sliders.palette ?? 0;
 
   let room: Atmosphere["room"] = null;
   if (bounds && bounds.length >= 6) {
@@ -331,6 +337,7 @@ export function atmosphereFor(code: string, bounds?: ArrayLike<number>): Atmosph
     fogDensity,
     heightFog,
     grade: worldGrade(weights, palette),
+    ink: inkForPalette(palette),
     shafts: weights.sky > 0 ? 0.6 + 0.4 * weights.sky : 0,
   };
 }

@@ -975,7 +975,10 @@ before the hidden ceiling (`?roomfade=off` cuts them sharply), the Fusion Charge
 from outside and from the cockpit, cloaked ships (`?cloak=flat` for the old translucent
 hull); M3 C1's mode scenes `squeeze-warn`, `squeeze-close` (the shell
 put on the practice terrain with `Game.practiceShell`), `heist-carrier`, `heist-dig`, `reactor`,
-`last-color` and `teams4`, built by `web/src/gallery/modeScenes.ts`; pass page options with `--query`) at 1920x1080 and saves one PNG per scene, plus a
+`last-color` and `teams4`, built by `web/src/gallery/modeScenes.ts`; M4 A7's Palette steps
+`palette-{0,40,65,85,100}` on caves (with `-mine` and `-sky` variants), `palette-100-paint`,
+`palette-100-pigment` and `palette-85-fight`, where `--query palette=<0..100>` renders any
+scene at another Palette step; pass page options with `--query`) at 1920x1080 and saves one PNG per scene, plus a
 `manifest.json` with the share code, the camera pose and the per-pass GPU times, under
 `target/visual-gallery/<label>/`. `target/visual-gallery/index.html` shows every label side by
 side per scene, so a package takes a `before` run on its base and an `after` run on its branch:
@@ -999,7 +1002,7 @@ It needs no game server (a static file server on 127.0.0.1 serves `web/dist`).
 
 GPU timing: with the optional `timestamp-query` feature every render pass writes timestamps
 (`web/src/renderer/gpuTimer.ts`; labels `terrain`, `objects`, `post`, later `particles`,
-`lights`, `sky`), averaged over 60 frames. `Renderer.detailedTiming` (on in the gallery and while
+`lights`, `sky`, `ink`), averaged over 60 frames. `Renderer.detailedTiming` (on in the gallery and while
 the F3 overlay shows) splits the scene into a terrain and an objects pass; otherwise the scene is
 one pass timed as `scene`. The F3 overlay shows the line `gpu <total> ms (worst ..) · <pass>
 <ms> ...`. The gallery launches the browser with `--enable-webgpu-developer-features`

@@ -19,6 +19,7 @@
 
 import { FRAME_WGSL, PAINT_COLOR_SHIFT, TEAM_SLOTS } from "./frame.ts";
 import { LIGHTING_WGSL } from "./lighting.ts";
+import { KEEP_ALPHA } from "./post.ts";
 
 /** World units per texture repeat of the rock layer (detail normals, cracks). */
 export const ROCK_SCALE_U = 9;
@@ -237,6 +238,8 @@ fn fs_main(in: VsOut) -> @location(0) vec4f {
   // (uniform rock skips this ALU).
   let fwp = fwidth(p);
   var emissive = vec3f(0.0);
+  // Paint keeps its colour through a monochrome look (M4 A7 ink, Last Color Standing).
+  var keep = 0.0;
   let ok = in.team.x + in.team.y + in.team.z + in.team.w;
   if (ok > 0.0) {
     // Paint: coverage sharpened into a splattered edge. Team and effect come
@@ -271,6 +274,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4f {
     f0 = mix(f0, 0.05, paint_w);
     bump = mix(bump, vec2f(0.75, 0.15), paint_w);
     emissive = tint * 0.3 * (paint_w - fx_w) + fx_col / max(fx_sum, 1e-4) * 0.4 * (1.0 - mark) * fx_w;
+    keep = paint_w;
   }
   if (dot(in.surf, vec4f(1.0)) > 0.0) {
     // Surface states (HDR, these bloom). Hot: dark crust with glowing cracks
@@ -326,6 +330,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4f {
   // the sky is drawn under the scene by its alpha). VQP.
   let cover = room_fade(p);
   if (cover < 0.01) { discard; }
-  return vec4f(apply_fog(color, p) * cover, cover);
+  // Alpha above 1 marks colour a monochrome look keeps (shaders/post.ts KEEP_ALPHA): painted rock.
+  return vec4f(apply_fog(color, p) * cover, cover + select(0.0, keep * ${KEEP_ALPHA}, cover >= 1.0));
 }
 `;

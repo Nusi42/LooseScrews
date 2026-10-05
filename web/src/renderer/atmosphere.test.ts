@@ -114,6 +114,48 @@ test("asteroid belts are open space with a sky", () => {
   assert.equal(mines.open, 0);
 });
 
+/**
+ * Test-only encoder of the generator version 4 layout (milestone-4-plan.md §3.8: version 8,
+ * archetype 3, seed 64, sliders 47 as one base-101 number with Enclosure most significant, CRC-8).
+ * Checked against a code made by the Rust encoder (ls-worldgen golden fixture).
+ */
+function encodeV4(version: number, archetype: number, seed: bigint, sliders: number[]): string {
+  let packedSliders = 0n;
+  for (const v of sliders) packedSliders = packedSliders * 101n + BigInt(v);
+  let bits = BigInt(version);
+  bits = (bits << 3n) | BigInt(archetype);
+  bits = (bits << 64n) | seed;
+  bits = (bits << 47n) | packedSliders;
+  const packed = bits << 6n;
+  let crc = 0;
+  for (let i = 15; i >= 0; i--) {
+    crc ^= Number((packed >> BigInt(i * 8)) & 0xffn);
+    for (let k = 0; k < 8; k++) crc = crc & 0x80 ? ((crc << 1) ^ 0x07) & 0xff : (crc << 1) & 0xff;
+  }
+  bits = (bits << 8n) | BigInt(crc);
+  let body = "";
+  for (let i = 25; i >= 0; i--) body += CROCKFORD[Number((bits >> BigInt(i * 5)) & 31n)];
+  return `LS${body}`;
+}
+
+test("generator version 4 codes: archetype field and base-101 sliders (M4 §3.8 layout)", () => {
+  const sliders = [100, 0, 37, 99, 85, 100, 1];
+  const code = encodeV4(4, 1, 0xfedcba9876543210n, sliders);
+  assert.equal(code.length, 28, "still 26 symbols after LS");
+  assert.equal(encodeV4(4, 0, 42n, [50, 40, 50, 0, 0, 20, 30]), "LS0G-0000-0000-0001-AC58-T2XM-57ND".replace(/-/g, ""), "matches the Rust encoder");
+  const w = decodeShareCode(code);
+  assert.ok(w);
+  assert.equal(w.version, 4);
+  assert.equal(w.archetype, 1);
+  assert.equal(w.seed, 0xfedcba9876543210n);
+  assert.deepEqual(Object.values(w.sliders), sliders);
+  assert.equal(atmosphereFor(code).ink.mono, 1, "Palette 85 is an ink level");
+  // A flipped bit breaks the CRC; older codes keep archetype 0.
+  const bad = code.slice(0, 10) + (code[10] === "0" ? "1" : "0") + code.slice(11);
+  assert.equal(decodeShareCode(bad), null);
+  assert.equal(decodeShareCode(encode(3, 2n, [1, 2, 3, 4, 5, 6, 7]))?.archetype, 0);
+});
+
 // ----- world types, sky and grades -------------------------------------------------------------
 
 test("world weights follow the generator's Enclosure blend", () => {
@@ -185,9 +227,9 @@ test("grades: caves warm, mines sodium, sky cold; the Palette slider desaturates
   assert.ok(caves.slope[0] > caves.slope[2], "caves warm");
   assert.ok(mines.slope[0] / mines.slope[2] > caves.slope[0] / caves.slope[2], "mines warmer than caves");
   assert.ok(sky.slope[2] > sky.slope[0], "sky cold");
-  const ink = worldGrade(worldWeights(50), 100);
-  assert.ok(ink.saturation <= 0.11 * caves.saturation + 1e-9);
-  assert.equal(worldGrade(worldWeights(50), 50).saturation, caves.saturation * 0.55);
+  // M4 A7: half the saturation just below the ink (49); the monochrome levels take the rest out in the composite.
+  assert.ok(Math.abs(worldGrade(worldWeights(50), 49).saturation - caves.saturation * 0.5) < 1e-9);
+  assert.ok(worldGrade(worldWeights(50), 100).saturation <= 0.4 * caves.saturation + 1e-9);
   // The atmosphere carries the world's grade.
   assert.deepEqual(atmosphereFor(encode(3, 2n, [100, 40, 50, 0, 70, 20, 30]), BOUNDS).grade, worldGrade(worldWeights(100), 70));
 });

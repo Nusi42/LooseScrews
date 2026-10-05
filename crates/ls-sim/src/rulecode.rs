@@ -1170,6 +1170,8 @@ fn read_full_tail(
         allowed_ship_types,
         absurdity,
         mutators,
+        events: BTreeMap::new(),
+        pigment_pickup: None,
     }))
 }
 

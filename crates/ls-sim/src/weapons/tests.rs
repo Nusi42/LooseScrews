@@ -344,6 +344,7 @@ fn world() -> World {
         ],
         pickup_points: vec![],
         instability: 42,
+        absurdity: 0,
         heist: None,
     };
     World::new(WorldConfig {

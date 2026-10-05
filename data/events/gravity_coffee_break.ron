@@ -1,0 +1,13 @@
+// Gravity coffee break: Every gravity well switches off for 20 s (fades over 1 s;
+// `well_scale`).
+// Behaviour: crates/ls-sim/src/events/gravity_coffee_break.rs (B1). Schema: `ls_sim::events::EventDef`.
+EventDef(
+    id: "gravity_coffee_break",
+    name: "Gravity coffee break",
+    enabled: true,
+    weight: 1.0,
+    active_secs: 20.0,
+    ending_secs: 1.0,
+    moods: [],
+    params: { "fade_secs": 1.0 },
+)

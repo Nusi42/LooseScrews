@@ -13,6 +13,9 @@
 //! - [`World`]: projectiles, entities (debris, decoys, ghosts, dust),
 //!   splash, knockback, craters and paint, pickups, scrap, respawns and the
 //!   game mode, advanced by [`World::step`].
+//! - The comedy director ([`director`]) and its events ([`events`], one
+//!   module per event behind [`events::EventModule`], `data/events/*.ron`);
+//!   the replicated part is [`MoodView`] (`ModeView::mood`).
 //! - Game modes ([`modes`], one module per mode behind [`modes::ModeModule`])
 //!   and mutators ([`mutators`]); the replicated mode state is [`ModeView`]
 //!   ([`World::mode_view`]), the results table [`MatchResults`].
@@ -27,8 +30,10 @@
 
 pub mod behavior;
 pub mod data;
+pub mod director;
 pub mod entity;
 pub mod error;
+pub mod events;
 pub mod gadgets;
 pub mod golden;
 pub mod hash;
@@ -48,8 +53,10 @@ pub mod world;
 
 pub use behavior::{gadget_cue, Command, Ctx, Cue, CueKind, DamageSource};
 pub use data::{data_hash, with_behavior_version, GameData, SIM_BEHAVIOR_VERSION};
+pub use director::{DirectorEvent, DirectorState, EventEffects, Mood, MoodView, RNG_STREAM_MOOD};
 pub use entity::{Entity, EntityKind, EntitySpawn, EntityView, ReplicatedKind, Source};
 pub use error::SimError;
+pub use events::{EventDef, EventKind, EventModule, EventPhase, EventTable, MoveEffects};
 pub use gadgets::{GadgetActivation, GadgetDef, GadgetId, GadgetTable};
 pub use hash::StateHasher;
 pub use input::{Buttons, InputCmd};
@@ -60,9 +67,9 @@ pub use mode::{
 pub use modes::heist::HeistLevel;
 pub use modes::MoveLimits;
 pub use ruleset::{
-    Availability, HeistRules, HotReactorRules, LastColorStandingRules, Loadout, ModeField,
-    ModeRules, Mutator, PaintTheVoidRules, PickupKind, PickupRule, ResolvedRules, RuleSet,
-    ScrapPickupRule, TeamBrawlRules, TheSqueezeRules, WeaponTuning,
+    Availability, EventRule, HeistRules, HotReactorRules, LastColorStandingRules, Loadout,
+    ModeField, ModeRules, Mutator, PaintTheVoidRules, PickupKind, PickupRule, PigmentPickupRule,
+    ResolvedRules, RuleSet, ScrapPickupRule, TeamBrawlRules, TheSqueezeRules, WeaponTuning,
 };
 pub use ship::{simulate_movement, ChargeState, MovementReport, PlayerId, ShipState, WeaponState};
 pub use terrain::{

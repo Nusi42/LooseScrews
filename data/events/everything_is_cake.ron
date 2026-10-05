@@ -1,0 +1,12 @@
+// Everything is cake: For 20 s every crater has 1.44x the radius (`crater_scale`); crater
+// debris is cake: scavenging it repairs twice its scrap in hull (`scavenge_scale`).
+// Behaviour: crates/ls-sim/src/events/everything_is_cake.rs (B1). Schema: `ls_sim::events::EventDef`.
+EventDef(
+    id: "everything_is_cake",
+    name: "Everything is cake",
+    enabled: true,
+    weight: 1.0,
+    active_secs: 20.0,
+    moods: [],
+    params: { "crater_scale": 1.44, "scavenge_scale": 2.0 },
+)

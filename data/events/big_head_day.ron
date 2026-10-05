@@ -1,0 +1,12 @@
+// Big head day: For 15 s ship hit spheres against projectiles are 3x larger
+// (`hit_radius_scale`); terrain collision, ramming and pickups unchanged.
+// Behaviour: crates/ls-sim/src/events/big_head_day.rs (B1). Schema: `ls_sim::events::EventDef`.
+EventDef(
+    id: "big_head_day",
+    name: "Big head day",
+    enabled: true,
+    weight: 1.0,
+    active_secs: 15.0,
+    moods: [],
+    params: { "hit_scale": 3.0 },
+)

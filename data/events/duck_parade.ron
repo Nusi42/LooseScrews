@@ -1,0 +1,13 @@
+// Duck parade: Five giant rubber ducks (3.5 u) drift in a convoy along a network route at 5 u/s
+// (45 s max), ignore rock, absorb projectiles and push ships aside (no damage). Positions are a
+// function of the start tick and the seed.
+// Behaviour: crates/ls-sim/src/events/duck_parade.rs (B3). Schema: `ls_sim::events::EventDef`.
+EventDef(
+    id: "duck_parade",
+    name: "Duck parade",
+    enabled: true,
+    weight: 1.0,
+    active_secs: 45.0,
+    moods: [Giddy],
+    params: { "ducks": 5.0, "duck_radius": 3.5, "speed": 5.0 },
+)

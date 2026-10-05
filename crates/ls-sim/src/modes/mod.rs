@@ -24,6 +24,8 @@
 //! | `move_limits` | a ship moves: speed cap scale, boost off (Heist carrier) | the player's replicated mode flags |
 //! | `material_at` | a hook asks for the rock strength (craters): override it in a region | [`ModeState`] + the point |
 //! | `terrain_shell` | start of every tick: the solid shell the terrain adds (The Squeeze) | [`ModeState`] + tick |
+//! | `allows_event` | the comedy director rolls: may this event run now? (vetoes) | [`ModeRef`] + the event |
+//! | `leader` | the director's target for leader events (Tax drone, Customer survey) | [`ModeRef`] |
 //!
 //! A module that does not override a hook gets the generic behaviour of
 //! this file ("generic fallback", like M2's weapon stubs): kills score for
@@ -49,6 +51,7 @@ use std::fmt::Debug;
 use ls_math::{Tick, Vec3};
 
 use crate::behavior::Ctx;
+use crate::events::EventKind;
 use crate::mode::{
     player_flags, MatchPhase, ModeKind, ModeState, ModeView, PlayerMode, LIVES_UNLIMITED,
 };
@@ -326,6 +329,18 @@ pub trait ModeModule: Send + Sync + Debug {
     fn terrain_shell(&self, _state: &ModeState, _now: u64) -> Option<crate::ShellSphere> {
         None
     }
+
+    /// Whether the comedy director may start `kind` now (vetoes; every
+    /// event by default). Checked at each roll, not for forced events.
+    fn allows_event(&self, _m: &ModeRef, _kind: EventKind) -> bool {
+        true
+    }
+
+    /// The player leader events aim at (Tax drone, Customer survey), or
+    /// `None` without a clear leader ([`default_leader`]).
+    fn leader(&self, m: &ModeRef) -> Option<PlayerId> {
+        default_leader(m)
+    }
 }
 
 /// One registered mode.
@@ -418,6 +433,38 @@ pub fn best_player_side(m: &ModeRef) -> Option<u8> {
         None
     } else {
         best.map(|(_, side)| side)
+    }
+}
+
+/// The default leader: in team modes the best player (most mode score,
+/// ties to the lower id) of the side with the most team score (ties to the
+/// lower team); in free-for-all the best player. `None` until the leading
+/// score is above 0, and for players out of play or without a ship.
+pub fn default_leader(m: &ModeRef) -> Option<PlayerId> {
+    let playing = |id: &PlayerId, p: &PlayerMode| !p.is_out() && m.ships.contains_key(id);
+    let side = if m.state.teams > 0 {
+        let n = m.state.teams.min(crate::mode::MAX_TEAMS) as usize;
+        let scores = &m.state.team_scores[..n];
+        let best = *scores.iter().max()?;
+        if best <= 0 {
+            return None;
+        }
+        Some(scores.iter().position(|&s| s == best)? as u8)
+    } else {
+        None
+    };
+    let mut best: Option<(i32, PlayerId)> = None;
+    for (id, p) in &m.state.players {
+        if !playing(id, p) || side.is_some_and(|t| m.ships[id].team != t) {
+            continue;
+        }
+        if best.is_none_or(|(s, _)| p.score > s) {
+            best = Some((p.score, *id));
+        }
+    }
+    match best {
+        Some((s, id)) if s > 0 || side.is_some() => Some(id),
+        _ => None,
     }
 }
 
@@ -548,6 +595,7 @@ pub(crate) fn base_view(
             .map(|o| o.view())
             .collect(),
         flags,
+        mood: crate::director::MoodView::default(),
     }
 }
 

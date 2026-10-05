@@ -1,0 +1,13 @@
+// Level hiccups: For 15 s, every 3 s (plus or minus 1, seeded) ships, debris and unstuck mines
+// get an impulse along `up` that moves them about 2 u over 0.25 s; projectiles in flight are
+// nudged by 2 u.
+// Behaviour: crates/ls-sim/src/events/level_hiccups.rs (B1). Schema: `ls_sim::events::EventDef`.
+EventDef(
+    id: "level_hiccups",
+    name: "Level hiccups",
+    enabled: true,
+    weight: 1.0,
+    active_secs: 15.0,
+    moods: [Bored],
+    params: { "interval_secs": 3.0, "jitter_secs": 1.0, "lift": 2.0, "lift_secs": 0.25 },
+)

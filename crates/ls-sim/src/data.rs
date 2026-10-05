@@ -1,5 +1,6 @@
 //! The game data set: every `data/` file the simulation embeds (weapons,
-//! ships, gadgets, rule sets), the tables built from them, and the data hash.
+//! ships, gadgets, rule sets, comedy events and the director), the tables
+//! built from them, and the data hash.
 //!
 //! The data hash is a deterministic FNV-1a hash over all embedded files,
 //! sorted by path (`weapons/scrap_laser.ron`, ...): for each file its path,
@@ -49,6 +50,7 @@ pub fn builtin_files() -> Vec<(&'static str, &'static str)> {
             .map(|(_, f, d)| (*f, *d)),
     );
     files.extend(crate::ruleset::BUILTIN_RULESETS.iter().copied());
+    files.extend(crate::director::DirectorDef::builtin_files());
     files.sort_by(|a, b| a.0.cmp(b.0));
     files
 }
@@ -74,7 +76,12 @@ pub fn hash_files<'a>(files: impl IntoIterator<Item = (&'a str, &'a str)>) -> u6
 /// behaviour code must not join and desync silently. Bump it together with
 /// `REPLAY_GOLDEN_HASH` (`crates/ls-sim/src/tests.rs`) whenever behaviour
 /// changes without a data change.
-pub const SIM_BEHAVIOR_VERSION: u32 = 5;
+///
+/// 6: Milestone 4 (comedy director stage, gravity, Instability cave-ins,
+/// pigment, radiation, dynamic wells; assigned by A3, the integrator decides
+/// when the wave A packages are merged). `REPLAY_GOLDEN_HASH` stays: the
+/// scripted replays run with Absurdity 0, Instability 0 and no wells.
+pub const SIM_BEHAVIOR_VERSION: u32 = 6;
 
 /// Hash of the embedded data set plus [`SIM_BEHAVIOR_VERSION`] (computed once).
 pub fn data_hash() -> u64 {
@@ -101,7 +108,7 @@ mod tests {
         let files = builtin_files();
         assert_eq!(
             files.len(),
-            27 + 3 + 4 + crate::ruleset::BUILTIN_RULESETS.len()
+            27 + 3 + 4 + crate::ruleset::BUILTIN_RULESETS.len() + 1 + 18
         );
         assert_eq!(
             data_hash(),
@@ -127,7 +134,7 @@ mod tests {
         );
         // Any change does.
         let mut changed = files.clone();
-        let tweaked = changed[0].1.replace("speed", "speeed");
+        let tweaked = changed[0].1.replace("id", "iid");
         changed[0].1 = &tweaked;
         assert_ne!(hash_files(changed), base);
         assert_ne!(hash_files(files[1..].iter().copied()), base);
@@ -144,7 +151,7 @@ mod tests {
             let disk = std::fs::read_to_string(root.join(path)).unwrap();
             assert_eq!(disk.replace('\r', ""), text.replace('\r', ""), "{path}");
         }
-        for dir in ["weapons", "ships", "gadgets", "rulesets"] {
+        for dir in ["weapons", "ships", "gadgets", "rulesets", "events"] {
             for entry in std::fs::read_dir(root.join(dir)).unwrap() {
                 let name = entry.unwrap().file_name().into_string().unwrap();
                 if name.ends_with(".ron") {

@@ -1,0 +1,19 @@
+// Hat rain: For 25 s, 24 + 2 per player hats drift down along `up` at 3 u/s and rest on rock;
+// touch to wear one; 3 or more hats reveal the wearer; hats scatter on death; the results name
+// the Hat Baron.
+// Behaviour: crates/ls-sim/src/events/hat_rain.rs (B3). Schema: `ls_sim::events::EventDef`.
+EventDef(
+    id: "hat_rain",
+    name: "Hat rain",
+    enabled: true,
+    weight: 1.0,
+    active_secs: 25.0,
+    moods: [Giddy],
+    params: {
+        "hats_base": 24.0,
+        "hats_per_player": 2.0,
+        "fall_speed": 3.0,
+        "reveal_hats": 3.0,
+        "drop_secs": 10.0,
+    },
+)

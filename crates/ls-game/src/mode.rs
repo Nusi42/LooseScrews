@@ -227,6 +227,7 @@ mod tests {
                 state: 0,
             }],
             flags: view_flags::LIVES,
+            mood: Default::default(),
         }
     }
 

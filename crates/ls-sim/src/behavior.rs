@@ -287,6 +287,8 @@ pub struct View<'a> {
     pub visuals: &'a VisualTable,
     /// The level's Instability slider (0-100), see `MatchSetup::instability`.
     pub instability: u8,
+    /// The running comedy event's effects this tick (crater scale, ...).
+    pub effects: crate::director::EventEffects,
     pub ships: &'a BTreeMap<PlayerId, ShipState>,
     /// Projectiles in flight. While projectiles are being stepped this holds
     /// only the ones spawned during that stage; use
@@ -590,7 +592,8 @@ impl<'a> Ctx<'a> {
     /// scaled edit is what gets applied, logged and sent.
     pub fn crater(&mut self, center: Vec3, radius: f32) {
         let scale = material_crater_scale(self.material_at(center));
-        self.crater_exact(center, radius * scale);
+        let event = self.view.effects.crater_scale;
+        self.crater_exact(center, radius * scale * event);
     }
 
     /// Subtracts a sphere of exactly `radius`, whatever the rock (Tectonic

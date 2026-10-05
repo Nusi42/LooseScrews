@@ -49,6 +49,12 @@ pub trait MutatorModule: Send + Sync + Debug {
     fn view_flags(&self) -> u16 {
         0
     }
+
+    /// Whether the comedy director may start `kind` (vetoes; every event
+    /// by default).
+    fn allows_event(&self, _kind: crate::events::EventKind) -> bool {
+        true
+    }
 }
 
 /// One registered mutator.

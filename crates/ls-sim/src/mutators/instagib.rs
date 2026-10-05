@@ -97,6 +97,14 @@ impl MutatorModule for Instagib {
     fn view_flags(&self) -> u16 {
         view_flags::INSTAGIB
     }
+
+    /// Energy and hull are hidden: no Tax drone, no Pizza delivery.
+    fn allows_event(&self, kind: crate::events::EventKind) -> bool {
+        !matches!(
+            kind,
+            crate::events::EventKind::TaxDrone | crate::events::EventKind::PizzaDelivery
+        )
+    }
 }
 
 #[cfg(test)]

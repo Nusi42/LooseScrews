@@ -326,17 +326,21 @@ weapons never fire (`can_fire`), are never granted (`give_weapon`, pickups) and 
 (`update_pickup_spawns` zeroes their weight); tests in `tests_arsenal.rs` and the room tests.
 
 Rule set codes (`RuleSet::to_code` / `from_code`, format in `rulecode.rs`): `LR` + Crockford
-base32 in groups of four. Format 4 (M3) carries every mode: a full/diff bit and a 4-bit mode
-index after the header, and the mode's settings as its generic field list
+base32 in groups of four. Format 5 (M4) carries every mode, comedy event bans (`RuleSet::events`,
+a bit per event; the header counts the events like the weapons) and pigment pickups
+(`RuleSet::pigment_pickup`): a full/diff bit and a 4-bit mode index after the header, and the
+mode's settings as its generic field list
 (`ModeRules::fields`: each field `bits` bits in steps of `1 / steps`). The diff form (what
 `to_code` prints) stores only the differences from the mode's default rule set
 (`RuleSet::default_for`: `data/rulesets/<mode>.ron`, or Paint the Void's rules with the
 mode's settings and without the Paint Thrower until the mode has its own file) plus a 16-bit
-fingerprint of that default: the default Paint the Void rules are `LR8V-6097-G000-TMBG` (19
+fingerprint of that default: the default Paint the Void rules are `LRAV-741Q-J900-01HQ-M` (19
 characters), a ban adds about 3 symbols. A diff code made against a different default is
 rejected ("ask for the full code"). The full form (`to_full_code`, about 270 characters)
-stores every setting; `to_code` uses it when it is shorter. The M2 formats 2 (full) and 3
-(diff), Paint the Void only, still decode. All carry the weapon and gadget counts (the
+stores every setting; `to_code` uses it when it is shorter. The M3 format 4 and the M2
+formats 2 (full) and 3 (diff), Paint the Void only, still decode: their diffs against the M3
+defaults (`rulecode::LEGACY_ABSURDITY` 20, no pigment, no event bans), the M4 fields filled
+with today's defaults. All carry the weapon and gadget counts (the
 registry is append-only: codes from an older build decode with the missing weapons banned,
 codes from a newer build, or with an unknown mode or mutator, are rejected) and a CRC-16. Encoding fails for values the format cannot carry exactly (tuning in
 twentieths, shield fractions in hundredths), so a code always decodes to the rule set it was

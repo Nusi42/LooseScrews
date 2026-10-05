@@ -9,10 +9,14 @@
 //!   is bit-identical to a build without a director.
 //! - **Cadence** (numbers in `data/events/director.ron`, [`DirectorDef`]): no
 //!   announcement in the first 45 s of a match or in its last 20 s (plus the
-//!   announce phase); a roll every 20 s while no event runs and the gap after
-//!   the last one (30 s, longer when the mood is calm) has passed; chance per
-//!   roll `0.6 x absurdity / 100`; one event at a time; an event does not
-//!   repeat within a match while others are eligible.
+//!   announce phase); a roll every 20 s from the quiet start with a chance
+//!   of `0.6 x absurdity / 100`; one event at a time, and at least 30 s
+//!   (longer when the mood is calm) between one event's end and the next
+//!   announcement: a successful roll while an event runs or during that gap
+//!   waits (at most one waits) and the event is picked and announced as soon
+//!   as the gap has passed; an event does not repeat within a match while
+//!   others are eligible. Expected per 5-minute match: about 1.4 events at
+//!   Absurdity 20, 3.5 at 50, 5 at 100 (the gaps cap it there).
 //! - **Choice**: enabled events, not banned by the rule set
 //!   (`RuleSet::events`), allowed by the mode (`ModeModule::allows_event`)
 //!   and the mutators, and `eligible`; weight `EventDef::weight`, times
@@ -56,7 +60,8 @@ pub const RNG_STREAM_MOOD: u64 = 0x5349_4d5f_4d4f_4f44; // "SIM_MOOD"
 
 /// A private RNG on [`RNG_STREAM_MOOD`] for `key` at `tick`:
 /// `Pcg32::new(mix64(match_seed ^ mix64(tick ^ key ^ stream)), stream)`.
-/// Key 0 is the director's roll, key 1 its mood drift, keys with the event
+/// Key 0 is the director's roll, key 1 its mood drift, key 2 the choice of
+/// the event, keys with the event
 /// index in the high 32 bits belong to the events (`EventCtx::rng`).
 pub fn mood_rng(seed: u64, tick: u64, key: u64) -> Pcg32 {
     Pcg32::new(
@@ -67,6 +72,7 @@ pub fn mood_rng(seed: u64, tick: u64, key: u64) -> Pcg32 {
 
 const KEY_ROLL: u64 = 0;
 const KEY_MOOD: u64 = 1;
+const KEY_CHOOSE: u64 = 2;
 
 /// The level's mood (append only: the index is the wire id).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default, Serialize, Deserialize)]
@@ -242,8 +248,13 @@ pub struct DirectorState {
     pub mood: Mood,
     /// Tick of the next mood drift (0 = not started yet).
     pub next_mood_tick: u64,
-    /// Earliest tick of the next roll (0 = the quiet start).
+    /// Tick of the next roll (0 = not started: the quiet start).
     pub next_roll_tick: u64,
+    /// A roll succeeded while an event ran or the gap lasted: announce as
+    /// soon as the gap has passed.
+    pub pending: bool,
+    /// No announcement before this tick (the gap after the last event).
+    pub gap_until: u64,
     /// The running event.
     pub current: Option<EventState>,
     /// Bit per [`EventKind`]: events announced this match.
@@ -343,6 +354,16 @@ impl DirectorState {
         if self.next_roll_tick == 0 {
             self.next_roll_tick = Tick::ticks_for_secs(def.quiet_start_secs).max(1);
         }
+        let close = now + def.announce_ticks() + Tick::ticks_for_secs(def.quiet_end_secs);
+        let may_announce = close <= inp.mode.end_tick;
+        // The roll grid: every roll_secs, busy or not.
+        if inp.absurdity > 0 && now >= self.next_roll_tick {
+            self.next_roll_tick = now + Tick::ticks_for_secs(def.roll_secs).max(1);
+            let mut rng = mood_rng(ctx.view.seed, now, KEY_ROLL);
+            if may_announce && rng.chance(def.chance(inp.absurdity)) {
+                self.pending = true;
+            }
+        }
         // The running event.
         if let Some(mut ev) = self.current.take() {
             let table_def = inp.table.get(ev.kind);
@@ -377,19 +398,15 @@ impl DirectorState {
             self.announce(ctx, inp, kind, true, out);
             return;
         }
-        // A roll.
-        if inp.absurdity == 0 || now < self.next_roll_tick {
+        // A successful roll waiting for the gap.
+        if !self.pending || now < self.gap_until {
             return;
         }
-        let close = now + def.announce_ticks() + Tick::ticks_for_secs(def.quiet_end_secs);
-        if close > inp.mode.end_tick {
+        self.pending = false;
+        if !may_announce || inp.absurdity == 0 {
             return;
         }
-        self.next_roll_tick = now + Tick::ticks_for_secs(def.roll_secs).max(1);
-        let mut rng = mood_rng(ctx.view.seed, now, KEY_ROLL);
-        if !rng.chance(def.chance(inp.absurdity)) {
-            return;
-        }
+        let mut rng = mood_rng(ctx.view.seed, now, KEY_CHOOSE);
         if let Some(kind) = self.choose(ctx, inp, &mut rng) {
             self.announce(ctx, inp, kind, false, out);
         }
@@ -481,7 +498,7 @@ impl DirectorState {
         if self.mood == Mood::Calm {
             gap = Tick::ticks_for_secs(inp.def.gap_secs * inp.def.calm_gap_scale);
         }
-        self.next_roll_tick = self.next_roll_tick.max(now + gap);
+        self.gap_until = now + gap;
     }
 
     fn with_event(
@@ -512,6 +529,8 @@ impl DirectorState {
         h.write_u8(self.mood.index());
         h.write_u64(self.next_mood_tick);
         h.write_u64(self.next_roll_tick);
+        h.write_bool(self.pending);
+        h.write_u64(self.gap_until);
         h.write_u32(self.played);
         h.write_u32(self.count);
         h.write_u32(self.schedule.len() as u32);

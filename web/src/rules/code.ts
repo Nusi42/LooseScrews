@@ -1,7 +1,7 @@
 // Rule set codes (`LR...`) in TypeScript: a bit-exact mirror of
-// crates/ls-sim/src/rulecode.rs (format 4, full or diff against the mode's default rule
-// set, every mode; the Paint the Void-only M2 formats 2 = full and 3 = diff still decode;
-// see the module docs there). The Node tests check this
+// crates/ls-sim/src/rulecode.rs (format 5, full or diff against the mode's default rule
+// set, every mode, comedy event bans, pigment pickups; the M3 format 4 and the Paint the
+// Void-only M2 formats 2 = full and 3 = diff still decode; see the module docs there). The Node tests check this
 // file against the vectors the Rust side generates into catalog.ts, so a code made
 // in the browser is exactly the code the server decodes.
 
@@ -14,6 +14,7 @@ import {
   type ModeKindName,
   type ModeRules,
   type PickupRule,
+  type PigmentPickupRule,
   type RuleSetData,
   type ScrapPickupRule,
   type ShieldInteraction,
@@ -22,8 +23,12 @@ import {
 } from "./types.ts";
 
 export const RULE_CODE_PREFIX = "LR";
-/** The format this build prints (full and diff, every mode). */
-export const CODE_VERSION = 4;
+/** The format this build prints (full and diff, every mode, event bans, pigment). */
+export const CODE_VERSION = 5;
+/** The M3 format (every mode, mutators), read only. */
+export const LEGACY_V4_VERSION = 4;
+/** Absurdity of every built-in rule set before M4 (the base of format 2-4 diff codes). */
+export const LEGACY_ABSURDITY = 20;
 /** The M2 formats (Paint the Void only), read only. */
 export const LEGACY_FULL_VERSION = 2;
 export const LEGACY_DIFF_VERSION = 3;
@@ -33,6 +38,14 @@ const ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 const NAME_CHARS = " ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-";
 const WEAPON_BITS = 6;
 const GADGET_BITS = 4;
+const EVENT_BITS = 5;
+
+/** The registry ids a code covers (a prefix of each registry). */
+interface Ids {
+  weapons: readonly string[];
+  gadgets: readonly string[];
+  events: readonly string[];
+}
 
 /** Encoding or decoding failed; `message` is meant for players. */
 export class RuleCodeError extends Error {
@@ -264,6 +277,22 @@ function readScrap(r: Reader): ScrapPickupRule {
   return { weight, respawn_secs, amount };
 }
 
+function writePigment(b: Bits, p: PigmentPickupRule): void {
+  checkInt(p.respawn_secs, 1023, "pigment respawn");
+  checkInt(p.players_per_pickup, 15, "pigment players per pickup");
+  checkInt(p.min_on_map, 15, "pigment minimum on the map");
+  b.push(p.respawn_secs, 10);
+  b.push(p.players_per_pickup, 4);
+  b.push(p.min_on_map, 4);
+}
+
+function readPigment(r: Reader): PigmentPickupRule {
+  const respawn_secs = r.read(10);
+  const players_per_pickup = r.read(4);
+  const min_on_map = r.read(4);
+  return { respawn_secs, players_per_pickup, min_on_map };
+}
+
 function writeShield(b: Bits, s: ShieldInteraction): void {
   const [kind, v] =
     s.kind === "Blocked"
@@ -308,6 +337,22 @@ export function eqRule(a: PickupRule | undefined, b: PickupRule | undefined): bo
 function eqScrap(a: ScrapPickupRule | null, b: ScrapPickupRule | null): boolean {
   if (!a || !b) return a === b;
   return a.weight === b.weight && a.respawn_secs === b.respawn_secs && a.amount === b.amount;
+}
+
+function eqPigment(a: PigmentPickupRule | null, b: PigmentPickupRule | null): boolean {
+  if (!a || !b) return a === b;
+  return a.respawn_secs === b.respawn_secs && a.players_per_pickup === b.players_per_pickup && a.min_on_map === b.min_on_map;
+}
+
+/** Whether the rule set bans comedy event `id`. */
+export function eventBanned(r: RuleSetData, id: string): boolean {
+  return r.events[id] === "Banned";
+}
+
+/** Bans (or allows) a comedy event. */
+export function setEventBanned(r: RuleSetData, id: string, banned: boolean): void {
+  if (banned) r.events[id] = "Banned";
+  else delete r.events[id];
 }
 
 function eqShield(a: ShieldInteraction | undefined, b: ShieldInteraction | undefined): boolean {
@@ -363,7 +408,9 @@ export function rulesEqual(a: RuleSetData, b: RuleSetData): boolean {
     a.allowed_ship_types.every((t, i) => t === b.allowed_ship_types[i]) &&
     a.absurdity === b.absurdity &&
     a.mutators.length === b.mutators.length &&
-    a.mutators.every((m, i) => m === b.mutators[i])
+    a.mutators.every((m, i) => m === b.mutators[i]) &&
+    eqMap(a.events, b.events, (x, y) => (x ?? "On") === (y ?? "On")) &&
+    eqPigment(a.pigment_pickup, b.pigment_pickup)
   );
 }
 
@@ -388,17 +435,20 @@ export function inLoadout(a: Availability): boolean {
   return a === "LoadoutAndPickup" || a === "LoadoutOnly";
 }
 
-/** What decoding returns: banned entries left out, ship types in index order. */
+/** What decoding returns: banned entries and events that are on left out, ship types in index order. */
 export function canonical(r: RuleSetData, catalog: Catalog): RuleSetData {
   const c = cloneRules(r);
   for (const [k, a] of Object.entries(c.weapons)) if (a === "Banned") delete c.weapons[k];
   for (const [k, a] of Object.entries(c.gadgets)) if (a === "Banned") delete c.gadgets[k];
+  for (const [k, e] of Object.entries(c.events)) if (e === "On") delete c.events[k];
   c.allowed_ship_types = shipsFromMask(shipMask(r.allowed_ship_types, catalog), catalog);
   c.mutators = mutatorsFromMask(mutatorMask(r.mutators, catalog), catalog);
   return c;
 }
 
-function checkIds(r: RuleSetData, weapons: readonly string[], gadgets: readonly string[]): void {
+function checkIds(r: RuleSetData, ids: Ids): void {
+  const { weapons, gadgets } = ids;
+  for (const id of Object.keys(r.events)) indexOf(ids.events, id, "event");
   const lo = r.starting_loadout;
   for (const id of [
     ...Object.keys(r.weapons),
@@ -422,9 +472,11 @@ function pick<T>(map: Record<string, T>, keep: (id: string) => boolean): Record<
   return out;
 }
 
-/** The mode default restricted to the covered weapons and gadgets (Rust `base_for`). */
-function baseFor(kind: ModeKindName, weapons: readonly string[], gadgets: readonly string[], catalog: Catalog): RuleSetData {
+/** The mode default restricted to the covered weapons, gadgets and events (Rust `base_for`). */
+function baseFor(kind: ModeKindName, ids: Ids, catalog: Catalog): RuleSetData {
+  const { weapons, gadgets } = ids;
   const base = cloneRules(catalog.defaults[kind]);
+  base.events = pick(base.events, (id) => ids.events.includes(id));
   const w = (id: string): boolean => weapons.includes(id);
   const g = (id: string): boolean => gadgets.includes(id);
   base.weapons = pick(base.weapons, w);
@@ -439,6 +491,23 @@ function baseFor(kind: ModeKindName, weapons: readonly string[], gadgets: readon
   lo.secondaries = lo.secondaries.filter(([id]) => w(id));
   if (lo.gadget !== null && !g(lo.gadget)) lo.gadget = null;
   return canonical(base, catalog);
+}
+
+/** The base of format 2-4 diff codes: the M3 mode default (Rust `legacy_base_for`). */
+function legacyBaseFor(kind: ModeKindName, ids: Ids, catalog: Catalog): RuleSetData {
+  const base = baseFor(kind, ids, catalog);
+  base.absurdity = LEGACY_ABSURDITY;
+  base.pigment_pickup = null;
+  base.events = {};
+  return base;
+}
+
+/** A format 2-4 decode gets today's pigment default and no event bans (Rust `with_m4_fields`). */
+function withM4Fields(r: RuleSetData, catalog: Catalog): RuleSetData {
+  const p = catalog.defaults[r.mode.kind].pigment_pickup;
+  r.pigment_pickup = p === null ? null : { ...p };
+  r.events = {};
+  return r;
 }
 
 /** Drops pickups and loadout entries the availability no longer allows (Rust `implied_by_availability`). */
@@ -457,10 +526,13 @@ export function impliedByAvailability(r: RuleSetData): void {
 // ---------------------------------------------------------------------------
 // Encoding
 
-function headerCounts(b: Bits, weapons: readonly string[], gadgets: readonly string[]): void {
-  if (weapons.length > 63 || gadgets.length > 15) fail("too many weapons or gadgets for the code format");
-  b.push(weapons.length, 6);
-  b.push(gadgets.length, 4);
+function headerCounts(b: Bits, ids: Ids, version: number): void {
+  if (ids.weapons.length > 63 || ids.gadgets.length > 15 || ids.events.length > 31) {
+    fail("too many weapons, gadgets or events for the code format");
+  }
+  b.push(ids.weapons.length, 6);
+  b.push(ids.gadgets.length, 4);
+  if (version >= CODE_VERSION) b.push(ids.events.length, EVENT_BITS);
 }
 
 function writeAll<T>(b: Bits, ids: readonly string[], map: Record<string, T>, write: (b: Bits, v: T, id: string) => void): void {
@@ -472,37 +544,38 @@ function writeAll<T>(b: Bits, ids: readonly string[], map: Record<string, T>, wr
 }
 
 /** Format 2 payload (legacy; only the fingerprints of format 3 codes use it). */
-function legacyFullPayload(r: RuleSetData, weapons: readonly string[], gadgets: readonly string[], catalog: Catalog): Bits {
+function legacyFullPayload(r: RuleSetData, ids: Ids, catalog: Catalog): Bits {
   const b = new Bits();
   b.push(LEGACY_FULL_VERSION, 4);
-  headerCounts(b, weapons, gadgets);
+  headerCounts(b, ids, LEGACY_FULL_VERSION);
   writeName(b, r.name);
   b.push(0, 2);
   legacyWriteMode(b, r.mode);
-  writeFullTail(b, r, weapons, gadgets, catalog);
+  writeFullTail(b, r, ids, catalog, LEGACY_FULL_VERSION);
   return b;
 }
 
-/** Format 4 full payload. */
-function fullPayload(r: RuleSetData, weapons: readonly string[], gadgets: readonly string[], catalog: Catalog): Bits {
+/** Format 5 (or, for fingerprints of M3 codes, 4) full payload. */
+function fullPayload(r: RuleSetData, ids: Ids, catalog: Catalog, version: number): Bits {
   const b = new Bits();
-  b.push(CODE_VERSION, 4);
-  headerCounts(b, weapons, gadgets);
+  b.push(version, 4);
+  headerCounts(b, ids, version);
   b.flag(true);
   b.push(modeInfo(r.mode.kind, catalog).index, MODE_BITS);
   writeName(b, r.name);
   writeModeFields(b, r.mode, catalog);
-  writeFullTail(b, r, weapons, gadgets, catalog);
+  writeFullTail(b, r, ids, catalog, version);
   return b;
 }
 
 /** The full formats' fields after the mode settings (Rust `write_full_tail`). */
-function writeFullTail(b: Bits, r: RuleSetData, weapons: readonly string[], gadgets: readonly string[], catalog: Catalog): void {
+function writeFullTail(b: Bits, r: RuleSetData, ids: Ids, catalog: Catalog, version: number): void {
+  const { weapons, gadgets } = ids;
   b.push(percent(r.friendly_fire_percent, "friendly fire"), 7);
   b.push(percent(r.absurdity, "absurdity"), 7);
   b.push(shipMask(r.allowed_ship_types, catalog), 4);
   b.push(mutatorMask(r.mutators, catalog), 4);
-  checkIds(r, weapons, gadgets);
+  checkIds(r, ids);
   for (const w of weapons) b.push(AVAILABILITIES.indexOf(availabilityOf(r, w)), 2);
   for (const g of gadgets) b.push(AVAILABILITIES.indexOf(gadgetAvailabilityOf(r, g)), 2);
   writeLoadout(b, r.starting_loadout, weapons, gadgets);
@@ -511,8 +584,13 @@ function writeFullTail(b: Bits, r: RuleSetData, weapons: readonly string[], gadg
   writeAll(b, gadgets, r.gadget_pickups, writeRule);
   b.flag(r.scrap_pickup !== null);
   if (r.scrap_pickup !== null) writeScrap(b, r.scrap_pickup);
+  if (version >= CODE_VERSION) {
+    b.flag(r.pigment_pickup !== null);
+    if (r.pigment_pickup !== null) writePigment(b, r.pigment_pickup);
+  }
   writeAll(b, weapons, r.shield_overrides, writeShield);
   writeAll(b, weapons, r.tuning, writeTuning);
+  if (version >= CODE_VERSION) for (const e of ids.events) b.flag(eventBanned(r, e));
 }
 
 function writeChanges(b: Bits, ids: readonly string[], idxBits: number, changed: (id: string) => boolean, write: (id: string) => void): void {
@@ -548,47 +626,41 @@ function writeMapDiff<T>(
   );
 }
 
-function fingerprint(base: RuleSetData, weapons: readonly string[], gadgets: readonly string[], catalog: Catalog): number {
-  const b = fullPayload(base, weapons, gadgets, catalog);
+function fingerprint(base: RuleSetData, ids: Ids, catalog: Catalog, version: number): number {
+  const b = fullPayload(base, ids, catalog, version);
   return crc16(pack(b.bits));
 }
 
-function legacyFingerprint(base: RuleSetData, weapons: readonly string[], gadgets: readonly string[], catalog: Catalog): number {
-  const b = legacyFullPayload(base, weapons, gadgets, catalog);
+function legacyFingerprint(base: RuleSetData, ids: Ids, catalog: Catalog): number {
+  const b = legacyFullPayload(base, ids, catalog);
   return crc16(pack(b.bits));
 }
 
-/** Format 4 diff payload. */
-function diffPayload(rules: RuleSetData, weapons: readonly string[], gadgets: readonly string[], catalog: Catalog): Bits {
-  checkIds(rules, weapons, gadgets);
+/** Format 5 diff payload. */
+function diffPayload(rules: RuleSetData, ids: Ids, catalog: Catalog): Bits {
+  checkIds(rules, ids);
   const r = canonical(rules, catalog);
   const info = modeInfo(r.mode.kind, catalog);
-  const base = baseFor(info.kind, weapons, gadgets, catalog);
+  const base = baseFor(info.kind, ids, catalog);
   const b = new Bits();
   b.push(CODE_VERSION, 4);
-  headerCounts(b, weapons, gadgets);
+  headerCounts(b, ids, CODE_VERSION);
   b.flag(false);
   b.push(info.index, MODE_BITS);
-  b.push(fingerprint(base, weapons, gadgets, catalog), 16);
+  b.push(fingerprint(base, ids, catalog, CODE_VERSION), 16);
 
   b.flag(r.name !== base.name);
   if (r.name !== base.name) writeName(b, r.name);
   const modeChanged = !eqMode(r.mode, base.mode);
   b.flag(modeChanged);
   if (modeChanged) writeModeFields(b, r.mode, catalog);
-  writeDiffTail(b, r, base, weapons, gadgets, catalog);
+  writeDiffTail(b, r, base, ids, catalog);
   return b;
 }
 
-/** The diff formats' fields after the mode settings (Rust `write_diff_tail`). */
-function writeDiffTail(
-  b: Bits,
-  r: RuleSetData,
-  base: RuleSetData,
-  weapons: readonly string[],
-  gadgets: readonly string[],
-  catalog: Catalog,
-): void {
+/** The diff format's fields after the mode settings (Rust `write_diff_tail`). */
+function writeDiffTail(b: Bits, r: RuleSetData, base: RuleSetData, ids: Ids, catalog: Catalog): void {
+  const { weapons, gadgets } = ids;
   for (const [v, bv, what] of [
     [r.friendly_fire_percent, base.friendly_fire_percent, "friendly fire"],
     [r.absurdity, base.absurdity, "absurdity"],
@@ -629,8 +701,21 @@ function writeDiffTail(
     b.flag(r.scrap_pickup !== null);
     if (r.scrap_pickup !== null) writeScrap(b, r.scrap_pickup);
   }
+  const pigmentChanged = !eqPigment(r.pigment_pickup, base.pigment_pickup);
+  b.flag(pigmentChanged);
+  if (pigmentChanged) {
+    b.flag(r.pigment_pickup !== null);
+    if (r.pigment_pickup !== null) writePigment(b, r.pigment_pickup);
+  }
   writeMapDiff(b, weapons, WEAPON_BITS, r.shield_overrides, base.shield_overrides, eqShield, writeShield);
   writeMapDiff(b, weapons, WEAPON_BITS, r.tuning, base.tuning, eqTuning, writeTuning);
+  writeChanges(
+    b,
+    ids.events,
+    EVENT_BITS,
+    (id) => eventBanned(r, id) !== eventBanned(base, id),
+    () => {},
+  );
 }
 
 function finish(b: Bits): string {
@@ -647,22 +732,25 @@ function finish(b: Bits): string {
   return out;
 }
 
-function ids(catalog: Catalog): { weapons: string[]; gadgets: string[] } {
-  return { weapons: catalog.weapons.map((w) => w.id), gadgets: catalog.gadgets.map((g) => g.id) };
+function ids(catalog: Catalog): Ids {
+  return {
+    weapons: catalog.weapons.map((w) => w.id),
+    gadgets: catalog.gadgets.map((g) => g.id),
+    events: catalog.events.map((e) => e.id),
+  };
 }
 
 /** The short code (diff against the mode default, or the full code when shorter). Throws `RuleCodeError`. */
 export function encodeRules(r: RuleSetData, catalog: Catalog): string {
-  const { weapons, gadgets } = ids(catalog);
-  const full = fullPayload(r, weapons, gadgets, catalog);
-  const diff = diffPayload(r, weapons, gadgets, catalog);
+  const all = ids(catalog);
+  const full = fullPayload(r, all, catalog, CODE_VERSION);
+  const diff = diffPayload(r, all, catalog);
   return finish(diff.bits.length <= full.bits.length ? diff : full);
 }
 
-/** The full (format 4) code. Throws `RuleCodeError`. */
+/** The full (format 5) code. Throws `RuleCodeError`. */
 export function encodeFullRules(r: RuleSetData, catalog: Catalog): string {
-  const { weapons, gadgets } = ids(catalog);
-  return finish(fullPayload(r, weapons, gadgets, catalog));
+  return finish(fullPayload(r, ids(catalog), catalog, CODE_VERSION));
 }
 
 // ---------------------------------------------------------------------------
@@ -746,7 +834,8 @@ function readAvailabilityDiff(r: Reader, ids: readonly string[], idxBits: number
 type Parsed = { rules: RuleSetData } | { error: string };
 
 /** The full formats' fields after the mode settings (Rust `read_full_tail`). */
-function readFullTail(r: Reader, weapons: readonly string[], gadgets: readonly string[], catalog: Catalog, name: string, mode: ModeRules): Parsed {
+function readFullTail(r: Reader, ids: Ids, catalog: Catalog, version: number, name: string, mode: ModeRules): Parsed {
+  const { weapons, gadgets } = ids;
   const friendly_fire_percent = r.read(7);
   const absurdity = r.read(7);
   const allowed_ship_types = shipsFromMask(r.read(4), catalog);
@@ -767,8 +856,11 @@ function readFullTail(r: Reader, weapons: readonly string[], gadgets: readonly s
   const upgrade_pickups = readAll(r, weapons, readRule);
   const gadget_pickups = readAll(r, gadgets, readRule);
   const scrap_pickup = r.flag() ? readScrap(r) : null;
+  const pigment_pickup = version >= CODE_VERSION && r.flag() ? readPigment(r) : null;
   const shield_overrides = readAll(r, weapons, readShield);
   const tuning = readAll(r, weapons, readTuning);
+  const events: Record<string, "Banned"> = {};
+  if (version >= CODE_VERSION) for (const e of ids.events) if (r.flag()) events[e] = "Banned";
   if ((mutatorBits & ~knownMutators(catalog)) !== 0) return { error: "unknown mutator (code from a newer build?)" };
   return {
     rules: {
@@ -787,27 +879,30 @@ function readFullTail(r: Reader, weapons: readonly string[], gadgets: readonly s
       allowed_ship_types,
       absurdity,
       mutators,
+      events,
+      pigment_pickup,
     },
   };
 }
 
-function readFullV2(r: Reader, weapons: readonly string[], gadgets: readonly string[], catalog: Catalog): Parsed {
+function readFullV2(r: Reader, ids: Ids, catalog: Catalog): Parsed {
   const name = readName(r);
   const mode = r.read(2);
   const m = legacyReadMode(r, catalog);
-  const parsed = readFullTail(r, weapons, gadgets, catalog, name, m);
+  const parsed = readFullTail(r, ids, catalog, LEGACY_FULL_VERSION, name, m);
   if (mode !== 0) return { error: "unknown mode" };
   return parsed;
 }
 
-function readFullV4(r: Reader, info: ModeInfo, weapons: readonly string[], gadgets: readonly string[], catalog: Catalog): Parsed {
+function readFullV45(r: Reader, info: ModeInfo, ids: Ids, catalog: Catalog, version: number): Parsed {
   const name = readName(r);
   const mode = readModeFields(r, info, catalog);
-  return readFullTail(r, weapons, gadgets, catalog, name, mode);
+  return readFullTail(r, ids, catalog, version, name, mode);
 }
 
 /** The diff formats' fields after the mode settings; returns whether an unknown mutator bit was set. */
-function readDiffTail(r: Reader, out: RuleSetData, weapons: readonly string[], gadgets: readonly string[], catalog: Catalog): boolean {
+function readDiffTail(r: Reader, out: RuleSetData, ids: Ids, catalog: Catalog, version: number): boolean {
+  const { weapons, gadgets } = ids;
   if (r.flag()) out.friendly_fire_percent = r.read(7);
   if (r.flag()) out.absurdity = r.read(7);
   if (r.flag()) out.allowed_ship_types = shipsFromMask(r.read(4), catalog);
@@ -833,8 +928,14 @@ function readDiffTail(r: Reader, out: RuleSetData, weapons: readonly string[], g
     if (eqScrap(s, out.scrap_pickup)) fail("corrupt code (an entry equals the default)");
     out.scrap_pickup = s;
   }
+  if (version >= CODE_VERSION && r.flag()) {
+    const p = r.flag() ? readPigment(r) : null;
+    if (eqPigment(p, out.pigment_pickup)) fail("corrupt code (an entry equals the default)");
+    out.pigment_pickup = p;
+  }
   readMapDiff(r, weapons, WEAPON_BITS, out.shield_overrides, eqShield, readShield);
   readMapDiff(r, weapons, WEAPON_BITS, out.tuning, eqTuning, readTuning);
+  if (version >= CODE_VERSION) readChanges(r, ids.events, EVENT_BITS, (id) => setEventBanned(out, id, !eventBanned(out, id)));
   return unknownMutator;
 }
 
@@ -844,33 +945,33 @@ function diffChecks(out: RuleSetData, fp: number, baseFp: number, unknownMutator
   return { rules: out };
 }
 
-function readDiffV3(r: Reader, weapons: readonly string[], gadgets: readonly string[], catalog: Catalog): Parsed {
+function readDiffV3(r: Reader, ids: Ids, catalog: Catalog): Parsed {
   const mode = r.read(2);
   const fp = r.read(16);
   if (mode !== 0) return { error: "unknown mode" };
-  const out = baseFor("PaintTheVoid", weapons, gadgets, catalog);
-  const baseFp = legacyFingerprint(out, weapons, gadgets, catalog);
+  const out = legacyBaseFor("PaintTheVoid", ids, catalog);
+  const baseFp = legacyFingerprint(out, ids, catalog);
   if (r.flag()) out.name = readName(r);
   if (r.flag()) out.mode = legacyReadMode(r, catalog);
-  const unknownMutator = readDiffTail(r, out, weapons, gadgets, catalog);
+  const unknownMutator = readDiffTail(r, out, ids, catalog, LEGACY_DIFF_VERSION);
   return diffChecks(out, fp, baseFp, unknownMutator);
 }
 
-function readDiffV4(r: Reader, info: ModeInfo, weapons: readonly string[], gadgets: readonly string[], catalog: Catalog): Parsed {
+function readDiffV45(r: Reader, info: ModeInfo, ids: Ids, catalog: Catalog, version: number): Parsed {
   const fp = r.read(16);
-  const out = baseFor(info.kind, weapons, gadgets, catalog);
-  const baseFp = fingerprint(out, weapons, gadgets, catalog);
+  const out = version >= CODE_VERSION ? baseFor(info.kind, ids, catalog) : legacyBaseFor(info.kind, ids, catalog);
+  const baseFp = fingerprint(out, ids, catalog, version);
   if (r.flag()) out.name = readName(r);
   if (r.flag()) {
     const m = readModeFields(r, info, catalog);
     if (eqMode(m, out.mode)) fail("corrupt code (an entry equals the default)");
     out.mode = m;
   }
-  const unknownMutator = readDiffTail(r, out, weapons, gadgets, catalog);
+  const unknownMutator = readDiffTail(r, out, ids, catalog, version);
   return diffChecks(out, fp, baseFp, unknownMutator);
 }
 
-/** Decodes a code of any format this build reads (2, 3, 4) into canonical rules. Throws `RuleCodeError`. */
+/** Decodes a code of any format this build reads (2 to 5) into canonical rules. Throws `RuleCodeError`. */
 export function decodeRules(code: string, catalog: Catalog): RuleSetData {
   const bits = symbols(code);
   const r = new Reader(bits);
@@ -886,17 +987,20 @@ export function decodeRules(code: string, catalog: Catalog): RuleSetData {
       `code from a newer build (${nw} weapons, ${ng} gadgets; this build knows ${all.weapons.length} and ${all.gadgets.length})`,
     );
   }
-  const weapons = all.weapons.slice(0, nw);
-  const gadgets = all.gadgets.slice(0, ng);
+  const ne = version >= CODE_VERSION ? r.read(EVENT_BITS) : 0;
+  if (ne > all.events.length) fail(`code from a newer build (${ne} comedy events; this build knows ${all.events.length})`);
+  // Weapons and gadgets the code does not cover stay banned; events it does not cover stay on.
+  const covered: Ids = { weapons: all.weapons.slice(0, nw), gadgets: all.gadgets.slice(0, ng), events: all.events.slice(0, ne) };
   let parsed: Parsed;
-  if (version === LEGACY_FULL_VERSION) parsed = readFullV2(r, weapons, gadgets, catalog);
-  else if (version === LEGACY_DIFF_VERSION) parsed = readDiffV3(r, weapons, gadgets, catalog);
+  if (version === LEGACY_FULL_VERSION) parsed = readFullV2(r, covered, catalog);
+  else if (version === LEGACY_DIFF_VERSION) parsed = readDiffV3(r, covered, catalog);
   else {
     const full = r.flag();
     const index = r.read(MODE_BITS);
     const info = catalog.modes.find((m) => m.index === index) ?? fail(`unknown mode ${index} (code from a newer build?)`);
-    parsed = full ? readFullV4(r, info, weapons, gadgets, catalog) : readDiffV4(r, info, weapons, gadgets, catalog);
+    parsed = full ? readFullV45(r, info, covered, catalog, version) : readDiffV45(r, info, covered, catalog, version);
   }
+  if (version < CODE_VERSION && "rules" in parsed) parsed = { rules: withM4Fields(parsed.rules, catalog) };
   const payload = r.pos;
   const crc = r.read(16);
   const rest = bits.slice(r.pos);
@@ -906,7 +1010,7 @@ export function decodeRules(code: string, catalog: Catalog): RuleSetData {
   return parsed.rules;
 }
 
-/** The format version of a code (4; 2 and 3 for M2 codes), or null if it has none. */
+/** The format version of a code (5; 4 for M3 codes, 2 and 3 for M2 codes), or null if it has none. */
 export function codeVersion(code: string): number | null {
   try {
     return new Reader(symbols(code)).read(4);
@@ -915,15 +1019,15 @@ export function codeVersion(code: string): number | null {
   }
 }
 
-/** Whether a code is a full code (format 4 full or format 2), a diff, or unreadable (null). */
+/** Whether a code is a full code (format 4/5 full or format 2), a diff, or unreadable (null). */
 export function codeForm(code: string): "full" | "diff" | null {
   try {
     const r = new Reader(symbols(code));
     const version = r.read(4);
     if (version === LEGACY_FULL_VERSION) return "full";
     if (version === LEGACY_DIFF_VERSION) return "diff";
-    if (version !== CODE_VERSION) return null;
-    r.read(10);
+    if (version !== CODE_VERSION && version !== LEGACY_V4_VERSION) return null;
+    r.read(version === CODE_VERSION ? 15 : 10);
     return r.flag() ? "full" : "diff";
   } catch {
     return null;

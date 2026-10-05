@@ -37,6 +37,7 @@ tests are in [determinism.md](determinism.md). The contract part is the RNG stre
   | `ls_game::setup::RNG_STREAM_SPAWNS` | `0x4741_4d45_5f53_504e` ("GAME_SPN") | Team spawn point placement, `Pcg32::from_seed(world_seed, ..)` |
   | `ls_game::setup::RNG_STREAM_PICKUP_POINTS` | `0x4741_4d45_5f50_4b50` ("GAME_PKP") | Pickup point placement, `Pcg32::from_seed(world_seed, ..)` |
   | `ls_sim::modes::the_squeeze::RNG_STREAM_SQUEEZE` | `0x5349_4d5f_5351_5a45` ("SIM_SQZE") | The Squeeze: safe-zone centres, `Pcg32::new(mix64(match_seed ^ mix64(phase ^ stream)), ..)` per phase, and wall scrap, `Pcg32::new(mix64(match_seed ^ mix64(tick ^ stream.rotate_left(17))), ..)` per batch |
+  | `ls_sim::director::RNG_STREAM_MOOD` | `0x5349_4d5f_4d4f_4f44` ("SIM_MOOD") | The comedy director and its events (`director::mood_rng(match_seed, tick, key)`): `Pcg32::new(mix64(match_seed ^ mix64(tick ^ key.rotate_left(17) ^ stream)), stream)`, a fresh generator per draw; key 0 the roll, 1 the mood drift, 2 the event choice, `(event index << 32) ^ k` the events (`EventCtx::rng`) |
   | `ls_sim::behavior::RNG_STREAM_MODULES` | `0x5349_4d5f_4d4f_4453` ("SIM_MODS") | Weapon and gadget modules (`Ctx::rng(key)`): `Pcg32::new(mix64(match_seed ^ mix64(key ^ tick.rotate_left(32))), ..)`, a private stream per key and tick. Seed Grenade growth uses the same stream id keyed only by the match seed and the projectile id (no tick: `seed_grenade::growth`) |
 
   The simulation's `match_seed` (`WorldConfig::seed`) is
@@ -336,6 +337,9 @@ sure it is the same data); details in [arsenal-framework.md](arsenal-framework.m
 | Data hash | `ls_sim::data_hash()`: FNV-1a over all embedded `data/` files sorted by path (path, 0, length, bytes without CR), plus `SIM_BEHAVIOR_VERSION` |
 | `ModeKind` index | Paint the Void 0, Team Brawl 1, The Squeeze 2, Heist 3, Hot Reactor 4, Last Color Standing 5 (append only): rule set code mode index, wire mode kind, `LobbyState::next_mode`; `ModeKind::id` is the module and directory mode id (`the_squeeze`; its rule set file is `squeeze.ron`) |
 | `Mutator` index | Instagib 0 (`Mutator::ALL` order, append only; rule set codes) |
+| `EventKind` index | Comedy events in `events::MODULES` order (append only): Bored level 0, Tax drone 1, Gravity coffee break 2, Rubber chickens 3, Cat paw 4, Tired announcer 5, Wrong genre 6, Gossip wall 7, Pizza delivery 8, Everything is cake 9, Duck parade 10, Hat rain 11, Customer survey 12, Disco inferno 13, Big head day 14, Moving day 15, Mimic pickups 16, Level hiccups 17; `MoodView::event`, rule set code event-ban bits; `EventKind::id` is the module, data file and `RuleSet::events` key |
+| `Mood` index | Calm 0, Bored 1, Grumpy 2, Giddy 3 (append only; `MoodView::mood`) |
+| `EventPhase` index | Announce 0, Active 1, Ending 2 (`MoodView::phase`) |
 | Side ids | Teams 0-3 (`MAX_TEAMS` 4); in free-for-all every ship its own side 0-253 (`MAX_FFA_SIDE`) in `ShipState::team`, `NetPlayer::team`, `NetModePlayer::side`, `ResultRow::side`, `Welcome::team`; 255 = no side (`mode::NO_SIDE`, `ls_net::mode::NONE`); ship flags keep only the 2 low bits |
 | Objective kinds | `mode::objective_kind`: `SAFE_ZONE` 0, `NEXT_ZONE` 1, `CORE` 2, `EXTRACTION` 3, `REACTOR` 4, `CUSTOM` 255; at most 8 per view (`MAX_OBJECTIVES`) |
 | Player mode flags | `mode::player_flags`: `ELIMINATED` 1, `SPECTATOR` 2, `CARRIER` 4 (replicated; `move_limits` reads them, so the predictor applies the carrier's limits) |

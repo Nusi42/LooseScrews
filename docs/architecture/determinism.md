@@ -164,18 +164,30 @@ What M3 changed deliberately (plan [§4](../milestone-3-plan.md#4-determinism-an
 | Per-mode replays | new (C3): `ls_sim::golden` and `crates/ls-sim/tests/fixtures/mode_replays.txt`, plus the module goldens above | one replay per built-in rule set on native, wasm32 and the shipped WASM package |
 | The Squeeze | no generator change | the walls are a runtime shell layer (`ShelledTerrain`, `GameTerrain::set_shell`), outside worldgen goldens and `GameTerrain::state_hash` |
 
+### Milestone 4 record
+
+What M4 changed deliberately (plan [§4](../milestone-4-plan.md#4-determinism-and-handshake-impacts)); wave D (D3) completes it.
+
+| Item | Change | Why |
+| --- | --- | --- |
+| `SIM_BEHAVIOR_VERSION` | 5 -> 6 (wave A, assigned by A3) | the comedy director as the last stage of `World::step`, plus wave A's gravity, Instability cave-ins, pigment, radiation and dynamic wells |
+| `REPLAY_GOLDEN_HASH` and the nine mode replays | unchanged | the scripted replays run with `MatchSetup::absurdity` 0 (and Instability 0, no wells): the director stays off and its pristine state is not hashed (`director::tests::inert_director_leaves_the_hash_alone`) |
+| Director state | hashed once it did anything (`DirectorState::is_pristine`) | mood, roll grid, gap, the running event's state and the forced schedule |
+| Data hash | `data/events/*.ron` (18 events and `director.ron`), built-in rule set Absurdity 20 -> 100 (duel 50), `pigment_pickup` lines | embedded files change the hash automatically |
+| Rule set codes | format 4 -> 5 (`LRA...`): event count in the header, pigment pickup, event bans | formats 2-4 decode against the M3 defaults (`rulecode::LEGACY_ABSURDITY` 20, no pigment, no bans); tested with M2 and M3 codes in Rust and the web editor (`legacyVectors` in the catalog) |
+
 ### Other pinned values
 
 | Constant or fixture | Test | Changes when |
 | --- | --- | --- |
 | `material_field_hash_is_pinned` constant | `cargo test -p ls-worldgen --lib material` | the rock material field changes |
 | `web/src/rules/catalog.ts` (generated) | `rulecode::tests::web_catalog_is_current` | weapon or gadget ids, names, slots, costs, levels, the registries or the default rule set change: `LS_BLESS_RULES_CATALOG=1 cargo test -p ls-sim --lib rulecode` |
-| Rule set codes quoted in docs and examples (the default is `LR8V-6097-G000-TMBG`; the catalog holds the current one) | `rulecode::tests::web_catalog_is_current` | the code format, the default rule set, or the registries change: a new weapon or gadget changes every code, the default included (codes made by older builds still decode) |
+| Rule set codes quoted in docs and examples (the default is `LRAV-741Q-J900-01HQ-M`; the catalog holds the current one) | `rulecode::tests::web_catalog_is_current` | the code format, the default rule set, or the registries change: a new weapon or gadget changes every code, the default included (codes made by older builds still decode) |
 
 ### Data hash and behaviour version
 
 `ls_sim::data_hash()` hashes every embedded `data/` file by path and content (weapons,
-gadgets, ships, the built-in rule sets) plus `ls_sim::SIM_BEHAVIOR_VERSION` (currently 5).
+gadgets, ships, the built-in rule sets) plus `ls_sim::SIM_BEHAVIOR_VERSION` (currently 6).
 `Hello` carries it and the server rejects a different hash with `DataMismatch`, so a browser
 that cached an old build, or a bot built from other data, is refused with a clear message
 instead of predicting with other numbers. Consequences:

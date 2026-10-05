@@ -1336,6 +1336,33 @@ impl World {
         events
     }
 
+    /// The events a roll of director state `d` could pick now, with their
+    /// weights (tests; `table` overrides the event data).
+    #[cfg(test)]
+    pub(crate) fn director_candidates_for_test<T: SimTerrain + ?Sized>(
+        &mut self,
+        terrain: &mut T,
+        d: &DirectorState,
+        table: Option<&EventTable>,
+    ) -> Vec<(crate::events::EventKind, f32)> {
+        let cfg = Arc::clone(&self.config);
+        let (c, _) = self.collect_hook(&cfg, &*terrain, |ctx| {
+            let inp = DirectorInput {
+                def: DirectorDef::builtin(),
+                table: table.unwrap_or(EventTable::builtin()),
+                absurdity: cfg.absurdity,
+                banned: cfg.banned_events,
+                mode: &self.mode,
+                mode_module: cfg.mode_module,
+                mode_ref: self.mode_ref(&cfg),
+                mutators: &cfg.mutator_modules,
+                setup: &cfg.setup,
+            };
+            d.candidates(ctx, &inp)
+        });
+        c
+    }
+
     /// Runs the comedy director's step with a full hook context and applies
     /// the commands its events queued.
     fn run_director<T: SimTerrain + ?Sized>(

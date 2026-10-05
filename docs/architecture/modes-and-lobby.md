@@ -43,6 +43,8 @@ set HUD flags; their hooks run after the mode's.
 | `move_limits` | a ship moves | the rules + the player's replicated mode flags; returns `MoveLimits` (speed cap scale, no boost). The client predictor applies the same limits from the flags in each snapshot (`Predictor::set_limits`) |
 | `material_at` | a hook asks for the rock material (`Ctx::material_at`, `Ctx::crater`) | `ModeState` + tick + point; `Some(id)` overrides the terrain's (Heist's hard vein knot and weak collapsing chamber) |
 | `terrain_shell` | start of every tick, before anything moves | `ModeState` + tick; the solid shell the terrain adds (`SimTerrain::set_shell`, The Squeeze; [contracts.md](contracts.md#shell-layer-the-squeeze)) |
+| `allows_event` | the comedy director rolls (M4) | `ModeRef` + `EventKind`; vetoes (The Squeeze: no Cat paw or Duck parade from phase 4); mutators have the same hook (Instagib: no Tax drone or Pizza delivery) |
+| `leader` | leader events pick their target (Tax drone, Customer survey) | `ModeRef`; default `modes::default_leader`: most mode score (team modes: best player of the leading team), `None` until someone scored |
 
 The world keeps the generic `mode::ModeState` (part of the state hash: kind, teams, phase,
 timer, stage and stage end tick, paint coverage, team scores, score target, per-player

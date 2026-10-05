@@ -1,6 +1,7 @@
 // Rule set editor screen: edit every match rule of the design doc (weapon
 // availability, starting loadout, pickup weights and respawn times, friendly fire,
-// ship types, tuning multipliers, gadgets, scrap piles), see the problems the server
+// ship types, tuning multipliers, gadgets, scrap piles, pigment pickups, the Absurdity
+// cap and comedy event bans), see the problems the server
 // would report, and get an `LR` rule set code, an invite link (world + rule set
 // codes) and the host's `ls-server` command line.
 //
@@ -8,7 +9,7 @@
 // lives in code.ts / validate.ts / model.ts (Node-tested); this file is only DOM.
 
 import { CATALOG } from "./catalog.ts";
-import { availabilityOf, decodeRules, gadgetAvailabilityOf, MAX_NAME, RuleCodeError } from "./code.ts";
+import { availabilityOf, decodeRules, eventBanned, gadgetAvailabilityOf, MAX_NAME, RuleCodeError, setEventBanned } from "./code.ts";
 import {
   defaultRules,
   FRIENDLY_FIRE_STEPS,
@@ -193,6 +194,8 @@ export function showRuleEditor(parent: HTMLElement, opts: RuleEditorOptions): { 
       upgradesSection(),
       gadgetsSection(problemFields),
       scrapSection(problemFields),
+      pigmentSection(problemFields),
+      eventsSection(problemFields),
       outputSection(result.ok ? result.code : null, result.problems),
     );
     if (result.ok) saveStored(result.code);
@@ -267,7 +270,12 @@ export function showRuleEditor(parent: HTMLElement, opts: RuleEditorOptions): { 
           "Respawn (s)",
           numberInput(rules.mode.respawn_secs, { min: 0, step: 0.1 }, (v) => edit((r) => (r.mode.respawn_secs = v))),
         ),
-        field("Absurdity (0-100)", numberInput(rules.absurdity, { min: 0, max: 100, step: 1 }, (v) => edit((r) => (r.absurdity = v)))),
+        field(
+          "Absurdity cap (0-100)",
+          numberInput(rules.absurdity, { min: 0, max: 100, step: 1, title: "Comedy events run at the world's Absurdity, at most this; 0 = none" }, (v) =>
+            edit((r) => (r.absurdity = v)),
+          ),
+        ),
       ),
       el("h3", {}, "Allowed ship types"),
       ships,
@@ -423,6 +431,49 @@ export function showRuleEditor(parent: HTMLElement, opts: RuleEditorOptions): { 
     );
   };
 
+  const pigmentSection = (bad: Set<string>): HTMLElement => {
+    const p = rules.pigment_pickup;
+    const fallback = catalog.defaults[rules.mode.kind].pigment_pickup ?? { respawn_secs: 30, players_per_pickup: 4, min_on_map: 2 };
+    const on = checkbox(p !== null, (v) => edit((r) => (r.pigment_pickup = v ? { ...fallback } : null)));
+    const fields = p
+      ? [
+          el("label", { class: "rules-field" }, el("span", {}, "Respawn (s)"), numberInput(p.respawn_secs, { min: 0, max: 1023, step: 1 }, (v) => edit((r) => r.pigment_pickup && (r.pigment_pickup.respawn_secs = v)))),
+          el("label", { class: "rules-field" }, el("span", {}, "One per players"), numberInput(p.players_per_pickup, { min: 1, max: 15, step: 1 }, (v) => edit((r) => r.pigment_pickup && (r.pigment_pickup.players_per_pickup = v)))),
+          el("label", { class: "rules-field" }, el("span", {}, "At least"), numberInput(p.min_on_map, { min: 0, max: 15, step: 1 }, (v) => edit((r) => r.pigment_pickup && (r.pigment_pickup.min_on_map = v)))),
+        ]
+      : [];
+    return el(
+      "section",
+      { class: bad.has("pigment") ? "invalid" : "" },
+      el("h2", {}, "Pigment pickups"),
+      el("div", { class: "rules-grid" }, el("label", { class: "check" }, on, el("span", {}, "Pigment at pickup points on monochrome levels")), ...fields),
+    );
+  };
+
+  const eventsSection = (bad: Set<string>): HTMLElement => {
+    const boxes = catalog.events.map((e) =>
+      el(
+        "label",
+        { class: eventBanned(rules, e.id) ? "check banned" : "check" },
+        checkbox(!eventBanned(rules, e.id), (on) => edit((r) => setEventBanned(r, e.id, !on))),
+        el("span", {}, e.name),
+      ),
+    );
+    return el(
+      "section",
+      { class: bad.has("events") ? "invalid" : "" },
+      el("h2", {}, "Comedy events"),
+      el(
+        "p",
+        { class: "muted" },
+        rules.absurdity === 0
+          ? "Absurdity cap 0: no comedy events at all."
+          : `The level rolls these at its own Absurdity, at most ${rules.absurdity}. Untick to ban one.`,
+      ),
+      el("div", { class: rules.absurdity === 0 ? "rules-events off" : "rules-events" }, ...boxes),
+    );
+  };
+
   const outputSection = (code: string | null, problems: RuleProblem[]): HTMLElement => {
     const worldInput = el("input", { type: "text", value: world, placeholder: "World share code (optional, LS...)", spellcheck: "false" });
     worldInput.addEventListener("change", () => {
@@ -491,6 +542,11 @@ function injectStyle(): void {
 .rules-table tr.banned td:first-child { text-decoration: line-through; color: var(--muted); }
 .rules-table tr.invalid td:first-child, .rules-ships.invalid { color: var(--error); }
 .rules-ships { display: flex; gap: 16px; flex-wrap: wrap; }
+.rules-events { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 2px 16px; }
+.rules-events label.check { margin: 0; padding: 4px 0; }
+.rules-events label.banned span { text-decoration: line-through; color: var(--muted); }
+.rules-events.off { opacity: 0.45; }
+@media (max-width: 600px) { .rules-events { grid-template-columns: 1fr 1fr; } .rules-events label.check { font-size: 13px; } }
 .rules-problems { color: var(--error); margin: 6px 0; padding-left: 20px; }
 .rules-card .muted { color: var(--muted); }
 .rules-output { border-top: 1px solid rgba(255,255,255,0.12); margin-top: 18px; }

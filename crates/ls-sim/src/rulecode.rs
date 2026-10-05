@@ -7,15 +7,17 @@
 //! reads `O` as `0` and `I`/`L` as `1` (after the `LR` prefix). The payload
 //! bits (most significant bit first) start with a 4-bit format version.
 //!
-//! This build prints **format 4** (every mode, mutators) and still reads
-//! the Paint the Void-only formats 2 (full) and 3 (diff) of M2 builds.
+//! This build prints **format 5** (every mode, mutators, comedy event bans,
+//! pigment pickups) and still reads format 4 (M3 builds) and the Paint the
+//! Void-only formats 2 (full) and 3 (diff) of M2 builds.
 //!
-//! - **Format 4, diff** (what [`RuleSet::to_code`] normally prints): only
+//! - **Format 5, diff** (what [`RuleSet::to_code`] normally prints): only
 //!   the settings that differ from the mode's default rule set
-//!   ([`RuleSet::default_for`]). The default Paint the Void rules are 14
-//!   symbols; banning a weapon adds 3 symbols (its pickups leave with it).
-//! - **Format 4, full** ([`RuleSet::to_full_code`], the fallback): every
-//!   setting; about 210 symbols for the default rules. `to_code` prints it
+//!   ([`RuleSet::default_for`]). The default Paint the Void rules are 15
+//!   symbols; banning a weapon adds 3 symbols (its pickups leave with it),
+//!   banning an event 1-2.
+//! - **Format 5, full** ([`RuleSet::to_full_code`], the fallback): every
+//!   setting; about 215 symbols for the default rules. `to_code` prints it
 //!   only when it is shorter than the diff (almost everything changed).
 //!
 //! Every format ends with a CRC-16/CCITT-FALSE over the payload bits
@@ -25,18 +27,20 @@
 //!
 //! | Bits | Field |
 //! | --- | --- |
-//! | 4 | format version (2, 3 or 4) |
+//! | 4 | format version (2, 3, 4 or 5) |
 //! | 6, 4 | number of weapons and gadgets the code covers (the registry lengths of the build that made it) |
-//! | 1, 4 | format 4 only: 1 = full, 0 = diff; mode index ([`ModeKind`]) |
+//! | 5 | format 5 only: number of comedy events the code covers ([`crate::events::MODULES`]) |
+//! | 1, 4 | formats 4 and 5: 1 = full, 0 = diff; mode index ([`ModeKind`]) |
 //!
-//! "Per weapon" and "per gadget" fields cover the counts from the header, in
-//! registry order (`weapons::MODULES`, `gadgets::MODULES`; append-only). A
-//! code from an older build (fewer weapons) decodes with the missing weapons
-//! banned and without rules; a code from a newer build (more weapons than
-//! this build knows, or an unknown mode or mutator) is rejected with a clear
-//! error instead of misparsing.
+//! "Per weapon", "per gadget" and "per event" fields cover the counts from
+//! the header, in registry order (`weapons::MODULES`, `gadgets::MODULES`,
+//! `events::MODULES`; append-only). A code from an older build (fewer
+//! weapons) decodes with the missing weapons banned and without rules (and
+//! the missing events on); a code from a newer build (more weapons or
+//! events than this build knows, or an unknown mode or mutator) is rejected
+//! with a clear error instead of misparsing.
 //!
-//! # Mode settings (format 4)
+//! # Mode settings (formats 4 and 5)
 //!
 //! Every field of the mode's settings struct, in declaration order
 //! ([`ModeRules::fields`]): `bits` bits holding the value in steps of
@@ -44,7 +48,7 @@
 //! seconds, `respawn_secs` 8 bits of tenths). The field lists are part of
 //! the format: append fields at the end of a mode, never reorder.
 //!
-//! # Format 4 full
+//! # Format 5 full (format 4: without the rows marked 5)
 //!
 //! | Bits | Field |
 //! | --- | --- |
@@ -62,19 +66,21 @@
 //! | per weapon: 1 [+ rule] | upgrade pickups |
 //! | per gadget: 1 [+ rule] | gadget pickups |
 //! | 1 [+ 8 + 10 + 8] | scrap pickup: weight (quarters), respawn (seconds), amount (whole) |
+//! | 1 [+ 10 + 4 + 4] | 5: pigment pickup: respawn (seconds), players per pickup, minimum on the map |
 //! | per weapon: 1 [+ 2 + 8] | shield override: kind (Blocked, Wears, PassThrough), value (hundredths) |
 //! | per weapon: 1 [+ 8 + 8 + 8] | tuning: damage, fire rate, ammo multipliers (twentieths) |
+//! | per event: 1 | 5: banned |
 //! | 16 | CRC-16 |
 //!
 //! A pickup rule is weight (8 bits, quarters, up to 63.75), respawn (10
 //! bits, whole seconds), then 1 bit + 6 bits ammo if non-zero and 1 bit + 4
 //! bits `max_on_map` if non-zero.
 //!
-//! # Format 4 diff (against the mode default)
+//! # Format 5 diff (against the mode default; format 4: without the rows marked 5)
 //!
 //! | Bits | Field |
 //! | --- | --- |
-//! | 16 | base fingerprint: CRC-16 of the base's format 4 full payload over the covered weapons and gadgets |
+//! | 16 | base fingerprint: CRC-16 of the base's full payload (same format) over the covered weapons, gadgets and events |
 //! | 1 [+ name] | name (as in the full format) |
 //! | 1 [+ mode settings] | the mode settings (all fields) |
 //! | 1 [+ 7], 1 [+ 7] | friendly fire percent, absurdity |
@@ -86,47 +92,69 @@
 //! | changes (1 [+ rule]) | weapon pickups, then upgrade pickups |
 //! | changes (1 [+ rule]), 4-bit indices | gadget pickups |
 //! | 1 [+ 1 [+ 26]] | scrap pickup (present, then as in the full format) |
+//! | 1 [+ 1 [+ 18]] | 5: pigment pickup (present, then as in the full format) |
 //! | changes (1 [+ 2 + 8]) | shield overrides |
 //! | changes (1 [+ 24]) | tuning |
+//! | changes, 5-bit indices | 5: event bans that flip (no value: an entry toggles the base's ban) |
 //! | 16 | CRC-16 |
 //!
 //! A "changes" list is 1 bit (0 = nothing changed) or 1 bit, the number of
-//! entries minus one (6 bits for weapons, 4 for gadgets) and the entries:
+//! entries minus one (6 bits for weapons, 4 for gadgets, 5 for events) and
+//! the entries:
 //! registry index (strictly increasing) and the new value; for per-weapon
 //! maps the value is 1 bit present (0 = removed) plus the value. Every entry
 //! must differ from the base. The base fingerprint catches codes made against
 //! a different default rule set (another build's data): they are rejected
 //! with a clear message instead of decoding to different rules.
 //!
+//! # Format 4 (read only)
+//!
+//! M3 builds printed format 4: the layout above without event bans and
+//! pigment pickups. Its diff codes were made against the M3 default rule
+//! sets, which differ from today's only by the M4 fields: Absurdity 20
+//! instead of 100, no pigment pickups, no event bans. A format 4 code
+//! therefore decodes against that legacy base ([`LEGACY_ABSURDITY`]) and
+//! keeps the Absurdity it carried (20 unless the host changed it); the new
+//! fields get today's mode defaults (pigment pickups) and no event bans.
+//!
 //! # Formats 2 and 3 (read only)
 //!
 //! The M2 formats carry only Paint the Void: no full/diff bit, and instead
 //! of the mode settings a 2-bit mode (0) plus teams (3 bits), match seconds
 //! (16) and respawn tenths (8); format 2 puts them after the name, format 3
-//! has the 2-bit mode before its fingerprint (a CRC-16 of the base's format
-//! 2 payload). Everything else is laid out as in format 4.
+//! has the 2-bit mode before its fingerprint (a CRC-16 of the legacy base's
+//! format 2 payload). Everything else is laid out as in format 4, and they
+//! decode like format 4 codes (legacy base, M4 fields filled in).
 //!
 //! Values that the format cannot carry exactly (a weight of 0.3, a respawn of
 //! 2.5 s, an unknown weapon id, a name with other characters) make
 //! [`RuleSet::to_code`] fail, so every code decodes to exactly the rule set
 //! it was made from (canonical form: banned weapons and gadgets left out of
-//! the availability maps, ship types and mutators in index order).
+//! the availability maps, events that are on left out of the event map,
+//! ship types and mutators in index order).
 
 use std::collections::BTreeMap;
 
+use crate::events::MODULES as EVENTS;
 use crate::gadgets::MODULES as GADGETS;
 use crate::mode::ModeKind;
 use crate::ruleset::{
-    Availability, Loadout, ModeRules, Mutator, PaintTheVoidRules, PickupRule, RuleSet,
-    ScrapPickupRule, WeaponTuning,
+    Availability, EventRule, Loadout, ModeRules, Mutator, PaintTheVoidRules, PickupRule,
+    PigmentPickupRule, RuleSet, ScrapPickupRule, WeaponTuning,
 };
 use crate::weapons::MODULES as WEAPONS;
 use crate::{ShieldInteraction, ShipType, SimError};
 
 /// Prefix of every printed rule set code.
 pub const PREFIX: &str = "LR";
-/// The format this build prints (full and diff, every mode).
-pub const CODE_VERSION: u8 = 4;
+/// The format this build prints (full and diff, every mode, event bans,
+/// pigment pickups).
+pub const CODE_VERSION: u8 = 5;
+/// The M3 format (every mode, mutators; read only).
+pub const LEGACY_V4_VERSION: u8 = 4;
+/// Absurdity of every built-in rule set before M4: format 2-4 diff codes
+/// were made against bases with this value.
+pub const LEGACY_ABSURDITY: u8 = 20;
 /// The M2 full format (Paint the Void only; read only).
 pub const LEGACY_FULL_VERSION: u8 = 2;
 /// The M2 diff format (Paint the Void only; read only).
@@ -139,6 +167,7 @@ const NAME_CHARS: &[u8; 64] = b" ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstu
 pub const MAX_NAME: usize = 31;
 const WEAPON_BITS: u32 = 6;
 const GADGET_BITS: u32 = 4;
+const EVENT_BITS: u32 = 5;
 
 fn err(m: impl Into<String>) -> SimError {
     SimError::RuleSetCode(m.into())
@@ -244,6 +273,19 @@ pub fn weapon_ids() -> Vec<&'static str> {
 /// Gadget ids in registry order.
 pub fn gadget_ids() -> Vec<&'static str> {
     GADGETS.iter().map(|m| m.id).collect()
+}
+
+/// Comedy event ids in registry order.
+pub fn event_ids() -> Vec<&'static str> {
+    EVENTS.iter().map(|m| m.id).collect()
+}
+
+/// The registry ids a code covers (a prefix of each registry).
+#[derive(Clone, Copy)]
+struct Ids<'a> {
+    weapons: &'a [&'a str],
+    gadgets: &'a [&'a str],
+    events: &'a [&'a str],
 }
 
 fn write_rule(b: &mut Bits, r: &PickupRule, what: &str) -> Result<(), SimError> {
@@ -450,6 +492,26 @@ fn read_scrap(r: &mut Reader) -> Result<ScrapPickupRule, SimError> {
     })
 }
 
+fn write_pigment(b: &mut Bits, p: &PigmentPickupRule) -> Result<(), SimError> {
+    if p.respawn_secs > 1023 || p.players_per_pickup > 15 || p.min_on_map > 15 {
+        return Err(err(
+            "pigment pickup: respawn_secs <= 1023, players_per_pickup and min_on_map <= 15",
+        ));
+    }
+    b.push(p.respawn_secs as u64, 10);
+    b.push(p.players_per_pickup as u64, 4);
+    b.push(p.min_on_map as u64, 4);
+    Ok(())
+}
+
+fn read_pigment(r: &mut Reader) -> Result<PigmentPickupRule, SimError> {
+    Ok(PigmentPickupRule {
+        respawn_secs: r.read(10)? as u16,
+        players_per_pickup: r.read(4)? as u8,
+        min_on_map: r.read(4)? as u8,
+    })
+}
+
 fn write_shield(b: &mut Bits, s: &ShieldInteraction, _: &str) -> Result<(), SimError> {
     let (kind, v) = match *s {
         ShieldInteraction::Blocked => (0, 0),
@@ -488,7 +550,11 @@ fn read_tuning(r: &mut Reader) -> Result<WeaponTuning, SimError> {
 }
 
 /// Every id the rule set mentions must have a code index.
-fn check_ids(r: &RuleSet, weapons: &[&str], gadgets: &[&str]) -> Result<(), SimError> {
+fn check_ids(r: &RuleSet, ids: Ids) -> Result<(), SimError> {
+    let (weapons, gadgets) = (ids.weapons, ids.gadgets);
+    for id in r.events.keys() {
+        index_of(ids.events, id, "event")?;
+    }
     for id in r
         .weapons
         .keys()
@@ -519,16 +585,19 @@ pub fn canonical(r: &RuleSet) -> RuleSet {
     let mut c = r.clone();
     c.weapons.retain(|_, a| *a != Availability::Banned);
     c.gadgets.retain(|_, a| *a != Availability::Banned);
+    c.events.retain(|_, e| *e != EventRule::On);
     c.allowed_ship_types = ships_from_mask(ship_mask(&r.allowed_ship_types));
     c.mutators = mutators_from_mask(mutator_mask(&r.mutators));
     c
 }
 
 /// The mode's default rule set ([`RuleSet::default_for`], the base of diff
-/// codes), restricted to the weapons and gadgets a code covers, in
+/// codes), restricted to the weapons, gadgets and events a code covers, in
 /// canonical form.
-fn base_for(kind: ModeKind, weapons: &[&str], gadgets: &[&str]) -> RuleSet {
+fn base_for(kind: ModeKind, ids: Ids) -> RuleSet {
+    let (weapons, gadgets) = (ids.weapons, ids.gadgets);
     let mut base = RuleSet::default_for(kind);
+    base.events.retain(|k, _| ids.events.contains(&k.as_str()));
     let w = |id: &String| weapons.contains(&id.as_str());
     let g = |id: &String| gadgets.contains(&id.as_str());
     base.weapons.retain(|k, _| w(k));
@@ -547,19 +616,33 @@ fn base_for(kind: ModeKind, weapons: &[&str], gadgets: &[&str]) -> RuleSet {
     canonical(&base)
 }
 
-/// Everything after the mode settings in the full formats (2 and 4):
-/// friendly fire to tuning.
-fn write_full_tail(
-    b: &mut Bits,
-    r: &RuleSet,
-    weapons: &[&str],
-    gadgets: &[&str],
-) -> Result<(), SimError> {
+/// The base of format 2-4 diff codes: the mode's default as M3 builds had
+/// it (Absurdity [`LEGACY_ABSURDITY`], no pigment pickups, no event bans).
+fn legacy_base_for(kind: ModeKind, ids: Ids) -> RuleSet {
+    let mut base = base_for(kind, ids);
+    base.absurdity = LEGACY_ABSURDITY;
+    base.pigment_pickup = None;
+    base.events.clear();
+    base
+}
+
+/// A rule set decoded from a format 2-4 code gets the M4 fields of today's
+/// mode default: its pigment pickups, no event bans.
+fn with_m4_fields(mut r: RuleSet) -> RuleSet {
+    r.pigment_pickup = RuleSet::default_for(r.mode.kind()).pigment_pickup;
+    r.events.clear();
+    r
+}
+
+/// Everything after the mode settings in the full formats (2, 4 and 5):
+/// friendly fire to tuning (and the event bans in format 5).
+fn write_full_tail(b: &mut Bits, r: &RuleSet, ids: Ids, version: u8) -> Result<(), SimError> {
+    let (weapons, gadgets) = (ids.weapons, ids.gadgets);
     b.push(percent(r.friendly_fire_percent, "friendly fire")?, 7);
     b.push(percent(r.absurdity, "absurdity")?, 7);
     b.push(ship_mask(&r.allowed_ship_types), 4);
     b.push(mutator_mask(&r.mutators), 4);
-    check_ids(r, weapons, gadgets)?;
+    check_ids(r, ids)?;
     for &w in weapons {
         b.push(r.availability(w).index() as u64, 2);
     }
@@ -577,47 +660,67 @@ fn write_full_tail(
             write_scrap(b, s)?;
         }
     }
+    if version >= CODE_VERSION {
+        match &r.pigment_pickup {
+            None => b.flag(false),
+            Some(p) => {
+                b.flag(true);
+                write_pigment(b, p)?;
+            }
+        }
+    }
     write_all(b, weapons, &r.shield_overrides, write_shield)?;
     write_all(b, weapons, &r.tuning, write_tuning)?;
+    if version >= CODE_VERSION {
+        for &e in ids.events {
+            b.flag(r.event_banned(e));
+        }
+    }
     Ok(())
 }
 
 /// Format 2 payload (Paint the Void only; header included, checksum
 /// excluded). This build no longer prints it: it only computes the base
 /// fingerprints of format 3 codes.
-fn legacy_full_payload(r: &RuleSet, weapons: &[&str], gadgets: &[&str]) -> Result<Bits, SimError> {
+fn legacy_full_payload(r: &RuleSet, ids: Ids) -> Result<Bits, SimError> {
     let ModeRules::PaintTheVoid(m) = &r.mode else {
         return Err(err("format 2 carries only Paint the Void"));
     };
     let mut b = Bits::default();
     b.push(LEGACY_FULL_VERSION as u64, 4);
-    header_counts(&mut b, weapons, gadgets)?;
+    header_counts(&mut b, ids, LEGACY_FULL_VERSION)?;
     write_name(&mut b, &r.name)?;
     b.push(0, 2);
     legacy_write_mode(&mut b, m)?;
-    write_full_tail(&mut b, r, weapons, gadgets)?;
+    write_full_tail(&mut b, r, ids, LEGACY_FULL_VERSION)?;
     Ok(b)
 }
 
-/// Format 4 full payload (header included, checksum excluded).
-fn full_payload(r: &RuleSet, weapons: &[&str], gadgets: &[&str]) -> Result<Bits, SimError> {
+/// Format 5 (or, for fingerprints of M3 codes, 4) full payload (header
+/// included, checksum excluded).
+fn full_payload(r: &RuleSet, ids: Ids, version: u8) -> Result<Bits, SimError> {
     let mut b = Bits::default();
-    b.push(CODE_VERSION as u64, 4);
-    header_counts(&mut b, weapons, gadgets)?;
+    b.push(version as u64, 4);
+    header_counts(&mut b, ids, version)?;
     b.flag(true);
     b.push(r.mode.kind().index() as u64, MODE_BITS);
     write_name(&mut b, &r.name)?;
     write_mode_fields(&mut b, &r.mode)?;
-    write_full_tail(&mut b, r, weapons, gadgets)?;
+    write_full_tail(&mut b, r, ids, version)?;
     Ok(b)
 }
 
-fn header_counts(b: &mut Bits, weapons: &[&str], gadgets: &[&str]) -> Result<(), SimError> {
-    if weapons.len() > 63 || gadgets.len() > 15 {
-        return Err(err("too many weapons or gadgets for the code format"));
+fn header_counts(b: &mut Bits, ids: Ids, version: u8) -> Result<(), SimError> {
+    if ids.weapons.len() > 63 || ids.gadgets.len() > 15 || ids.events.len() > 31 {
+        return Err(err(
+            "too many weapons, gadgets or events for the code format",
+        ));
     }
-    b.push(weapons.len() as u64, 6);
-    b.push(gadgets.len() as u64, 4);
+    b.push(ids.weapons.len() as u64, 6);
+    b.push(ids.gadgets.len() as u64, 4);
+    if version >= CODE_VERSION {
+        b.push(ids.events.len() as u64, EVENT_BITS);
+    }
     Ok(())
 }
 
@@ -808,32 +911,32 @@ fn implied_by_availability(r: &mut RuleSet) {
 }
 
 /// Fingerprint of a (restricted, canonical) base rule set: CRC-16 of its
-/// format 4 full payload.
-fn fingerprint(base: &RuleSet, weapons: &[&str], gadgets: &[&str]) -> Result<u16, SimError> {
-    let b = full_payload(base, weapons, gadgets)
+/// full payload in `version` (5, or 4 for M3 codes).
+fn fingerprint(base: &RuleSet, ids: Ids, version: u8) -> Result<u16, SimError> {
+    let b = full_payload(base, ids, version)
         .map_err(|e| err(format!("the default rule set cannot be encoded: {e}")))?;
     Ok(crc16(&b.bytes(b.bits.len())))
 }
 
 /// The fingerprint of format 3 codes: CRC-16 of the base's format 2 payload.
-fn legacy_fingerprint(base: &RuleSet, weapons: &[&str], gadgets: &[&str]) -> Result<u16, SimError> {
-    let b = legacy_full_payload(base, weapons, gadgets)
+fn legacy_fingerprint(base: &RuleSet, ids: Ids) -> Result<u16, SimError> {
+    let b = legacy_full_payload(base, ids)
         .map_err(|e| err(format!("the default rule set cannot be encoded: {e}")))?;
     Ok(crc16(&b.bytes(b.bits.len())))
 }
 
-/// Format 4 diff payload (header included, checksum excluded).
-fn diff_payload(r: &RuleSet, weapons: &[&str], gadgets: &[&str]) -> Result<Bits, SimError> {
-    check_ids(r, weapons, gadgets)?;
+/// Format 5 diff payload (header included, checksum excluded).
+fn diff_payload(r: &RuleSet, ids: Ids) -> Result<Bits, SimError> {
+    check_ids(r, ids)?;
     let r = canonical(r);
     let kind = r.mode.kind();
-    let base = base_for(kind, weapons, gadgets);
+    let base = base_for(kind, ids);
     let mut b = Bits::default();
     b.push(CODE_VERSION as u64, 4);
-    header_counts(&mut b, weapons, gadgets)?;
+    header_counts(&mut b, ids, CODE_VERSION)?;
     b.flag(false);
     b.push(kind.index() as u64, MODE_BITS);
-    b.push(fingerprint(&base, weapons, gadgets)? as u64, 16);
+    b.push(fingerprint(&base, ids, CODE_VERSION)? as u64, 16);
 
     b.flag(r.name != base.name);
     if r.name != base.name {
@@ -843,18 +946,13 @@ fn diff_payload(r: &RuleSet, weapons: &[&str], gadgets: &[&str]) -> Result<Bits,
     if r.mode != base.mode {
         write_mode_fields(&mut b, &r.mode)?;
     }
-    write_diff_tail(&mut b, &r, base, weapons, gadgets)?;
+    write_diff_tail(&mut b, &r, base, ids)?;
     Ok(b)
 }
 
-/// Everything after the mode settings in the diff formats (3 and 4).
-fn write_diff_tail(
-    b: &mut Bits,
-    r: &RuleSet,
-    base: RuleSet,
-    weapons: &[&str],
-    gadgets: &[&str],
-) -> Result<(), SimError> {
+/// Everything after the mode settings in the diff format 5.
+fn write_diff_tail(b: &mut Bits, r: &RuleSet, base: RuleSet, ids: Ids) -> Result<(), SimError> {
+    let (weapons, gadgets) = (ids.weapons, ids.gadgets);
     for (v, bv, what) in [
         (
             r.friendly_fire_percent,
@@ -936,6 +1034,13 @@ fn write_diff_tail(
             write_scrap(b, s)?;
         }
     }
+    b.flag(r.pigment_pickup != base.pigment_pickup);
+    if r.pigment_pickup != base.pigment_pickup {
+        b.flag(r.pigment_pickup.is_some());
+        if let Some(p) = &r.pigment_pickup {
+            write_pigment(b, p)?;
+        }
+    }
     write_map_diff(
         b,
         weapons,
@@ -951,6 +1056,13 @@ fn write_diff_tail(
         &r.tuning,
         &base.tuning,
         write_tuning,
+    )?;
+    write_changes(
+        b,
+        ids.events,
+        EVENT_BITS,
+        |id| r.event_banned(id) != base.event_banned(id),
+        |_, _| Ok(()),
     )?;
     Ok(())
 }
@@ -1021,20 +1133,31 @@ impl RuleSet {
     /// diff against the mode's default rule set, or the full encoding when
     /// that is shorter. Fails for values the format cannot carry exactly.
     pub fn to_code(&self) -> Result<String, SimError> {
-        self.to_code_with(&weapon_ids(), &gadget_ids())
+        let (w, g, e) = (weapon_ids(), gadget_ids(), event_ids());
+        self.to_code_with(Ids {
+            weapons: &w,
+            gadgets: &g,
+            events: &e,
+        })
     }
 
-    /// The full format 4 code: independent of the default rule sets, and
+    /// The full format 5 code: independent of the default rule sets, and
     /// much longer.
     pub fn to_full_code(&self) -> Result<String, SimError> {
-        Ok(finish(full_payload(self, &weapon_ids(), &gadget_ids())?))
+        let (w, g, e) = (weapon_ids(), gadget_ids(), event_ids());
+        let ids = Ids {
+            weapons: &w,
+            gadgets: &g,
+            events: &e,
+        };
+        Ok(finish(full_payload(self, ids, CODE_VERSION)?))
     }
 
     /// [`RuleSet::to_code`] over explicit module lists (tests of codes from
     /// older builds).
-    fn to_code_with(&self, weapons: &[&str], gadgets: &[&str]) -> Result<String, SimError> {
-        let full = full_payload(self, weapons, gadgets)?;
-        let diff = diff_payload(self, weapons, gadgets)?;
+    fn to_code_with(&self, ids: Ids) -> Result<String, SimError> {
+        let full = full_payload(self, ids, CODE_VERSION)?;
+        let diff = diff_payload(self, ids)?;
         Ok(finish(if diff.bits.len() <= full.bits.len() {
             diff
         } else {
@@ -1042,19 +1165,24 @@ impl RuleSet {
         }))
     }
 
-    /// Decodes a rule set code of any format this build reads (2, 3 and
-    /// 4; see the module docs). The result is canonical and still has to
-    /// be validated with [`RuleSet::resolve`].
+    /// Decodes a rule set code of any format this build reads (2 to 5;
+    /// see the module docs). The result is canonical and still has to be
+    /// validated with [`RuleSet::resolve`].
     pub fn from_code(code: &str) -> Result<RuleSet, SimError> {
-        Self::from_code_with(code, &weapon_ids(), &gadget_ids())
+        let (w, g, e) = (weapon_ids(), gadget_ids(), event_ids());
+        Self::from_code_with(
+            code,
+            Ids {
+                weapons: &w,
+                gadgets: &g,
+                events: &e,
+            },
+        )
     }
 
     /// [`RuleSet::from_code`] over explicit module lists.
-    fn from_code_with(
-        code: &str,
-        all_weapons: &[&str],
-        all_gadgets: &[&str],
-    ) -> Result<RuleSet, SimError> {
+    fn from_code_with(code: &str, all: Ids) -> Result<RuleSet, SimError> {
+        let (all_weapons, all_gadgets) = (all.weapons, all.gadgets);
         let bits = parse_symbols(code)?;
         let mut r = Reader {
             bits: &bits,
@@ -1074,12 +1202,28 @@ impl RuleSet {
                 all_gadgets.len()
             )));
         }
-        // Weapons and gadgets the code does not cover stay banned, without rules.
-        let (weapons, gadgets) = (&all_weapons[..nw], &all_gadgets[..ng]);
+        let ne = if version >= CODE_VERSION as u64 {
+            r.read(EVENT_BITS)? as usize
+        } else {
+            0
+        };
+        if ne > all.events.len() {
+            return Err(err(format!(
+                "code from a newer build ({ne} comedy events; this build knows {})",
+                all.events.len()
+            )));
+        }
+        // Weapons and gadgets the code does not cover stay banned, without
+        // rules; events it does not cover stay on.
+        let ids = Ids {
+            weapons: &all_weapons[..nw],
+            gadgets: &all_gadgets[..ng],
+            events: &all.events[..ne],
+        };
         let rules = match version as u8 {
-            LEGACY_FULL_VERSION => read_full_v2(&mut r, weapons, gadgets)?,
-            LEGACY_DIFF_VERSION => read_diff_v3(&mut r, weapons, gadgets)?,
-            _ => {
+            LEGACY_FULL_VERSION => read_full_v2(&mut r, ids)?.map(with_m4_fields),
+            LEGACY_DIFF_VERSION => read_diff_v3(&mut r, ids)?.map(with_m4_fields),
+            v => {
                 let full = r.flag()?;
                 let index = r.read(MODE_BITS)? as u8;
                 let Some(kind) = ModeKind::from_index(index) else {
@@ -1087,10 +1231,15 @@ impl RuleSet {
                         "unknown mode {index} (code from a newer build?)"
                     )));
                 };
-                if full {
-                    read_full_v4(&mut r, kind, weapons, gadgets)?
+                let rules = if full {
+                    read_full_v45(&mut r, kind, ids, v)?
                 } else {
-                    read_diff_v4(&mut r, kind, weapons, gadgets)?
+                    read_diff_v45(&mut r, kind, ids, v)?
+                };
+                if v == LEGACY_V4_VERSION {
+                    rules.map(with_m4_fields)
+                } else {
+                    rules
                 }
             }
         };
@@ -1113,14 +1262,16 @@ impl RuleSet {
 type Parsed = Result<RuleSet, SimError>;
 
 /// Reads the full formats' fields after the mode settings (friendly fire
-/// to tuning) into a rule set with `name` and `mode`.
+/// to tuning, and in format 5 the event bans) into a rule set with `name`
+/// and `mode`.
 fn read_full_tail(
     r: &mut Reader,
-    weapons: &[&str],
-    gadgets: &[&str],
+    ids: Ids,
+    version: u8,
     name: String,
     mode: ModeRules,
 ) -> Result<Parsed, SimError> {
+    let (weapons, gadgets) = (ids.weapons, ids.gadgets);
     let friendly_fire_percent = r.read(7)? as u8;
     let absurdity = r.read(7)? as u8;
     let allowed_ship_types = ships_from_mask(r.read(4)?);
@@ -1149,8 +1300,21 @@ fn read_full_tail(
     } else {
         None
     };
+    let pigment_pickup = if version >= CODE_VERSION && r.flag()? {
+        Some(read_pigment(r)?)
+    } else {
+        None
+    };
     let shield_overrides = read_all(r, weapons, read_shield)?;
     let tuning = read_all(r, weapons, read_tuning)?;
+    let mut events = BTreeMap::new();
+    if version >= CODE_VERSION {
+        for &e in ids.events {
+            if r.flag()? {
+                events.insert(e.to_string(), EventRule::Banned);
+            }
+        }
+    }
     if mutator_bits & !known_mutators() != 0 {
         return Ok(Err(err("unknown mutator (code from a newer build?)")));
     }
@@ -1170,33 +1334,39 @@ fn read_full_tail(
         allowed_ship_types,
         absurdity,
         mutators,
-        events: BTreeMap::new(),
-        pigment_pickup: None,
+        events,
+        pigment_pickup,
     }))
 }
 
 /// Reads a format 2 body (Paint the Void only).
-fn read_full_v2(r: &mut Reader, weapons: &[&str], gadgets: &[&str]) -> Result<Parsed, SimError> {
+fn read_full_v2(r: &mut Reader, ids: Ids) -> Result<Parsed, SimError> {
     let name = read_name(r)?;
     let mode = r.read(2)?;
     let m = legacy_read_mode(r)?;
-    let rules = read_full_tail(r, weapons, gadgets, name, ModeRules::PaintTheVoid(m))?;
+    let rules = read_full_tail(
+        r,
+        ids,
+        LEGACY_FULL_VERSION,
+        name,
+        ModeRules::PaintTheVoid(m),
+    )?;
     if mode != 0 {
         return Ok(Err(err("unknown mode")));
     }
     Ok(rules)
 }
 
-/// Reads a format 4 full body (after the mode index).
-fn read_full_v4(
+/// Reads a format 4 or 5 full body (after the mode index).
+fn read_full_v45(
     r: &mut Reader,
     kind: ModeKind,
-    weapons: &[&str],
-    gadgets: &[&str],
+    ids: Ids,
+    version: u8,
 ) -> Result<Parsed, SimError> {
     let name = read_name(r)?;
     let mode = read_mode_fields(r, kind)?;
-    read_full_tail(r, weapons, gadgets, name, mode)
+    read_full_tail(r, ids, version, name, mode)
 }
 
 /// Reads the diff formats' fields after the mode settings into `out`;
@@ -1204,9 +1374,10 @@ fn read_full_v4(
 fn read_diff_tail(
     r: &mut Reader,
     out: &mut RuleSet,
-    weapons: &[&str],
-    gadgets: &[&str],
+    ids: Ids,
+    version: u8,
 ) -> Result<bool, SimError> {
+    let (weapons, gadgets) = (ids.weapons, ids.gadgets);
     if r.flag()? {
         out.friendly_fire_percent = r.read(7)? as u8;
     }
@@ -1246,6 +1417,17 @@ fn read_diff_tail(
         }
         out.scrap_pickup = s;
     }
+    if version >= CODE_VERSION && r.flag()? {
+        let p = if r.flag()? {
+            Some(read_pigment(r)?)
+        } else {
+            None
+        };
+        if p == out.pigment_pickup {
+            return Err(err("corrupt code (an entry equals the default)"));
+        }
+        out.pigment_pickup = p;
+    }
     read_map_diff(
         r,
         weapons,
@@ -1254,6 +1436,13 @@ fn read_diff_tail(
         read_shield,
     )?;
     read_map_diff(r, weapons, WEAPON_BITS, &mut out.tuning, read_tuning)?;
+    if version >= CODE_VERSION {
+        read_changes(r, ids.events, EVENT_BITS, |_, id| {
+            let banned = out.event_banned(id);
+            out.ban_event(id, !banned);
+            Ok(())
+        })?;
+    }
     Ok(unknown_mutator)
 }
 
@@ -1282,35 +1471,39 @@ fn diff_checks(
 
 /// Reads a format 3 body (Paint the Void only, base fingerprint over the
 /// base's format 2 payload).
-fn read_diff_v3(r: &mut Reader, weapons: &[&str], gadgets: &[&str]) -> Result<Parsed, SimError> {
+fn read_diff_v3(r: &mut Reader, ids: Ids) -> Result<Parsed, SimError> {
     let mode = r.read(2)?;
     let fp = r.read(16)? as u16;
     if mode != 0 {
         // Checked after the checksum, so a typo is reported as a typo.
         return Ok(Err(err("unknown mode")));
     }
-    let mut out = base_for(ModeKind::PaintTheVoid, weapons, gadgets);
-    let base_fp = legacy_fingerprint(&out, weapons, gadgets);
+    let mut out = legacy_base_for(ModeKind::PaintTheVoid, ids);
+    let base_fp = legacy_fingerprint(&out, ids);
     if r.flag()? {
         out.name = read_name(r)?;
     }
     if r.flag()? {
         out.mode = ModeRules::PaintTheVoid(legacy_read_mode(r)?);
     }
-    let unknown_mutator = read_diff_tail(r, &mut out, weapons, gadgets)?;
+    let unknown_mutator = read_diff_tail(r, &mut out, ids, LEGACY_DIFF_VERSION)?;
     Ok(diff_checks(out, fp, base_fp, unknown_mutator))
 }
 
-/// Reads a format 4 diff body (after the mode index).
-fn read_diff_v4(
+/// Reads a format 4 or 5 diff body (after the mode index).
+fn read_diff_v45(
     r: &mut Reader,
     kind: ModeKind,
-    weapons: &[&str],
-    gadgets: &[&str],
+    ids: Ids,
+    version: u8,
 ) -> Result<Parsed, SimError> {
     let fp = r.read(16)? as u16;
-    let mut out = base_for(kind, weapons, gadgets);
-    let base_fp = fingerprint(&out, weapons, gadgets);
+    let mut out = if version >= CODE_VERSION {
+        base_for(kind, ids)
+    } else {
+        legacy_base_for(kind, ids)
+    };
+    let base_fp = fingerprint(&out, ids, version);
     if r.flag()? {
         out.name = read_name(r)?;
     }
@@ -1321,7 +1514,7 @@ fn read_diff_v4(
         }
         out.mode = m;
     }
-    let unknown_mutator = read_diff_tail(r, &mut out, weapons, gadgets)?;
+    let unknown_mutator = read_diff_tail(r, &mut out, ids, version)?;
     Ok(diff_checks(out, fp, base_fp, unknown_mutator))
 }
 

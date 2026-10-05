@@ -1,0 +1,172 @@
+// WGSL for the instanced objects' materials (VQ4). Included by the
+// instanced and translucent object shaders after the Frame struct and the
+// shared `light()` / `apply_fog()` helpers. `shade_model` picks the
+// material by the vertex's part (kit.ts PART_*; PART_PLAIN and unknown parts
+// keep the pre-VQ4 look: instance colour, lit, mixed toward glowing by the
+// instance's emissive amount).
+//
+// Emissive strengths are constants below. They are in the current LDR
+// output's units; once the HDR pipeline (VQ2) lands, raise ENGINE_* and
+// NAV_FLASH toward physical HDR values (4-8) and let exposure and bloom
+// do the work.
+
+import {
+  PART_CANOPY,
+  PART_ENGINE,
+  PART_GLOW,
+  PART_HULL,
+  PART_LAMP,
+  PART_LIVERY,
+  PART_METAL,
+  PART_NAV_PORT,
+  PART_NAV_STARBOARD,
+  PART_NAV_TAIL,
+  PART_SCORCH,
+  PART_TRIM,
+} from "./kit.ts";
+
+/** Engine glow at rest and at full boost (multiplies the engine colour). */
+export const ENGINE_IDLE = 0.9;
+export const ENGINE_BOOST = 2.6;
+/** Nav light: steady level and flash peak. */
+export const NAV_STEADY = 0.45;
+export const NAV_FLASH = 3.0;
+/** Nav light blink period (s) and flash length (s). */
+export const NAV_PERIOD = 1.2;
+export const NAV_FLASH_LEN = 0.14;
+
+/** Nav light brightness (NAV_STEADY..NAV_STEADY+NAV_FLASH) at time `t` (s) with per-ship `phase` (s); `strobe` double-flashes. */
+export function navBlink(t: number, phase: number, strobe = false): number {
+  const local = (((t + phase) % NAV_PERIOD) + NAV_PERIOD) % NAV_PERIOD;
+  const on = local < NAV_FLASH_LEN || (strobe && local > 2 * NAV_FLASH_LEN && local < 3 * NAV_FLASH_LEN);
+  return NAV_STEADY + (on ? NAV_FLASH : 0);
+}
+
+const f = (x: number): string => (Number.isInteger(x) ? `${x}.0` : String(x));
+
+export const MODEL_SHADING_WGSL = /* wgsl */ `
+const PART_HULL = ${PART_HULL}u;
+const PART_LIVERY = ${PART_LIVERY}u;
+const PART_TRIM = ${PART_TRIM}u;
+const PART_METAL = ${PART_METAL}u;
+const PART_CANOPY = ${PART_CANOPY}u;
+const PART_ENGINE = ${PART_ENGINE}u;
+const PART_NAV_PORT = ${PART_NAV_PORT}u;
+const PART_NAV_STARBOARD = ${PART_NAV_STARBOARD}u;
+const PART_NAV_TAIL = ${PART_NAV_TAIL}u;
+const PART_GLOW = ${PART_GLOW}u;
+const PART_SCORCH = ${PART_SCORCH}u;
+const PART_LAMP = ${PART_LAMP}u;
+
+// Small-argument hash (model-space coordinates stay below a few units).
+fn model_hash(p: vec3f) -> f32 {
+  let q = fract(p * vec3f(0.1031, 0.1030, 0.0973));
+  let r = q + dot(q, q.yzx + 33.33);
+  return fract((r.x + r.y) * r.z);
+}
+
+// Panel seams: a staggered grid of plates projected along the dominant
+// model-space axis. Returns 0 on a seam, 1 on a plate.
+fn panel_mask(lp: vec3f, ln: vec3f) -> f32 {
+  let a = abs(ln);
+  var uv = lp.xz;
+  if (a.x >= a.y && a.x >= a.z) { uv = lp.zy; } else if (a.z >= a.y) { uv = lp.xy; }
+  let cell = vec2f(0.21, 0.12);
+  let row = floor(uv.y / cell.y);
+  let u = uv.x / cell.x + 0.5 * (row - 2.0 * floor(row * 0.5));
+  let g = vec2f(fract(u), fract(uv.y / cell.y));
+  let edge = min(min(g.x, 1.0 - g.x) * cell.x, min(g.y, 1.0 - g.y) * cell.y);
+  return smoothstep(0.0008, 0.0026, edge);
+}
+
+// Plate-to-plate shade variation (weathering).
+fn panel_tone(lp: vec3f) -> f32 {
+  return 0.93 + 0.12 * model_hash(floor(lp * vec3f(4.8, 8.3, 4.8)));
+}
+
+// Smooth 3D value noise in 0..1 (model space).
+fn model_noise(p: vec3f) -> f32 {
+  let i = floor(p);
+  let f = p - i;
+  let u = f * f * (3.0 - 2.0 * f);
+  let a = mix(mix(model_hash(i), model_hash(i + vec3f(1.0, 0.0, 0.0)), u.x), mix(model_hash(i + vec3f(0.0, 1.0, 0.0)), model_hash(i + vec3f(1.0, 1.0, 0.0)), u.x), u.y);
+  let b = mix(mix(model_hash(i + vec3f(0.0, 0.0, 1.0)), model_hash(i + vec3f(1.0, 0.0, 1.0)), u.x), mix(model_hash(i + vec3f(0.0, 1.0, 1.0)), model_hash(i + vec3f(1.0, 1.0, 1.0)), u.x), u.y);
+  return mix(a, b, u.z);
+}
+
+// Blinn-Phong specular from the sun and the camera headlight.
+fn model_spec(n: vec3f, v: vec3f, power: f32) -> f32 {
+  let h = normalize(frame.light_dir.xyz + v);
+  let sun = pow(max(dot(n, h), 0.0), power) * step(0.0, dot(n, frame.light_dir.xyz));
+  let head = pow(max(dot(n, v), 0.0), power * 2.0) * frame.light_dir.w * 0.6;
+  return sun + head;
+}
+
+fn nav_blink(t: f32, phase: f32, strobe: bool) -> f32 {
+  let local = fract((t + phase) / ${f(NAV_PERIOD)}) * ${f(NAV_PERIOD)};
+  var on = local < ${f(NAV_FLASH_LEN)};
+  if (strobe) { on = on || (local > ${f(2 * NAV_FLASH_LEN)} && local < ${f(3 * NAV_FLASH_LEN)}); }
+  return ${f(NAV_STEADY)} + select(0.0, ${f(NAV_FLASH)}, on);
+}
+
+// Material of a model vertex. color: instance rgb + emissive amount (a);
+// glow: engine strength (0 idle .. 1 full boost); blink: nav light phase (s).
+fn shade_model(part: u32, n: vec3f, world_pos: vec3f, lp: vec3f, ln: vec3f, color: vec4f, glow: f32, blink: f32) -> vec3f {
+  let v = normalize(frame.camera_pos.xyz - world_pos);
+  let t = frame.camera_pos.w;
+  let lit = light(n, world_pos);
+  let fres = pow(1.0 - clamp(dot(n, v), 0.0, 1.0), 4.0);
+  // Cool rim light lifts silhouettes off dark rock.
+  let rim = vec3f(0.35, 0.45, 0.6) * fres * 0.5;
+  var out = vec3f(0.0);
+  if (part == PART_HULL) {
+    let base = mix(vec3f(0.47, 0.49, 0.53), color.rgb, 0.2) * panel_tone(lp) * mix(0.62, 1.0, panel_mask(lp, ln));
+    out = base * lit + vec3f(model_spec(n, v, 40.0) * 0.35) + rim * base;
+  } else if (part == PART_LIVERY) {
+    let base = color.rgb * mix(0.7, 1.0, panel_mask(lp, ln));
+    out = base * lit + vec3f(model_spec(n, v, 48.0) * 0.4) + base * 0.08 + rim * base;
+  } else if (part == PART_TRIM) {
+    let base = vec3f(0.085, 0.09, 0.105);
+    out = base * lit + vec3f(model_spec(n, v, 24.0) * 0.2) + rim * 0.3;
+  } else if (part == PART_METAL) {
+    let base = vec3f(0.6, 0.62, 0.66);
+    out = base * lit * 0.8 + vec3f(model_spec(n, v, 70.0) * 0.9) + rim * base;
+  } else if (part == PART_CANOPY) {
+    // Dark tinted glass: strong highlight, sky reflection at grazing angles, a faint lit cockpit.
+    let refl = mix(frame.fog_color.rgb * 2.0 + vec3f(0.05, 0.08, 0.12), vec3f(0.5, 0.6, 0.7), fres);
+    out = vec3f(0.02, 0.035, 0.05) * lit + refl * (0.15 + 0.6 * fres) + vec3f(model_spec(n, v, 120.0) * 1.4) + vec3f(0.04, 0.12, 0.16);
+  } else if (part == PART_ENGINE) {
+    // Hot white centre (facing the viewer) fading to a coloured rim: orange idle, blue-white boost.
+    let g = clamp(glow, 0.0, 1.0);
+    let rim_col = mix(vec3f(1.0, 0.38, 0.1), vec3f(0.3, 0.6, 1.0), g);
+    let core = pow(clamp(dot(n, v), 0.0, 1.0), 2.0);
+    let hot = mix(rim_col, mix(vec3f(1.0, 0.8, 0.5), vec3f(0.85, 0.95, 1.0), g), core);
+    let flicker = 0.92 + 0.08 * sin(t * 37.0 + blink * 11.0);
+    out = hot * mix(${f(ENGINE_IDLE)}, ${f(ENGINE_BOOST)}, g) * (0.55 + 0.45 * core) * flicker;
+  } else if (part == PART_NAV_PORT) {
+    out = vec3f(1.0, 0.12, 0.08) * nav_blink(t, blink, false);
+  } else if (part == PART_NAV_STARBOARD) {
+    out = vec3f(0.12, 1.0, 0.3) * nav_blink(t, blink, false);
+  } else if (part == PART_NAV_TAIL) {
+    out = vec3f(1.0, 1.0, 0.95) * nav_blink(t, blink + 0.6, true);
+  } else if (part == PART_LAMP) {
+    out = vec3f(1.0, 0.95, 0.8) * 1.6;
+  } else if (part == PART_GLOW) {
+    out = color.rgb * (1.1 + 0.6 * color.a) + vec3f(0.15);
+  } else if (part == PART_SCORCH) {
+    // Burnt paint: soot patches (smooth noise, no per-triangle switches) with glowing embers at their hearts.
+    let paint = mix(vec3f(0.3, 0.31, 0.33), color.rgb, 0.25) * mix(0.6, 1.0, panel_mask(lp, ln));
+    let burn = smoothstep(0.42, 0.68, model_noise(lp * 7.0) * 0.7 + model_noise(lp * 19.0) * 0.3);
+    let soot = vec3f(0.035, 0.03, 0.028);
+    let base = mix(paint, soot, burn);
+    let heat = smoothstep(0.74, 0.86, model_noise(lp * 31.0 + vec3f(7.0))) * burn * burn;
+    let ember = heat * (0.65 + 0.35 * sin(t * 2.5 + model_noise(lp * 5.0) * 12.0));
+    out = base * lit + vec3f(model_spec(n, v, 20.0) * 0.12 * (1.0 - burn)) + vec3f(1.0, 0.32, 0.06) * ember * 0.8;
+  } else {
+    // PART_PLAIN: the pre-VQ4 instance look.
+    return mix(color.rgb * lit, color.rgb * 1.5, color.a);
+  }
+  // Instance emissive (cloak shimmer, ghosts, returning decoys) washes the material toward its colour.
+  return mix(out, color.rgb * 1.5, color.a);
+}
+`;

@@ -200,10 +200,13 @@ down 2 s after the last player left (scripted runs).
   in `web/src/wasm/api.ts` and `crates/ls-wasm/src/lib.rs`.
 - `web/src/game/scene.ts` maps a shape name to a style (`SHAPE_STYLES`: mesh kind, size, glow,
   trail, spin, bob, translucency) and builds the renderer's instances; meshes are procedural
-  (`web/src/renderer/primitives.ts`, `MESH_BUILDERS`). A new weapon or entity needs only a
+  (`web/src/renderer/models/index.ts`, `MESH_BUILDERS`: the modelling-kit hulls and props of
+  `models/*`, the remaining primitives of `primitives.ts`). Ships draw the hull of their type
+  (`shipMeshKind`), decoys and ghosts their owner's, wrecks the dead ship's
+  (`game/wrecks.ts`). A new weapon or entity needs only a
   `visual` in its data file; a new `Shape` variant needs one style entry (a test checks that
   every ls-sim shape has one). Pickups bob and spin, scrap piles grow with their scrap, armed
-  mines blink, ghosts and dust clouds are translucent, decoys take their team's hull colour,
+  mines blink, ghosts and dust clouds are translucent, decoys take their team's colour,
   and inside a dust cloud the fog closes in (`dustFog`).
 - Name tags (`web/src/ui/nameTags.ts`) project a point above each ship; teammates are labelled
   to 90 u, enemies to 45 u.

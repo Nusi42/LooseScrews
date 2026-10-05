@@ -1,6 +1,8 @@
 // WGSL sources. All pipelines share the per-frame uniform block below; keep
 // FRAME_UNIFORM_FLOATS and the writer in renderer.ts in sync with it.
 
+import { MODEL_SHADING_WGSL } from "./models/shading.ts";
+
 /** Number of paint team colour slots, indexed by team id; ids >= TEAM_SLOTS (NO_TEAM = 255) are unpainted. */
 export const TEAM_SLOTS = 4;
 
@@ -166,6 +168,12 @@ struct VsOut {
   @location(1) normal: vec3f,
   @location(2) color: vec4f,
   @location(3) opacity: f32,
+  // VQ4 model materials: part (kit.ts PART_*), model-space position and
+  // normal (panel seams), x = engine glow, y = nav light phase.
+  @location(4) @interpolate(flat) part: u32,
+  @location(5) local_pos: vec3f,
+  @location(6) local_normal: vec3f,
+  @location(7) fx: vec2f,
 };
 
 fn quat_rotate(q: vec4f, v: vec3f) -> vec3f {
@@ -180,7 +188,8 @@ fn vs_main(
   @location(2) offset_scale: vec4f, // xyz world position, w = uniform scale
   @location(3) rotation: vec4f,     // unit quaternion (x, y, z, w)
   @location(4) color: vec4f,        // rgb colour, a = emissive amount 0..1
-  @location(5) extra: vec4f,        // x = stretch along local Z, y = opacity
+  @location(5) extra: vec4f,        // x = stretch along local Z, y = opacity, z = glow, w = blink phase
+  @location(6) part: u32,           // mesh vertex part (low byte; models/kit.ts PART_*)
 ) -> VsOut {
   var out: VsOut;
   let stretch = max(extra.x, 1e-3);
@@ -192,6 +201,10 @@ fn vs_main(
   out.normal = quat_rotate(rotation, normalize(vec3f(normal.xy, normal.z / stretch)));
   out.color = color;
   out.opacity = extra.y;
+  out.part = part & 0xffu;
+  out.local_pos = pos;
+  out.local_normal = normal;
+  out.fx = extra.zw;
   return out;
 }
 `;
@@ -199,12 +212,12 @@ fn vs_main(
 export const INSTANCED_WGSL = /* wgsl */ `
 ${FRAME_STRUCT}
 ${INSTANCED_VS}
+${MODEL_SHADING_WGSL}
 
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4f {
   let n = normalize(in.normal);
-  let lit = in.color.rgb * light(n, in.world_pos);
-  let color = mix(lit, in.color.rgb * 1.5, in.color.a);
+  let color = shade_model(in.part, n, in.world_pos, in.local_pos, normalize(in.local_normal), in.color, in.fx.x, in.fx.y);
   return vec4f(apply_fog(color, in.world_pos), 1.0);
 }
 `;
@@ -217,6 +230,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4f {
 export const TRANSLUCENT_WGSL = /* wgsl */ `
 ${FRAME_STRUCT}
 ${INSTANCED_VS}
+${MODEL_SHADING_WGSL}
 
 @fragment
 fn fs_main(in: VsOut, @builtin(front_facing) front: bool) -> @location(0) vec4f {
@@ -224,8 +238,7 @@ fn fs_main(in: VsOut, @builtin(front_facing) front: bool) -> @location(0) vec4f 
   if (!front) { n = -n; }
   let v = normalize(frame.camera_pos.xyz - in.world_pos);
   let facing = abs(dot(n, v));
-  let lit = in.color.rgb * light(n, in.world_pos);
-  let color = mix(lit, in.color.rgb * 1.5, in.color.a);
+  let color = shade_model(in.part, n, in.world_pos, in.local_pos, normalize(in.local_normal), in.color, in.fx.x, in.fx.y);
   let alpha = clamp(in.opacity * (0.2 + 0.8 * facing * facing), 0.0, 1.0);
   return vec4f(apply_fog(color, in.world_pos), alpha);
 }

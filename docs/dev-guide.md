@@ -559,6 +559,19 @@ rejected at the handshake with `DataMismatch`, not desynced. Run the wasm32 unit
   `web/src/game/scene.ts` maps each `Shape` to a mesh. A new shape means a variant in the
   `shapes!` list in `crates/ls-sim/src/visual.rs` (append; the index is on the wire) and a
   style in `SHAPE_STYLES`. Weapon names, slots and the weapon HUD come from the data.
+- **Models:** hulls and props are built in TypeScript with the modelling kit in
+  `web/src/renderer/models/kit.ts` (loft, lathe, bevelled box, sphere, mirror, smoothing
+  groups); every triangle carries a material part (`PART_*`: hull, livery, trim, metal,
+  canopy, engine, nav lights, glow, scorch; `PART_PLAIN` keeps the instance colour) that the
+  object shader (`models/shading.ts`) turns into paint, glass, glow and blinking lights. Hulls
+  live in `models/ships.ts` (3-4 closed pieces each, which `models/wrecks.ts` throws apart for
+  the wreck), props in `models/props.ts`, mesh kinds in `models/index.ts`. A new mesh kind is
+  one entry in `MESH_BUILDERS` and `LEGACY_MESH_BUILDERS`. `models/models.test.ts` checks the
+  budgets (600-2000 triangles per hull, inside the hitbox sphere x 1.05), winding and parts.
+  Look at them with `?view=ships` (ship bay; `&show=wrecks|props`, `&scene=flight`,
+  `&focus=0..3`, `&boost=1`, `&models=legacy` for the old primitives) and take before/after
+  shots plus the object-cost bench with `node tools/browser-smoke/models.mjs` (after
+  `cd web && npm run build`; images in `target/visual-gallery/vq4`).
 - **Shot prediction:** the browser draws its own shots at once with
   `crates/ls-wasm/src/shots.rs`. `ShotModel::for_weapon` maps weapon ids to a model; the
   default `Pattern` is the generic `fire_pattern`. A weapon whose `fire` differs (instant, fans

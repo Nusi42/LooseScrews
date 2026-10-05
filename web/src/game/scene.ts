@@ -10,7 +10,7 @@
 import * as q from "../math/quat.ts";
 import type { Quat } from "../math/quat.ts";
 import type { Vec3 } from "../math/vec3.ts";
-import type { MeshKind } from "../renderer/primitives.ts";
+import { shipMeshKind, wreckMeshKind, type MeshKind } from "../renderer/models/index.ts";
 import { emptyScene, type Instance, type Rgb, type SceneInstances } from "../renderer/renderer.ts";
 import { PAINT_COLORS, type Beam, type Flash } from "./mechanics.ts";
 import {
@@ -83,7 +83,8 @@ export const SHAPE_STYLES: Readonly<Record<string, ShapeStyle>> = {
   crate: { mesh: "crate", size: 0.9, emissive: 0.35, spin: 1.2, bob: 0.15 },
   upgrade: { mesh: "upgrade", size: 0.9, emissive: 0.6, spin: 2, bob: 0.2, glow: 1.6 },
   gadget: { mesh: "gadget", size: 0.9, emissive: 0.5, spin: 1.5, bob: 0.15 },
-  decoy: { mesh: "ship", size: 1, emissive: 0.1, teamHull: true },
+  // "ship" and "wreck" resolve to the owner's / dead ship's hull (shipMeshKind, wreckMeshKind).
+  decoy: { mesh: "ship", size: 1, emissive: 0, teamHull: true },
   ghost: { mesh: "ship", size: 1, emissive: 0.7, opacity: 0.35 },
   dust: { mesh: "sphere", size: 6, emissive: 0.15, opacity: 0.4, radiusScaled: true },
   duck: { mesh: "duck", size: 2.5, emissive: 0.05, bob: 0.1 },
@@ -146,21 +147,25 @@ export function addShips(
     const scale = (s.radius || TINKER_RADIUS) / TINKER_RADIUS;
     const color = teamHull(s.team);
     const gadget = s.gadgetActive ? gadgetOf(s.id) : "";
+    const mesh = shipMeshKind(s.shipType);
+    // The hull's livery takes the team colour; engines glow brighter while boosting.
     const hull: Instance = {
       position: s.position,
       rotation: s.orientation,
       scale,
       color,
-      emissive: s.boosting ? 0.35 : 0.1,
+      emissive: 0,
+      glow: s.boosting ? 1 : 0,
+      blink: phase(s.id),
     };
     if (gadget === "cloak") {
       // A lighter shade of the team hull colour, so a cloaked teammate and a
       // cloaked enemy still read apart.
       const shimmer: Rgb = [0.5 + color[0] * 0.5, 0.5 + color[1] * 0.5, 0.5 + color[2] * 0.5];
-      push(scene, "translucent", "ship", { ...hull, color: shimmer, emissive: 0.9, opacity: cloakShimmer(time, s.id) });
+      push(scene, "translucent", mesh, { ...hull, color: shimmer, emissive: 0.9, opacity: cloakShimmer(time, s.id) });
       continue;
     }
-    push(scene, "opaque", "ship", hull);
+    push(scene, "opaque", mesh, hull);
     if (gadget === "shield") {
       push(scene, "translucent", "sphere", {
         position: s.position,
@@ -306,11 +311,21 @@ export function addEntities(
   entities: readonly EntityState[],
   visuals: readonly VisualDef[],
   time: number,
+  hulls: EntityHulls = {},
 ): void {
   for (const e of entities) {
     if (e.kind === "marker" && !visuals[e.visual]) continue;
     const visual = visuals[e.visual];
     const style = styleFor(visual);
+    // Decoys and ghosts show their owner's hull, wrecks the dead ship's.
+    let mesh = style.mesh;
+    let shipLike = false;
+    if (mesh === "ship") {
+      mesh = shipMeshKind(hulls.shipTypeOf?.(e.owner) ?? 1);
+      shipLike = true;
+    } else if (mesh === "wreck") {
+      mesh = wreckMeshKind(hulls.wreckTypeOf?.(e) ?? 1);
+    }
     let color = visual?.color ?? WHITE;
     if (style.teamHull) color = teamHull(e.team);
     let scale = style.size * (visual?.scale ?? 1);
@@ -333,12 +348,13 @@ export function addEntities(
     const returning = e.kind === "decoy" && (e.state[1] & DECOY_RETURNING) !== 0;
     if (returning) emissive = 0.6 + 0.4 * Math.sin(time * 20);
     const inst: Instance = { position, rotation, scale, color, emissive };
+    if (shipLike) inst.blink = phase(e.owner);
     if (style.opacity !== undefined) {
       // Borrowed Time ghosts flicker.
       const opacity = e.kind === "ghost" ? style.opacity * (0.6 + 0.4 * Math.sin(time * 13 + ph)) : style.opacity;
-      push(scene, "translucent", style.mesh, { ...inst, opacity });
+      push(scene, "translucent", mesh, { ...inst, opacity });
     } else {
-      push(scene, "opaque", style.mesh, inst);
+      push(scene, "opaque", mesh, inst);
     }
     if (returning) {
       push(scene, "translucent", "sphere", { position, rotation: q.identity(), scale: scale * 1.8, color, emissive: 1, opacity: 0.3 });
@@ -356,8 +372,16 @@ export function addEntities(
   }
 }
 
+/** Which hull ship-shaped entities show (VQ4). */
+export interface EntityHulls {
+  /** Ship type of a ship id (decoys and ghosts take their owner's hull); default Tinker. */
+  shipTypeOf?: ((id: number) => number | undefined) | undefined;
+  /** Hull type of a wreck (game/wrecks.ts WreckTypes); default Tinker. */
+  wreckTypeOf?: ((e: EntityState) => number) | undefined;
+}
+
 /** Optional extras for `buildScene` (M2 wave C mechanics). */
-export interface SceneExtras {
+export interface SceneExtras extends EntityHulls {
   /** Gadget kind of a ship id ("shield", "cloak", "decoy", ""). */
   gadgetOf?: (id: number) => string;
   beams?: readonly Beam[];
@@ -380,7 +404,9 @@ export function buildScene(
   addShips(scene, ships, extras.gadgetOf, time);
   const hide = extras.hideShot;
   addProjectiles(scene, hide ? shots.filter((p) => !hide(p)) : shots, visuals, teamOf, time);
-  addEntities(scene, entities, visuals, time);
+  // Ship types of the ships in view, unless the caller knows every player's.
+  const shipTypeOf = extras.shipTypeOf ?? ((id: number) => ships.find((s) => s.id === id)?.shipType);
+  addEntities(scene, entities, visuals, time, { shipTypeOf, wreckTypeOf: extras.wreckTypeOf });
   addEffects(scene, extras.beams ?? [], extras.flashes ?? [], time);
   return scene;
 }

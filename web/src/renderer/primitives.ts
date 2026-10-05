@@ -339,39 +339,5 @@ export function appendOrientedBox(b: MeshBuilder, c: V3, ax: V3, ay: V3, az: V3,
   }
 }
 
-/** Every instanced mesh kind the renderer knows. */
-export type MeshKind =
-  | "ship"
-  | "bolt"
-  | "orb"
-  | "sphere"
-  | "rocket"
-  | "harpoon"
-  | "mine"
-  | "crate"
-  | "upgrade"
-  | "gadget"
-  | "debris"
-  | "scrap"
-  | "wreck"
-  | "duck";
-
-/** Builders for every mesh kind (the renderer uploads each once). */
-export const MESH_BUILDERS: Readonly<Record<MeshKind, () => MeshData>> = {
-  ship: shipMesh,
-  bolt: projectileMesh,
-  orb: () => sphereMesh(1),
-  sphere: () => sphereMesh(2),
-  rocket: rocketMesh,
-  harpoon: harpoonMesh,
-  mine: mineMesh,
-  crate: crateMesh,
-  upgrade: upgradeMesh,
-  gadget: gadgetMesh,
-  debris: debrisMesh,
-  scrap: scrapMesh,
-  wreck: wreckMesh,
-  duck: duckMesh,
-};
-
-export const MESH_KINDS = Object.keys(MESH_BUILDERS) as MeshKind[];
+// Mesh kinds and builders live in models/index.ts (VQ4); these primitives
+// are the legacy set (LEGACY_MESH_BUILDERS there) and shared helpers.

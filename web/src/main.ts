@@ -51,6 +51,8 @@ import { EndScreen, endScreenModel, Scoreboard, scoreboardModel } from "./ui/sco
 import { showLoading, showStartScreen, type StartOptions } from "./ui/startScreen.ts";
 import { loadWasm } from "./wasm/load.ts";
 import { addRuleEditorLink, showRuleEditor, wantsRuleEditor } from "./rules/editor.ts";
+import { showShowcase, wantsShowcase } from "./renderer/models/showcase.ts";
+import { WreckTypes } from "./game/wrecks.ts";
 import { parseInvite } from "./rules/model.ts";
 import type { WasmApi } from "./wasm/api.ts";
 
@@ -86,6 +88,11 @@ async function start(): Promise<void> {
   // `?editor=rules`: the rule set editor (no game core or GPU needed).
   if (wantsRuleEditor(location)) {
     showRuleEditor(ui, { baseUrl: location.href, ...parseInvite(location.href) });
+    return;
+  }
+  // `?view=ships`: the VQ4 model showcase (ship bay, wrecks, props, in flight).
+  if (wantsShowcase(location)) {
+    await showShowcase(canvas, ui, loadWasm);
     return;
   }
 
@@ -215,6 +222,7 @@ function runGame(
     const effectsOverlay = new EffectsOverlay(ui);
     const shipPanel = new ShipPanel(ui);
     const effects = new EffectsState();
+    const wrecks = new WreckTypes();
     let shipBayOpen = false;
     let shipError = "";
     let dead = false;
@@ -350,6 +358,10 @@ function runGame(
       if (initialLoad && chunkStats.pending === 0) initialLoad = false;
 
       const players = r.players;
+      // Wrecks show the hull of the ship that died there (VQ4).
+      const own = players.find((p) => p.id === game.player);
+      const tracked = r.pose && own ? [...r.ships, { id: game.player, alive: r.pose.alive, position: r.pose.position, shipType: own.shipType }] : r.ships;
+      wrecks.observe(tracked, r.entities, time);
       renderer.setScene(
         buildScene(r.ships, r.projectiles, r.entities, session.visuals, session.teamOf(r.ships), time, {
           gadgetOf: (id) => {
@@ -360,6 +372,8 @@ function runGame(
           flashes: fx.flashes,
           // The guided Eyeball is the camera; hide only that one missile.
           hideShot: guided ? (p) => p === guided : undefined,
+          shipTypeOf: (id) => players.find((p) => p.id === id)?.shipType,
+          wreckTypeOf: (e) => wrecks.typeOf(e),
         }),
       );
       // Inside a dust cloud the fog closes in (visibility is cut).

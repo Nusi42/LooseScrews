@@ -131,6 +131,12 @@ implement them.
 | Mode state | `Snapshot::mode` = `ls_game::mode::mode_view_to_net(&world.mode_view())` (ids are wire ids; players without one are left out); once ended, `end_tick` is the last simulated tick |
 | Results | `Message::MatchResults` once when the mode stops running (`World::results` through `ls_game::mode::results_to_net`: winner and team scores from the mode view, kills and deaths counted by the simulation per ship, rows best first), and after the `Welcome` to clients joining a finished match |
 | Lobby | `Ready`, `PickTeam`, `Spectate` are queued as `LobbyRequest`s (`Room::take_lobby_requests`); hosts send `LobbyState` with `Room::send` / `Room::broadcast` |
+| Mood (protocol 6) | `NetModeState::mood` = `ls_game::mode::mood_to_net(&view.mood, world.up(), wire)`: the director's mood, event (`EventKind` index), phase (`EventPhase` index), target wire id, active tick, phase end tick, 8 parameter bytes and the level's up |
+| Architect | `ArchitectAction` (stroke, centre, radius) is queued per sender player (`Room::take_architect_actions`, at most `MAX_QUEUED_ARCHITECT_ACTIONS` between takes, the rest counted in `RoomStats::dropped_architect_actions`); The Architect mode validates it |
+| Ship ext (protocol 6) | `NetShip::ext` = `ls_game::convert::ship_ext(ship)`: pigmented (`ShipState::pigmented`), hats worn |
+| Chicken | `NetProjectile::chicken` = `proj_flags::CHICKEN` of the projectile (Rubber chickens) |
+| Wells | every `ls_sim::gravity::DynamicWell` of the world as a `ReplicatedKind::Well` entity (`ls_game::convert::well_entities`, layout `ls_net::well_state`), appended to the snapshot's entities |
+| Announcements | `Event::Director(Announced)` -> `Cue` `EventAnnounce` (value = `EventKind` index, target = the named player) |
 | Edits | Each snapshot carries up to 64 edits starting at the client's acknowledged edit count (`edit_end` of its newest acked snapshot); resent until acked |
 | Events | `Damaged` -> `Hit` (pos = impact point), `Killed` -> `Kill` (255 = none), `Respawned`, `MatchEnded`, `Cue` -> `Cue` (kind byte, source, target, pos, value); batched per snapshot, reliable |
 | Ping | Send right after the input for tick `c`; `Pong::server_tick - c` measures input slack |
@@ -205,6 +211,20 @@ catch-up sends only the newest 8 `Input` messages (older ones would be late anyw
   - match end: the session learns the end tick from any running snapshot (`tick +
     match_ticks_left`) and calls `Predictor::freeze_after(end)`, so ticks after it do not move
     the ship, exactly like the server (no corrections on the post-match screen).
+- **Moods, wells and up (M4, protocol 6)**: `Predictor::set_mood(view, up)` takes the
+  replicated mood view (`ls_game::mode::mood_from_net`; target ids are wire ids, the ids the
+  client gives its own ship) and the level's up before each reconciliation; every predicted tick
+  applies the running event's movement effects (`ls_sim::director::move_effects` with the match
+  seed, `apply_move_effects_before` / `_after`) around the movement, exactly as `World::step`
+  does. `Predictor::set_wells` takes the level's well field: the static wells of the match setup
+  plus the dynamic wells rebuilt from the newest snapshot's well entities; the movement runs
+  `simulate_movement_env` with the clamped pull at the ship and the level's up. A dynamic well
+  that starts after the snapshot (telegraphed) carries its start in the entity, so the
+  prediction starts it on the right tick; one the client learns of late is corrected by the
+  next reconciliation (the server state already has its pull). `ClientSession::mood()`,
+  `well_sites()`, `belt()` expose the rest; `architect_action(...)` builds the stroke message.
+  Test: `crates/ls-game/tests/mood_netplay.rs` (reconciliation error below 0.05 u through forced
+  events, a turned up, a well field and dynamic wells starting and ending mid-flight).
 - **Interpolation** (`InterpolationBuffer`): remote ships at `server time - 6 ticks` (100 ms),
   lerp position/velocity, nlerp orientation, no interpolation across jumps above 8 u, at most
   6 ticks of extrapolation.
@@ -243,6 +263,14 @@ catch-up sends only the newest 8 `Input` messages (older ones would be late anyw
   per-match HUD state; ping state carries over); `takeMatchTransition()` reports it once and
   `takeUnloads` first returns every chunk of the previous level. The loadout HUD carries each
   weapon's shot count and state byte (`shots`, `states`).
+- **M4 level features (protocol 6)**: `modeState()` JSON carries `mood` (`modes::mood_json`:
+  mood and event ids, phase, target, ticks, parameters, up); `eventIds()` lists the events;
+  `shipExt()` gives `[id, pigmented, hats]` per ship; `architectActionPacket(stroke, x, y, z,
+  radius)` builds the stroke packet; `beltSite()` returns the belt as JSON (`level::belt_json`:
+  centre, radii, gate azimuths, slots, pickup points, boulder orbits) and `boulderPoses(tick)`
+  the drifting boulders at a fractional tick from the simulation's orbit functions;
+  `wells()`, `up()`, `monochrome` and `doseRateAt(x, y, z)` give the well field, the level's
+  up, the monochrome flag and the radiation dose rate for the HUD meter.
 - **Stats for overlays**: flat arrays for the F3 debug overlay (ping, corrections, snaps, shot
   counters, chunk counts) and the scoreboard / end-of-match screen (per-ship team, paint per
   team, match info). The browser passes its clock with `setClockMs` before handling packets so

@@ -39,6 +39,9 @@ export const MATCH_INFO_LEN = 6;
 export const LOADOUT_INFO_STRIDE = 4;
 export const CUE_STRIDE = 8;
 export const CHARGE_LEN = 8;
+export const SHIP_EXT_STRIDE = 3;
+export const BOULDER_STRIDE = 8;
+export const WELL_STRIDE = 8;
 
 export interface ChunkMeshHandle {
   readonly key: string;
@@ -188,6 +191,23 @@ export interface GameHandle {
   practiceEdit?(add: boolean, x: number, y: number, z: number, radius: number): boolean;
   /** Practice only (gallery, M3 C1): The Squeeze's shell on the terrain; a radius below 0 removes it. */
   practiceShell?(x: number, y: number, z: number, radius: number): boolean;
+  // M4 protocol 6 (ls-wasm level.rs, modes.rs; the mood is in modeState() JSON as `mood`).
+  /** `ArchitectAction` packet placing a stroke (send reliably; `undefined` offline). */
+  architectActionPacket?(stroke: number, x: number, y: number, z: number, radius: number): Uint8Array | undefined;
+  /** SHIP_EXT_STRIDE numbers per ship: [id, pigmented (0/1), hats]. */
+  shipExt?(): Uint8Array;
+  /** The asteroid belt as JSON (centre, radii, gateAzimuths, slots, pickupPoints, boulders); `undefined` on classic levels. */
+  beltSite?(): string | undefined;
+  /** Drifting boulders at a (fractional) server tick, BOULDER_STRIDE floats each: [x, y, z, qx, qy, qz, qw, radius]. */
+  boulderPoses?(tick: number): Float32Array;
+  /** Gravity wells now, WELL_STRIDE floats each: [x, y, z, range, peakAccel, coreRadius (0 dynamic), startTick, endTick (-1 static)]. */
+  wells?(): Float32Array;
+  /** The level's up (unit vector; +Y unless Bored level turned it). */
+  up?(): Float32Array;
+  /** Monochrome level (Palette 80+ or Last Color Standing): pigment rules and the ink look. */
+  readonly monochrome?: boolean;
+  /** Radiation dose rate (hull per second) at a point; 0 on classic levels. */
+  doseRateAt?(x: number, y: number, z: number): number;
   free(): void;
 }
 
@@ -216,6 +236,8 @@ export interface WasmApi {
   visualShapeNames(): string[];
   /** Entity kind names in wire-byte order (`kind` of `entities()`). */
   entityKindNames(): string[];
+  /** Comedy event ids in EventKind order (`event` of the mode state's mood). */
+  eventIds?(): string[];
   goldenHashes(code: string): string[];
   tickHz(): number;
   Game: {

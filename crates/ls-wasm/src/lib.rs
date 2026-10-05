@@ -23,6 +23,10 @@
 //! boundary cheap; their layouts are documented on each method and mirrored
 //! by `web/src/wasm/api.ts`.
 
+// wasm-bindgen's `getter_with_clone` expands to `.clone()` on Copy fields, which
+// clippy 1.99 reports as `clone_on_copy` in our structs.
+#![allow(clippy::clone_on_copy)]
+
 use wasm_bindgen::prelude::*;
 
 pub mod beam;

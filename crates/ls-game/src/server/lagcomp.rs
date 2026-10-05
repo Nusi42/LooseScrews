@@ -166,7 +166,7 @@ pub fn plan_compensation(
         });
         // Would the simulation hit something at least as early anyway?
         let sim_hits = moved.iter().any(|(id, pos)| {
-            let r = world.ship(*id).map_or(0.5, &radius_of);
+            let r = world.ship(*id).map_or(0.5, radius_of);
             *id != p.owner
                 && segment_sphere(p.pos, dir, len, *pos, r)
                     .is_some_and(|t| t <= wall && t <= t_best + 1e-4)

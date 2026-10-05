@@ -23,6 +23,8 @@ WeaponDef(
     terrain: (crater_radius: 1.0),
     shield: Wears(1.0),
     max_ammo: 5,
+    // Gravity wells bend it in flight (M4).
+    gravity: true,
     visual: (shape: Mine, color: (160, 255, 80), scale: 1.0),
     params: { "arm_secs": 1.0, "detect_radius": 10.0, "creep_speed": 4.0, "trigger_radius": 1.5, "launch_drag": 1.5, "scorch_spacing": 1.5, "scorch_radius": 1.5, "scorch_hot_secs": 10.0 },
 )

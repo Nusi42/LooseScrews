@@ -19,6 +19,10 @@
 //! - Game modes ([`modes`], one module per mode behind [`modes::ModeModule`])
 //!   and mutators ([`mutators`]); the replicated mode state is [`ModeView`]
 //!   ([`World::mode_view`]), the results table [`MatchResults`].
+//! - World physics (M4): gravity wells ([`gravity`]), the level's up
+//!   ([`World::up`]), Instability's craters and cave-ins ([`instability`]),
+//!   pigment on monochrome levels ([`pigment`]) and radiation on belt
+//!   levels ([`radiation`], [`belt`]); numbers in `data/world/*.ron`.
 //! - [`World::state_hash`] for replay and desync checks, [`data::data_hash`]
 //!   for the handshake.
 //!
@@ -29,6 +33,7 @@
 //! This crate is deterministic: follow the rules in `CLAUDE.md`.
 
 pub mod behavior;
+pub mod belt;
 pub mod data;
 pub mod director;
 pub mod entity;
@@ -36,11 +41,15 @@ pub mod error;
 pub mod events;
 pub mod gadgets;
 pub mod golden;
+pub mod gravity;
 pub mod hash;
 pub mod input;
+pub mod instability;
 pub mod mode;
 pub mod modes;
 pub mod mutators;
+pub mod pigment;
+pub mod radiation;
 pub mod rulecode;
 pub mod ruleset;
 pub mod ship;
@@ -52,12 +61,14 @@ pub mod weapons;
 pub mod world;
 
 pub use behavior::{gadget_cue, Command, Ctx, Cue, CueKind, DamageSource};
+pub use belt::{BeltLevel, BoulderOrbit};
 pub use data::{data_hash, with_behavior_version, GameData, SIM_BEHAVIOR_VERSION};
 pub use director::{DirectorEvent, DirectorState, EventEffects, Mood, MoodView, RNG_STREAM_MOOD};
 pub use entity::{Entity, EntityKind, EntitySpawn, EntityView, ReplicatedKind, Source};
 pub use error::SimError;
 pub use events::{EventDef, EventKind, EventModule, EventPhase, EventTable, MoveEffects};
 pub use gadgets::{GadgetActivation, GadgetDef, GadgetId, GadgetTable};
+pub use gravity::{DynamicWell, GravitySettings, WellField, WellSite};
 pub use hash::StateHasher;
 pub use input::{Buttons, InputCmd};
 pub use mode::{
@@ -71,7 +82,10 @@ pub use ruleset::{
     ModeField, ModeRules, Mutator, PaintTheVoidRules, PickupKind, PickupRule, PigmentPickupRule,
     ResolvedRules, RuleSet, ScrapPickupRule, TeamBrawlRules, TheSqueezeRules, WeaponTuning,
 };
-pub use ship::{simulate_movement, ChargeState, MovementReport, PlayerId, ShipState, WeaponState};
+pub use ship::{
+    simulate_movement, simulate_movement_env, ChargeState, MoveEnv, MovementReport, PlayerId,
+    ShipState, WeaponState,
+};
 pub use terrain::{
     paint_team_id, team_from_paint_id, PaintCoverage, PaintedTerrain, ShellSphere, ShelledTerrain,
     SimTerrain, NO_PAINT,

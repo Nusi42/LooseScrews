@@ -8,6 +8,6 @@ rulesets/team_brawl.ron 0x843b2464dac90cb9
 rulesets/instagib_brawl.ron 0x36fc7a16100a8397
 rulesets/duel.ron 0x0f26fa5bb887cf9e
 rulesets/hot_reactor.ron 0xc615541e095b8966
-rulesets/last_color_standing.ron 0xf34cebf9df60b935
+rulesets/last_color_standing.ron 0x2a0a9d5371f2e972
 rulesets/heist.ron 0x9bf29897dfd856eb
 rulesets/squeeze.ron 0x65a96dbc63f30544

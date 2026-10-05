@@ -58,6 +58,7 @@ pub(crate) mod testkit {
             instability,
             absurdity: 0,
             heist: None,
+            ..Default::default()
         };
         World::new(WorldConfig {
             rules,

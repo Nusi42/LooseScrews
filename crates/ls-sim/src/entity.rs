@@ -74,7 +74,7 @@ pub enum ReplicatedKind {
     DustCloud = 8,
     Marker = 9,
     // Protocol 6 (M4; append only, `docs/milestone-4-plan.md` §3.1-§3.8).
-    /// Pigment pickup on a monochrome level (state per A4).
+    /// A pigment pickup on a monochrome level (M4; state `[splash, side, 0, 0]`).
     PigmentPickup = 10,
     /// Event drone; `state[0]` = drone role (0 tax, 1 pizza, 2 survey).
     Drone = 11,
@@ -340,6 +340,31 @@ pub fn step_debris<T: TerrainQuery + ?Sized>(e: &mut Entity, terrain: &T) -> boo
     );
     // No gravity: slow debris rests wherever it is (in contact or floating).
     if e.vel.length() < DEBRIS_REST_SPEED {
+        e.vel = Vec3::ZERO;
+        e.resting = true;
+    }
+    contact
+}
+
+/// [`step_debris`] in a gravity well (M4): the pull `accel` is added
+/// first, and the debris only comes to rest while it touches rock (in open
+/// space a pulled piece keeps falling). Returns true if it touched terrain.
+pub fn step_debris_pulled<T: TerrainQuery + ?Sized>(
+    e: &mut Entity,
+    terrain: &T,
+    accel: Vec3,
+) -> bool {
+    e.resting = false;
+    e.vel += accel * DT;
+    e.vel *= (1.0 - DEBRIS_DRAG * DT).max(0.0);
+    let (contact, _) = move_sphere(
+        terrain,
+        &mut e.pos,
+        &mut e.vel,
+        e.radius,
+        DEBRIS_RESTITUTION,
+    );
+    if contact && e.vel.length() < DEBRIS_REST_SPEED {
         e.vel = Vec3::ZERO;
         e.resting = true;
     }

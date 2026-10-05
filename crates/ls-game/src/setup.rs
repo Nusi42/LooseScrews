@@ -289,6 +289,7 @@ pub fn match_setup(
         instability: code.sliders.instability,
         absurdity: code.sliders.absurdity,
         heist: heist_level(&gen),
+        ..Default::default()
     })
 }
 

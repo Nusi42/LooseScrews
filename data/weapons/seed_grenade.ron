@@ -22,6 +22,8 @@ WeaponDef(
     knockback: 1.0,
     shield: Blocked,
     max_ammo: 3,
+    // Gravity wells bend it in flight (M4).
+    gravity: true,
     visual: (shape: Grenade, color: (120, 200, 90), scale: 1.0),
     params: {
         "grow_spheres": 6.0,

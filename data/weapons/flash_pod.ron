@@ -18,6 +18,8 @@ WeaponDef(
     projectile_radius: 0.2,
     shield: Blocked,
     max_ammo: 5,
+    // Gravity wells bend it in flight (M4).
+    gravity: true,
     visual: (shape: Grenade, color: (255, 255, 200), scale: 1.0),
     params: { "blind_radius": 15.0, "blind_secs": 2.0, "blind_needs_sight": 1.0, "glow_secs": 30.0, "glow_radius": 8.0 },
 )

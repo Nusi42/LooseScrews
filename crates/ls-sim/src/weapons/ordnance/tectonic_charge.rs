@@ -30,7 +30,8 @@
 //! 4. **Aftermath**: the collapse zone caves in whatever the Instability slider says: one
 //!    exact (not rock-strength scaled) `collapse_radius` crater. Instability sets how far
 //!    `crack_count` cracks run into the rock beyond it: `crack_max x instability / 100` u of
-//!    strength-scaled craters every `crack_spacing` u, narrowing towards the tip, decided in
+//!    strength-scaled craters (not grown by Instability, `Ctx::crater_material`) every
+//!    `crack_spacing` u, narrowing towards the tip, decided in
 //!    the collapse tick and carved over the next `crack_spread_ticks` ticks in equal shares
 //!    (deferred edits, `Ctx::later`; keeps the collapse tick cheap). A dust
 //!    cloud of `dust_radius` lasts `dust_secs`; `debris_count` scrap-filled debris pieces
@@ -244,7 +245,7 @@ impl TectonicCharge {
             for (i, (at, r)) in cracks.into_iter().enumerate() {
                 // Share `i * spread / n`: tick 1 .. `spread` after the collapse.
                 let delay = 1 + (i * spread / n.max(1)) as u64;
-                ctx.later(delay, |ctx| ctx.crater(at, r));
+                ctx.later(delay, |ctx| ctx.crater_material(at, r));
             }
         }
     }

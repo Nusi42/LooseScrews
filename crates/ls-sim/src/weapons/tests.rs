@@ -346,6 +346,7 @@ fn world() -> World {
         instability: 42,
         absurdity: 0,
         heist: None,
+        ..Default::default()
     };
     World::new(WorldConfig {
         weapons,
@@ -714,15 +715,18 @@ fn craters_scale_by_rock_strength_and_charged_rock_drains() {
             })
             .collect::<Vec<f32>>()
     };
+    // The world runs at Instability 42: craters (not exact ones) also grow
+    // by 1 + 0.4 * 42 / 100 (M4).
+    let k = crate::instability::InstabilitySettings::builtin().crater_scale(42);
     assert_eq!(
         radii(&mut w, &mut t, -10.0),
-        vec![2.0 * 0.6, 2.0],
+        vec![2.0 * 0.6 * k, 2.0],
         "hard rock, exact"
     );
     run_on(&mut w, &mut t, &[], 60);
     assert_eq!(
         radii(&mut w, &mut t, 10.0),
-        vec![2.0 * 1.4, 2.0],
+        vec![2.0 * 1.4 * k, 2.0],
         "weak rock, exact"
     );
 

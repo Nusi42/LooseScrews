@@ -56,6 +56,7 @@ fn setup(level: bool) -> MatchSetup {
             chamber_radius: 9.0,
             extraction: [(ZONE0, ZONE_R), (ZONE1, ZONE_R)],
         }),
+        ..Default::default()
     }
 }
 

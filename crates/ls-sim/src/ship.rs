@@ -112,6 +112,10 @@ pub struct ShipState {
     /// across weapon switches, dropped with the weapon and at respawn.
     #[serde(default)]
     pub weapon_state: BTreeMap<WeaponId, u32>,
+    /// Pigmented (monochrome levels, M4) until this tick: +25 % damage,
+    /// drawn in colour; 0 = grey. See `crate::pigment`.
+    #[serde(default)]
+    pub pigment_until: u64,
 }
 
 impl ShipState {
@@ -159,6 +163,7 @@ impl ShipState {
             last_fired_tick: None,
             next_ship_type: None,
             weapon_state: BTreeMap::new(),
+            pigment_until: 0,
         }
     }
 
@@ -208,6 +213,11 @@ impl ShipState {
     pub fn speed(&self) -> f32 {
         self.vel.length()
     }
+
+    /// Whether the ship carries pigment at tick `now` (M4).
+    pub fn pigmented(&self, now: u64) -> bool {
+        now < self.pigment_until
+    }
 }
 
 /// What happened during one movement step (used for resources and tests).
@@ -236,6 +246,43 @@ fn approach(v: f32, target: f32, step: f32) -> f32 {
 /// amount of speed removed by active (reverse-thrust) braking. Without
 /// `damping` (slippery paint) an axis without input keeps its speed.
 fn axis_step(v: f32, input: f32, cap: f32, t: &ShipTuning, damping: bool) -> (f32, f32) {
+    axis_step_pulled(v, input, cap, t, damping, 0.0, 0.0)
+}
+
+/// [`axis_step`] with a well's pull `g` (u/s^2) along this axis. With
+/// input (or without damping) the pull is simply added after the step, so
+/// thrust (at least 2.5x the clamped pull) always wins. Without input the
+/// dampers aim at the drift speed `g * drift_secs` (at most the cap)
+/// instead of 0: the ship falls freely toward the well up to that speed,
+/// faster motion along the pull and any motion against it is damped as
+/// usual. `g == 0` is exactly [`axis_step`].
+fn axis_step_pulled(
+    v: f32,
+    input: f32,
+    cap: f32,
+    t: &ShipTuning,
+    damping: bool,
+    g: f32,
+    drift_secs: f32,
+) -> (f32, f32) {
+    if g != 0.0 {
+        if input != 0.0 || !damping {
+            let (nv, braked) = axis_step_pulled(v, input, cap, t, damping, 0.0, 0.0);
+            return (nv + g * DT, braked);
+        }
+        let v1 = v + g * DT;
+        let drift = (g * drift_secs).clamp(-cap, cap);
+        // Falling toward the well, slower than the drift: no damping.
+        if v1 * g >= 0.0 && v1.abs() <= drift.abs() {
+            return (v1, 0.0);
+        }
+        let rate = if v1.abs() > cap {
+            t.overspeed_decel.max(t.damping_decel)
+        } else {
+            t.damping_decel
+        };
+        return (approach(v1, drift, rate * DT), 0.0);
+    }
     let target = input * cap;
     if input == 0.0 {
         if !damping {
@@ -272,20 +319,28 @@ fn axis_step(v: f32, input: f32, cap: f32, t: &ShipTuning, damping: bool) -> (f3
     }
 }
 
-/// Applies look, roll and horizon assist to the orientation.
-fn rotate_ship(ship: &mut ShipState, input: &InputCmd, t: &ShipTuning) {
+/// Applies look, roll and horizon assist (levelling against `world_up`)
+/// to the orientation.
+fn rotate_ship(ship: &mut ShipState, input: &InputCmd, t: &ShipTuning, world_up: Vec3) {
     let max_turn = t.max_turn_rate * DT;
     let pitch = input.look_pitch.clamp(-max_turn, max_turn);
     let yaw = input.look_yaw.clamp(-max_turn, max_turn);
     let mut roll_rate = input.roll * t.roll_rate;
 
     if ship.horizon_assist && input.roll == 0.0 {
-        // Roll angle relative to world up, measured about the forward axis.
+        // Roll angle relative to the level's up, measured about the forward
+        // axis. World +Y (the usual up) keeps the exact M1 arithmetic.
         let fwd = ship.orientation.forward();
-        if fwd.y.abs() < 0.95 {
+        let y = world_up == Vec3::Y;
+        let fwd_up = if y { fwd.y } else { fwd.dot(world_up) };
+        if fwd_up.abs() < 0.95 {
             let right = ship.orientation.right();
             let up = ship.orientation.up();
-            let angle = det::atan2(right.y, up.y);
+            let angle = if y {
+                det::atan2(right.y, up.y)
+            } else {
+                det::atan2(right.dot(world_up), up.dot(world_up))
+            };
             let correction =
                 (-angle * t.horizon_gain).clamp(-t.horizon_max_rate, t.horizon_max_rate);
             roll_rate += correction;
@@ -389,19 +444,64 @@ pub fn paint_touching<T: TerrainQuery + ?Sized>(terrain: &T, pos: Vec3, radius: 
     terrain.paint_colors_near(pos, reach)
 }
 
+/// The level around a ship during one movement step (M4): the well pull
+/// at the ship's position and the level's up. [`MoveEnv::DEFAULT`] (no
+/// pull, world +Y) is the M1-M3 flight model exactly.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MoveEnv {
+    /// Well acceleration (u/s^2) at the ship, already clamped
+    /// (`WellField::ship_accel`).
+    pub gravity: Vec3,
+    /// The level's up (`World::up`; horizon assist levels the roll to it).
+    pub up: Vec3,
+    /// Dampers aim at the drift speed `gravity * drift_secs` on axes
+    /// without input (`GravitySettings::drift_secs`).
+    pub drift_secs: f32,
+}
+
+impl MoveEnv {
+    pub const DEFAULT: MoveEnv = MoveEnv {
+        gravity: Vec3::ZERO,
+        up: Vec3::Y,
+        drift_secs: 0.0,
+    };
+}
+
+impl Default for MoveEnv {
+    fn default() -> Self {
+        MoveEnv::DEFAULT
+    }
+}
+
 /// One tick of rotation, thrust, boost, energy regen, terrain collision and
 /// boost refills (hard braking, near-miss scrapes) for a living ship, with
 /// the paint effects of the surface it touches (see the module docs).
+/// No wells, world +Y up: [`simulate_movement_env`] with [`MoveEnv::DEFAULT`].
 pub fn simulate_movement<T: TerrainQuery + ?Sized>(
     ship: &mut ShipState,
     input: &InputCmd,
     tuning: &ShipTuning,
     terrain: &T,
 ) -> MovementReport {
+    simulate_movement_env(ship, input, tuning, terrain, &MoveEnv::DEFAULT)
+}
+
+/// [`simulate_movement`] in a level with wells and a turned up (M4): the
+/// pull is applied per local axis inside the flight model (the dampers do
+/// not fight it; see `axis_step_pulled`), and horizon assist levels the
+/// roll against `env.up`. The server and the client predictor call this
+/// with the same environment.
+pub fn simulate_movement_env<T: TerrainQuery + ?Sized>(
+    ship: &mut ShipState,
+    input: &InputCmd,
+    tuning: &ShipTuning,
+    terrain: &T,
+    env: &MoveEnv,
+) -> MovementReport {
     let input = input.sanitized();
     let t = tuning;
     ship.horizon_assist = input.buttons.contains(Buttons::HORIZON_ASSIST);
-    rotate_ship(ship, &input, t);
+    rotate_ship(ship, &input, t, env.up);
 
     let touching = paint_touching(terrain, ship.pos, t.radius);
     let sticky = touching & (1 << PAINT_YELLOW) != 0;
@@ -421,10 +521,20 @@ pub fn simulate_movement<T: TerrainQuery + ?Sized>(
 
     let mut report = MovementReport::default();
     let local = ship.orientation.conjugate().rotate(ship.vel);
+    let pull = if env.gravity == Vec3::ZERO {
+        None
+    } else {
+        Some(ship.orientation.conjugate().rotate(env.gravity))
+    };
     let mut new_local = [0.0f32; 3];
     for (i, out) in new_local.iter_mut().enumerate() {
         let v = local[i];
-        let (nv, braked) = axis_step(v, input.thrust[i], cap, t, !slippery);
+        let (nv, braked) = match pull {
+            None => axis_step(v, input.thrust[i], cap, t, !slippery),
+            Some(g) => {
+                axis_step_pulled(v, input.thrust[i], cap, t, !slippery, g[i], env.drift_secs)
+            }
+        };
         if braked > 0.0 && v.abs() > t.hard_brake_min_speed {
             report.hard_braked += braked;
         }
@@ -961,6 +1071,7 @@ mod tests {
             instability: 0,
             absurdity: 0,
             heist: None,
+            ..Default::default()
         };
         let mut w = World::new(WorldConfig::paint_the_void(3, setup)).unwrap();
         let mut room = BoxRoomTerrain::centered(Vec3::splat(60.0));
@@ -1063,6 +1174,7 @@ mod tests {
             instability: 0,
             absurdity: 0,
             heist: None,
+            ..Default::default()
         };
         let mut w = World::new(WorldConfig::paint_the_void(3, setup)).unwrap();
         let mut t = ChargedRoom {

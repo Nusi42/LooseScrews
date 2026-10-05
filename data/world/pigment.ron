@@ -1,0 +1,18 @@
+// Pigment on monochrome levels (M4; docs/milestone-4-plan.md §3.4).
+// Schema: `ls_sim::pigment::PigmentSettings`. Times in s.
+// A monochrome level (Palette 80+, or any Last Color Standing level) gets pigment pickups at its
+// pickup points: one per `per_players` players in play, at least `min`, each respawning
+// `respawn_secs` after it was taken. Touching one colours your ship for `duration_secs`
+// (refreshed by another): +`damage_bonus` damage with every weapon, visible to everyone. A
+// pigmented ship that dies drops a splash pickup that lasts `splash_secs`. In Last Color Standing
+// a pickup restores `restore_colour` colour instead (no damage bonus there).
+// The rule set's pigment settings (rule set code format 5) override `monochrome` and
+// `last_color_standing` when present. Changing a number changes the data hash (handshake).
+PigmentSettings(
+    duration_secs: 40.0,
+    damage_bonus: 0.25,
+    splash_secs: 15.0,
+    restore_colour: 17,
+    monochrome: (per_players: 4, min: 2, respawn_secs: 30.0),
+    last_color_standing: (per_players: 4, min: 1, respawn_secs: 45.0),
+)

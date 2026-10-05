@@ -157,7 +157,7 @@ impl Leave {
 struct ClientConn {
     link: SimLink,
     /// The connection's `Hello`, replayed into every new room (`PickTeam`
-    /// updates its team).
+    /// updates its team, `SelectShip` its ship type).
     hello: Hello,
     /// Asked to spectate from the next match on (`Spectate`).
     spectate: bool,
@@ -907,6 +907,15 @@ impl Sim {
             match self.room.join(&hello) {
                 Ok(id) => {
                     debug!(room = %self.params.label, old_id, player = id, "player moved to the next room");
+                    // `Spectate`: no ship in this match (warm-ups stay
+                    // open to everyone).
+                    if c.spectate && kind == RoomKind::Match {
+                        if let Some(p) = self.room.player_of(id) {
+                            if let Err(e) = self.room.world_mut().set_spectator(p, true) {
+                                warn!(room = %self.params.label, player = id, error = %e, "could not make the player a spectator");
+                            }
+                        }
+                    }
                     self.clients.insert(id, c);
                 }
                 Err(reject) => {
@@ -1149,7 +1158,14 @@ impl Sim {
                                 lobby_msgs.push((id, LobbyMsg::Spectate(spectate)));
                                 Ok(())
                             }
-                            Ok(msg) => self.room.handle_message(id, msg),
+                            Ok(msg) => {
+                                // The ship choice also applies to the next
+                                // rooms (the `Hello` is replayed into them).
+                                if let Message::SelectShip { ship_type } = msg {
+                                    c.hello.ship_type = Some(ship_type);
+                                }
+                                self.room.handle_message(id, msg)
+                            }
                             Err(e) => Err(e.into()),
                         };
                         if let Err(e) = handled {
@@ -1242,6 +1258,8 @@ impl Sim {
     }
 
     fn remove(&mut self, id: u8, why: Leave) {
+        // The wire id goes to the next player who joins.
+        self.ready.remove(&id);
         if let Some(mut c) = self.clients.remove(&id) {
             self.room.leave(id);
             self.party_left(&c.hello);
@@ -1258,6 +1276,7 @@ impl Sim {
 
     fn disconnect_all(&mut self, reason: &str) {
         let ids: Vec<u8> = self.clients.keys().copied().collect();
+        self.ready.clear();
         for id in ids {
             self.send_disconnect(id, reason);
             if let Some(mut c) = self.clients.remove(&id) {
@@ -2008,6 +2027,105 @@ mod tests {
         assert!(
             l.last().unwrap().players.iter().all(|p| !p.ready),
             "ready resets with every room"
+        );
+    }
+
+    /// The wire id of the connection `conn` in the current room.
+    fn wire_id(s: &Sim, conn: u64) -> u8 {
+        s.clients
+            .iter()
+            .find(|(_, c)| c.link.info().id == conn)
+            .map(|(&id, _)| id)
+            .expect("connected")
+    }
+
+    /// Whether the connection `conn` spectates in the current room.
+    fn spectating(s: &Sim, conn: u64) -> bool {
+        let p = s.room.player_of(wire_id(s, conn)).expect("in the room");
+        s.room.world().is_spectator(p)
+    }
+
+    #[tokio::test]
+    async fn spectate_applies_from_the_next_match_on() {
+        let (mut s, _tx) = sim(4);
+        let a = join(&mut s, 1, LinkConfig::default());
+        let b = join(&mut s, 2, LinkConfig::default());
+        s.tick();
+        send(&b, Message::Spectate { spectate: true }).await;
+        s.tick();
+        assert!(!spectating(&s, 2), "this match is not affected");
+        next_match(&mut s);
+        assert!(spectating(&s, 2), "b asked to spectate the next match");
+        assert!(!spectating(&s, 1));
+        s.tick();
+        let mode = s.room.world().mode_view();
+        let b_player = s.room.player_of(wire_id(&s, 2)).unwrap();
+        let b_view = mode.players.iter().find(|p| p.player == b_player).unwrap();
+        assert_ne!(b_view.flags & ls_sim::mode::player_flags::SPECTATOR, 0);
+        // Playing again from the match after.
+        send(&b, Message::Spectate { spectate: false }).await;
+        s.tick();
+        next_match(&mut s);
+        assert!(!spectating(&s, 2));
+        drop((a, b));
+    }
+
+    #[tokio::test]
+    async fn ship_choice_survives_the_match_transition() {
+        let (mut s, _tx) = sim(4);
+        let a = join(&mut s, 1, LinkConfig::default());
+        s.tick();
+        frames(&a);
+        let hauler = ls_sim::ShipType::Hauler.index();
+        send(&a, Message::SelectShip { ship_type: hauler }).await;
+        s.tick();
+        next_match(&mut s);
+        s.tick();
+        let msgs = frames(&a);
+        let w = welcomes(&msgs);
+        assert_eq!(w.len(), 1, "{msgs:?}");
+        assert_eq!(w[0].ship_type, hauler, "the picked ship, not the Hello's");
+    }
+
+    #[tokio::test]
+    async fn a_new_player_does_not_inherit_a_departed_players_ready() {
+        let mut p = params(
+            4,
+            Playlist::new(vec![entry(RuleSet::paint_the_void(), 2, 8)]).unwrap(),
+        );
+        p.lobby = LobbyTiming {
+            warmup: Duration::from_secs(600),
+            countdown: Duration::from_millis(50),
+            results: Duration::from_millis(50),
+        };
+        let (mut s, _tx) = sim_with(p);
+        let a = join(&mut s, 1, LinkConfig::default());
+        s.tick();
+        send(&a, Message::Ready { ready: true }).await;
+        s.tick();
+        assert_eq!(wire_id(&s, 1), 0);
+        send(
+            &a,
+            Message::Disconnect {
+                reason: "bye".into(),
+            },
+        )
+        .await;
+        s.tick();
+        assert!(s.clients.is_empty());
+        // b takes a's wire id; it has not pressed Ready.
+        let _b = join(&mut s, 2, LinkConfig::default());
+        let c = join(&mut s, 3, LinkConfig::default());
+        s.tick();
+        assert_eq!(wire_id(&s, 2), 0);
+        send(&c, Message::Ready { ready: true }).await;
+        for _ in 0..5 {
+            s.tick();
+        }
+        assert_eq!(
+            s.lobby.phase().name(),
+            "warmup",
+            "only c is ready: no countdown"
         );
     }
 

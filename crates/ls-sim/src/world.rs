@@ -809,10 +809,30 @@ impl World {
         let teams = self.mode.teams;
         let team = if teams == 0 {
             // Free-for-all: every ship is its own side (lowest free side id).
+            // A departed player's side stays taken while its projectiles,
+            // mines or decoys are still around: a newcomer on that side
+            // would be immune to them (same side) and they to it.
             if let Some(t) = team {
                 return Err(SimError::InvalidTeam(t));
             }
-            let used: BTreeSet<u8> = self.ships.values().map(|s| s.team).collect();
+            let departed = |o: PlayerId| !self.ships.contains_key(&o);
+            let used: BTreeSet<u8> = self
+                .ships
+                .values()
+                .map(|s| s.team)
+                .chain(
+                    self.projectiles
+                        .iter()
+                        .filter(|p| departed(p.owner))
+                        .map(|p| p.team),
+                )
+                .chain(
+                    self.entities
+                        .iter()
+                        .filter(|e| e.owner.is_some_and(departed))
+                        .map(|e| e.team),
+                )
+                .collect();
             (0..=MAX_FFA_SIDE)
                 .find(|t| !used.contains(t))
                 .ok_or(SimError::TooManyPlayers)?

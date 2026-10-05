@@ -34,6 +34,10 @@ use crate::hash::StateHasher;
 /// `data/world/pigment.ron` (embedded, part of the data hash).
 pub const PIGMENT_RON: &str = include_str!("../../../data/world/pigment.ron");
 
+/// Palette slider value from which a level is monochrome
+/// (`MatchSetup::monochrome`, §3.4).
+pub const MONOCHROME_PALETTE: u8 = 80;
+
 /// Key of the respawn point RNG (`Ctx::rng` style).
 pub const PIGMENT_RNG_KEY: u64 = 0x0050_4947_4d45_4e54; // "PIGMENT"
 

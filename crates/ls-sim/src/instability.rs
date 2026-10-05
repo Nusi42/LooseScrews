@@ -29,7 +29,8 @@
 //! match seed, the tick and [`CAVE_IN_RNG_KEY`] (like `Ctx::rng`).
 //! Numbers: `data/world/instability.ron` ([`InstabilitySettings`]).
 
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::cmp::Reverse;
+use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
 use std::sync::OnceLock;
 
 use ls_math::terrain::{TerrainQuery, MATERIAL_HARD, MATERIAL_WEAK};
@@ -358,10 +359,14 @@ pub fn plan_cave_in<T: TerrainQuery + ?Sized>(
         debris.push((p, vel, radius, scrap));
     }
     // Never enclose a ship: a ship that could reach open space before must
-    // still reach it with the rubble.
+    // still reach it with the rubble (checked only near the rubble, and
+    // without the rubble only when the check with it fails).
     let reach = settings.escape_reach;
     for &(p, sr) in ships {
-        if p.distance(ceiling) > reach + settings.rubble_spread + settings.rubble_radius.1 * 2.0 {
+        let near = rubble
+            .iter()
+            .any(|s| p.distance(s.center) - s.radius < reach);
+        if !near || escapes(terrain, &rubble, p, sr, reach) {
             continue;
         }
         if !escapes(terrain, &[], p, sr, reach) {
@@ -388,7 +393,10 @@ pub fn plan_cave_in<T: TerrainQuery + ?Sized>(
 
 /// Whether a sphere of radius `r` at `from` can reach a point `reach` u
 /// away (Chebyshev distance on a 1 u grid, 6-connected) through open space
-/// that is outside every sphere of `rubble`.
+/// that is outside every sphere of `rubble`. A best-first search that
+/// always grows the cell farthest out (ties: the oldest), so in the open it
+/// walks straight to the boundary and only a sealed pocket is explored
+/// whole.
 pub fn escapes<T: TerrainQuery + ?Sized>(
     terrain: &T,
     rubble: &[RubbleSphere],
@@ -405,23 +413,26 @@ pub fn escapes<T: TerrainQuery + ?Sized>(
                 p.distance_squared(s.center) > min * min
             })
     };
+    let cheb = |c: [i32; 3]| c[0].abs().max(c[1].abs()).max(c[2].abs());
     let mut seen: BTreeSet<[i32; 3]> = BTreeSet::new();
-    let mut queue: VecDeque<[i32; 3]> = VecDeque::new();
+    // Max-heap on (distance out, -insertion order).
+    let mut open: BinaryHeap<(i32, Reverse<u32>, [i32; 3])> = BinaryHeap::new();
+    let mut seq = 0u32;
     seen.insert([0, 0, 0]);
-    queue.push_back([0, 0, 0]);
-    while let Some(c) = queue.pop_front() {
-        if c.iter().any(|v| v.abs() >= n) {
+    open.push((0, Reverse(seq), [0, 0, 0]));
+    while let Some((d, _, c)) = open.pop() {
+        if d >= n {
             return true;
         }
         for (axis, step) in [(0, 1), (0, -1), (1, 1), (1, -1), (2, 1), (2, -1)] {
             let mut nb = c;
             nb[axis] += step;
-            if seen.contains(&nb) {
+            if !seen.insert(nb) {
                 continue;
             }
-            seen.insert(nb);
             if free(nb) {
-                queue.push_back(nb);
+                seq += 1;
+                open.push((cheb(nb), Reverse(seq), nb));
             }
         }
     }

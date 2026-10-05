@@ -16,7 +16,7 @@ InstabilitySettings(
     material_factor: (1.5, 1.0, 0.5),
     warning_secs: 1.5,
     min_interval_secs: 8.0,
-    ceiling_search: 14.0,
+    ceiling_search: 24.0,
     rubble_count: (5, 9),
     rubble_radius: (1.5, 3.0),
     rubble_spread: 3.5,

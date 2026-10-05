@@ -1,0 +1,8 @@
+# Mood replay hashes: scripted replays of the M4 world physics (ls_sim::world_replays, lines
+# starting with "world/") and of the comedy director's events. Checked by
+# `cargo test -p ls-sim --lib` (native and wasm32) and by tools/determinism-check.mjs.
+# Re-bless the world lines: LS_BLESS_MOOD_REPLAYS=1 cargo test -p ls-sim --lib world_replays
+world/gravity 0x930876b7c1dfa16e
+world/cave_in 0xca8426a8a830b6bc
+world/pigment 0xc68e3c3054f034f6
+world/radiation 0x813873808786976f

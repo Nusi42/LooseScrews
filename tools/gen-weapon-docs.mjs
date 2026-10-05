@@ -344,6 +344,7 @@ function notesText(w) {
     if (c.auto_release) bits.push("fires by itself");
     notes.push(bits.join(", "));
   }
+  if (w.gravity === true) notes.push("gravity wells bend it");
   return notes.join("; ") || "–";
 }
 

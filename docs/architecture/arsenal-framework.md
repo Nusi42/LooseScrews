@@ -122,7 +122,7 @@ Reading: `ship`, `tuning_of`, `def`, `input`, `ships_within`, `nearest_ship`,
 `ls_math::terrain::MATERIAL_*`), `projectiles()` (every projectile in flight in any stage,
 except the one whose hook runs), `trail` (a ship's position, velocity and hull up to 3 s ago),
 `rng`, and `ctx.view` for the tables (`weapons`, `gadgets`, `ship_types`, `rules`, `visuals`),
-the level's `instability` slider (0-100, Tectonic collapse scaling) and state (`ships`,
+the level's `instability` slider (0-100, Tectonic collapse scaling, crater growth) and state (`ships`,
 `projectiles` plus `projectiles_stepping` / `projectiles_stepped` while projectiles are
 stepped, `entities`, `pickups` (content at `PickupSpawn::content_pos`), `scrap_piles`,
 `terrain`, `layers`, `inputs`). `weapons::debris_crowded(ctx, point, max)` tells whether
@@ -130,22 +130,25 @@ stepped, `entities`, `pickups` (content at `PickupSpawn::content_pos`), `scrap_p
 so sustained fire does not fill the debris cap).
 
 Writing (each queues a `Command`): `damage` / `damage_proportional` (knockback proportional to
-damage), `splash`, `shockwave` (knockback only), `edit` / `crater` (scaled by rock strength) /
-`crater_exact` (not scaled) / `grow` / `paint` (plain) / `paint_color` (with an effect colour)
+damage), `splash`, `shockwave` (knockback only), `edit` / `crater` (scaled by rock strength
+and, M4, grown by Instability: `1 + 0.4 x instability / 100`) / `crater_material` (rock
+strength only: Tectonic cracks) / `crater_exact` (not scaled) / `grow` / `paint` (plain) /
+`paint_color` (with an effect colour)
 / `scorch` (permanent scorch mark, optionally hot for a while; skips scorched spots) /
 `channel`, `set_weapon_state`, `spawn_projectile` (see
 `weapons::projectile_for` and `sub_projectile`), `spawn_entity` / `spawn_debris`,
 `impulse_ship`, `impulse_entity`, `impulse_projectile` (another projectile; a stuck one is
 pulled loose: Magnet Sneeze pulling mines in), `move_pickup` (moves a scrap pile, or a pickup's
 content off its spawn point, by a delta: Magnet Sneeze), `remove_projectile`, `drain_energy`, `blind`,
-`swap`, `rewind`, `disable_weapons`, `adjust_hull`, `cue`, `emit`, and `detonate` (the default
-impact).
+`swap`, `rewind`, `disable_weapons`, `adjust_hull`, `add_well` / `remove_well` (M4 dynamic
+gravity wells: Paperweight, Architect strokes; see `contracts.md` "World physics"), `cue`,
+`emit`, and `detonate` (the default impact).
 
 `ctx.later(delay, |ctx| ...)` defers the terrain edits the closure queues by `delay` ticks
 (`Command::EditLater`, applied at the start of that tick before respawns, part of the state
 hash while pending); the Tectonic Charge spreads its cracks with it.
 
-Damage goes through one pipeline: friendly-fire scaling between teammates, then the mode's and
+Damage goes through one pipeline: a pigmented attacker's x1.25 (M4, monochrome levels), friendly-fire scaling between teammates, then the mode's and
 the mutators' `on_damage` hooks, the mode's `on_hit` (it sees every hit, also one a shield
 will absorb), then the target's active gadget (`GadgetBehavior::on_damage`,
 the Shield; a mode hook may skip it), then hull, `Damaged` event and kill (the mode's
@@ -192,23 +195,27 @@ set tuning and charge multipliers), splash knockback scales with the falloff, an
 0. On the first tick the mode's `on_start`; then the deferred terrain edits due this tick.
 1. Respawns (with the ship type picked for the next life; never for eliminated or spectating
    players, and only if the mode's `allow_respawn` agrees).
-2. Per ship in id order: weapon selection; movement (`simulate_movement` with the paint
-   effects of the surface it touches, frozen for ships guiding a projectile); charged-rock
+2. Per ship in id order: weapon selection; movement (`simulate_movement_env` with the paint
+   effects of the surface it touches and, M4, the clamped well pull at the ship and the
+   level's up; frozen for ships guiding a projectile); charged-rock
    drain; scavenging (scrap piles, then debris) and Tug scrap passing; gadget
    (G press edge: toggle on/off or instant use; drain; `tick` hook); weapon mode (V press
    edge: the selected primary's `on_mode`); then firing, primary then
    secondary (charge hooks, `fire`). Commands of each hook are applied immediately.
-3. Projectiles in list order: `on_fuse`, `on_expire` or `update`, then the swept move with hit
-   hooks. Projectiles spawned during this stage start moving next tick. While stepping, the
+3. Projectiles in list order: `on_fuse`, `on_expire` or `update`, then (M4) the well pull for
+   weapons with `gravity: true` (not stuck), then the swept move with hit hooks. Projectiles spawned during this stage start moving next tick. While stepping, the
    not-yet-stepped and already-stepped lists live in the world, so `ImpulseProjectile` /
    `RemoveProjectile` and `View::all_projectiles` reach every projectile.
-4. Entities: debris physics, decoy movement (kinematic entities, `Entity::kinematic`, only move
+4. Entities: debris physics (pulled by wells, M4), decoy movement (kinematic entities, `Entity::kinematic`, only move
    by their velocity, without terrain collision, so a module can drive them), ships push
    debris, `entity_tick` / `entity_expired` hooks of the owning module (changes to the entity
    written back, then its commands), expiry.
 5. Scrap piles, pickup collection, pickup respawns.
 6. Ship trails (3 s of position, velocity, hull per ship for Borrowed Time).
-7. Mode: `on_tick` (Paint the Void refreshes its coverage every 30 ticks), newly eliminated
+7. World physics (M4): radiation on belt levels, pigment pickups (expiry, collection,
+   respawns), ended dynamic wells dropped, Instability (strain decay once a second, the
+   cave-in warning, the cave-in).
+8. Mode: `on_tick` (Paint the Void refreshes its coverage every 30 ticks), newly eliminated
    players leave play (`Event::Eliminated`), then `end_check` (`Event::MatchEnded`).
 
 ## Gadgets
@@ -266,7 +273,8 @@ wrecks). `World::entity_views` flattens everything but ships and projectiles int
 | Dust cloud | radius in whole units, module state bytes 1-3 |
 | Ghost, marker | the module's `Entity::state` |
 
-Debris: spheres of 0.3-1.5 u with drag, terrain bounce and rest (no gravity), pushed by ships
+Debris: spheres of 0.3-1.5 u with drag, terrain bounce and rest (no gravity, except M4 wells:
+pulled debris rests only in rock contact), pushed by ships
 that ram them and by splash and shockwaves, blocking projectiles (with `hp`), scavengeable
 (emptied debris disappears), at most `entity::MAX_DEBRIS` (64; the oldest goes first).
 
@@ -306,7 +314,8 @@ than 100 u from the viewer's ship. The viewer's own ship is always kept.
 
 ## Data hash
 
-`ls_sim::data_hash()` hashes every embedded `data/` file (weapons, ships, gadgets, rule sets)
+`ls_sim::data_hash()` hashes every embedded `data/` file (weapons, ships, gadgets, rule sets,
+M4 world physics `world/*.ron`)
 by path and content (CR bytes ignored; comment edits count), plus
 `ls_sim::SIM_BEHAVIOR_VERSION` (bumped with behaviour changes that change no data, together
 with `REPLAY_GOLDEN_HASH`; 5 since M3 wave A: mode framework, per-match teams, Tectonic cracks

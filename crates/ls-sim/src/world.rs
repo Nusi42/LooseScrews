@@ -2391,7 +2391,7 @@ impl World {
                 Command::Emit(e) => events.push(e),
                 Command::EditLater { tick, edit } => self.deferred_edits.push((tick, edit)),
                 Command::AddWell(w) => self.add_well(w),
-                Command::RemoveWell { key } => self.wells.dynamics.retain(|w| w.key != key),
+                Command::RemoveWell { key } => self.remove_well(key),
             }
         }
     }
@@ -3167,6 +3167,11 @@ impl World {
         if w.end_tick > w.start_tick && w.peak_accel > 0.0 && w.range > 0.0 && w.pos.is_finite() {
             self.wells.dynamics.push(w);
         }
+    }
+
+    /// Removes the dynamic wells with `key` (also [`Command::RemoveWell`]).
+    pub fn remove_well(&mut self, key: u32) {
+        self.wells.dynamics.retain(|w| w.key != key);
     }
 
     /// Removes every dynamic well (a new heat, tests).

@@ -58,9 +58,9 @@ pub struct ModeReplay {
     pub kills: usize,
 }
 
-type Arena = ShelledTerrain<PaintedTerrain<BoxRoomTerrain>>;
+pub(crate) type Arena = ShelledTerrain<PaintedTerrain<BoxRoomTerrain>>;
 
-fn arena() -> Arena {
+pub(crate) fn arena() -> Arena {
     let mut t = PaintedTerrain::new(BoxRoomTerrain::centered(Vec3::new(64.0, 32.0, 64.0)), 2.0);
     t.apply_edit(&TerrainEdit::AddSphere {
         center: VEIN,
@@ -69,7 +69,7 @@ fn arena() -> Arena {
     ShelledTerrain::new(t)
 }
 
-fn setup() -> MatchSetup {
+pub(crate) fn setup() -> MatchSetup {
     // Eight spawns on a ring, teams 0-3 in turn (two per team; free-for-all
     // and two-team modes use them all or their own).
     let spawns = (0..8)
@@ -127,7 +127,12 @@ fn replay_rules(name: &str, text: &str) -> RuleSet {
 
 /// Scripted inputs: pseudo-random buttons and thrust, aiming at the nearest
 /// enemy. Depends only on the world state and the RNG.
-fn inputs(rng: &mut Pcg32, w: &World, ids: &[PlayerId], tick: u64) -> Vec<(PlayerId, InputCmd)> {
+pub(crate) fn inputs(
+    rng: &mut Pcg32,
+    w: &World,
+    ids: &[PlayerId],
+    tick: u64,
+) -> Vec<(PlayerId, InputCmd)> {
     ids.iter()
         .map(|&id| {
             let (pitch, yaw) = aim(w, id);

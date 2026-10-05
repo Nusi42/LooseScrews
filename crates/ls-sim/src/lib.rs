@@ -54,6 +54,7 @@ pub mod visual;
 pub mod weapon;
 pub mod weapons;
 pub mod world;
+pub mod world_replays;
 
 pub use behavior::{gadget_cue, Command, Ctx, Cue, CueKind, DamageSource};
 pub use belt::{BeltLevel, BoulderOrbit};
@@ -100,3 +101,5 @@ pub use ls_math;
 mod tests;
 #[cfg(test)]
 mod tests_arsenal;
+#[cfg(test)]
+mod tests_world;

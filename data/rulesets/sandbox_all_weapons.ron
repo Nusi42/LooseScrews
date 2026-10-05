@@ -87,9 +87,12 @@ RuleSet(
         "decoy": (weight: 1.0, respawn_secs: 15.0),
     },
     scrap_pickup: Some((weight: 6.0, respawn_secs: 15.0, amount: 30.0)),
+    // Pigment pickups on monochrome levels (Palette 80+): one per 4 players, at least 2.
+    pigment_pickup: Some((respawn_secs: 30, players_per_pickup: 4, min_on_map: 2)),
     shield_overrides: {},
     tuning: {},
     friendly_fire_percent: 50,
     allowed_ship_types: [Skitter, Tinker, Hauler, Tug],
-    absurdity: 20,
+    // Comedy events: the director runs at min(world Absurdity slider, this cap): the world decides.
+    absurdity: 100,
 )

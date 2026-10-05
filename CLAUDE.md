@@ -37,7 +37,7 @@
 
 ## Layout
 - `crates/` Rust workspace crates (`ls-math`, `ls-worldgen`, `ls-sim`, `ls-net`, `ls-game` shared client/server glue, `ls-server`, `ls-wasm`, `ls-bots`, `ls-directory` optional server list service: `docs/architecture/directory.md`)
-- `data/` weapon, ship, gadget and rule set definitions (RON) — gameplay numbers live here, not in code; all files are embedded and hashed (`ls_sim::data_hash`, checked in the handshake)
+- `data/` weapon, ship, gadget, comedy event (`data/events/`, director cadence included) and rule set definitions (RON) — gameplay numbers live here, not in code; all files are embedded and hashed (`ls_sim::data_hash`, checked in the handshake)
 - `web/` browser client (TypeScript strict, Vite, WebGPU, npm)
 - `tools/` CI and helper scripts; work-folder guards `tools/lib/work-folder.mjs`, `tools/work-folders.mjs` (create/status/guard-master), Git hooks `tools/hooks/` + `.githooks/`, Claude hook `tools/post-edit.mjs`, `tools/check-binds.mjs`; their tests: `node --test "tools/test/*.test.mjs"`
 - `docs/` developer docs; `userDocs/` player-facing manuals and hosting guides — keep them separate

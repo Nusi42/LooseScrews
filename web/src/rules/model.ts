@@ -136,6 +136,13 @@ export function bannedWeapons(r: RuleSetData, catalog: Catalog): string[] {
 }
 
 /** A short human summary (e.g. for the code field's caption). */
+/** "no comedy events", "all comedy events" or "comedy events: 2 banned". */
+function eventsSummary(r: RuleSetData, catalog: Catalog): string {
+  if (r.absurdity === 0) return "no comedy events";
+  const banned = catalog.events.filter((e) => r.events[e.id] === "Banned").length;
+  return banned === 0 ? "all comedy events" : `comedy events: ${banned} banned`;
+}
+
 export function rulesSummary(r: RuleSetData, catalog: Catalog): string {
   const banned = bannedWeapons(r, catalog);
   const ff = r.friendly_fire_percent === 0 ? "off" : `${r.friendly_fire_percent}%`;
@@ -147,6 +154,7 @@ export function rulesSummary(r: RuleSetData, catalog: Catalog): string {
     `ships: ${r.allowed_ship_types.join(", ") || "none"}`,
     banned.length ? `banned: ${banned.join(", ")}` : "no weapon banned",
     `${gadgets} gadget${gadgets === 1 ? "" : "s"}`,
+    eventsSummary(r, catalog),
   ].join(" · ");
 }
 

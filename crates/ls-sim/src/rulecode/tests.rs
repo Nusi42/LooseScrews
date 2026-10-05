@@ -32,10 +32,37 @@ fn version_of(code: &str) -> u64 {
     .unwrap()
 }
 
-/// Format 4 and the full (`true`) or diff (`false`) bit.
+/// Format 5 and the full (`true`) or diff (`false`) bit.
 fn is_full(code: &str) -> bool {
     assert_eq!(version_of(code), CODE_VERSION as u64, "{code}");
-    parse_symbols(code).unwrap()[14]
+    parse_symbols(code).unwrap()[HEADER_BITS]
+}
+
+/// Bits before the full/diff bit in format 5: version 4, counts 6 + 4 + 5.
+const HEADER_BITS: usize = 19;
+
+/// The registry ids of this build.
+fn all_ids() -> (Vec<&'static str>, Vec<&'static str>, Vec<&'static str>) {
+    (weapon_ids(), gadget_ids(), event_ids())
+}
+
+fn ids<'a>(w: &'a [&'a str], g: &'a [&'a str], e: &'a [&'a str]) -> Ids<'a> {
+    Ids {
+        weapons: w,
+        gadgets: g,
+        events: e,
+    }
+}
+
+/// What a rule set looked like in an M3 build (format 2-4 codes): the
+/// Absurdity of the M3 defaults where it is today's default, and decoded
+/// with today's pigment default and no event bans.
+fn m3(r: &RuleSet) -> RuleSet {
+    let mut r = r.clone();
+    if r.absurdity == RuleSet::default_for(r.mode.kind()).absurdity {
+        r.absurdity = LEGACY_ABSURDITY;
+    }
+    canonical(&with_m4_fields(r))
 }
 
 fn edited() -> RuleSet {
@@ -282,8 +309,7 @@ fn full_encoding_is_the_fallback_when_it_is_shorter() {
 
 #[test]
 fn codes_from_older_builds_decode_and_newer_ones_are_rejected() {
-    let weapons = weapon_ids();
-    let gadgets = gadget_ids();
+    let (weapons, gadgets, events) = all_ids();
     // An older build did not have the last weapon yet (the registry is
     // append-only): its codes say nothing about it.
     let last = *weapons.last().unwrap();
@@ -296,14 +322,13 @@ fn codes_from_older_builds_decode_and_newer_ones_are_rejected() {
         old.tuning.remove(last);
         old.starting_loadout.primaries.retain(|w| w != last);
         old.starting_loadout.secondaries.retain(|(w, _)| w != last);
-        let code = old
-            .to_code_with(&weapons[..weapons.len() - 1], &gadgets)
-            .unwrap();
+        let older = ids(&weapons[..weapons.len() - 1], &gadgets, &events);
+        let code = old.to_code_with(older).unwrap();
         let back = RuleSet::from_code(&code).unwrap();
         assert_eq!(back.availability(last), Availability::Banned);
         assert_eq!(back, canonical(&old));
         // The full form as well.
-        let full = finish(full_payload(&old, &weapons[..weapons.len() - 1], &gadgets).unwrap());
+        let full = finish(full_payload(&old, older, CODE_VERSION).unwrap());
         assert_eq!(RuleSet::from_code(&full).unwrap(), back);
     }
     // A newer build knows one weapon more: a clear error, not a checksum
@@ -311,11 +336,32 @@ fn codes_from_older_builds_decode_and_newer_ones_are_rejected() {
     let mut newer = weapons.clone();
     newer.push("future_gun");
     let r = RuleSet::paint_the_void();
-    let code = r.to_code_with(&newer, &gadgets).unwrap();
+    let code = r.to_code_with(ids(&newer, &gadgets, &events)).unwrap();
     let e = RuleSet::from_code(&code).unwrap_err().to_string();
     assert!(e.contains("newer build"), "{e}");
-    let full = finish(full_payload(&r, &newer, &gadgets).unwrap());
+    let full = finish(full_payload(&r, ids(&newer, &gadgets, &events), CODE_VERSION).unwrap());
     let e = RuleSet::from_code(&full).unwrap_err().to_string();
+    assert!(e.contains("newer build"), "{e}");
+
+    // An older build without the last comedy event: it stays on.
+    let last_event = *events.last().unwrap();
+    let mut r = RuleSet::paint_the_void();
+    r.ban_event(events[0], true);
+    let older = ids(&weapons, &gadgets, &events[..events.len() - 1]);
+    for code in [
+        r.to_code_with(older).unwrap(),
+        finish(full_payload(&r, older, CODE_VERSION).unwrap()),
+    ] {
+        let back = RuleSet::from_code(&code).unwrap();
+        assert!(back.event_banned(events[0]));
+        assert!(!back.event_banned(last_event));
+        assert_eq!(back, canonical(&r));
+    }
+    // A newer build with one event more: rejected.
+    let mut newer = events.clone();
+    newer.push("future_event");
+    let code = r.to_code_with(ids(&weapons, &gadgets, &newer)).unwrap();
+    let e = RuleSet::from_code(&code).unwrap_err().to_string();
     assert!(e.contains("newer build"), "{e}");
 }
 
@@ -325,9 +371,9 @@ fn codes_from_older_builds_decode_and_newer_ones_are_rejected() {
 fn diff_codes_against_other_default_rules_are_rejected() {
     let code = banned(&["railspike"]).to_code().unwrap();
     let mut bits = parse_symbols(&code).unwrap();
-    // Flip one fingerprint bit (after version 4, counts 10, full/diff 1,
+    // Flip one fingerprint bit (after version 4, counts 15, full/diff 1,
     // mode 4).
-    bits[19] = !bits[19];
+    bits[HEADER_BITS + 5] = !bits[HEADER_BITS + 5];
     // Recompute the checksum over the patched payload.
     let payload_len = {
         let mut r = Reader {
@@ -335,13 +381,18 @@ fn diff_codes_against_other_default_rules_are_rejected() {
             pos: 4,
         };
         let (nw, ng) = (r.read(6).unwrap() as usize, r.read(4).unwrap() as usize);
+        let ne = r.read(EVENT_BITS).unwrap() as usize;
         assert!(!r.flag().unwrap());
         let kind = ModeKind::from_index(r.read(MODE_BITS).unwrap() as u8).unwrap();
-        let w = weapon_ids();
-        let g = gadget_ids();
-        read_diff_v4(&mut r, kind, &w[..nw], &g[..ng])
-            .unwrap()
-            .unwrap_err();
+        let (w, g, e) = all_ids();
+        read_diff_v45(
+            &mut r,
+            kind,
+            ids(&w[..nw], &g[..ng], &e[..ne]),
+            CODE_VERSION,
+        )
+        .unwrap()
+        .unwrap_err();
         r.pos
     };
     let mut b = Bits {
@@ -625,6 +676,23 @@ fn json_rules(r: &RuleSet) -> String {
                     .join(", ")
             ),
         ),
+        (
+            "events",
+            json_obj(
+                r.events
+                    .iter()
+                    .map(|(k, v)| (k.clone(), json_str(&format!("{v:?}")))),
+            ),
+        ),
+        (
+            "pigment_pickup",
+            r.pigment_pickup.map_or("null".into(), |p| {
+                format!(
+                    "{{\"respawn_secs\": {}, \"players_per_pickup\": {}, \"min_on_map\": {}}}",
+                    p.respawn_secs, p.players_per_pickup, p.min_on_map
+                )
+            }),
+        ),
     ];
     json_obj(fields.into_iter().map(|(k, v)| (k.to_string(), v)))
 }
@@ -818,6 +886,60 @@ fn vectors() -> Vec<(&'static str, RuleSet)> {
         ),
         ("unencodable: long name", with(&|r| r.name = "n".repeat(32))),
         (
+            "ban duck parade and cat paw",
+            with(&|r| {
+                r.ban_event("duck_parade", true);
+                r.ban_event("cat_paw", true);
+            }),
+        ),
+        (
+            "every event banned, absurdity 0",
+            with(&|r| {
+                for id in event_ids() {
+                    r.ban_event(id, true);
+                }
+                r.absurdity = 0;
+            }),
+        ),
+        (
+            "pigment edited",
+            with(&|r| {
+                r.pigment_pickup = Some(crate::PigmentPickupRule {
+                    respawn_secs: 1023,
+                    players_per_pickup: 15,
+                    min_on_map: 0,
+                })
+            }),
+        ),
+        ("no pigment", with(&|r| r.pigment_pickup = None)),
+        (
+            "invalid: pigment per 0 players",
+            with(&|r| {
+                r.pigment_pickup = Some(crate::PigmentPickupRule {
+                    respawn_secs: 30,
+                    players_per_pickup: 0,
+                    min_on_map: 2,
+                })
+            }),
+        ),
+        (
+            "unencodable: pigment respawn 1024",
+            with(&|r| {
+                r.pigment_pickup = Some(crate::PigmentPickupRule {
+                    respawn_secs: 1024,
+                    players_per_pickup: 4,
+                    min_on_map: 2,
+                })
+            }),
+        ),
+        (
+            "unencodable: unknown event",
+            with(&|r| {
+                r.events
+                    .insert("tea_party".into(), crate::EventRule::Banned);
+            }),
+        ),
+        (
             "unencodable: match 0.5 s",
             with(&|r| r.mode.set_field("match_secs", 0.5)),
         ),
@@ -946,6 +1068,14 @@ fn catalog_ts() -> String {
             json_str(&d.name)
         ));
     }
+    out.push_str("  ],\n  \"events\": [\n");
+    for (kind, d) in crate::events::EventTable::builtin().iter() {
+        out.push_str(&format!(
+            "    {{\"id\": {}, \"name\": {}}},\n",
+            json_str(kind.id()),
+            json_str(&d.name)
+        ));
+    }
     out.push_str("  ],\n  \"shipTypes\": [");
     out.push_str(
         &ShipType::ALL
@@ -1017,8 +1147,45 @@ fn catalog_ts() -> String {
             json_rules(&canonical(&r))
         ));
     }
+    out.push_str("  ],\n");
+    out.push_str("  \"legacyVectors\": [\n");
+    for (code, r) in legacy_vectors() {
+        let back = RuleSet::from_code(code).unwrap();
+        out.push_str(&format!(
+            "    {{\"code\": {}, \"rules\": {}}},\n",
+            json_str(code),
+            json_rules(&back)
+        ));
+        assert_eq!(back, r, "{code}");
+    }
     out.push_str("  ],\n};\n");
     out
+}
+
+/// Codes of older formats (2-4) the web decoder must read like the server,
+/// with what they decode to.
+fn legacy_vectors() -> Vec<(&'static str, RuleSet)> {
+    let m3_builtin = |kind: ModeKind| {
+        let mut r = RuleSet::default_for(kind);
+        r.absurdity = LEGACY_ABSURDITY;
+        m3(&r)
+    };
+    vec![
+        ("LR6V-69CM-G006-58R", m3(&RuleSet::paint_the_void())),
+        (
+            "LR4V-6WGD-RX2W-0Q8K-W0PM-RVR8-0JR7-K4AF-05AN-A5AN-APAM-A40B-1506-A107-H0G3-RG61-W840-Y420-F20R-7H10-2GG8-1W86-0S44-0A8D-0G3T-2840-YGT0-GA42-G61X-1410-PR50-C3T2-840Y-GT0R-7M4G-25N0-RR21-D410-PR8G-42V0-M10P-R908-5MG4-2V14-30F0-0000-1085-MG42-T821-D4R0-7HW0-0000-0000-02B5-4",
+            m3(&RuleSet::paint_the_void()),
+        ),
+        ("LR6V-69CM-G214-D7G1-P6B", m3(&banned(&["railspike", "tectonic_charge"]))),
+        ("LR8V-6097-G000-TMBG", m3_builtin(ModeKind::PaintTheVoid)),
+        ("LR8V-63T6-X000-NNJ0", m3_builtin(ModeKind::TeamBrawl)),
+        ("LR8V-6B79-S000-RPJG", m3_builtin(ModeKind::LastColorStanding)),
+        (
+            "LR8V-6097-GQ4N-5V5F-VNM1-9M9P-FZQM-0JR1-Y081-JG83-4A0N-245G-JG3C-A23R-01B2-6BPB-80N2-4CJG-6BS",
+            m3(&edited()),
+        ),
+        ("LR8V-6097-G084-HMY0-2J90", m3(&banned(&["railspike", "tectonic_charge"]))),
+    ]
 }
 
 #[test]
@@ -1128,9 +1295,9 @@ fn format_3_and_2_codes_still_decode() {
     ] {
         assert_eq!(version_of(code), LEGACY_DIFF_VERSION as u64);
         assert_eq!(version_of(full), LEGACY_FULL_VERSION as u64);
-        assert_eq!(RuleSet::from_code(code).unwrap(), canonical(&rules), "{code}");
-        assert_eq!(RuleSet::from_code(full).unwrap(), canonical(&rules), "{full}");
-        // Re-encoding prints format 4.
+        assert_eq!(RuleSet::from_code(code).unwrap(), m3(&rules), "{code}");
+        assert_eq!(RuleSet::from_code(full).unwrap(), m3(&rules), "{full}");
+        // Re-encoding prints format 5.
         assert!(!is_full(&rules.to_code().unwrap()));
     }
     // A typo in an old code is still a typo.
@@ -1145,9 +1312,10 @@ fn format_3_and_2_codes_still_decode() {
 #[test]
 fn unknown_modes_and_mutators_are_rejected() {
     let r = RuleSet::default_for(ModeKind::TeamBrawl);
-    let mut payload = diff_payload(&r, &weapon_ids(), &gadget_ids()).unwrap();
-    // The mode index (bits 15..19) to 15.
-    for b in &mut payload.bits[15..19] {
+    let (w, g, e) = all_ids();
+    let mut payload = diff_payload(&r, ids(&w, &g, &e)).unwrap();
+    // The mode index (the 4 bits after the full/diff bit) to 15.
+    for b in &mut payload.bits[HEADER_BITS + 1..HEADER_BITS + 5] {
         *b = true;
     }
     let e = RuleSet::from_code(&finish(payload))
@@ -1158,17 +1326,139 @@ fn unknown_modes_and_mutators_are_rejected() {
     // Mutator bit 3 in a full code: rejected after the checksum check.
     let mut r = RuleSet::paint_the_void();
     r.mutators = vec![Mutator::Instagib];
-    let full = full_payload(&r, &weapon_ids(), &gadget_ids()).unwrap();
+    let full = full_payload(&r, ids(&w, &g, &event_ids()), CODE_VERSION).unwrap();
     let mut bits = full.bits.clone();
-    // After version 4, counts 10, full 1, mode 4, name, mode fields,
+    // After version 4, counts 15, full 1, mode 4, name, mode fields,
     // friendly fire 7, absurdity 7, ships 4: the 4 mutator bits.
     let name_bits = 5 + 6 * r.name.len();
     let mode_bits: u32 = r.mode.fields().iter().map(|f| f.bits).sum();
-    let at = 19 + name_bits + mode_bits as usize + 18;
+    let at = HEADER_BITS + 5 + name_bits + mode_bits as usize + 18;
     assert!(bits[at + 3], "Instagib is bit 0 (the last of the four)");
     bits[at] = true;
     let e = RuleSet::from_code(&finish(Bits { bits }))
         .unwrap_err()
         .to_string();
     assert!(e.contains("unknown mutator"), "{e}");
+}
+
+/// Codes printed by M3 builds (format 4) still decode: against the M3
+/// default rule sets (Absurdity 20), with today's pigment pickups and no
+/// event bans.
+#[test]
+fn format_4_codes_still_decode() {
+    let builtin = |file: &str| {
+        let (name, text) = crate::ruleset::BUILTIN_RULESETS
+            .iter()
+            .find(|(f, _)| *f == file)
+            .unwrap();
+        // Every M3 built-in rule set had Absurdity 20.
+        let mut r = RuleSet::from_ron(name, text).unwrap();
+        r.absurdity = LEGACY_ABSURDITY;
+        r
+    };
+    let mode = |kind: ModeKind, f: &dyn Fn(&mut RuleSet)| {
+        let mut r = RuleSet::default_for(kind);
+        f(&mut r);
+        r
+    };
+    let cases: Vec<(&str, RuleSet)> = vec![
+        // The M3 built-in rule sets.
+        ("LR8V-6097-G000-TMBG", builtin("rulesets/paint_the_void.ron")),
+        ("LR8V-71AK-DT3S-S9S0-7W0V-K9G3-2ZDT-N6HD-80JR-7K4A-F05A-NA5A-NAMA-MA40-B150-6C20-7J10-3S0G-1WG8-0Y84-0F42-07J1-03S0-G1WG-80Y8-40F4-207R-D0G1-Y284-0FGT-103W-2G80-Z142-07R5-0G1Y-2840-FGT1-03W4-G83S-0RR4-0F42-07R9-0G1W-G80Z-0M20-7R90-G1WG-80Z1-4207-G000-010G-1WG8-0Y84-0F4C-07HW-0000-0000-000R-A2", builtin("rulesets/sandbox_all_weapons.ron")),
+        ("LR8V-63T6-X000-NNJ0", builtin("rulesets/team_brawl.ron")),
+        ("LR8V-72W9-MBDS-Q1HQ-005C-DWCS-04P0-Y00B-4AF3-ZZZQ-ZZZZ-ZZZY-2800-0000-0000-0000-0000-0000-00DG-7", builtin("rulesets/instagib_brawl.ron")),
+        ("LR8V-63T6-XJ15-XZ6G-09C3-R510-0078-0", builtin("rulesets/duel.ron")),
+        ("LR8V-69BZ-2000-Y3DG", builtin("rulesets/hot_reactor.ron")),
+        ("LR8V-6B79-S000-RPJG", builtin("rulesets/last_color_standing.ron")),
+        ("LR8V-67TK-E000-EQ2G", builtin("rulesets/heist.ron")),
+        ("LR8V-65PE-T000-XS10", builtin("rulesets/squeeze.ron")),
+        // Edited M3 rule sets (vectors of the M3 web catalog).
+        ("LR8V-6097-GQ4N-5V5F-VNM1-9M9P-FZQM-0JR1-Y081-JG83-4A0N-245G-JG3C-A23R-01B2-6BPB-80N2-4CJG-6BS", edited()),
+        ("LR8V-6097-G084-HMY0-2J90", banned(&["railspike", "tectonic_charge"])),
+        ("LR8V-6097-G0H0-0HS6", {
+            let mut r = RuleSet::paint_the_void();
+            r.mutators = vec![Mutator::Instagib];
+            r
+        }),
+        ("LR8V-63T6-XJ15-XZ6G-09C3-R512-406K-YW", mode(ModeKind::TeamBrawl, &|r| {
+            r.name = "Duel".into();
+            r.mode.set_field("teams", 0.0);
+            r.mode.set_field("kill_target", 10.0);
+            r.mode.set_field("match_secs", 300.0);
+            r.mutators = vec![Mutator::Instagib];
+        })),
+        ("LR8V-65PE-T80E-2003-RCA1-WA05-003V-8C", mode(ModeKind::TheSqueeze, &|r| {
+            r.mode.set_field("phases", 3.0);
+            r.mode.set_field("crush_per_sec", 40.0);
+            r.mode.set_field("scrap_per_100u2", 1.25);
+        })),
+        ("LR8V-6B79-S80E-21XJ-689C-2G00-287R", mode(ModeKind::LastColorStanding, &|r| {
+            r.mode.set_field("drain_per_kill", 50.0);
+            r.mode.set_field("stalemate_secs", 300.0);
+        })),
+    ];
+    let weapons = WeaponTable::builtin();
+    for (code, rules) in cases {
+        assert_eq!(version_of(code), LEGACY_V4_VERSION as u64, "{code}");
+        let back = RuleSet::from_code(code).unwrap_or_else(|e| panic!("{code}: {e}"));
+        assert_eq!(back, m3(&rules), "{code}");
+        back.resolve(&weapons).unwrap();
+        // Re-encoding prints format 5 and round-trips.
+        round_trip(&back);
+    }
+    // A typo in an M3 code is still a typo.
+    let e = RuleSet::from_code("LR8V-6097-G000-TMBH")
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("checksum"), "{e}");
+}
+
+/// Event bans and pigment pickups round-trip, in the diff and the full
+/// form, and cost little.
+#[test]
+fn event_bans_and_pigment_round_trip() {
+    let base = RuleSet::paint_the_void();
+    let base_code = base.to_code().unwrap();
+    let mut r = base.clone();
+    r.ban_event("duck_parade", true);
+    let one = round_trip(&r);
+    assert!(one.len() <= base_code.len() + 3, "{base_code} -> {one}");
+    assert!(RuleSet::from_code(&one)
+        .unwrap()
+        .event_banned("duck_parade"));
+    for id in event_ids() {
+        r.ban_event(id, true);
+    }
+    let all = round_trip(&r);
+    assert_eq!(
+        RuleSet::from_code(&all).unwrap().banned_events(),
+        (1 << event_ids().len()) - 1
+    );
+    r.resolve(&WeaponTable::builtin()).unwrap();
+    // A base that bans an event: allowing it again is a change too.
+    let mut base_ban = base.clone();
+    base_ban.ban_event("cat_paw", true);
+    round_trip(&base_ban);
+
+    let mut p = base.clone();
+    p.pigment_pickup = Some(crate::PigmentPickupRule {
+        respawn_secs: 1023,
+        players_per_pickup: 15,
+        min_on_map: 15,
+    });
+    round_trip(&p);
+    p.pigment_pickup = None;
+    round_trip(&p);
+    p.pigment_pickup = Some(crate::PigmentPickupRule {
+        respawn_secs: 1024,
+        players_per_pickup: 4,
+        min_on_map: 2,
+    });
+    assert!(p.to_code().is_err());
+    // An unknown event id cannot be encoded (and does not resolve).
+    let mut u = base.clone();
+    u.events
+        .insert("tea_party".into(), crate::EventRule::Banned);
+    assert!(u.to_code().is_err());
+    assert!(u.resolve(&WeaponTable::builtin()).is_err());
 }

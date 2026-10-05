@@ -1,0 +1,13 @@
+// Moving day: Every pickup not held moves to a new permutation of the pickup points over 2 s
+// (untouchable meanwhile: `allows_pickup`); spawn timers kept. Needs at least 4 pickups in
+// play.
+// Behaviour: crates/ls-sim/src/events/moving_day.rs (B1). Schema: `ls_sim::events::EventDef`.
+EventDef(
+    id: "moving_day",
+    name: "Moving day",
+    enabled: true,
+    weight: 1.0,
+    active_secs: 2.0,
+    moods: [Bored],
+    params: { "min_pickups": 4.0 },
+)

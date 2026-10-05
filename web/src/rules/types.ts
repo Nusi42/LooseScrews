@@ -24,6 +24,19 @@ export interface ScrapPickupRule {
   amount: number;
 }
 
+/** Pigment pickups on monochrome levels (`ls_sim::PigmentPickupRule`). */
+export interface PigmentPickupRule {
+  /** Whole seconds, 0..=1023. */
+  respawn_secs: number;
+  /** One pickup per this many players, 1..=15. */
+  players_per_pickup: number;
+  /** At least this many, 0..=15. */
+  min_on_map: number;
+}
+
+/** Whether the comedy director may roll an event (`ls_sim::EventRule`). */
+export type EventRule = "On" | "Banned";
+
 export type ShieldKind = "Blocked" | "Wears" | "PassThrough";
 
 export interface ShieldInteraction {
@@ -98,8 +111,12 @@ export interface RuleSetData {
   /** 0 = off, otherwise 10..=100. */
   friendly_fire_percent: number;
   allowed_ship_types: ShipTypeName[];
+  /** Cap of the comedy director's Absurdity (0-100; it runs at min(world slider, cap)). */
   absurdity: number;
   mutators: string[];
+  /** Comedy events by id; unlisted = On. */
+  events: Record<string, EventRule>;
+  pigment_pickup: PigmentPickupRule | null;
 }
 
 export interface WeaponInfo {
@@ -113,6 +130,12 @@ export interface WeaponInfo {
 }
 
 export interface GadgetInfo {
+  id: string;
+  name: string;
+}
+
+/** A comedy event (`data/events/<id>.ron`). */
+export interface EventInfo {
   id: string;
   name: string;
 }
@@ -136,6 +159,8 @@ export interface Catalog {
   weapons: WeaponInfo[];
   /** Registry order. */
   gadgets: GadgetInfo[];
+  /** Comedy events in registry order (rule set code bits). */
+  events: EventInfo[];
   /** `ShipType::index` order. */
   shipTypes: ShipTypeName[];
   /** Every mode, in mode index order. */
@@ -145,4 +170,6 @@ export interface Catalog {
   /** Canonical default rule set per mode (the base of diff codes). */
   defaults: Record<ModeKindName, RuleSetData>;
   vectors: CodeVector[];
+  /** Codes of the older formats (2-4) with what they decode to. */
+  legacyVectors: { code: string; rules: RuleSetData }[];
 }

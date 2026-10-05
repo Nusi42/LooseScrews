@@ -1,0 +1,13 @@
+// Wrong genre: For 10 s every ship is locked to the plane through its position perpendicular to
+// z (`move_effects` plane lock), facing snaps to +x or -x, new projectiles fly in the plane,
+// ship hits ignore depth.
+// Behaviour: crates/ls-sim/src/events/wrong_genre.rs (B1). Schema: `ls_sim::events::EventDef`.
+EventDef(
+    id: "wrong_genre",
+    name: "Wrong genre",
+    enabled: true,
+    weight: 1.0,
+    active_secs: 10.0,
+    moods: [],
+    params: { "face_snap_secs": 0.3 },
+)

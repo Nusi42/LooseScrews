@@ -42,6 +42,10 @@ pub enum SimError {
     UnknownGadget(String),
     #[error("gadget `{0}` is banned by the rule set")]
     GadgetBanned(String),
+    #[error("invalid event `{id}`: {reason}")]
+    InvalidEvent { id: String, reason: String },
+    #[error("unknown comedy event `{0}`")]
+    UnknownEvent(String),
     #[error("rule set code: {0}")]
     RuleSetCode(String),
 }

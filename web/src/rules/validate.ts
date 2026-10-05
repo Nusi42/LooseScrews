@@ -32,6 +32,24 @@ export function validateRules(r: RuleSetData, catalog: Catalog): RuleProblem[] {
   if (!Number.isInteger(r.absurdity) || r.absurdity < 0 || r.absurdity > 100) {
     add("general", `Absurdity ${r.absurdity} must be 0-100.`);
   }
+  for (const id of Object.keys(r.events)) {
+    if (!catalog.events.some((e) => e.id === id)) add("events", `Unknown comedy event ${id}.`);
+  }
+  const p = r.pigment_pickup;
+  if (
+    p &&
+    (!Number.isInteger(p.respawn_secs) ||
+      p.respawn_secs < 0 ||
+      p.respawn_secs > 1023 ||
+      !Number.isInteger(p.players_per_pickup) ||
+      p.players_per_pickup < 1 ||
+      p.players_per_pickup > 15 ||
+      !Number.isInteger(p.min_on_map) ||
+      p.min_on_map < 0 ||
+      p.min_on_map > 15)
+  ) {
+    add("pigment", "Pigment pickups need a respawn of 0-1023 s, one per 1-15 players and a minimum of 0-15.");
+  }
   const mutators = new Set<string>();
   for (const m of r.mutators) {
     if (!catalog.mutators.includes(m)) add("general", `Unknown mutator ${m}.`);

@@ -150,6 +150,7 @@ pub(crate) mod tests {
                 .map(|i| Vec3::new(-14.0 + 4.0 * i as f32, -3.0, 0.0))
                 .collect(),
             instability: 0,
+            absurdity: 0,
             heist: None,
         }
     }

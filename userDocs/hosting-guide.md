@@ -103,7 +103,7 @@ random worlds, beginning with a warm-up for Team Brawl, and prints (shortened):
 
 ```
 INFO ls_server::sim: match ready room=public entry=team_brawl share_code=LS0G-APFE-9ZGE-BSJN-5C58-T2XM-57KF ruleset=Team Brawl warmup=true build_ms=496
-INFO ls_server::sim: rules: Team Brawl LR8V-63T6-X000-NNJ0 (banned weapons: paint_thrower) room=public
+INFO ls_server::sim: rules: Team Brawl LRAV-7439-JH00-07NT-8 (banned weapons: paint_thrower) room=public
 INFO ls_server: share code LS0G-APFE-9ZGE-BSJN-5C58-T2XM-57KF - open http://localhost:7777 to play
 ```
 
@@ -169,7 +169,7 @@ ls-server --code LS0G-C4GD-KYZH-1HJ5-BC58-T2XM-57NT
 ls-server --ruleset data/rulesets/sandbox_all_weapons.ron
 
 # Rules from the rule set editor, without the Tectonic Charge
-ls-server --ruleset LR8V-6097-G000-TMBG --ban tectonic_charge
+ls-server --ruleset LRAV-741Q-J900-01HQ-M --ban tectonic_charge
 
 # Your own rule set file, a server-wide balance list and a longer break between matches
 ls-server --ruleset my_rules.ron --balance-list balance.ron --intermission 20
@@ -238,7 +238,7 @@ Standing and Paint the Void each have their own. You can give the server its rul
    [Playlists](#playlists)).
 2. **A built-in rule set by id:** `--ruleset team_brawl`, played in every match.
 3. **A rule set code** made in the [rule set editor](#rule-set-codes-the-editor-and-invite-links):
-   `--ruleset LR8V-6097-G000-TMBG`. Nothing to copy around.
+   `--ruleset LRAV-741Q-J900-01HQ-M`. Nothing to copy around.
 4. **A rule set file** (RON): `--ruleset my_rules.ron`. Copy one of the built-in files, edit
    the copy and pass its path.
 5. **Several of them in turn:** a playlist file, `--playlist playlist.ron` (see
@@ -307,6 +307,8 @@ RuleSet(
         "decoy": (weight: 0.5, respawn_secs: 45.0),
     },
     scrap_pickup: Some((weight: 12.0, respawn_secs: 15.0, amount: 30.0)),   // or None
+    // Pigment pickups on monochrome levels (Palette 80+): one per 4 players, at least 2; or None
+    pigment_pickup: Some((respawn_secs: 30, players_per_pickup: 4, min_on_map: 2)),
     shield_overrides: {               // replace a weapon's Shield setting
         // "railspike": PassThrough(0.5),
     },
@@ -315,8 +317,9 @@ RuleSet(
     },
     friendly_fire_percent: 50,        // 0 = off, otherwise 10 to 100
     allowed_ship_types: [Skitter, Tinker, Hauler, Tug],
-    absurdity: 20,                    // 0 to 100; no effect yet
+    absurdity: 100,                   // cap of the comedy events: 0 = none, 100 = the world decides
     // mutators: [Instagib],          // optional: mutators on top of the mode
+    // events: { "duck_parade": Banned, "cat_paw": Banned },   // optional: comedy events never rolled
 )
 ```
 
@@ -409,17 +412,19 @@ ban adds about three symbols. The built-in rules of each mode:
 
 | Mode | Code of its built-in rules |
 | --- | --- |
-| Paint the Void | `LR8V-6097-G000-TMBG` |
-| Team Brawl | `LR8V-63T6-X000-NNJ0` |
-| The Squeeze | `LR8V-65PE-T000-XS10` |
-| Heist | `LR8V-67TK-E000-EQ2G` |
-| Hot Reactor | `LR8V-69BZ-2000-Y3DG` |
-| Last Color Standing | `LR8V-6B79-S000-RPJG` |
+| Paint the Void | `LRAV-741Q-J900-01HQ-M` |
+| Team Brawl | `LRAV-7439-JH00-07NT-8` |
+| The Squeeze | `LRAV-7453-NW00-04CR-W` |
+| Heist | `LRAV-746S-WW00-03DB-4` |
+| Hot Reactor | `LRAV-749E-S600-040N-C` |
+| Last Color Standing | `LRAV-74AE-DC00-00PS-C` |
 
 The editor has no mode picker yet: to edit another mode's rules, open it with that mode's code
-(`?editor=rules&rules=LR8V-63T6-X000-NNJ0`); it edits weapons, pickups, tuning and times, not
+(`?editor=rules&rules=LRAV-7439-JH00-07NT-8`); it edits weapons, pickups, tuning and times, not
 the mode's own settings (write a rule set file for those).
-Codes made by older versions (they start with `LR6`) still work. Codes are
+Codes made by older versions (they start with `LR6` or `LR8`) still work; they mean what they
+meant then, so an older code keeps the Absurdity cap of 20 the built-in rules had before comedy
+events existed. Codes are
 case-insensitive, and dashes and spaces are optional. `--ruleset` accepts a code wherever it
 accepts a file.
 
@@ -1008,8 +1013,8 @@ the server list and invites over plain HTTP on one machine, not a TLS proxy.
 - **Server bans in private rooms:** custom matches and duels ignore `--ban` and the balance list.
 - **No slider tool:** you can't create a share code with chosen slider values yet (playlists can
   pick random worlds within Enclosure and Density ranges), and only Enclosure, Density,
-  Instability and (visually) Palette have an effect. The rule set's `absurdity` value has no
-  effect yet.
+  Instability and (visually) Palette have an effect. The comedy director rolls events by the
+  rule set's `absurdity` cap, but every event is still a placeholder that only announces itself.
 - **No custom TLS certificate** for WebTransport and no built-in HTTPS for the web page or the
   directory (use a reverse proxy).
 - **No WebRTC fallback, desktop app, regional hosting or orchestration** (the design mentions

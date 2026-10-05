@@ -696,7 +696,9 @@ design doc's match rules is a field; see `data/rulesets/paint_the_void.ron` for 
        tuning: { "scrap_laser": (damage: 1.25, fire_rate: 1.0, ammo: 1.0) },
        friendly_fire_percent: 0,                 // 0 = off, otherwise 10..=100
        allowed_ship_types: [Skitter, Tinker],
-       absurdity: 0,                             // 0..=100, used from M4
+       absurdity: 0,                             // 0..=100: cap of the comedy events (0 = none)
+       // events: { "duck_parade": Banned },      // comedy events this rule set never rolls
+       // pigment_pickup: Some((respawn_secs: 30, players_per_pickup: 4, min_on_map: 2)),
    )
    ```
 
@@ -727,10 +729,12 @@ A mutator is a module in `crates/ls-sim/src/mutators/`. Then regenerate the edit
 A rule set travels as a short code: `RuleSet::to_code()` prints `LR` plus Crockford base32 in
 groups of four (CRC-16 at the end), `RuleSet::from_code` reads it back exactly, and
 `ls-server --ruleset <code>` accepts one wherever it takes a file (an existing file of that name
-wins). Codes (format 4, every mode) store only the differences from the mode's default rules
-(`RuleSet::default_for`), so the default Paint the Void rules are `LR8V-6097-G000-TMBG` and a
-ban adds about three symbols; a rule set far from the default falls back to the full encoding
-when that is shorter. Codes of the M2 formats 2 and 3 (Paint the Void, `LR6...`) still decode.
+wins). Codes (format 5, every mode, comedy event bans and pigment pickups) store only the
+differences from the mode's default rules (`RuleSet::default_for`), so the default Paint the
+Void rules are `LRAV-741Q-J900-01HQ-M` and a ban adds about three symbols (an event ban one or
+two); a rule set far from the default falls back to the full encoding when that is shorter.
+Codes of the M3 format 4 (`LR8...`) and the M2 formats 2 and 3 (Paint the Void, `LR6...`) still
+decode, against the defaults of their time (Absurdity 20, no pigment, no event bans).
 Values the format cannot carry exactly (tuning in twentieths, shield fractions in hundredths,
 weights like 0.3) are rejected when encoding, so a code always decodes to the rule set it was
 made from. Format: `crates/ls-sim/src/rulecode.rs`; details in
@@ -776,7 +780,7 @@ BalanceList(
 Effective rules = rule set, then balance list, then `--ban`s, validated at startup. The list is
 re-read before every match (if it no longer loads, the server warns and keeps the previous
 rules), so a host can change it while the server runs. Example:
-`cargo run -p ls-server --release -- --ruleset LR8V-6097-G000-TMBG --ban seeker --balance-list balance.ron`
+`cargo run -p ls-server --release -- --ruleset LRAV-741Q-J900-01HQ-M --ban seeker --balance-list balance.ron`
 logs `rules: Paint the Void LR6V-... (banned weapons: seeker, tectonic_charge)`; the `Welcome`
 carries these effective rules, so clients see the bans. Host-facing details:
 [`userDocs/hosting-guide.md`](../userDocs/hosting-guide.md).
@@ -869,6 +873,34 @@ Choice flow: the start screen's pick goes into `Hello::ship_type` for the first 
 opens the ship bay and 1-4 pick the type for the next respawn (`Message::SelectShip`,
 `ClientSession::select_ship`, `World::set_ship_type`). The rule set's `allowed_ship_types` is
 enforced for both (the room falls back to the Tinker or the first allowed type).
+
+### 11.1 Comedy events (M4)
+
+The comedy director (`crates/ls-sim/src/director/`, numbers in `data/events/director.ron`) is
+the last stage of `World::step`: it runs at the effective Absurdity
+`min(MatchSetup::absurdity, RuleSet::absurdity)` (0 = off, nothing hashed), drifts the mood,
+rolls every 20 s, announces an event for 3 s, runs it and keeps the gaps. Each of the 18
+events is a module `crates/ls-sim/src/events/<id>.rs` (`EventModule`) with a data file
+`data/events/<id>.ron` (`EventDef`: name, `enabled`, `weight`, `active_secs`, `ending_secs`,
+`moods`, `targeted`, `params`), registered in `events::MODULES` in `EventKind` order (append
+only). Wave A ships announce-only stubs; to build one, replace its stub body:
+
+- lifecycle hooks `eligible`, `on_announce` (target, `params` bytes), `on_start`, `on_tick`,
+  `on_end` get an `EventCtx` (the hook `Ctx` for damage, entities, edits and cues, the
+  `EventState` with scratch values and spawned entity ids, `EventCtx::rng`);
+- effect hooks (`move_effects`, `hit_radius_scale`, `projectile_flags`, `crater_scale`,
+  `scavenge_scale`, `well_scale`, `reveal`, `allows_pickup`) are pure functions of the
+  replicated `MoodView`, the match seed and the tick, so the client predictor computes the
+  same (`director::event_effects`, `director::move_effects`, `apply_move_effects_before` /
+  `_after`); the world already applies them;
+- tests: `World::schedule_event(tick, kind)` forces an event whatever the Absurdity, bans,
+  vetoes and eligibility; `director/tests.rs` has the cadence and statistics tests
+  (`cargo test --release -p ls-sim --lib event_statistics -- --nocapture` prints the mean
+  events per match at Absurdity 0, 20, 50 and 100).
+
+Rule sets ban events by id (`events: { "duck_parade": Banned }`, rule set code format 5) and
+cap the Absurdity; modes and mutators veto with `allows_event`, and `ModeModule::leader` picks
+the target of leader events. Warm-up rooms run at Absurdity 0.
 
 ## 12. Browser smoke test
 

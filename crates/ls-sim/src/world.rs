@@ -16,7 +16,9 @@
 //! 5. scrap piles and pickups;
 //! 6. ship trails (Borrowed Time history);
 //! 7. mode: the mode's `on_tick` hook, then `end_check` (timer, scores,
-//!    eliminations; see [`crate::modes`]).
+//!    eliminations; see [`crate::modes`]);
+//! 8. comedy director: mood, the running event's hooks, rolls (see
+//!    [`crate::director`]).
 //!
 //! Before stage 1: the mode's `on_start` hook on the first tick, then the
 //! deferred terrain edits due this tick ([`Ctx::later`]).
@@ -29,10 +31,14 @@ use ls_math::{Aabb, Pcg32, Quat, Vec3, DT};
 use serde::{Deserialize, Serialize};
 
 use crate::behavior::{gadget_cue, Command, Ctx, Cue, CueKind, DamageSource, View};
+use crate::director::{
+    DirectorDef, DirectorEvent, DirectorInput, DirectorState, EventEffects, MoodView,
+};
 use crate::entity::{
     state_byte, step_debris, Entity, EntityKind, EntitySpawn, EntityView, ReplicatedKind, Source,
     DEBRIS_PUSH, MAX_DEBRIS, NO_TEAM, WIRE_ID_MASK,
 };
+use crate::events::{EventTable, MoveEffects};
 use crate::gadgets::{GadgetActivation, GadgetBehavior, GadgetUse, IncomingHit};
 use crate::hash::StateHasher;
 use crate::mode::{
@@ -95,6 +101,11 @@ pub struct MatchSetup {
     /// `ls_worldgen::Generator::belt`.
     #[serde(default)]
     pub belt: Option<ls_math::level::BeltSite>,
+    /// The level's Absurdity slider (0-100): the comedy director runs at
+    /// `min(absurdity, RuleSet::absurdity)` ([`crate::director`]). 0 (test
+    /// rooms, scripted replays): no events.
+    #[serde(default)]
+    pub absurdity: u8,
 }
 
 /// Everything needed to start a match.
@@ -144,6 +155,10 @@ struct SimConfig {
     /// The mode's module and the mutators' (in rule set order).
     mode_module: &'static dyn ModeModule,
     mutator_modules: Vec<&'static dyn MutatorModule>,
+    /// The comedy director's effective Absurdity: `min(level, rule set)`.
+    absurdity: u8,
+    /// Bit per `EventKind`: events the rule set bans.
+    banned_events: u32,
 }
 
 impl SimConfig {
@@ -177,6 +192,9 @@ pub mod proj_flags {
     pub const CUSTOM_B: u16 = 1 << 7;
     /// Replicated bits.
     pub const NET_MASK: u16 = 0x00ff;
+    /// Drawn as a rubber chicken (Rubber chickens event; outside the M3
+    /// replicated bits, protocol 6 carries it).
+    pub const CHICKEN: u16 = 1 << 8;
     /// Removed by a hook (not replicated; the projectile is gone after the hook).
     pub const REMOVED: u16 = 1 << 15;
 }
@@ -348,6 +366,8 @@ pub enum Event {
     },
     /// Something for clients to show or play (warnings, blinding, chimes).
     Cue(Cue),
+    /// The comedy director changed the mood or an event's phase.
+    Director(DirectorEvent),
 }
 
 /// Recent history of one ship (newest last).
@@ -448,6 +468,11 @@ pub struct World {
     stepped: Vec<Projectile>,
     /// Terrain edits queued for later ticks (`Ctx::later`), in queue order.
     deferred_edits: Vec<(u64, TerrainEdit)>,
+    /// The comedy director (mood, running event, rolls).
+    director: DirectorState,
+    /// The running event's scalar effects this tick (derived from the
+    /// director at the start of each tick; not hashed).
+    effects: EventEffects,
 }
 
 impl World {
@@ -535,6 +560,8 @@ impl World {
             .map_or(CHARGED_DRAIN_PER_SEC, |(_, d)| {
                 d.param("charged_drain_per_sec", CHARGED_DRAIN_PER_SEC)
             });
+        let absurdity = config.setup.absurdity.min(config.rules.absurdity);
+        let banned_events = config.rules.banned_events();
         let mut world = World {
             rng: Pcg32::from_seed(config.seed, RNG_STREAM_PICKUPS),
             config: Arc::new(SimConfig {
@@ -551,6 +578,8 @@ impl World {
                 charged_drain_per_sec,
                 mode_module,
                 mutator_modules,
+                absurdity,
+                banned_events,
             }),
             tick: 0,
             ships: BTreeMap::new(),
@@ -568,6 +597,8 @@ impl World {
             stepping: Vec::new(),
             stepped: Vec::new(),
             deferred_edits: Vec::new(),
+            director: DirectorState::default(),
+            effects: EventEffects::NONE,
         };
         let mut events = Vec::new();
         world.update_pickup_spawns(&mut events);
@@ -662,7 +693,8 @@ impl World {
         self.mode.teams
     }
 
-    /// The replicated mode state (scores, phase, timer, lives, objectives).
+    /// The replicated mode state (scores, phase, timer, lives, objectives,
+    /// the director's mood and event).
     pub fn mode_view(&self) -> ModeView {
         let cfg = &self.config;
         let mut view = crate::modes::base_view(
@@ -672,7 +704,42 @@ impl World {
             &cfg.rules.mutators,
         );
         cfg.mode_module.view(&self.mode, &cfg.rules.mode, &mut view);
+        view.mood = self.director.view();
         view
+    }
+
+    /// The comedy director's state.
+    pub fn director(&self) -> &DirectorState {
+        &self.director
+    }
+
+    /// The replicated director state (also in [`World::mode_view`]).
+    pub fn mood_view(&self) -> MoodView {
+        self.director.view()
+    }
+
+    /// The director's effective Absurdity: `min(MatchSetup::absurdity,
+    /// RuleSet::absurdity)`.
+    pub fn effective_absurdity(&self) -> u8 {
+        self.config.absurdity
+    }
+
+    /// The running event's scalar effects this tick.
+    pub fn event_effects(&self) -> EventEffects {
+        self.effects
+    }
+
+    /// Forces comedy event `kind` at `tick` (or as soon as the running event
+    /// ended): practice `?event=<id>`, the server's `--event-schedule`,
+    /// replays and tests. Ignores the Absurdity, bans, vetoes, `enabled`
+    /// and eligibility.
+    pub fn schedule_event(&mut self, tick: u64, kind: crate::events::EventKind) {
+        self.director.schedule(tick, kind);
+    }
+
+    /// The level placement this match runs on (spawns, pickup points, sliders).
+    pub fn setup(&self) -> &MatchSetup {
+        &self.config.setup
     }
 
     /// The results table: winner (side) or draw, and one row per player
@@ -953,6 +1020,11 @@ impl World {
         let (Some(v), Some(t)) = (self.ships.get(&viewer), self.ships.get(&target)) else {
             return true;
         };
+        if self.director.current.is_some()
+            && crate::director::reveals(&self.director.view(), self.config.seed, self.tick, t)
+        {
+            return true;
+        }
         match t.gadget {
             Some(g) if t.gadget_active && t.alive => {
                 let def = self.config.gadgets.get(g);
@@ -1070,6 +1142,11 @@ impl World {
         self.tick += 1;
         let now = self.tick;
         let cfg = Arc::clone(&self.config);
+        self.effects = if self.director.current.is_some() {
+            crate::director::event_effects(&self.director.view(), cfg.seed, now)
+        } else {
+            EventEffects::NONE
+        };
 
         let mut cmds: BTreeMap<PlayerId, InputCmd> = BTreeMap::new();
         for (p, c) in inputs {
@@ -1144,11 +1221,24 @@ impl World {
             } else {
                 cmd
             };
+            // Comedy event forces, impulses and plane locks.
+            let fx = if self.director.current.is_some() {
+                crate::director::move_effects(&self.director.view(), cfg.seed, now, ship)
+            } else {
+                MoveEffects::NONE
+            };
+            let pos_before = ship.pos;
+            if !fx.is_none() {
+                crate::director::apply_move_effects_before(ship, &fx);
+            }
             if limits.is_none() {
                 simulate_movement(ship, &move_cmd, tuning, &*terrain);
             } else {
                 let (limited, _) = limits.apply(tuning, &move_cmd);
                 simulate_movement(ship, &move_cmd, &limited, &*terrain);
+            }
+            if !fx.is_none() {
+                crate::director::apply_move_effects_after(ship, &fx, pos_before);
             }
             // Charged surfaces (Leech Arc) drain ships scraping them.
             if ship.in_contact
@@ -1160,7 +1250,13 @@ impl World {
                 ship.energy = (ship.energy - cfg.charged_drain_per_sec * DT).max(0.0);
             }
             if cmd.buttons.contains(Buttons::SCAVENGE) {
-                scavenge(ship, &mut self.scrap, &mut self.entities, tuning);
+                if self.effects.scavenge_scale == 1.0 {
+                    scavenge(ship, &mut self.scrap, &mut self.entities, tuning);
+                } else {
+                    let mut t = tuning.clone();
+                    t.hull_per_scrap *= self.effects.scavenge_scale;
+                    scavenge(ship, &mut self.scrap, &mut self.entities, &t);
+                }
             }
             let gadget_pressed = cmd.buttons.contains(Buttons::GADGET)
                 && !ship.prev_buttons.contains(Buttons::GADGET);
@@ -1231,14 +1327,78 @@ impl World {
                 events.push(Event::Eliminated { player: id });
             }
         }
+        let mut ended = false;
         if let Some(winner) = cfg.mode_module.end_check(&self.mode_ref(&cfg)) {
             self.mode.phase = MatchPhase::Ended { winner };
             events.push(Event::MatchEnded {
                 winner,
                 team_cells: self.mode.coverage.team_cells,
             });
+            ended = true;
+        }
+
+        // 8. The comedy director.
+        if self.director.is_on(cfg.absurdity) {
+            self.run_director(&cfg, terrain, ended, &mut events);
         }
         events
+    }
+
+    /// The events a roll of director state `d` could pick now, with their
+    /// weights (tests; `table` overrides the event data).
+    #[cfg(test)]
+    pub(crate) fn director_candidates_for_test<T: SimTerrain + ?Sized>(
+        &mut self,
+        terrain: &mut T,
+        d: &DirectorState,
+        table: Option<&EventTable>,
+    ) -> Vec<(crate::events::EventKind, f32)> {
+        let cfg = Arc::clone(&self.config);
+        let (c, _) = self.collect_hook(&cfg, &*terrain, |ctx| {
+            let inp = DirectorInput {
+                def: DirectorDef::builtin(),
+                table: table.unwrap_or(EventTable::builtin()),
+                absurdity: cfg.absurdity,
+                banned: cfg.banned_events,
+                mode: &self.mode,
+                mode_module: cfg.mode_module,
+                mode_ref: self.mode_ref(&cfg),
+                mutators: &cfg.mutator_modules,
+                setup: &cfg.setup,
+            };
+            d.candidates(ctx, &inp)
+        });
+        c
+    }
+
+    /// Runs the comedy director's step with a full hook context and applies
+    /// the commands its events queued.
+    fn run_director<T: SimTerrain + ?Sized>(
+        &mut self,
+        cfg: &SimConfig,
+        terrain: &mut T,
+        ended: bool,
+        events: &mut Vec<Event>,
+    ) {
+        let mut director = std::mem::take(&mut self.director);
+        let mut out = Vec::new();
+        let ((), cmds) = self.collect_hook(cfg, &*terrain, |ctx| {
+            let inp = DirectorInput {
+                def: DirectorDef::builtin(),
+                table: EventTable::builtin(),
+                absurdity: cfg.absurdity,
+                banned: cfg.banned_events,
+                mode: &self.mode,
+                mode_module: cfg.mode_module,
+                mode_ref: self.mode_ref(cfg),
+                mutators: &cfg.mutator_modules,
+                setup: &cfg.setup,
+            };
+            director.step(ctx, &inp, ended, &mut out);
+        });
+        self.director = director;
+        events.extend(out.into_iter().map(Event::Director));
+        self.apply_commands(cfg, terrain, cmds, events);
     }
 
     /// Runs a mode hook with a full [`ModeCtx`] and applies its commands.
@@ -1349,6 +1509,7 @@ impl World {
             rules: &cfg.resolved,
             visuals: &cfg.visuals,
             instability: cfg.setup.instability,
+            effects: self.effects,
             ships: &self.ships,
             projectiles: &self.projectiles,
             projectiles_stepping: &self.stepping,
@@ -1784,7 +1945,8 @@ impl World {
                     if !s.alive || (*id == p.owner && !hits_owner) || skip_ships.contains(id) {
                         continue;
                     }
-                    let r = cfg.tuning(s.ship_type).radius + p.radius;
+                    let r =
+                        cfg.tuning(s.ship_type).radius * self.effects.hit_radius_scale + p.radius;
                     if let Some(t) = segment_sphere(p.pos, dir, remaining, s.pos, r) {
                         if t < best_t {
                             best_t = t;
@@ -2115,6 +2277,7 @@ impl World {
                     let mut p = *p;
                     p.id = self.alloc_projectile_id();
                     p.flags &= !proj_flags::REMOVED;
+                    p.flags |= self.effects.projectile_flags;
                     p.passed = None;
                     if p.generation == 0 {
                         events.push(Event::Fired {
@@ -2547,10 +2710,14 @@ impl World {
     fn collect_pickups(&mut self, cfg: &SimConfig, now: u64, events: &mut Vec<Event>) {
         let mode = &self.mode;
         let module = cfg.mode_module;
+        let mood = self.director.current.as_ref().map(|_| self.director.view());
         for (i, sp) in self.pickups.iter_mut().enumerate() {
             let Some((entry, kind)) = sp.content else {
                 continue;
             };
+            if mood.is_some_and(|v| !crate::director::allows_pickup(&v, cfg.seed, now, i as u16)) {
+                continue;
+            }
             if matches!(kind, PickupKind::Scrap { .. }) {
                 continue;
             }
@@ -2952,6 +3119,11 @@ impl World {
         // when present (a two-team Paint the Void match without deferred
         // edits keeps its M2 hash).
         hash_mode_extras(&mut h, &self.mode);
+        // The director only once it did anything (Absurdity 0 keeps the
+        // M3 hashes).
+        if !self.director.is_pristine() {
+            self.director.hash(&mut h);
+        }
         if !self.deferred_edits.is_empty() {
             h.write_u8(0xde);
             h.write_u32(self.deferred_edits.len() as u32);

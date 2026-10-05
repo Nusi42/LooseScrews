@@ -1,0 +1,11 @@
+// Gossip wall: A face grows on the rock nearest the centroid of the living ships; for 15 s
+// every ship's position is revealed to everyone (`reveal`), cloaked ships too.
+// Behaviour: crates/ls-sim/src/events/gossip_wall.rs (B2). Schema: `ls_sim::events::EventDef`.
+EventDef(
+    id: "gossip_wall",
+    name: "Gossip wall",
+    enabled: true,
+    weight: 1.0,
+    active_secs: 15.0,
+    moods: [],
+)

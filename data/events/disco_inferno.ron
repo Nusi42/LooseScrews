@@ -1,0 +1,12 @@
+// Disco inferno: For 20 s the sun and ambient light drop to 8 %, a disco ball descends over the
+// players' centroid, every ship leaves a light trail. No other sim rule.
+// Behaviour: crates/ls-sim/src/events/disco_inferno.rs (B3). Schema: `ls_sim::events::EventDef`.
+EventDef(
+    id: "disco_inferno",
+    name: "Disco inferno",
+    enabled: true,
+    weight: 1.0,
+    active_secs: 20.0,
+    moods: [Giddy],
+    params: { "light_level": 0.08 },
+)

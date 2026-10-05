@@ -29,6 +29,7 @@ RuleSet(
     tuning: {},
     friendly_fire_percent: 50,
     allowed_ship_types: [Skitter, Tinker, Hauler, Tug],
-    absurdity: 20,
+    // Comedy events: the director runs at min(world Absurdity slider, this cap): the world decides.
+    absurdity: 100,
     mutators: [Instagib],
 )

@@ -310,6 +310,7 @@ pub fn match_setup(
         spawns,
         pickup_points: pickups,
         instability: code.sliders.instability,
+        absurdity: code.sliders.absurdity,
         heist: heist_level(&gen),
     })
 }
@@ -336,6 +337,7 @@ pub fn belt_setup(code: &ShareCode, teams: u8, gen: &Generator, belt: &BeltSite)
         heist: None,
         wells: gen.gravity_wells().to_vec(),
         belt: Some(belt.clone()),
+        absurdity: code.sliders.absurdity,
     }
 }
 

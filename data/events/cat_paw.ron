@@ -1,0 +1,24 @@
+// Cat paw: After the tell on the boundary wall nearest the densest group of ships, a paw (10 u
+// pad) sweeps 90 u along an arc in 2 s and withdraws: 30 damage and 25 u/s knockback to ships
+// touched, debris swept along, three claw grooves carved (about 36 `SubtractSphere` r 2.5
+// spread over the sweep), never in spawn zones or the Heist vein. Needs an open boundary face
+// with ships within 60 u.
+// Behaviour: crates/ls-sim/src/events/cat_paw.rs (B3). Schema: `ls_sim::events::EventDef`.
+EventDef(
+    id: "cat_paw",
+    name: "Cat paw",
+    enabled: true,
+    weight: 1.0,
+    active_secs: 3.0,
+    moods: [Grumpy],
+    params: {
+        "pad_radius": 10.0,
+        "sweep_length": 90.0,
+        "sweep_secs": 2.0,
+        "damage": 30.0,
+        "knockback": 25.0,
+        "groove_radius": 2.5,
+        "groove_edits": 36.0,
+        "ship_range": 60.0,
+    },
+)

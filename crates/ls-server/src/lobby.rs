@@ -84,8 +84,9 @@ pub fn ticks(d: Duration) -> u64 {
 
 /// The rules of a warm-up room for `rules`: same ships and teams, every
 /// weapon and gadget banned (empty loadout, no pickups, no mutators: a
-/// mutator such as Instagib would hand its weapon back) and a long match
-/// clock, so players can fly the level but not fight.
+/// mutator such as Instagib would hand its weapon back), Absurdity 0 (no
+/// comedy events) and a long match clock, so players can fly the level but
+/// not fight.
 ///
 /// The warm-up never ends early, whatever the next match's mode: instead
 /// of that mode (whose kill target, lives, last-side-standing check or
@@ -108,6 +109,9 @@ pub fn warmup_rules(rules: &RuleSet) -> RuleSet {
     r.starting_loadout.gadget = None;
     // Mutators would rewrite the arsenal back in (Instagib: the Railspike).
     r.mutators.clear();
+    // No comedy events in warm-up (the director stays off).
+    r.absurdity = 0;
+    r.events.clear();
     // A timer-only mode whatever the next mode (no reactor, no closing
     // walls, no kill target or lives can end a warm-up).
     r.mode = warmup_mode(&rules.mode);
@@ -477,6 +481,29 @@ mod tests {
         assert!(warm.mutators.is_empty());
         assert!(warm.availability("railspike").is_banned());
         assert!(warm.starting_loadout.primaries.is_empty());
+    }
+
+    #[test]
+    fn warmup_has_no_comedy_events() {
+        // The built-in rule sets cap Absurdity at 100: the warm-up room
+        // runs at 0, so the director stays off whatever the world says.
+        let rules = RuleSet::paint_the_void();
+        assert!(rules.absurdity > 0);
+        let w = warmup_rules(&rules);
+        assert_eq!(w.absurdity, 0);
+        let mut setup = ls_sim::MatchSetup {
+            spawns: vec![ls_sim::SpawnPoint {
+                pos: ls_math::Vec3::ZERO,
+                team: 0,
+                orientation: ls_math::Quat::IDENTITY,
+            }],
+            ..Default::default()
+        };
+        setup.absurdity = 100;
+        let mut cfg = ls_sim::WorldConfig::paint_the_void(1, setup);
+        cfg.rules = w;
+        let world = ls_sim::World::new(cfg).unwrap();
+        assert_eq!(world.effective_absurdity(), 0);
     }
 
     #[test]

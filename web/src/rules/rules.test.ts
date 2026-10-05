@@ -11,8 +11,12 @@ import {
   encodeFullRules,
   encodeRules,
   formatRuleCode,
+  eventBanned,
+  LEGACY_ABSURDITY,
   LEGACY_DIFF_VERSION,
   LEGACY_FULL_VERSION,
+  LEGACY_V4_VERSION,
+  setEventBanned,
   normalizeRuleCode,
   RuleCodeError,
   rulesEqual,
@@ -235,7 +239,8 @@ test("every mode's default is a short diff code, and mode settings round-trip", 
 });
 
 test("M2 codes (formats 3 and 2) still decode", () => {
-  const def = defaultRules(CATALOG);
+  // Against the M2/M3 default (Absurdity 20), with today's pigment and no event bans.
+  const def = { ...defaultRules(CATALOG), absurdity: LEGACY_ABSURDITY };
   const v3 = "LR6V-69CM-G006-58R";
   assert.equal(codeVersion(v3), LEGACY_DIFF_VERSION);
   assert.ok(rulesEqual(decodeRules(v3, CATALOG), def));
@@ -246,4 +251,37 @@ test("M2 codes (formats 3 and 2) still decode", () => {
   const banned = decodeRules("LR6V-69CM-G214-D7G1-P6B", CATALOG);
   assert.equal(availabilityOf(banned, "railspike"), "Banned");
   assert.equal(availabilityOf(banned, "tectonic_charge"), "Banned");
+});
+
+test("older codes (formats 2-4) decode like the server decodes them", () => {
+  assert.ok(CATALOG.legacyVectors.length >= 6);
+  let v4 = 0;
+  for (const v of CATALOG.legacyVectors) {
+    if (codeVersion(v.code) === LEGACY_V4_VERSION) v4++;
+    assert.ok(rulesEqual(decodeRules(v.code, CATALOG), v.rules), v.code);
+    // Re-encoded they print format 5.
+    assert.equal(codeVersion(encodeRules(v.rules, CATALOG)), CODE_VERSION);
+  }
+  assert.ok(v4 >= 4);
+});
+
+test("comedy event bans and pigment pickups round-trip", () => {
+  assert.equal(CATALOG.events.length, 18);
+  const base = defaultRules(CATALOG);
+  const short = encodeRules(base, CATALOG);
+  const r = defaultRules(CATALOG);
+  setEventBanned(r, "duck_parade", true);
+  const code = roundTrip(r);
+  assert.ok(code.length <= short.length + 3, `${short} -> ${code}`);
+  assert.ok(eventBanned(decodeRules(code, CATALOG), "duck_parade"));
+  assert.ok(!eventBanned(decodeRules(code, CATALOG), "cat_paw"));
+  setEventBanned(r, "duck_parade", false);
+  assert.equal(encodeRules(r, CATALOG), short);
+  r.pigment_pickup = null;
+  roundTrip(r);
+  r.pigment_pickup = { respawn_secs: 45, players_per_pickup: 3, min_on_map: 1 };
+  roundTrip(r);
+  assert.equal(validateRules(r, CATALOG).length, 0);
+  r.pigment_pickup.players_per_pickup = 0;
+  assert.ok(validateRules(r, CATALOG).some((p) => p.field === "pigment"));
 });

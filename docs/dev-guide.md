@@ -793,7 +793,8 @@ enforced for both (the room falls back to the Tinker or the first allowed type).
 
 `tools/browser-smoke` drives a locally installed Chrome or Edge (puppeteer-core, headless, real
 WebGPU) against real servers. It is the last step of `tools/ci.*` and checks what no Node test
-can: WGSL compiles and all 3 render pipelines validate on a hardware adapter, frames are not
+can: WGSL compiles and every render pipeline (the scene's terrain, instanced and translucent
+ones and the post chain's bloom down, bloom up and composite) validates on a hardware adapter, frames are not
 blank, and the game works end to end.
 
 ```sh
@@ -866,7 +867,9 @@ one pass timed as `scene`. The F3 overlay shows the line `gpu <total> ms (worst 
 exceeds 8 ms by more than 25 %. `--budget-scale 1.75` checks the integrated-GPU "medium"
 target (14 ms), `--power low` asks for the integrated GPU (`?gpu=low-power`; Chrome needs
 `--use-webgpu-power-preference=force-low-power`, which the script passes, and fails when that
-GPU is not available to WebGPU), `--no-budget` records without failing. Without
+GPU is not available to WebGPU), `--no-budget` records without failing, `--quality high|medium|low` renders another preset
+(default high, `?quality=`; no automatic pick in the gallery), `--grade <preset>` previews a
+colour grade (`GRADE_PRESETS` in `web/src/renderer/post.ts`, `?grade=`). Without
 `timestamp-query` or on a software adapter the budget is not checked. Measured on a much faster
 GPU than the reference, the check only catches gross regressions; read the absolute numbers on
 the reference class.

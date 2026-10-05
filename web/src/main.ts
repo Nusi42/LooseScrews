@@ -447,6 +447,7 @@ function runGame(
             speed,
             gpuError: renderer.lastError ?? null,
             gpu: renderer.gpuTimings(),
+            quality: renderer.quality.level,
           }),
         );
       }

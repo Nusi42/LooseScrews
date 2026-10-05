@@ -573,11 +573,15 @@ async function main() {
         `${s.shaders.length} modules (${s.shaders.map((m) => m.label).join(", ")})${compileErrors.length ? `; ${compileErrors.join(" | ")}` : ""}`,
       );
       for (const w of compileWarnings) note(`WGSL warning: ${w}`);
-      // The renderer builds exactly three: terrain, instanced, translucent.
+      // The renderer builds the scene pipelines (terrain, instanced,
+      // translucent) and the post chain (bloom down, bloom up, composite);
+      // later packages add more, so check that these are among them.
+      const required = ["terrain", "instanced", "translucent", "bloom down", "bloom up", "composite"];
+      const missing = required.filter((l) => !s.pipelines.some((p) => p.label === l));
       check(
         `${label}: every render pipeline validates`,
-        s.pipelines.length === 3 && pipelineErrors.length === 0,
-        `${s.pipelines.length} pipelines (${s.pipelines.map((p) => p.label).join(", ")})${pipelineErrors.length ? `; ${pipelineErrors.join(" | ")}` : ""}`,
+        missing.length === 0 && pipelineErrors.length === 0,
+        `${s.pipelines.length} pipelines (${s.pipelines.map((p) => p.label).join(", ")})${missing.length ? `; missing ${missing.join(", ")}` : ""}${pipelineErrors.length ? `; ${pipelineErrors.join(" | ")}` : ""}`,
       );
       check(
         `${label}: hardware WebGPU adapter`,

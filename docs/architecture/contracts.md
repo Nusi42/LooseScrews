@@ -231,7 +231,7 @@ hands the client a `MeshData` (`web/src/renderer/mesh.ts`) by flattening only:
 `teams` as the `Uint8Array` field `team` with values unchanged; `states` travel as the
 optional `surface` field, `materials` and `colors` through `ChunkMesh.materials()` and
 `ChunkMesh.paintColors()` (unknown colour ids become plain). The web client packs them into
-one `u32` terrain vertex attribute (`web/src/renderer/shaders.ts`): bits 0-7 paint team (255
+one `u32` terrain vertex attribute (`web/src/renderer/shaders/frame.ts`): bits 0-7 paint team (255
 unpainted), bits 8-15 surface states, bits 16-23 material + 1 (0 unknown), bits 24-31 paint
 colour; without the optional layers the packing is the M1 one. Coloured paint draws a
 per-effect pattern (red stripes, blue waves, yellow dots) in a dark shade of the team colour,

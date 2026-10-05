@@ -25,6 +25,7 @@ import { CUE, EffectsState, NO_SHIP, type Cue, type EffectsContext, type Flash }
 import { buildScene } from "../game/scene.ts";
 import { parsePose, parseVisuals, type ProjectileState, type ShipState, type VisualDef } from "../game/views.ts";
 import type { GpuTimings } from "../renderer/gpuTimer.ts";
+import { GRADE_PRESETS } from "../renderer/post.ts";
 import { Renderer, type CameraView, type SceneInstances } from "../renderer/renderer.ts";
 import { CONTROLS_LEN, type GameHandle } from "../wasm/api.ts";
 import { loadWasm } from "../wasm/load.ts";
@@ -227,6 +228,9 @@ export async function runGallery(canvas: HTMLCanvasElement, ui: HTMLElement, loc
     const renderer = await Renderer.create(canvas);
     renderer.detailedTiming = true;
     renderer.timeOverride = scene.time;
+    // `?grade=<preset>`: try a colour grade (post.ts GRADE_PRESETS).
+    const grade = new URLSearchParams(loc.search).get("grade");
+    if (grade && grade in GRADE_PRESETS) renderer.settings.post.grade = GRADE_PRESETS[grade as keyof typeof GRADE_PRESETS];
     status.canTime = renderer.canTime;
 
     const rayMeshes = new Map<string, RayMesh>();

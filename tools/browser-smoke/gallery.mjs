@@ -21,6 +21,8 @@
 //                         auto = headless, headful when headless has no
 //                         WebGPU adapter [auto]
 //   --power high|low      GPU on two-GPU machines (low = integrated, ?gpu=low-power) [high]
+//   --quality <level>     render preset high|medium|low (?quality=; no automatic pick) [high]
+//   --grade <preset>      colour grade from post.ts GRADE_PRESETS (?grade=) [none]
 //   --budget-scale <x>    multiplies every budget (1 = reference mid GPU at
 //                         "high"; 1.75 = integrated GPU at "medium") [1]
 //   --frames <n>          timed frames averaged per scene [120]
@@ -58,6 +60,8 @@ const defaults = {
   browser: process.env.LS_BROWSER ?? "",
   mode: "auto",
   power: "high",
+  quality: "high",
+  grade: "",
   "budget-scale": "1",
   frames: "120",
 };
@@ -95,6 +99,7 @@ function parseArgs(argv) {
   if (!size) die("--size must be WxH");
   if (!["auto", "headless", "headful"].includes(o.mode)) die("--mode must be auto, headless or headful");
   if (!["high", "low"].includes(o.power)) die("--power must be high or low");
+  if (!["high", "medium", "low"].includes(o.quality)) die("--quality must be high, medium or low");
   if (!/^[\w.-]+$/.test(o.label)) die("--label may only use letters, digits, '.', '_' and '-'");
   const ids = o.scenes ? o.scenes.split(",") : SCENES.map((s) => s.id);
   for (const id of ids) if (!SCENES.some((s) => s.id === id)) die(`unknown scene ${id} (${SCENES.map((s) => s.id).join(", ")})`);
@@ -113,6 +118,8 @@ function parseArgs(argv) {
     browser: o.browser ? resolve(o.browser) : "",
     mode: o.mode,
     power: o.power,
+    quality: o.quality,
+    grade: o.grade,
     budgetScale: scale,
     frames,
     noBudget: o["no-budget"],
@@ -292,7 +299,7 @@ async function main() {
   const { server, base } = await serve(opts.webRoot);
   const labelDir = join(opts.outDir, opts.label);
   mkdirSync(labelDir, { recursive: true });
-  const power = opts.power === "low" ? "&gpu=low-power" : "";
+  const power = `&quality=${opts.quality}${opts.grade ? `&grade=${encodeURIComponent(opts.grade)}` : ""}${opts.power === "low" ? "&gpu=low-power" : ""}`;
   const launch = (headless) =>
     puppeteer.launch({
       executablePath: browserPath,
@@ -327,6 +334,7 @@ async function main() {
     adapter: "",
     size: `${opts.width}x${opts.height}`,
     power: opts.power,
+    quality: opts.quality,
     budgetScale: opts.budgetScale,
     scenes: [],
   };

@@ -696,8 +696,9 @@ Playlist(
 )
 ```
 
-- `rules`: a built-in rule set id (the file name in `data/rulesets/` without `.ron`), a rule set
-  file or an `LR…` code. `--ban` and `--balance-list` apply to every entry.
+- `rules`: a built-in rule set id (the file name in `data/rulesets/` without `.ron`, for
+  example `team_brawl`, `instagib_brawl` (Team Brawl with the Instagib mutator) or `duel`
+  (free-for-all, first to 10 kills)), a rule set file or an `LR…` code. `--ban` and `--balance-list` apply to every entry.
 - `world`: `Random` (default: a new random world with the default sliders every time),
   `RandomSliders(enclosure: (low, high), density: (low, high))` or `Code("LS…")`.
 - `min_players` (default 1) and `max_players` (default 32): the entry is skipped while the

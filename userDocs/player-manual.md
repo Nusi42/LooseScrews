@@ -756,9 +756,11 @@ Advanced page options, added to the address (combine them with `&`):
 
 These are part of the game design but aren't in the Milestone 2 build:
 
-- **Game modes:** only Paint the Void with two teams. Heist, Hot Reactor, Team Brawl, The Squeeze,
-  the co-op modes, The Architect and mutators such as Instagib come later. Rule sets can't turn
-  on mutators yet.
+- **Game modes:** Paint the Void and Team Brawl (team deathmatch with 2 to 4 teams, or
+  free-for-all; the server's duel rule set plays free-for-all to 10 kills), plus the Instagib
+  mutator (Railspike only, every enemy hit kills, instant respawn), on servers whose playlist
+  includes them. Heist, Hot Reactor, The Squeeze, Last Color Standing, the co-op modes and The
+  Architect come later.
 - **World sliders:** Verticality, Gravity Chaos (gravity wells), Palette (black-and-white levels)
   and Absurdity don't change the world yet, and there's no screen to set sliders or save a level.
 - **Comedy events** ("the level has moods"): not yet.

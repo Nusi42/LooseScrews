@@ -11,7 +11,7 @@
 //! | Weapon tuning | `tuning` (per weapon damage, fire rate and ammo multipliers; default 1x) |
 //! | Ship types | `allowed_ship_types` |
 //! | Friendly fire | `friendly_fire_percent` (0 = off, otherwise 10..=100) |
-//! | Absurdity, mutators | `absurdity` (0..=100), `mutators` (none supported yet) |
+//! | Absurdity, mutators | `absurdity` (0..=100), `mutators` (`crate::mutators`: Instagib) |
 //!
 //! [`RuleSet::resolve`] validates a rule set against the loaded weapons and
 //! gadgets and precomputes index-based tables for the simulation. Rule sets
@@ -473,11 +473,17 @@ pub struct RuleSet {
 const PAINT_THE_VOID_RON: &str = include_str!("../../../data/rulesets/paint_the_void.ron");
 const SANDBOX_ALL_WEAPONS_RON: &str =
     include_str!("../../../data/rulesets/sandbox_all_weapons.ron");
+const TEAM_BRAWL_RON: &str = include_str!("../../../data/rulesets/team_brawl.ron");
+const INSTAGIB_BRAWL_RON: &str = include_str!("../../../data/rulesets/instagib_brawl.ron");
+const DUEL_RON: &str = include_str!("../../../data/rulesets/duel.ron");
 
 /// Embedded rule set files (data hash).
-pub const BUILTIN_RULESETS: [(&str, &str); 2] = [
+pub const BUILTIN_RULESETS: [(&str, &str); 5] = [
     ("rulesets/paint_the_void.ron", PAINT_THE_VOID_RON),
     ("rulesets/sandbox_all_weapons.ron", SANDBOX_ALL_WEAPONS_RON),
+    ("rulesets/team_brawl.ron", TEAM_BRAWL_RON),
+    ("rulesets/instagib_brawl.ron", INSTAGIB_BRAWL_RON),
+    ("rulesets/duel.ron", DUEL_RON),
 ];
 
 impl RuleSet {
@@ -838,6 +844,14 @@ impl RuleSet {
                 }),
             teams: mode.teams(),
             allowed_ship_types: self.allowed_ship_types.clone(),
+            free_fire: weapons
+                .iter()
+                .map(|(_, d)| {
+                    self.mutators
+                        .iter()
+                        .any(|m| crate::mutators::module(*m).unlimited_ammo(&d.id))
+                })
+                .collect(),
         })
     }
 }
@@ -1024,9 +1038,17 @@ pub struct ResolvedRules {
     /// Number of teams (0 = free-for-all).
     pub teams: u8,
     pub allowed_ship_types: Vec<ShipType>,
+    /// Indexed by [`WeaponId`]: fires without paying its cost (unlimited
+    /// ammo, `MutatorModule::unlimited_ammo`).
+    pub free_fire: Vec<bool>,
 }
 
 impl ResolvedRules {
+    /// Whether weapon `w` fires without paying its cost (Instagib).
+    pub fn free_fire(&self, w: WeaponId) -> bool {
+        self.free_fire.get(w.0 as usize).copied().unwrap_or(false)
+    }
+
     pub fn availability(&self, w: WeaponId) -> Availability {
         self.availability
             .get(w.0 as usize)

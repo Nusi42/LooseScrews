@@ -3219,6 +3219,9 @@ fn can_fire(
     let Some(st) = ship.weapon(w) else {
         return false;
     };
+    if cfg.resolved.free_fire(w) {
+        return true;
+    }
     let t = cfg.tuning(ship.ship_type);
     match def.cost {
         WeaponCost::Energy(c) => {
@@ -3255,6 +3258,7 @@ fn try_fire(
     ship.weapon_mut(w)?.shots = shots.wrapping_add(1);
     let t = cfg.tuning(ship.ship_type);
     match def.cost {
+        _ if cfg.resolved.free_fire(w) => {}
         WeaponCost::Energy(c) => {
             if ship.energy >= c {
                 ship.energy -= c;

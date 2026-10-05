@@ -43,7 +43,8 @@ pub use generator::{Generator, RegionSampler, DEFAULT_SIZE_CHUNKS, WALL_THICKNES
 pub use grid::SampleGrid;
 pub use material::{strengthen_edit, Material, MaterialField, MaterialRegion};
 pub use mesh::{
-    dual_contouring, dual_contouring_with_sdf, surface_nets, surface_nets_with_sdf, Mesh,
+    dual_contouring, dual_contouring_with_sdf, surface_nets, surface_nets_with_sdf,
+    surface_nets_with_sdf_thin_where, Mesh,
 };
 pub use network::{ExtractionZone, HeistSite, Network};
 pub use sharecode::ShareCode;

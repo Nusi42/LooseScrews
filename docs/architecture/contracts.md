@@ -117,7 +117,9 @@ projectiles, debris and raycasts treat it like rock.
   can change: those with corners near open space (terrain above -2.5 u, tracked per 8 u block)
   where one of the two shells is within 2.5 u of its surface; `GameTerrain::mesh_chunk` meshes
   a chunk the shell reaches from its padded samples combined with the shell (same surface-nets
-  mesher, paint, states and materials). See `docs/milestone-3-plan.md` (B2 as built) for the
+  mesher, paint, states and materials; VQP's thin-feature pass is off within
+  `ls_worldgen::chunk::EXTRA_THIN_CLEARANCE` = 2.5 u of the shell, where the gaps between wall and rock
+  are about to be crushed). See `docs/milestone-3-plan.md` (B2 as built) for the
   measured remesh cost.
 
 ### `TerrainEdit`

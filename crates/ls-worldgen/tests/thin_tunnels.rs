@@ -12,7 +12,7 @@
 //! ```
 
 use ls_math::Vec3;
-use ls_worldgen::{surface_nets_with_sdf, Mesh, SampleGrid};
+use ls_worldgen::{surface_nets_with_sdf, surface_nets_with_sdf_thin_where, Mesh, SampleGrid};
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen_test::wasm_bindgen_test as test;
 
@@ -272,4 +272,25 @@ fn bore_mouth_stays_on_the_surface() {
     // A few folded (culled) triangles where the bore meets the ball: the
     // grid cannot represent the rim, every vertex there is a compromise.
     assert!(folds * 25 <= tris, "{folds} of {tris} triangles folded");
+}
+
+/// The gated mesher (the game's Squeeze shell mesher) is the plain one where
+/// the thin pass is allowed everywhere, and draws a bore thinner than a cell
+/// only partly (or not at all) where it is allowed nowhere.
+#[test]
+fn thin_pass_gate() {
+    let bore = Bore {
+        point: Vec3::new(16.5, 16.5, 16.5),
+        axis: Vec3::new(1.0, 0.0, 0.0),
+        r: 0.6,
+    };
+    let grid = SampleGrid::from_fn([0, 0, 0], |p| bore.field(p));
+    let plain = surface_nets_with_sdf(&grid, &|p| bore.field(p));
+    let everywhere = surface_nets_with_sdf_thin_where(&grid, &|p| bore.field(p), &|_| true);
+    assert_eq!(plain.positions, everywhere.positions);
+    assert_eq!(plain.indices, everywhere.indices);
+    assert!(!plain.indices.is_empty(), "the thin pass draws the bore");
+    let nowhere = surface_nets_with_sdf_thin_where(&grid, &|p| bore.field(p), &|_| false);
+    assert_ne!(plain.positions, nowhere.positions);
+    assert!(nowhere.indices.len() < plain.indices.len());
 }

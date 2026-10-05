@@ -133,7 +133,7 @@ impl Mesh {
 /// (correctly rounded, the same bits as `ls_math::det::sqrt`, which is a
 /// software routine on wasm32).
 pub fn surface_nets(grid: &SampleGrid) -> Mesh {
-    build(grid, Placement::Smooth(None))
+    build(grid, Placement::Smooth(None), None)
 }
 
 /// [`surface_nets`] with the exact field `sdf` for the snap at creases
@@ -143,7 +143,23 @@ pub fn surface_nets(grid: &SampleGrid) -> Mesh {
 /// 0.003 u (p95 0.07 u) from the collision surface, was 0.012 u (p95 0.2 u)
 /// with plain surface nets; about a quarter of the vertices need `sdf`.
 pub fn surface_nets_with_sdf(grid: &SampleGrid, sdf: &dyn Fn(Vec3) -> f32) -> Mesh {
-    build(grid, Placement::Smooth(Some(sdf)))
+    build(grid, Placement::Smooth(Some(sdf)), None)
+}
+
+/// [`surface_nets_with_sdf`] with the thin-feature pass ([`THIN_OPEN`])
+/// only at grid corners where `thin_allowed` holds; elsewhere the cells
+/// mesh as plain [`surface_nets_with_sdf`] without thin features. Where
+/// `thin_allowed` holds for every corner the mesh is bit-identical to
+/// [`surface_nets_with_sdf`]. The game's Squeeze shell turns the pass off
+/// next to its moving wall: the slivers of open space between the wall
+/// and the rock are thin features that are about to be crushed, and fitting
+/// them made shell remeshing about 40 % slower at the 99th percentile.
+pub fn surface_nets_with_sdf_thin_where(
+    grid: &SampleGrid,
+    sdf: &dyn Fn(Vec3) -> f32,
+    thin_allowed: &dyn Fn(Vec3) -> bool,
+) -> Mesh {
+    build(grid, Placement::Smooth(Some(sdf)), Some(thin_allowed))
 }
 
 /// Largest distance (u) the surface-nets snap moves a vertex.
@@ -165,7 +181,7 @@ const MIN_GRADIENT: f32 = 0.2;
 /// cell. Cheap, but corners sharper than a cell are only partly recovered;
 /// use [`dual_contouring_with_sdf`] for crisp edges.
 pub fn dual_contouring(grid: &SampleGrid) -> Mesh {
-    build(grid, Placement::Qef(None))
+    build(grid, Placement::Qef(None), None)
 }
 
 /// Meshes a chunk with dual contouring using exact Hermite data from `sdf`
@@ -175,7 +191,7 @@ pub fn dual_contouring(grid: &SampleGrid) -> Mesh {
 /// ([`ls_math::terrain::sdf_gradient`]). `sdf` must be a pure function of the
 /// position so neighbouring chunks agree on shared vertices.
 pub fn dual_contouring_with_sdf(grid: &SampleGrid, sdf: &dyn Fn(Vec3) -> f32) -> Mesh {
-    build(grid, Placement::Qef(Some(sdf)))
+    build(grid, Placement::Qef(Some(sdf)), None)
 }
 
 /// Root-refinement steps per edge crossing in [`dual_contouring_with_sdf`].
@@ -298,14 +314,18 @@ fn refine_crossing(f: impl Fn(f32) -> f32, va: f32, vb: f32) -> f32 {
     t0 + (t1 - t0) * (v0 / (v0 - v1))
 }
 
-fn build(grid: &SampleGrid, placement: Placement<'_>) -> Mesh {
+fn build(
+    grid: &SampleGrid,
+    placement: Placement<'_>,
+    thin_allowed: Option<&dyn Fn(Vec3) -> bool>,
+) -> Mesh {
     let mut mesh = Mesh::default();
     // With the exact field, rock corners next to open space finer than a
     // cell count as open (`thin_air`), so thin bores get vertices
     // all around (placed on the true surface by `fit_thin`), even in a
     // chunk whose corners are all rock.
     let thin = match placement {
-        Placement::Smooth(Some(sdf)) => thin_air(grid, sdf),
+        Placement::Smooth(Some(sdf)) => thin_air(grid, sdf, thin_allowed),
         _ => None,
     };
     let promoted = thin.as_ref().and_then(|t| t.values.as_deref());
@@ -626,8 +646,21 @@ pub const RIDGE_DROP: f32 = 0.45;
 /// fields never qualify, and thin rock is never removed. Returns `None` if
 /// no corner is marked. Decisions read corners by world position (within
 /// the halo) and the exact field, so neighbouring chunks agree.
-fn thin_air(grid: &SampleGrid, f: &dyn Fn(Vec3) -> f32) -> Option<ThinAir> {
+fn thin_air(
+    grid: &SampleGrid,
+    f: &dyn Fn(Vec3) -> f32,
+    allowed: Option<&dyn Fn(Vec3) -> bool>,
+) -> Option<ThinAir> {
     let values = grid.values();
+    let origin = grid.origin;
+    let corner_pos = |i: i32, j: i32, k: i32| {
+        Vec3::new(
+            (origin[0] + i) as f32,
+            (origin[1] + j) as f32,
+            (origin[2] + k) as f32,
+        )
+    };
+    let allowed_at = |i: i32, j: i32, k: i32| allowed.is_none_or(|a| a(corner_pos(i, j, k)));
     // A ridge of the field in at least two axis directions: on each, the
     // corner is at least as open as both neighbours and clearly more open
     // than one (a bore's axis). An open corner must also be strictly more
@@ -658,7 +691,7 @@ fn thin_air(grid: &SampleGrid, f: &dyn Fn(Vec3) -> f32) -> Option<ThinAir> {
             for i in -2..=CHUNK_CELLS + 1 {
                 let idx = corner_index(i, j, k);
                 let d = values[idx];
-                if d > 0.0 && d < THIN_OPEN && ridge(idx) {
+                if d > 0.0 && d < THIN_OPEN && ridge(idx) && allowed_at(i, j, k) {
                     open_ridge[idx] = THIN_RIDGE;
                     any = true;
                 }
@@ -666,7 +699,6 @@ fn thin_air(grid: &SampleGrid, f: &dyn Fn(Vec3) -> f32) -> Option<ThinAir> {
         }
     }
     let mut promoted: Option<Vec<f32>> = None;
-    let origin = grid.origin;
     for k in -1..=CHUNK_CELLS {
         for j in -1..=CHUNK_CELLS {
             for i in -1..=CHUNK_CELLS {
@@ -679,14 +711,10 @@ fn thin_air(grid: &SampleGrid, f: &dyn Fn(Vec3) -> f32) -> Option<ThinAir> {
                     .iter()
                     .any(|&n| open_ridge[n] == THIN_RIDGE)
                     || ridge(idx);
-                if !thin {
+                if !thin || !allowed_at(i, j, k) {
                     continue;
                 }
-                let corner = Vec3::new(
-                    (origin[0] + i) as f32,
-                    (origin[1] + j) as f32,
-                    (origin[2] + k) as f32,
-                );
+                let corner = corner_pos(i, j, k);
                 if open_within_box(f, corner) {
                     promoted.get_or_insert_with(|| values.to_vec())[idx] = PROMOTED;
                     open_ridge[idx] = THIN_PROMOTED;

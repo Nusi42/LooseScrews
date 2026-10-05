@@ -375,9 +375,9 @@ export function injectSocialStyle(): void {
   const s = document.createElement("style");
   s.id = STYLE_ID;
   s.textContent = `
-.ls-social-btn { position: fixed; left: 12px; bottom: 12px; z-index: 30; font: 13px system-ui, sans-serif;
+.ls-social-btn { position: fixed; left: 12px; top: 12px; z-index: 30; font: 13px system-ui, sans-serif;
   background: rgba(16,20,28,.85); color: #e8ecf4; border: 1px solid #3a4558; border-radius: 6px; padding: 6px 10px; cursor: pointer; }
-.ls-social-panel { position: fixed; left: 12px; bottom: 52px; z-index: 30; width: 300px; max-height: 60vh; overflow: auto;
+.ls-social-panel { position: fixed; left: 12px; top: 52px; z-index: 30; width: 300px; max-height: 60vh; overflow: auto;
   background: rgba(16,20,28,.94); color: #e8ecf4; border: 1px solid #3a4558; border-radius: 8px; padding: 10px 12px; font: 13px system-ui, sans-serif; }
 .ls-social-panel h3 { margin: 0 0 6px; font-size: 14px; }
 .ls-social-panel button, .ls-toast button, .ls-servers button { background: #2b6cb0; color: #fff; border: 0; border-radius: 4px; padding: 4px 9px; cursor: pointer; margin: 2px 4px 2px 0; }

@@ -60,11 +60,20 @@ use serde::{Deserialize, Serialize};
 use crate::generator::floor_i32;
 use crate::grid::{SampleGrid, GRID_HALO, HALO_CORNERS};
 use crate::material::{strengthen_edit, Material, MaterialField, MaterialRegion};
-use crate::mesh::{dual_contouring_with_sdf, surface_nets_with_sdf, Mesh};
+use crate::mesh::{
+    dual_contouring_with_sdf, surface_nets_with_sdf, surface_nets_with_sdf_thin_where, Mesh,
+};
 use crate::{Generator, RegionSampler, CHUNK_CELLS, NO_TEAM};
 
 /// Magnitude at which stored SDF values are clamped (u).
 pub const SDF_CLAMP: f32 = 6.0;
+/// [`ChunkStore::mesh_surface_nets_min`] fits thin features only where the
+/// extra field is above this (u). It matches the band within which the
+/// game remeshes chunks when its shell moves (`SHELL_MESH_BAND` in
+/// ls-game), so a moving shell switches the thin pass only in chunks that
+/// get remeshed anyway; it is far below the 8 u at which the game switches
+/// a chunk to this mesher, so shelled chunks match their plain neighbours.
+pub const EXTRA_THIN_CLEARANCE: f32 = 2.5;
 /// Corners stored per axis in a chunk (`0..=32`).
 pub const CHUNK_CORNERS: usize = CHUNK_CELLS as usize + 1;
 /// A geometry edit can change the mesh only within this distance of its
@@ -725,7 +734,11 @@ impl ChunkStore {
     /// `min(terrain, extra)`: the snap reads `min(exact field, extra(p))`,
     /// and materials come from the store. Where `extra` stays above the
     /// terrain the vertices are bit-identical to the plain mesh (the game's
-    /// shell layer, The Squeeze).
+    /// shell layer, The Squeeze). Thin features ([`crate::mesh::THIN_OPEN`])
+    /// are only fitted at corners where `extra` is above
+    /// [`EXTRA_THIN_CLEARANCE`], so callers that switch to this mesher for
+    /// chunks within a larger distance of `extra`'s surface keep matching
+    /// their plain neighbours.
     pub fn mesh_surface_nets_min(
         &self,
         c: ChunkCoord,
@@ -740,9 +753,14 @@ impl ChunkStore {
             b.min - Vec3::splat(2.0),
             b.max + Vec3::splat(2.0),
         ));
-        let mut mesh = surface_nets_with_sdf(grid, &|p| {
-            self.eval_with(p, |q| sampler.terrain(q)).min(extra(p))
-        });
+        // No thin features where `extra` comes near (the moving shell's
+        // slivers against the rock); elsewhere the same mesh as
+        // `mesh_surface_nets`.
+        let mut mesh = surface_nets_with_sdf_thin_where(
+            grid,
+            &|p| self.eval_with(p, |q| sampler.terrain(q)).min(extra(p)),
+            &|p| extra(p) > EXTRA_THIN_CLEARANCE,
+        );
         self.mesh_materials(c, &mut mesh);
         mesh
     }

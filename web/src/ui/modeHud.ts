@@ -301,6 +301,8 @@ export interface Marker {
 /** Screen fraction (of the half-extent) markers keep from the edge. */
 const EDGE_X = 0.92;
 const EDGE_Y = 0.86;
+/** Bottom edge: higher, so an off-screen marker's label clears the hint line at the bottom centre. */
+const EDGE_Y_DOWN = 0.74;
 
 /** Projects `p` to the canvas, clamping off-screen and behind-camera points to the edge. */
 export function projectMarker(
@@ -315,7 +317,7 @@ export function projectMarker(
   if (w > 1e-3) {
     nx = cx / w;
     ny = cy / w;
-    if (Math.abs(nx) > EDGE_X || Math.abs(ny) > EDGE_Y) edge = true;
+    if (Math.abs(nx) > EDGE_X || ny > EDGE_Y || ny < -EDGE_Y_DOWN) edge = true;
   } else {
     // Behind the camera: the clip x/y keep the side the point lies on.
     nx = cx;
@@ -324,7 +326,7 @@ export function projectMarker(
     if (Math.abs(nx) < 1e-6 && Math.abs(ny) < 1e-6) ny = -1;
   }
   if (edge) {
-    const s = Math.max(Math.abs(nx) / EDGE_X, Math.abs(ny) / EDGE_Y, 1e-9);
+    const s = Math.max(Math.abs(nx) / EDGE_X, Math.abs(ny) / (ny < 0 ? EDGE_Y_DOWN : EDGE_Y), 1e-9);
     nx /= s;
     ny /= s;
   }

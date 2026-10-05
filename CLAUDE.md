@@ -5,7 +5,7 @@
 - Docs index: `docs/README.md`; building, running, testing, adding weapons/rule sets: `docs/dev-guide.md`
 - Design: `docs/design/game-design-doc.md` (exported from the living doc; source of truth for game rules)
 - Plan and scope: `docs/implementation-plan.md` (read the relevant module spec before working on a crate)
-- Current milestone: M3 (modes and lobby) is done with exceptions, see "Milestone summary" in `docs/milestone-3-plan.md`; M4 (The level has moods) is next and has no plan file yet (`docs/implementation-plan.md` milestone table and §8 carried-over items); visual-quality track: `docs/visual-quality-plan.md`
+- Current milestone: `docs/milestone-4-plan.md` (M4 the level has moods, approved: comedy director and events, sliders, monochrome/pigment, The Architect, workshop, audio; scope, decisions, waves, acceptance criteria, as-built notes); previous: M3 summary in `docs/milestone-3-plan.md`; visual-quality track: `docs/visual-quality-plan.md`
 - Cross-crate contracts (terrain trait/edits, surface states, rock strength, mesh layers, axes, units, RNG streams): `docs/architecture/contracts.md`; types live in `ls_math::terrain`. Changing them is a cross-crate change: update the doc and all users together
 - Architecture: `docs/architecture/overview.md` (crates, data flow), `netcode.md`, `determinism.md` (rules, golden hashes, re-blessing), `renderer.md` (browser renderer: HDR, post, grade hook, quality presets, GPU timing)
 - Client/server glue (`ClientSession`, `Room`, wire conventions, lag compensation): `docs/architecture/game-glue.md`; server internals, browser client lifecycle, bots: `docs/architecture/server.md`

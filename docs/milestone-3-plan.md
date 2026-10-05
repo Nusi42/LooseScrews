@@ -346,6 +346,28 @@ Earlier runs, same day: `--playlist quick` before any change (quick1: 37 of 38 c
 
 Not covered: WebTransport (bots ran over WebSocket), the directory (C3's quick run covers `--directory local`), browser clients.
 
+D3 as built (docs, WIN4):
+- New [architecture/modes-and-lobby.md](architecture/modes-and-lobby.md) (mode framework moved
+  there from arsenal-framework.md, modes as built, lobby state machine, rotation, rooms,
+  identity, parties, invite links, duels, directory, browser side, tests, known gaps); netcode,
+  server, game-glue, contracts (mode ids, side ids, objective kinds, flags, room and party
+  codes), determinism (per-mode goldens, an M3 record), overview and the docs index updated.
+- userDocs: player manual (every mode, Instagib, duels, the lobby, server list, invite links,
+  parties, settings incl. FOV and `?quality=`, troubleshooting), hosting guide (all built-in
+  rule sets and their codes, mode settings and validation, playlists, private rooms, the
+  directory with an HTTPS reverse-proxy setup; every flag checked against `ls-server --help`,
+  `ls-bots --help` and `ls-directory --help`; the playlist example and the quick-start log
+  checked against a running server), README.
+- `tools/gen-weapon-docs.mjs` writes `userDocs/reference/modes.md` from `data/rulesets` and the
+  catalog's team counts (`--check` covers it in CI, pre-push and the per-file checks;
+  `tools/test/gen-weapon-docs.test.mjs` fails on a mode setting without a meaning).
+- implementation-plan.md §8: four carried-over items closed with evidence, the Tectonic collapse
+  tick's remaining bake cost (5.3 ms, re-measured) moved to M4.
+- Gaps found while documenting (not fixed, code outside D3): the lobby's Spectate choice was
+  never applied (fixed by D1 in the same wave, docs updated at integration); custom matches and duels ignore `--ban` and
+  `--balance-list`; on `https://` pages the server hands browsers its plain-HTTP `--directory`
+  URL (players need `?directory=`); teams 3 and 4 have no spawn zone of their own.
+
 ## 6. Acceptance criteria (milestone)
 
 - Every PvP mode in the design doc (Team Brawl, The Squeeze, Heist, Hot Reactor, Last Color Standing, Paint the Void) and the Instagib mutator exist as modules with a default rule set in `data/rulesets/`, behave as described in the design doc and §3.2, and have scenario tests for each core rule.

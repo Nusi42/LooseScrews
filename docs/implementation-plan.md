@@ -225,7 +225,7 @@ Commands and details: [dev-guide.md](dev-guide.md#4-tests) and [architecture/det
 | --- | --- | --- |
 | M1 Vertical slice | Done | See sections 1–5 |
 | M2 Arsenal and physics | Done | All weapons from the design doc, Tectonic Charge, debris physics, surface states, ship types, gadgets (Shield, Cloak, Decoy), rule set editor — see [milestone-2-plan.md](milestone-2-plan.md) |
-| M3 Modes and lobby | Next — planned in [milestone-3-plan.md](milestone-3-plan.md) | Team Brawl, The Squeeze, Instagib, Heist, Hot Reactor, Last Color Standing, duels; lobby in `ls-server` with match rotation, optional directory service for the server list, invites, party codes |
+| M3 Modes and lobby | Waves A-C integrated; wave D (review, docs, full CI, soak) in progress — [milestone-3-plan.md](milestone-3-plan.md) | Team Brawl, The Squeeze, Instagib, Heist, Hot Reactor, Last Color Standing, duels; lobby in `ls-server` with match rotation, optional directory service for the server list, invites, party codes ([modes-and-lobby.md](architecture/modes-and-lobby.md)) |
 | M4 The level has moods | Planned | Comedy director and events, remaining sliders (verticality, gravity chaos, palette, instability), monochrome pigment, The Architect |
 | M5 Platforms and ops | Planned | Tauri app with UDP, WebRTC fallback, WebGL2 fallback, regional deployment with Agones or Nomad, bandwidth optimization |
 | M6 Coop and business | Planned | Deep Dig, Tethered, Escort the Intern; cosmetics store, creator economy |
@@ -235,22 +235,45 @@ Commands and details: [dev-guide.md](dev-guide.md#4-tests) and [architecture/det
 Open items from finished milestones, scheduled into the milestone where they fit. Each
 milestone plan copies its items into its own scope table when it starts.
 
-**M3 Modes and lobby**
-- **Match rebuild blocks joins.** Building the next match (0.6–1.6 s) runs on the sim thread,
-  so players joining during it wait for their Welcome. Build the next match off the sim thread
-  and swap it in (matters more with lobby-driven match rotation). *From M1.*
-- **Tectonic collapse tick spike.** One collapse makes a single 2–7 ms tick (a 35 u exact
-  crater plus about 30 crack edits in one tick). p99 is unaffected; spread the crack craters
-  over the following ticks (sim behaviour change, bump `SIM_BEHAVIOR_VERSION`). *From M2.*
-- **Weapon state on the wire.** Send `WeaponState::shots` in `Message::Inventory` so the shot
-  predictor no longer infers the Scatter/Corkscrew fan phase, and add a weapon-state byte to
-  `NetWeapon` so the Paint Thrower colour survives a rejoin. *From M2.*
-- **Own Leech Arc beam drawn locally** instead of one round trip late. *From M2.*
-- **Bot navigation cost.** Building the nav grid costs about 2–3 s of CPU per bot per match;
-  share one grid per match between bots in the same process, or cache it per share code.
-  *From M2.* Done in M3 A5: `ls-bots` `nav_cache.rs` (one build per world per process).
+**M3 Modes and lobby** (all five taken into [milestone-3-plan.md](milestone-3-plan.md) §1;
+four closed, one partly closed and its rest moved to M4)
+- **Match rebuild blocks joins.** *From M1.* **Closed in M3 A3:** the next room (warm-up or
+  match) is built on an `ls-build` worker thread while the current room keeps running, and
+  swapped in with a new `Welcome` on the open connection; a join during a build joins the
+  running room at once. Evidence: `ls-server` `sim::tests::joins_during_the_next_match_build_are_welcomed_at_once`
+  and `tests/rooms.rs` `matches_rotate_on_one_connection_and_joins_never_wait_for_a_build`
+  (the join is served by the running room, checked by its `Welcome` epoch, with a 2 s build
+  delay; wall clock under half of it; 14 ms in a wave D re-run); C3's e2e rotation (`--playlist quick`, 9 matches, 144
+  in-place transitions, 0 disconnects). The 200 ms wall-clock figure was measured in the wave D
+  soak: 24 Welcome probes during next-room builds over 60 minutes, worst 14.5 ms
+  (milestone-3-plan.md "Milestone soak").
+- **Tectonic collapse tick spike.** *From M2.* **Partly closed in M3 A1:** the crack craters
+  are spread over the next 6 ticks (at most 16 per tick, the same set as before:
+  `tectonic_charge::tests::cracks_spread_over_six_ticks_and_match_the_m2_set`), so the crack
+  ticks stay under 2 ms (`cargo test -p ls-game --release --test tectonic_tick`; wave D re-run:
+  0.5-0.9 ms per crack tick). The collapse tick itself still costs about 3.5-5.3 ms (5.3 ms in
+  that re-run): the single exact 35 u crater's bake in
+  `ls_worldgen::ChunkStore::apply_geometry` / `bake_edit` (a `room_open` generator call per
+  corner of its reach box). The rest moves to M4 (below).
+- **Weapon state on the wire.** *From M2.* **Closed in M3 A2** (protocol 5): `NetWeapon`
+  carries `WeaponState::shots` and a weapon-state byte. Evidence: `ls-game`
+  `server::tests::inventory_carries_shots_and_weapon_state`, `ls-wasm`
+  `shots::tests::fan_phase_follows_the_inventory_shot_count` (no fan-phase inference left) and
+  `game::tests::paint_colour_comes_from_the_inventory_after_a_rejoin`.
+- **Own Leech Arc beam drawn locally.** *From M2.* **Closed in VQP** (`crates/ls-wasm/src/beam.rs`,
+  `Game.localBeam()`). Evidence: `ls-wasm` `game::tests::own_leech_arc_beam_is_drawn_locally_at_once`
+  (the beam shows on the firing frame, without the server's cue).
+- **Bot navigation cost.** *From M2.* **Closed in M3 A5** (`ls-bots` `nav_cache.rs`: one grid
+  build per world per process, on a worker thread). Evidence: `nav_cache` unit test
+  `second_acquire_reuses_the_build`, `tests/nav_cache.rs` (release, 8 bots on one world: 3.7-5.7 s
+  of navigation time per bot before, 0.44-0.63 s after, 8.4-9.1x).
 
 **M4 The level has moods**
+- **Tectonic collapse tick (rest of the M2 item).** The collapse tick's single 35 u crater still
+  costs about 3.5-5 ms in release (target: under 2 ms; p99 is unaffected). Make the big crater's
+  bake cheaper in `ls-worldgen` (skip `room_open` for corners the edit leaves unchanged, or bake
+  big craters lazily per chunk); `crates/ls-game/tests/tectonic_tick.rs` holds the collapse tick
+  to 8 ms until then. A worldgen job, so it goes with the M4 worldgen work. *From M2, via M3.*
 - **Dual contouring in play.** The sharp-edged mesher is golden-hashed and seam-free but costs
   4–13 ms per busy chunk against 0.5–0.8 ms for surface nets, so gameplay still meshes with
   surface nets. Make it fit the per-frame remesh budget (or remesh with it in the background)

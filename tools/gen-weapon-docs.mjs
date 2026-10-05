@@ -3,11 +3,14 @@
 //   data/weapons/*.ron  -> userDocs/reference/weapons.md
 //   data/ships/*.ron    -> userDocs/reference/ships.md
 //   data/gadgets/*.ron  -> userDocs/reference/gadgets.md (with the Shield setting per weapon)
+//   data/rulesets/*.ron -> userDocs/reference/modes.md (every built-in rule set: mode, teams,
+//                          match length, mode settings, mutators, arsenal); the team counts each
+//                          mode allows come from web/src/rules/catalog.ts (generated from ls-sim)
 // The default rule set (data/rulesets/paint_the_void.ron) supplies the weapon order (the
 // design doc's) and the "default rules" columns.
 //
 // Usage: node tools/gen-weapon-docs.mjs [--check]
-//   (no flag)  write the three files
+//   (no flag)  write the four files
 //   --check    write nothing; exit 1 if a file is missing or differs from what the data
 //              gives (CI runs this: after a data change, regenerate and commit the tables)
 //
@@ -644,18 +647,281 @@ function gadgetsDoc(gadgets, weapons, rules) {
 }
 
 // ---------------------------------------------------------------------------
+// Modes
+
+/**
+ * The modes in `ls_sim::ModeKind` order: RON tag, display name, what it is about and how a
+ * match is won (texts for pilots; the numbers come from the rule sets).
+ */
+const MODES = [
+  {
+    tag: "PaintTheVoid",
+    name: "Paint the Void",
+    anchor: "paint-the-void",
+    about: "Teams paint the level's surfaces in their colour with the Paint Thrower; craters erase paint. Kills don't score.",
+    wins: () => "most painted surface when the timer ends (equal: draw)",
+  },
+  {
+    tag: "TeamBrawl",
+    name: "Team Brawl",
+    anchor: "team-brawl",
+    about: "Team deathmatch with respawns, or every pilot for themselves with 0 teams (the duel). A kill scores 1; a suicide or team kill costs the side points.",
+    wins: (m) =>
+      m.kill_target > 0
+        ? `first to ${m.kill_target} kills, else most kills on time (equal: draw)`
+        : "first to the kill target (15 to 50, from the player count), else most kills on time (equal: draw)",
+  },
+  {
+    tag: "TheSqueeze",
+    name: "The Squeeze",
+    anchor: "the-squeeze",
+    about: "Every pilot for themselves with one life. Walls grow inward from the level's edge in phases (a warning, then the close) and crush ships caught in them; closing walls shed scrap.",
+    wins: () => "last ship flying (ships lost in the same tick: draw)",
+  },
+  {
+    tag: "Heist",
+    name: "Heist",
+    anchor: "heist",
+    about: "Dig the core out of its vein at the bottom of the level and carry it to your extraction zone. The carrier is slower and can't boost; a dropped core returns to the vein. Kills don't score.",
+    wins: (m) => `first to ${m.deliveries_to_win} deliveries, else most deliveries on time (equal: draw)`,
+  },
+  {
+    tag: "HotReactor",
+    name: "Hot Reactor",
+    anchor: "hot-reactor",
+    about: "A reactor sits on one pilot and passes to whoever hits or rams them. Its fuse runs faster the more ships are near; whoever holds it at detonation loses a life.",
+    wins: (m) => `last pilot with lives (${m.lives} each), else most lives on time`,
+  },
+  {
+    tag: "LastColorStanding",
+    name: "Last Color Standing",
+    anchor: "last-color-standing",
+    about: "A black-and-white level; every pilot has a colour meter that each death drains. Out of colour, out of the match. A late-match stalemate drain makes sure it ends.",
+    wins: () => "last pilot with colour, else most colour on time",
+  },
+];
+
+/** What each mode setting means (`ModeRules` fields in `crates/ls-sim/src/ruleset.rs`) and how to print it. */
+const MODE_FIELDS = {
+  teams: ["Teams (0 = every pilot for themselves)", (v) => (v === 0 ? "free-for-all" : String(v))],
+  match_secs: ["Match length (the timer)", (v) => duration(v)],
+  respawn_secs: ["Wait after being destroyed (s)", (v) => (v > 0 ? num(v) : "no respawn")],
+  kill_target: ["Kills to win (0 = max(15, 5 × players / teams), at most 50)", (v) => (v > 0 ? String(v) : "scaled")],
+  team_kill_penalty: ["Points a suicide or a team kill costs the side", (v) => String(v)],
+  first_phase_secs: ["First wall warning after the start (s)", (v) => num(v)],
+  phases: ["Wall phases", (v) => String(v)],
+  warn_secs: ["Warning before each close (s)", (v) => num(v)],
+  close_secs: ["Each close takes (s)", (v) => num(v)],
+  crush_per_sec: ["Crushing damage while touching a moving wall (hull/s, ignores shields)", (v) => num(v)],
+  scrap_per_100u2: ["Scrap debris pieces per 100 u² of closed opening", (v) => num(v)],
+  deliveries_to_win: ["Deliveries to win", (v) => String(v)],
+  carrier_speed_percent: ["Carrier's top speed (no boost)", (v) => `${v}%`],
+  drop_return_secs: ["A dropped core returns to the vein after (s)", (v) => num(v)],
+  core_respawn_secs: ["A delivered core is back in the vein after (s)", (v) => num(v)],
+  collapse_secs: ["The mine sheds its ceiling for (s) once the core is free", (v) => num(v)],
+  lives: ["Lives (lost only to a detonation in your hands)", (v) => String(v)],
+  fuse_secs: ["Fuse at normal speed (s)", (v) => num(v)],
+  fuse_radius: ["Ships within this distance of the holder speed the fuse up (u)", (v) => num(v)],
+  fuse_speed_per_ship: ["Extra fuse speed per ship near the holder", (v) => `+${num(v)}x`],
+  blast_radius: ["Detonation blast radius (u)", (v) => num(v)],
+  blast_damage: ["Detonation blast damage at the centre", (v) => num(v)],
+  pass_immunity_secs: ["A new holder can't lose the reactor for (s)", (v) => num(v)],
+  next_reactor_secs: ["Next reactor appears after (s)", (v) => num(v)],
+  colour: ["Colour at the start", (v) => String(v)],
+  drain_per_kill: ["Colour each death drains", (v) => String(v)],
+  stalemate_secs: ["Stalemate drain starts after", (v) => duration(v)],
+  stalemate_drain_secs: ["Stalemate: 1 colour lost every (s)", (v) => num(v)],
+};
+
+/** Mutators: name and what they change. */
+const MUTATOR_TEXT = {
+  Instagib:
+    "Railspike only, fired for free; any direct enemy hit kills, shields or not. No secondaries, gadgets or pickups (Paint the Void keeps its Paint Thrower). Hull and energy are hidden, boost stays; respawns are instant.",
+};
+
+/** Rule set files in the order the reference lists them; others follow by name. */
+const RULESET_ORDER = ["paint_the_void", "team_brawl", "squeeze", "heist", "hot_reactor", "last_color_standing", "instagib_brawl", "duel", "sandbox_all_weapons"];
+
+/** `300` -> "5 min", `90` -> "1 min 30 s", `45` -> "45 s". */
+export function duration(secs) {
+  if (!(secs > 0)) return "–";
+  const m = Math.floor(secs / 60);
+  const s = Math.round(secs - m * 60);
+  if (m === 0) return `${s} s`;
+  return s ? `${m} min ${s} s` : `${m} min`;
+}
+
+/**
+ * The mode list of web/src/rules/catalog.ts (generated from `ls_sim` by the rulecode test): per
+ * mode kind the team counts it allows. Empty when the catalog is missing or unreadable.
+ */
+export function catalogModes(text) {
+  const out = new Map();
+  for (const line of text.split("\n")) {
+    const m = /^\s*(\{"kind": .*\}),?\s*$/.exec(line);
+    if (!m) continue;
+    try {
+      const v = JSON.parse(m[1]);
+      if (typeof v.kind === "string" && Array.isArray(v.teams)) out.set(v.kind, v);
+    } catch {
+      /* not a mode line */
+    }
+  }
+  return out;
+}
+
+function teamCountsText(counts) {
+  if (!counts?.length) return "–";
+  const parts = counts.map((t) => (t === 0 ? "free-for-all" : String(t)));
+  const teams = parts.filter((p) => p !== "free-for-all");
+  const text = teams.length ? `${teams.join(", ")} teams` : "";
+  return [parts.includes("free-for-all") ? "free-for-all" : "", text].filter(Boolean).join(" or ");
+}
+
+function loadoutText(rules, names) {
+  const lo = rules.starting_loadout ?? {};
+  const parts = [...(lo.primaries ?? []).map((id) => names.get(id) ?? id)];
+  for (const [id, n] of lo.secondaries ?? []) parts.push(`${n} ${names.get(id) ?? id}${n === 1 ? "" : "s"}`);
+  if (lo.gadget) parts.push(names.get(lo.gadget) ?? lo.gadget);
+  return parts.join(", ") || "nothing";
+}
+
+function pickupText(rules, names, weaponCount) {
+  const w = rules.pickups instanceof Map ? [...rules.pickups.keys()] : [];
+  const parts = [];
+  if (w.length === 0) parts.push("no weapons");
+  else if (w.length <= 3) parts.push(w.map((id) => names.get(id) ?? id).join(", "));
+  else parts.push(`${w.length} of ${weaponCount} weapons`);
+  const up = rules.upgrade_pickups instanceof Map ? [...rules.upgrade_pickups.keys()] : [];
+  if (up.length) parts.push(`${up.map((id) => names.get(id) ?? id).join(", ")} upgrades`);
+  const g = rules.gadget_pickups instanceof Map ? [...rules.gadget_pickups.keys()] : [];
+  if (g.length) parts.push(g.map((id) => names.get(id) ?? id).join(", "));
+  if (rules.scrap_pickup) parts.push("scrap piles");
+  return w.length === 0 && !up.length && !g.length && !rules.scrap_pickup ? "none" : parts.join("; ");
+}
+
+function modesDoc(rulesets, weapons, gadgets, catalog) {
+  const names = new Map([...weapons, ...gadgets].map(({ id, def }) => [id, def.name]));
+  const rank = (id) => {
+    const k = RULESET_ORDER.indexOf(id);
+    return k < 0 ? RULESET_ORDER.length : k;
+  };
+  const sorted = [...rulesets].sort((a, b) => rank(a.id) - rank(b.id) || a.id.localeCompare(b.id));
+  const modeOf = (def) => (def.mode instanceof Enum ? def.mode : new Enum("?", [{}]));
+  const settings = (def) => modeOf(def).args[0] ?? {};
+  const mutators = (def) => (Array.isArray(def.mutators) ? def.mutators.map(tagOf) : []);
+  const info = (tag) => MODES.find((m) => m.tag === tag);
+  const out = [
+    header(
+      "Mode reference",
+      "data/rulesets/*.ron and web/src/rules/catalog.ts",
+      [
+        "Every built-in rule set of this build: its mode, teams, match length, the mode's settings,",
+        "mutators and arsenal. How each mode plays is in the",
+        "[player manual](../player-manual.md#game-modes); hosts pick rule sets by id (the file name",
+        "without `.ron`) with `--ruleset <id>` or in a playlist, see the",
+        "[hosting guide](../hosting-guide.md#playlists). A server's own rule set file or `LR` code can",
+        "change every number here.",
+      ].join("\n"),
+    ),
+    "## Built-in rule sets",
+    "",
+    table(
+      ["Rule set (id)", "Mode", "Teams", "Match length", "Respawn", "Mutators", "How to win"],
+      sorted.map(({ id, def }) => {
+        const mode = modeOf(def);
+        const m = settings(def);
+        const mi = info(mode.tag);
+        return [
+          `**${def.name}** (\`${id}\`)`,
+          mi ? `[${mi.name}](#${mi.anchor})` : mode.tag,
+          MODE_FIELDS.teams[1](m.teams),
+          duration(m.match_secs),
+          m.respawn_secs > 0 ? `${num(m.respawn_secs)} s` : "none (one life)",
+          mutators(def).join(", ") || "–",
+          mi ? mi.wins(m) : "–",
+        ];
+      }),
+    ),
+    "",
+    "Which of them a server plays, in which order and for how many players is its playlist",
+    "([hosting guide](../hosting-guide.md#lobby-match-end-and-rotation)).",
+    "",
+  ];
+  for (const mi of MODES) {
+    const sets = sorted.filter(({ def }) => modeOf(def).tag === mi.tag);
+    const cat = catalog.get(mi.tag);
+    out.push(`## ${mi.name}`, "", mi.about, "");
+    out.push(`- **Teams the mode allows:** ${teamCountsText(cat?.teams)}.`);
+    if (sets.length === 0) {
+      out.push("- No built-in rule set plays this mode.", "");
+      continue;
+    }
+    out.push(`- **Built-in rule sets:** ${sets.map(({ id, def }) => `${def.name} (\`${id}\`)`).join(", ")}.`, "");
+    const keys = [];
+    for (const { def } of sets) for (const k of Object.keys(settings(def))) if (!keys.includes(k)) keys.push(k);
+    out.push(
+      table(
+        ["Setting", ...sets.map(({ def }) => def.name), "Meaning"],
+        keys.map((k) => {
+          const [meaning, fmt] = MODE_FIELDS[k] ?? ["–", (v) => (typeof v === "number" ? num(v) : String(v))];
+          return [`\`${k}\``, ...sets.map(({ def }) => (settings(def)[k] === undefined ? "–" : fmt(settings(def)[k]))), meaning];
+        }),
+      ),
+      "",
+    );
+  }
+  out.push("## Mutators", "", "Mutators combine with any mode; a rule set lists them in `mutators`.", "");
+  out.push(
+    table(
+      ["Mutator", "What it changes", "Built-in rule sets with it"],
+      Object.entries(MUTATOR_TEXT).map(([tag, text]) => {
+        const using = sorted.filter(({ def }) => mutators(def).includes(tag)).map(({ id }) => `\`${id}\``);
+        return [`**${tag}**`, text, using.join(", ") || "–"];
+      }),
+    ),
+    "",
+  );
+  out.push(
+    "## Arsenal per rule set",
+    "",
+    "What you start with and what spawns at the level's pickup points. Weapon numbers are in the",
+    "[weapon reference](weapons.md), gadgets in the [gadget reference](gadgets.md).",
+    "",
+    table(
+      ["Rule set", "Start with", "Pickups", "Friendly fire", "Ship types"],
+      sorted.map(({ def }) => [
+        `**${def.name}**`,
+        loadoutText(def, names),
+        pickupText(def, names, weapons.length),
+        def.friendly_fire_percent ? `${def.friendly_fire_percent}%` : "off",
+        (def.allowed_ship_types ?? []).map(tagOf).join(", ") || "–",
+      ]),
+    ),
+    "",
+    "Friendly fire only matters in team modes (in free-for-all every other ship is an enemy).",
+    "",
+  );
+  return out.join("\n");
+}
+
+// ---------------------------------------------------------------------------
 
 export function generate() {
   const weapons = loadDir("weapons");
   const ships = loadDir("ships");
   const gadgets = loadDir("gadgets");
+  const rulesets = loadDir("rulesets");
   const rulesPath = join(dataDir, "rulesets", "paint_the_void.ron");
   const rules = existsSync(rulesPath) ? parseRon(readFileSync(rulesPath, "utf8"), rulesPath) : null;
+  const catalogPath = join(repoRoot, "web", "src", "rules", "catalog.ts");
+  const catalog = existsSync(catalogPath) ? catalogModes(readFileSync(catalogPath, "utf8")) : new Map();
   const tinker = ships.find((s) => s.id === "tinker")?.def;
   return {
     "weapons.md": weaponsDoc(weapons, rules, tinker?.hull_max ?? 100),
     "ships.md": shipsDoc(ships),
     "gadgets.md": gadgetsDoc(gadgets, weapons, rules),
+    "modes.md": modesDoc(rulesets, weapons, gadgets, catalog),
   };
 }
 

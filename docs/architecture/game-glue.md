@@ -18,7 +18,7 @@ ls-math <- ls-worldgen --+
 | `terrain` | `GameTerrain`: `ChunkStore` + edit log + dirty chunks; `TerrainQuery` + `SimTerrain` |
 | `setup` | `MatchConfig`, `match_setup` (spawn and pickup points), `build_match` (world + terrain) |
 | `convert` | `NetConv` (ships, status, quantization), inputs, projectiles, events |
-| `mode` | `mode_view_to_net` (`World::mode_view`, the replicated `ls_sim::ModeView`, to wire ids), `results_to_net` (`World::results` to `MatchResultsMsg`), `legacy_scores` (protocol 5) |
+| `mode` | `mode_view_to_net` (`World::mode_view`, the replicated `ls_sim::ModeView`, to wire ids), `results_to_net` (`World::results` to `MatchResultsMsg`), `legacy_scores` (protocol 5), `squeeze_shell` (The Squeeze's walls from the replicated mode state); the mode framework itself: [modes-and-lobby.md](modes-and-lobby.md) |
 | `client` | `InputSequencer`, `Predictor`, `InterpolationBuffer`, `ClientClock`, `ClientSession` |
 | `server` | `Room` (feature `server`, on by default), `ShipHistory`, lag compensation |
 
@@ -39,7 +39,7 @@ declared with `default-features = false`; `ls-server` enables `features = ["serv
   joiner builds its terrain with `replay_welcome(gen, log, edit_count)` and counts the
   left-out edits (`edit_count()`, `pruned_count()`), so its own `edit_log()` is not indexed
   by sequence number (only the server serves logs).
-- `SimTerrain::paint_coverage` maps `ls_worldgen::PaintCoverage` to teams 0/1 and caches it
+- `SimTerrain::paint_coverage` maps `ls_worldgen::PaintCoverage` to teams 0-3 and caches it
   until the next edit. It generates every chunk on first use (about 7 s in debug builds at the default sliders, well
   under a second in release), which is why `Room::new` pregenerates and why tests that stay
   below tick 30 (the first score update) turn that off.
@@ -74,7 +74,10 @@ declared with `default-features = false`; `ls-server` enables `features = ["serv
 
 `match_setup(code, rules, pristine_terrain)`:
 
-1. Room box shrunk by 4 u. Team 0 spawns in the low-x 30 % slab, team 1 in the high-x slab.
+1. Room box shrunk by 4 u. Spawn points are placed for at most two sides (`teams.clamp(1, 2)`):
+   team 0 in the low-x 30 % slab, team 1 in the high-x slab; free-for-all (`teams: 0`) gets one
+   set over the whole level. Teams 2 and 3 of a 3- or 4-team match have no points of their own
+   and spawn at any team's (`World::pick_spawn`).
    The pristine level is first scanned on a 4 u lattice (`scan_open_space`, points with at
    least 1 u clearance).
 2. Per team, up to 6 spawn points. Step 1 (only if the scan saw at least 6 points with 3 u
@@ -88,6 +91,9 @@ declared with `default-features = false`; `ls-server` enables `features = ["serv
 3. Up to 12 pickup points anywhere in the box (`RNG_STREAM_PICKUP_POINTS`), 2 u clearance,
    14 u apart, 10 u from every spawn; random draws only if at least 1 % of the lattice has
    2 u clearance, otherwise scanned points with 2, 1.5, then 1 u clearance.
+
+4. The Heist site (core vein, extraction zones) comes from the generator
+   (`heist_level` -> `MatchSetup::heist`; every rule set gets it, only Heist uses it).
 
 Roomy levels keep exactly the setups of the plain random search; tight ones (Enclosure 75 and
 up, where the SDF underestimates distance and almost nothing has 3 u clearance) get spawns and

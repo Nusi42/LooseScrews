@@ -3,7 +3,9 @@
 `crates/ls-server` hosts the authoritative `ls_game::server::Room` (see
 [game-glue.md](game-glue.md)); `crates/ls-bots` are headless clients built on
 `ls_game::client::ClientSession`; `tools/e2e.*` runs both together. How to run them locally:
-[dev-guide.md](../dev-guide.md); transport and netcode overview: [netcode.md](netcode.md).
+[dev-guide.md](../dev-guide.md); transport and netcode overview: [netcode.md](netcode.md); how
+modes, the lobby, rooms, parties and duels fit together across the crates:
+[modes-and-lobby.md](modes-and-lobby.md).
 
 ## ls-server
 
@@ -117,7 +119,11 @@ Endpoints on the `--bind` address (TCP) and the `--wt-bind` address (UDP, same p
   set / share code, player range, teams, players with team pick, ready and spectate flags) to
   everyone whenever it changes (the countdown alone is no change), always after the room's own
   packets of the tick, so a new `Welcome` arrives before its lobby state. `Spectate` is stored
-  and announced; joining the next room as a spectator needs the room's spectator support.
+  per connection and announced; when the player moves into the next match room the sim thread
+  calls `World::set_spectator(player, true)`, so they have no ship in that match (warm-up rooms
+  stay open to everyone; test `spectate_applies_from_the_next_match_on`). `SelectShip` also
+  updates the connection's stored `Hello`, so a ship picked mid-match carries over to the next
+  rooms, and a leaving player's `Ready` is cleared with its wire id (ids are reused).
 
 ### Server list, invites, parties and duels (`api.rs`, `party.rs`, `duel.rs`, `directory.rs`, M3 B7)
 
@@ -161,8 +167,10 @@ Endpoints on the `--bind` address (TCP) and the `--wt-bind` address (UDP, same p
   server, the challenger's world and rules codes), and the other player's browser, which polls
   the directory by its public id, answers on the challenger's server. Accepting opens a private
   room (`duel_spec`): 2 players, the challenger's world (a fixed random one without), the
-  challenger's rule set code or the built-in `duel` rule set (fallback until
-  `data/rulesets/duel.ron` exists: Team Brawl free-for-all, 10 kills, 5 minutes). Both players
+  challenger's rule set code or the built-in `duel` rule set (`data/rulesets/duel.ron`: Team
+  Brawl free-for-all, 10 kills or 5 minutes; a Team Brawl fallback with the same numbers is
+  built in code if the file is missing). Like custom matches (`api::custom_rules`), duel rules
+  are resolved without the server's `--ban` and `--balance-list` (known gap). Both players
   get the room code (the answer's reply, the challenger's inbox note `accepted`) and join by
   invite link; a declined challenge shows up as `declined`.
 - **Directory** (`directory.rs`): with `--directory <url>` the server sends
@@ -221,9 +229,12 @@ wins, then built-in ids; text that looks like a code is decoded). `--ban <weapon
 balance list, then bans, validated at startup. The balance list is re-read before every match;
 if it fails to load, the server warns and keeps that playlist entry's previous rules. The effective rules are
 what the `Welcome` carries and the simulation enforces, logged with their code at each match
-start (`ServerHandle::rules_code` keeps the first match's code). Built-in rule sets:
-`data/rulesets/paint_the_void.ron` (default) and `data/rulesets/sandbox_all_weapons.ron`
-(every weapon and gadget as a pickup, every ship type; used by the arsenal e2e run).
+start (`ServerHandle::rules_code` keeps the first match's code). Built-in rule sets
+(`ls_sim::ruleset::BUILTIN_RULESETS`, ids = file names): `paint_the_void`, `team_brawl`,
+`squeeze`, `heist`, `hot_reactor`, `last_color_standing` (one per mode, the default rotation),
+`instagib_brawl`, `duel` and `sandbox_all_weapons` (every weapon and gadget as a pickup, every
+ship type; used by the arsenal e2e run); their numbers are in
+[userDocs/reference/modes.md](../../userDocs/reference/modes.md).
 
 `--web-root` defaults to `web/dist` if it exists, so `cargo run -p ls-server --release` after
 `npm run build` in `web/` serves the client at `http://localhost:7777`. `--exit-when-empty` shuts

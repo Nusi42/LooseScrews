@@ -1,9 +1,10 @@
 # Loose Screws: hosting guide
 
 How to run a Loose Screws game server (`ls-server`), set its world and rules, fill it with bots
-(`ls-bots`) and keep it healthy. It covers the current build (Milestone 2). Features from the
-design that the server doesn't have yet are listed under
-[Not in this build yet](#not-in-this-build-yet).
+(`ls-bots`), run a server directory (`ls-directory`) and keep it all healthy. It covers the
+current build (Milestone 3: every player-versus-player mode, a lobby and match rotation,
+private rooms, parties, duels and the server list). Features from the design that the server
+doesn't have yet are listed under [Not in this build yet](#not-in-this-build-yet).
 
 ## Contents
 
@@ -21,10 +22,10 @@ design that the server doesn't have yet are listed under
 - [Firewall and router](#firewall-and-router)
 - [Filling the match with bots](#filling-the-match-with-bots)
 - [Logs and tick stats](#logs-and-tick-stats)
-- [Lobby, match end and rotation](#lobby-match-end-and-rotation)
+- [Lobby, match end and rotation](#lobby-match-end-and-rotation) ([playlists](#playlists), [private rooms](#private-rooms), [parties and duels](#parties-and-duels))
 - [Stopping the server](#stopping-the-server)
 - [Troubleshooting](#troubleshooting)
-- [Server directory (optional)](#server-directory-optional)
+- [Server directory (optional)](#server-directory-optional) ([HTTPS and a public directory](#https-and-a-public-directory))
 - [Not in this build yet](#not-in-this-build-yet)
 
 ## What the server does
@@ -41,9 +42,15 @@ and parties. It:
   WebTransport when it can and falls back to WebSocket.
 - enforces its rule set: banned weapons, gadgets and ship types never spawn and can't be used
 - runs a lobby between matches: warm-up flying with weapons off, a countdown, the match, its
-  result; then the next match of the rotation, with players staying connected
+  result; then the next match of the rotation (by default every mode in turn), with players
+  staying connected
+- opens private rooms for custom matches, parties and duels on request, and serves a small
+  JSON API for them at `/api/…`
+- optionally lists itself in a **server directory** (`--directory`) so players find it in the
+  in-game server list
 
-There is no account system or server list yet: players join by opening your address.
+Players join by opening your address, by an invite link, or from the server list. There are no
+accounts.
 
 ## Building
 
@@ -63,11 +70,11 @@ cd web
 npm install
 npm run build          # builds the game core for the browser, then the web client into web/dist
 cd ..
-cargo build --release -p ls-server -p ls-bots
+cargo build --release -p ls-server -p ls-bots -p ls-directory
 ```
 
-The programs end up in `target/release/`: `ls-server` and `ls-bots` (`ls-server.exe` and
-`ls-bots.exe` on Windows).
+The programs end up in `target/release/`: `ls-server`, `ls-bots` and `ls-directory`
+(`ls-server.exe` and so on, on Windows). You only need `ls-directory` for a server list.
 
 Always use **release** builds for hosting. A debug build works, but it takes several times
 longer to build a match (seconds instead of under one) and runs the simulation much more
@@ -91,22 +98,29 @@ cargo run --release -p ls-server
 ```
 
 or run the built program directly (`target/release/ls-server`, on Windows
-`target\release\ls-server.exe`). The server builds a random world with the default Paint the
-Void rules and prints:
+`target\release\ls-server.exe`). The server starts the default rotation of all six modes on
+random worlds, beginning with a warm-up for Team Brawl, and prints (shortened):
 
 ```
-INFO ls_server::sim: rules: Paint the Void LR8V-6097-G000-TMBG (banned weapons: none)
-INFO ls_server: share code LS0F-143C-ZQW8-CCHA-V4M6-8001-8FAE - open http://localhost:7777 to play
+INFO ls_server::sim: match ready room=public entry=team_brawl share_code=LS0E-NKVJ-FW3J-YCN9-B4M6-8001-8F1T ruleset=Team Brawl warmup=true build_ms=496
+INFO ls_server::sim: rules: Team Brawl LR8V-63T6-X000-NNJ0 (banned weapons: paint_thrower) room=public
+INFO ls_server: share code LS0E-NKVJ-FW3J-YCN9-B4M6-8001-8F1T - open http://localhost:7777 to play
 ```
 
-Open `http://localhost:7777`, enter a pilot name, pick a ship and click **Play online**. To add
-six bots so there's someone to play against, open a second terminal:
+("banned weapons: paint_thrower" is normal: only Paint the Void hands out the Paint Thrower.)
+
+Open `http://localhost:7777`, enter a pilot name, pick a ship and click **Play online**. You
+arrive in the warm-up. Team Brawl needs 4 players: alone, the warm-up runs its 30 seconds and
+the server moves on to a mode that fits one player (Paint the Void). To add six bots so there's
+someone to play against, open a second terminal:
 
 ```sh
 target/release/ls-bots --count 6
 ```
 
-Press **Ctrl+C** in the server terminal to stop it.
+With 7 players the rotation starts with Team Brawl. The bots press Ready at once, so the
+countdown starts as soon as you press **Enter**. Press **Ctrl+C** in the server terminal to stop
+it.
 
 Run the server **from the repository root** (or pass `--web-root` explicitly): the default web
 client folder `web/dist` and any relative `--ruleset` or `--balance-list` path are resolved
@@ -122,7 +136,7 @@ Verified against `ls-server --help` of this build (`ls-server 0.1.0`).
 | `--wt-bind <ADDR>` | same as `--bind` | UDP address and port for WebTransport. By default it uses the same port number as `--bind`, but over UDP. Can't be combined with `--no-webtransport`. |
 | `--no-webtransport` | off | Don't start WebTransport. Everyone connects over WebSocket, and `/cert-hash` answers 404. |
 | `--code <CODE>` | a random world | Share code of the world to host; with the default rotation every match plays on it. Without it, the server picks a random seed with the default sliders (Enclosure 50, Density 40, Instability 30): once with `--ruleset`, for every match with the default rotation. |
-| `--ruleset <FILE\|CODE\|ID>` | the default rotation | A rule set file (RON), a built-in rule set id (`paint_the_void`, `sandbox_all_weapons`) or an `LR…` rule set code (see [Rule sets](#rule-sets)), played in every match on one world. An existing file wins, then built-in ids; text that looks like a code is decoded. Read once at startup. Can't be combined with `--playlist`. |
+| `--ruleset <FILE\|CODE\|ID>` | the default rotation | A rule set file (RON), a built-in rule set id (`team_brawl`, `squeeze`, `heist`, `hot_reactor`, `last_color_standing`, `paint_the_void`, `instagib_brawl`, `duel`, `sandbox_all_weapons`) or an `LR…` rule set code (see [Rule sets](#rule-sets)), played in every match on one world. An existing file wins, then built-in ids; text that looks like a code is decoded. Read once at startup. Can't be combined with `--playlist`. |
 | `--playlist <FILE>` | the default rotation | A playlist file: the matches to rotate through, each with a rule set, a world and a player range (see [Playlists](#playlists)). Can't be combined with `--ruleset` or `--code`. |
 | `--ban <WEAPON_ID>` | none | Bans a weapon on top of the rule set. Repeat it for more weapons (`--ban railspike --ban tectonic_charge`). Weapon ids are listed in [Rule sets](#weapon-gadget-and-ship-ids). |
 | `--balance-list <FILE>` | none | A balance list file: weapons and gadgets banned or retuned server-wide, applied on top of the rule set and **re-read before every match** (see [Banning and balancing weapons](#banning-and-balancing-weapons)). |
@@ -133,7 +147,7 @@ Verified against `ls-server --help` of this build (`ls-server 0.1.0`).
 | `--warmup <SECONDS>` | `30` | Longest warm-up (flying the next level with weapons off) before the countdown starts, once enough players are there; shorter when everyone is ready. 0 to 3600. `--warmup 0 --countdown 0` turns the lobby off: matches start right away. |
 | `--countdown <SECONDS>` | `10` | Countdown before a match starts, 0 to 3600 |
 | `--private-rooms <N>` | `4` | Most private rooms (duels, parties, custom matches) open at once next to the public room, 0 to 64; each runs on its own CPU core, so at most one per core beyond the public room's |
-| `--directory <URL>` | none | Register with a server directory (`http://host:port`, see [Server directory](#server-directory-optional)) so the server shows up in the in-game server list. Without it the server is reachable by link or address only. |
+| `--directory <URL>` | none | Register with a server directory (`http://host:port`, optionally with a path; plain `http://` only, see [Server directory](#server-directory-optional)) so the server shows up in the in-game server list. Without it the server is reachable by link or address only. |
 | `--server-name <NAME>` | `Loose Screws server` | Name in the server list (up to 48 characters) |
 | `--region <TAG>` | empty | Region tag in the server list, e.g. `eu-west` (up to 16 characters) |
 | `--public-address <HOST:PORT>` | the `--bind` address | The address players reach this server at, as listed in the directory and put into invite links. Set it whenever `--bind` is `0.0.0.0` (then the default is `localhost:<port>`, which only works on this computer) or players come through a router or a domain name. |
@@ -165,6 +179,16 @@ ls-server --bind 127.0.0.1:8080 --no-webtransport
 
 # WebTransport on a separate UDP port
 ls-server --bind 0.0.0.0:7777 --wt-bind 0.0.0.0:7778
+
+# One mode only: Instagib Brawl in every match, 16 players
+ls-server --ruleset instagib_brawl --max-players 16
+
+# Your own rotation with short warm-ups, and room for 8 duels or custom matches
+ls-server --playlist playlist.ron --warmup 15 --countdown 5 --private-rooms 8
+
+# The default rotation, listed in your directory under a name
+ls-server --directory http://192.168.1.20:7780 --server-name "Scrap Den" --region eu-west \
+    --public-address 192.168.1.20:7777
 ```
 
 ## Choosing the world: share codes
@@ -202,30 +226,47 @@ allowed, the starting loadout, the pickups, per-weapon tuning, each weapon's Shi
 friendly fire. The server sends its rules to every browser when it joins, so players don't need
 to rebuild or download anything.
 
-You can give the server its rules three ways:
+The mode is part of the rule set: Team Brawl, The Squeeze, Heist, Hot Reactor, Last Color
+Standing and Paint the Void each have their own. You can give the server its rules these ways:
 
-1. **Nothing:** the built-in default, `data/rulesets/paint_the_void.ron`.
-2. **A rule set code** made in the [rule set editor](#rule-set-codes-the-editor-and-invite-links):
-   `--ruleset LR8V-6097-G000-TMBG`. Easiest, and nothing to copy around.
-3. **A rule set file** (RON): `--ruleset my_rules.ron`. Copy one of the built-in files, edit
+1. **Nothing:** the default rotation of the six modes' built-in rule sets (see
+   [Playlists](#playlists)).
+2. **A built-in rule set by id:** `--ruleset team_brawl`, played in every match.
+3. **A rule set code** made in the [rule set editor](#rule-set-codes-the-editor-and-invite-links):
+   `--ruleset LR8V-6097-G000-TMBG`. Nothing to copy around.
+4. **A rule set file** (RON): `--ruleset my_rules.ron`. Copy one of the built-in files, edit
    the copy and pass its path.
+5. **Several of them in turn:** a playlist file, `--playlist playlist.ron` (see
+   [Playlists](#playlists)).
 
-Built-in rule set files:
+Built-in rule sets (ids are the file names in `data/rulesets/` without `.ron`; every number is in
+the [mode reference](reference/modes.md)):
 
-| File | What it is |
+| Id | What it is |
 | --- | --- |
-| `data/rulesets/paint_the_void.ron` | The default: Scrap Laser, Paint Thrower, 3 Bolt Rockets and a Shield at spawn; every other weapon and gadget as a pickup; Tectonic Charge 1 per map with a 90 s respawn; friendly fire 50%; all four ship types |
-| `data/rulesets/sandbox_all_weapons.ron` | Every weapon and gadget as a pickup with even weights and 15 s respawns (Tectonic Charge 60 s, 1 per map), so a 5-minute match sees the whole arsenal. Good for trying everything with friends or bots. |
+| `team_brawl` | Team Brawl: 2 teams, kill target from the player count (15 to 50), 10 minutes |
+| `squeeze` | The Squeeze: free-for-all, one life, five wall phases |
+| `heist` | Heist: 2 teams (free-for-all for 1 to 3 players), first to 3 deliveries, 12 minutes |
+| `hot_reactor` | Hot Reactor: free-for-all, 3 lives, 20 s fuse |
+| `last_color_standing` | Last Color Standing: free-for-all, 100 colour, 34 per death, stalemate drain after 8 minutes |
+| `paint_the_void` | Paint the Void: 2 teams, 5 minutes; the only rule set with the Paint Thrower |
+| `instagib_brawl` | Team Brawl with the Instagib mutator: Railspike only, any hit kills |
+| `duel` | The duel rules: free-for-all Team Brawl, first to 10 kills or 5 minutes |
+| `sandbox_all_weapons` | Paint the Void with every weapon and gadget as a pickup at even weights and 15 s respawns (Tectonic Charge 60 s, 1 per map), so a 5-minute match sees the whole arsenal |
+
+All but Instagib Brawl start with the Scrap Laser, 3 Bolt Rockets and a Shield, have every other
+weapon and gadget as a pickup, the Tectonic Charge 1 per map with a 90 s respawn, all four ship
+types, and friendly fire 50% (off in the free-for-all-only modes).
 
 ### The rule set file
 
-The default rule set, shortened, with explanations:
+The Paint the Void rule set, shortened, with explanations:
 
 ```ron
 RuleSet(
     name: "Paint the Void",           // shown in the server log and the editor
     mode: PaintTheVoid((
-        teams: 2,                     // must be 2
+        teams: 2,                     // 2 to 4
         match_secs: 300.0,            // match length in seconds
         respawn_secs: 3.0,            // wait after being destroyed
     )),
@@ -270,8 +311,27 @@ RuleSet(
     friendly_fire_percent: 50,        // 0 = off, otherwise 10 to 100
     allowed_ship_types: [Skitter, Tinker, Hauler, Tug],
     absurdity: 20,                    // 0 to 100; no effect yet
+    // mutators: [Instagib],          // optional: mutators on top of the mode
 )
 ```
+
+Other modes have their own `mode:` block with the mode's settings, for example:
+
+```ron
+    mode: TeamBrawl((
+        teams: 2,                     // 0 = free-for-all, or 2 to 4
+        match_secs: 600.0,
+        respawn_secs: 3.0,
+        kill_target: 0,               // 0 = max(15, 5 x players / teams), at most 50
+        team_kill_penalty: 1,         // points a suicide or team kill costs
+    )),
+```
+
+The mode names are `PaintTheVoid`, `TeamBrawl`, `TheSqueeze`, `Heist`, `HotReactor` and
+`LastColorStanding`; every setting of each is listed and explained in the
+[mode reference](reference/modes.md). Leaving a setting out takes its default. The only mutator
+is `Instagib`: it reduces any rule set to the Railspike (loadout only, free to fire), removes
+secondaries, gadgets and pickups, makes any enemy hit kill and respawns instant.
 
 Availability values:
 
@@ -310,8 +370,12 @@ example:
 - Weights and respawn times can't be negative; tuning needs damage ≥ 0, fire rate > 0, ammo ≥ 0;
   Shield fractions are 0 to 1.
 - `friendly_fire_percent` is 0 or 10 to 100, `absurdity` is 0 to 100, at least one ship type is
-  allowed, the mode has 2 teams, `match_secs` is above 0. `mutators` must be empty (none exist
-  yet).
+  allowed, `match_secs` is above 0, `respawn_secs` and every mode setting at least 0, a mutator
+  is listed once.
+- The team count fits the mode: Paint the Void 2 to 4; Team Brawl 0 (free-for-all) or 2 to 4;
+  Heist 0 or 2; The Squeeze, Hot Reactor and Last Color Standing 0 only.
+- Mode settings make sense, for example Heist needs at least 1 delivery and a carrier speed of
+  1 to 100%, Hot Reactor at least 1 life and a fuse above 0, The Squeeze at least one phase.
 
 ### Weapon, gadget and ship ids
 
@@ -335,8 +399,21 @@ the rule set or a balance list instead.
 ### Rule set codes
 
 Every rule set fits into a **rule set code**: `LR` plus letters and digits in groups of four.
-Codes store only what differs from the default rules of their mode, so they stay short: the
-default Paint the Void rules are `LR8V-6097-G000-TMBG`, and a ban adds about three symbols.
+Codes store only what differs from the default rules of their mode, so they stay short, and a
+ban adds about three symbols. The built-in rules of each mode:
+
+| Mode | Code of its built-in rules |
+| --- | --- |
+| Paint the Void | `LR8V-6097-G000-TMBG` |
+| Team Brawl | `LR8V-63T6-X000-NNJ0` |
+| The Squeeze | `LR8V-65PE-T000-XS10` |
+| Heist | `LR8V-67TK-E000-EQ2G` |
+| Hot Reactor | `LR8V-69BZ-2000-Y3DG` |
+| Last Color Standing | `LR8V-6B79-S000-RPJG` |
+
+The editor has no mode picker yet: to edit another mode's rules, open it with that mode's code
+(`?editor=rules&rules=LR8V-63T6-X000-NNJ0`); it edits weapons, pickups, tuning and times, not
+the mode's own settings (write a rule set file for those).
 Codes made by older versions (they start with `LR6`) still work. Codes are
 case-insensitive, and dashes and spaces are optional. `--ruleset` accepts a code wherever it
 accepts a file.
@@ -375,8 +452,8 @@ opens it with a code loaded; `&world=LS…` fills the World field.
 ### Invite links
 
 An invite link points at a server and may carry a world, a rule set and a party:
-`http://<server>/?join=<host:port>&code=<LSâ€¦>&rules=<LRâ€¦>&party=<P-â€¦>` (every part optional;
-`world=` works like `code=`, `room=<R-â€¦>` joins a private room). Opening one and choosing
+`http://<server>/?join=<host:port>&code=<LS…>&rules=<LR…>&party=<P-…>` (every part optional;
+`world=` works like `code=`, `room=<R-…>` joins a private room). Opening one and choosing
 **Play online** joins that server:
 
 - with a **party code**: the party's room (the public room, or its private custom match) and,
@@ -385,7 +462,12 @@ An invite link points at a server and may carry a world, a rule set and a party:
   with them (one of its `--private-rooms`) and the player joins it;
 - with neither: the server's normal rotation.
 
-The rule set editor's links (`?world=â€¦&rules=â€¦`) therefore start a custom match on the server
+Custom matches and duels play the rule set code they were given as it is: your `--ban` flags
+and balance list do **not** apply in private rooms in this build (only in the public rotation).
+Keep that in mind before you give out a server to people you don't know; `--private-rooms 0`
+turns custom matches and duels off (party invites into the public room still work).
+
+The rule set editor's links (`?world=…&rules=…`) therefore start a custom match on the server
 that serves the page. Hosts can still use the codes for their own server (`--code`, `--ruleset`,
 or open the link with `&editor=rules` added to see and copy them).
 
@@ -415,7 +497,8 @@ BalanceList(
 ```
 
 The rules the server plays are: the rule set, then the balance list, then the `--ban` flags,
-checked at startup. The balance list is read again before every match; if it can't be read or is
+checked at startup, for every entry of the playlist. They don't reach private rooms (custom
+matches and duels, see [Invite links](#invite-links)). The balance list is read again before every match; if it can't be read or is
 invalid then, the server logs `could not reload the rules; keeping the previous ones` and plays
 on with the previous rules. At startup a bad list stops the server.
 
@@ -493,9 +576,10 @@ Ways around it:
    `http://localhost:7780/?server=192.168.1.20:7777`. The page is then secure (localhost), and the
    game connects to your server. The browser may ask for permission to access devices on the
    local network: allow it. Their client must be built from the same version as your server.
-3. **HTTPS in front of the server:** a reverse proxy with a real certificate that serves the page
-   over `https://` and forwards WebSocket upgrades on `/ws` to the server would give players a
-   secure page with no flags. **This setup is not tested with this build.**
+3. **HTTPS in front of the server:** a reverse proxy with a real certificate serves the page over
+   `https://` and forwards everything (including the WebSocket upgrade on `/ws`) to the server,
+   so players get a secure page with no flags. See
+   [HTTPS and a public directory](#https-and-a-public-directory).
 
 For players on the internet, you also need port forwarding (see below). Option 1 or 2 applies
 there too.
@@ -577,8 +661,8 @@ Verified against `ls-bots --help` of this build:
 | `--verbose` | off | Log debug output |
 
 Plan the numbers: `--count` plus the human players must fit in `--max-players`. Extra bots are
-refused with "room is full", and the run ends with exit code 2. The bots rejoin by themselves
-when a match restarts. Bots built from a different version than the server are refused with a
+refused with "room is full", and the run ends with exit code 2. The bots stay connected from
+match to match (and rejoin by themselves on older servers that restart matches). Bots built from a different version than the server are refused with a
 data mismatch.
 
 When the bots stop, they print a summary table (with shots and hits per weapon) and a result
@@ -614,7 +698,7 @@ Important lines:
 | `webtransport listening … port=… cert_sha256=…` | WebTransport is up, with its certificate hash |
 | `listening (http + websocket at /ws) … rules_code=… max_players=…` | The server accepts players |
 | `share code … - open http://… to play` | The address to open in a browser |
-| `player joined conn=… player=… team=… name=… transport=… players=…` | A player joined (team 0 is Orange, 1 is Blue) |
+| `player joined conn=… player=… team=… name=… transport=… players=…` | A player joined (team 0 is Orange, 1 Blue, 2 Lime, 3 Magenta; in free-for-all modes every player has a side of their own) |
 | `join rejected … reason=ServerFull` | The server was full. Other reasons: `DataMismatch` (the browser or bot was built from different game data), a version mismatch, or a bad handshake. |
 | `player left … reason=…` | A player left, timed out or was removed |
 | `tick stats …` | Performance and match counters, every `--stats-interval` seconds (see below) |
@@ -706,9 +790,9 @@ playlist.
 ### Playlists
 
 Without `--playlist` and `--ruleset`, the server rotates through the default playlist: Team
-Brawl (4 players or more), The Squeeze, Paint the Void, Hot Reactor, Heist and Last Color
-Standing, each on a new random world (or on `--code`'s world). Modes whose rule set isn't in
-this build yet are left out. `--ruleset` plays one rule set on one world in every match.
+Brawl (4 players or more), The Squeeze (2 or more), Paint the Void (1 or more), Hot Reactor,
+Heist and Last Color Standing (2 or more each), each on a new random world (or on `--code`'s
+world). `--ruleset` plays one rule set on one world in every match.
 A team Heist with fewer than 4 players plays its free-for-all variant (every extraction zone
 counts for everyone).
 
@@ -721,8 +805,9 @@ Playlist(
         (rules: "team_brawl", min_players: 4),
         // Your own rule set file (relative to the playlist file) on a fixed world.
         (rules: "my_rules.ron", world: Code("LS0C-0000-0000-0000-8006-8001-8F9M")),
-        // A rule set code from the editor, a random world with slider ranges, at most 8 players.
-        (rules: "LR6V-69CM-G006-58R", world: RandomSliders(enclosure: (20, 60), density: (30, 70)), max_players: 8),
+        // A rule set code (here: Team Brawl with 3 teams, no Railspike), a random world with
+        // slider ranges, at most 8 players.
+        (rules: "LR8V-63T6-XB09-C1W0-0GG1-3038-2C", world: RandomSliders(enclosure: (20, 60), density: (30, 70)), max_players: 8),
     ],
 )
 ```
@@ -733,7 +818,7 @@ Playlist(
 - `world`: `Random` (default: a new random world with the default sliders every time),
   `RandomSliders(enclosure: (low, high), density: (low, high))` or `Code("LS…")`.
 - `min_players` (default 1) and `max_players` (default 32): the entry is skipped while the
-  player count is outside this range. If no entry fits, a Team Brawl entry is played (with 2
+  player count is outside this range. If no entry fits, the playlist's first `team_brawl` entry is played (with 2
   teams from 4 players on, free-for-all below), otherwise the next entry anyway.
 
 The server checks the whole playlist at startup and refuses to start if an entry is invalid.
@@ -745,7 +830,13 @@ duels, parties and custom matches, each with its own code (`R-` and six characte
 own simulation thread. A private room closes when its last player leaves (or a minute after it
 was opened if nobody came). Players reach one through an invite link, a party code or an
 accepted duel; a client asking for an unknown or closed room code gets "unknown room". When all
-private rooms are in use, new duels and custom matches are refused until one closes.
+private rooms are in use, new duels and custom matches are refused until one closes. A private
+room runs the same lobby as the public room (warm-up, countdown, results) and plays its one
+match again and again until it is empty: a custom match on its world (a new random world each
+time if the invite had none) with the invite's rules (the public room's current rules if it had
+none), a duel on the challenger's world with at most 2 players. Each room has its own
+simulation thread and its own `tick stats` line; `--private-rooms` is capped at one room per CPU
+core beyond the public room's, so the tick budget holds per room.
 
 ### Parties and duels
 
@@ -761,7 +852,7 @@ setup beyond `--private-rooms`:
   opens a private two-player room on the challenger's world with the duel rules (free-for-all
   Team Brawl, first to 10 kills or 5 minutes, unless the challenger gave a rule set code) and
   both players move there.
-- The browser talks to the server's small JSON API at `/api/â€¦` for this (and for the server
+- The browser talks to the server's small JSON API at `/api/…` for this (and for the server
   list's player names). Players are known by a random id their browser keeps; there are no
   accounts.
 
@@ -790,6 +881,10 @@ stopped with a hard kill (closing the terminal window, Task Manager, `kill -9`) 
 | Players time out when their tab is hidden | Browsers slow down background tabs to about one update per second, which still keeps the connection alive. A computer going to sleep drops the connection. |
 | Stuttering, `tick p99 over budget` warnings | Use a release build, and check CPU load on the host. With `RUST_LOG=debug` the log itself adds load. |
 | Nobody gets to the next match | See the log for "could not build the next room; trying again". Players can reload the page to rejoin. |
+| The match never starts, the warm-up keeps going | The next playlist entry needs more players (Team Brawl: 4). After `--warmup` seconds the server picks an entry that fits; with `min_players` too high everywhere it plays the entry anyway. Check the `player count does not fit` log line. |
+| Server list empty or "No server directory" | The page's server has no `--directory`, or the directory is unreachable from the browser. On `https://` pages the directory must be `https://` too and named in the link (`?directory=`). `http://<directory>/servers` shows what is registered; servers of another build are hidden. |
+| "unknown room" / "unknown party" for invites | Private rooms close when their last player leaves, parties 10 minutes after their last member left; codes only work on the server that made them. |
+| Duels or custom matches are refused | All `--private-rooms` are in use (or set to 0). Raise it, within your CPU cores. |
 
 ## Server directory (optional)
 
@@ -803,7 +898,9 @@ cargo run -p ls-directory --release -- --bind 0.0.0.0:7780
 
 It keeps everything in memory (a restart forgets the list; servers re-register within 10 s) and
 speaks plain HTTP on TCP port 7780. Browsers on an `https://` page need it behind an HTTPS reverse
-proxy.
+proxy (see [HTTPS and a public directory](#https-and-a-public-directory)).
+
+Verified against `ls-directory --help` of this build:
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
@@ -830,20 +927,78 @@ world, player count and the players' names, and the browser measures the ping to
 itself. Players open it with the **Server list** link on the start screen; the page finds the
 directory through the server that served it (its `--directory`), or from `?directory=<url>` in
 the page address. Only servers of the same game version are listed. A duel challenge to a
-player on another listed server is passed on by the directory.
+player on another listed server is passed on by the directory. Hand players a list link such as
+`http://<your server>/?servers&directory=http://<directory>:7780` to open the list directly; the
+`directory=` part stays in the invite links the page makes.
+
+Things to know:
+
+- The directory has no accounts. Each server claims its address with a random secret on its
+  first check-in, so nobody else can change its entry while it is listed.
+- Behind a reverse proxy every request comes from the proxy's address, so raise `--rate` and
+  `--burst` (every player in game asks it for relayed duel challenges every 4 seconds).
+- `--public-address` is what the list shows and what invite links use: set it to the address
+  players reach the server at (a domain name or your public IP and port).
+
+### HTTPS and a public directory
+
+Browsers treat a page from `https://` as secure, so players need no browser flags, but such a
+page may only talk to `https://` and `wss://` addresses. For a public setup, put a reverse proxy
+with a real certificate in front of both the game server's HTTP port and the directory. With
+[Caddy](https://caddyserver.com/) (it gets certificates by itself and forwards WebSocket
+upgrades) a `Caddyfile` for two domain names is:
+
+```
+play.example.com {
+    reverse_proxy 127.0.0.1:7777
+}
+dir.example.com {
+    reverse_proxy 127.0.0.1:7780
+}
+```
+
+Then start both programs on the same machine:
+
+```sh
+ls-directory --bind 127.0.0.1:7780 --rate 100 --burst 400
+ls-server --bind 127.0.0.1:7777 --wt-bind 0.0.0.0:7777 \
+    --directory http://127.0.0.1:7780 --public-address play.example.com:443 \
+    --server-name "Scrap Den" --region eu-west
+```
+
+- Players open `https://play.example.com/`; the server list is
+  `https://play.example.com/?servers&directory=https://dir.example.com`. The page learns the
+  directory from its server, which only knows the plain `http://` address it registers with, so
+  on `https://` pages always give the `directory=` part.
+- `--public-address play.example.com:443` makes the list and the invite links point at the
+  proxy (`wss://play.example.com/ws` for the game, `https://play.example.com/api/…` for parties
+  and duels).
+- WebTransport doesn't go through the proxy: it uses UDP on `--wt-bind` (here 7777) with the
+  server's own certificate, which browsers trust by its hash. Open UDP 7777 (and TCP 443 for the
+  proxy) in the firewall; without UDP players still play over the proxied WebSocket.
+- The game server talks to the directory over plain HTTP (`ls-server` has no TLS client). Keep
+  that link on the same machine or a private network: the server's secret travels with every
+  check-in.
+- Other game servers on other machines need their own HTTPS name and proxy the same way, and a
+  plain-HTTP route to the directory (a private network, or the proxy's HTTP side).
+
+This setup follows from how the pieces work; the project's automated tests cover the directory,
+the server list and invites over plain HTTP on one machine, not a TLS proxy.
 
 ## Not in this build yet
 
-- **Modes arrive one by one:** the default rotation only holds the modes whose rule sets are in
-  this build; rule sets can't enable mutators yet.
-- **No accounts or friends lists.** Players are known by a random id their browser keeps;
-  parties exist on one server only. A public directory is not run for you: host your own
+- **Co-op modes and The Architect**, and a vote for the next mode (the rotation plays in order).
+- **No accounts, friends lists or ranked play.** Players are known by a random id their browser
+  keeps; parties exist on one server only. A public directory is not run for you: host your own
   `ls-directory` (behind an HTTPS proxy for `https://` pages).
 - **No admin commands** while running (kick, change world or rule set, end match). Restart the
   server with new flags; bans and tuning can change between matches through the balance list.
-- **No slider tool:** you can't create a share code with chosen slider values yet, and only
-  Enclosure, Density, Instability and (visually) Palette have an effect. The rule set's `absurdity` value has no
+- **Server bans in private rooms:** custom matches and duels ignore `--ban` and the balance list.
+- **No slider tool:** you can't create a share code with chosen slider values yet (playlists can
+  pick random worlds within Enclosure and Density ranges), and only Enclosure, Density,
+  Instability and (visually) Palette have an effect. The rule set's `absurdity` value has no
   effect yet.
-- **No custom TLS certificate** for WebTransport and no built-in HTTPS for the web page.
+- **No custom TLS certificate** for WebTransport and no built-in HTTPS for the web page or the
+  directory (use a reverse proxy).
 - **No WebRTC fallback, desktop app, regional hosting or orchestration** (the design mentions
   Agones or Nomad for later).

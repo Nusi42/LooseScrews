@@ -1,10 +1,12 @@
 # Loose Screws: player manual
 
-This manual covers the current build (Milestone 2: the full arsenal, four ship types, gadgets
-and a level that fights back). Features from the game design that this build doesn't have yet
-are listed under [Not in this build yet](#not-in-this-build-yet). Every number in the
-weapon, ship and gadget tables of the [reference pages](reference/) is generated from the
-game's data files, so those pages always match the build.
+This manual covers the current build (Milestone 3: every player-versus-player mode, the
+Instagib mutator, duels, a lobby between matches, a server list, invite links and parties, on
+top of Milestone 2's full arsenal, four ship types, gadgets and a level that fights back).
+Features from the game design that this build doesn't have yet are listed under
+[Not in this build yet](#not-in-this-build-yet). Every number in the
+weapon, ship, gadget and mode tables of the [reference pages](reference/) is generated from
+the game's data files, so those pages always match the build.
 
 ## Contents
 
@@ -21,15 +23,18 @@ game's data files, so those pages always match the build.
 - [Gadgets](#gadgets)
 - [The level fights back](#the-level-fights-back)
 - [Pickups and wrecks](#pickups-and-wrecks)
-- [Paint the Void](#paint-the-void)
-- [What the modes look like](#what-the-modes-look-like)
-- [Share codes, rule set codes and invite links](#share-codes-rule-set-codes-and-invite-links)
-  ([server list, parties and duels](#server-list-parties-and-duels))
+- [Game modes](#game-modes): [Paint the Void](#paint-the-void), [Team Brawl](#team-brawl),
+  [The Squeeze](#the-squeeze), [Heist](#heist), [Hot Reactor](#hot-reactor),
+  [Last Color Standing](#last-color-standing), [Instagib](#instagib), [duels](#duels)
+- [Between matches: the lobby](#between-matches-the-lobby)
+- [Share codes, rule set codes and the rule set editor](#share-codes-rule-set-codes-and-the-rule-set-editor)
+- [Playing with friends: server list, invites, parties and duels](#playing-with-friends-server-list-invites-parties-and-duels)
+- [Settings](#settings)
 - [Troubleshooting](#troubleshooting)
 - [Not in this build yet](#not-in-this-build-yet)
 
 Reference tables: [weapons](reference/weapons.md), [ships](reference/ships.md),
-[gadgets](reference/gadgets.md).
+[gadgets](reference/gadgets.md), [modes](reference/modes.md).
 
 ## What Loose Screws is
 
@@ -37,8 +42,11 @@ You pilot a Scrapling, a palm-sized ship built from junk, through a procedurally
 world of caverns, tunnels and floating rock. You can fly in any direction and turn any way you
 like, with no fixed "up". The level is part of the fight: weapons blast craters, melt
 channels, scorch and charge the rock, knock debris loose and even grow new rock, and all of it
-stays for the rest of the match. In **Paint the Void**, the only mode in this build, two teams
-race to cover as much of the level as they can in their own colour.
+stays for the rest of the match. Servers rotate through six modes: paint the level in your team's
+colour (**Paint the Void**), team deathmatch (**Team Brawl**), survive the closing walls (**The
+Squeeze**), dig out and steal the core (**Heist**), pass on a bomb (**Hot Reactor**) or keep
+your colour in a black-and-white world (**Last Color Standing**), plus one-hit-kill
+**Instagib** matches and one-on-one **duels**.
 
 Every world comes from a **share code**, a short text such as
 `LS0F-143C-ZQW8-CCHA-V4M6-8001-8FAE`. The same code always builds the same world.
@@ -79,10 +87,13 @@ plain background; the game then explains what is missing when you press a button
 
 Then choose one of the two buttons:
 
-- **Play online** joins the server that served the page. You always play **the server's world
-  and rules**, whatever you typed in the share code field. If your code is different, a message
-  in the kill feed reminds you that your code only works in practice. The server puts you on the
-  team with fewer players.
+- **Play online** joins the server that served the page (or the one an
+  [invite link](#invite-links) names). You play **the server's world, mode and rules**, whatever
+  you typed in the share code field; if your code is different, a message in the kill feed
+  reminds you that your code only works in practice. Between matches you stay connected and
+  wait in the [lobby](#between-matches-the-lobby). In team modes the server puts you on the team
+  with fewer players; in a mode with lives that is already running, you spectate until the next
+  match.
 - **Practice offline** builds a world on your own computer from the share code, or a random
   world if the field is empty, with the default Paint the Void rules. You fly for the Orange
   team against three target dummies ("Dummy 1" to "Dummy 3") on the Blue team. The dummies
@@ -129,7 +140,9 @@ same place as on a US keyboard (W, A, S, D and so on).
 | O | Spectate from the next match on, or play again |
 | Esc | Release the mouse |
 
-Tab, F3, Enter, T and O work even while the mouse is released. While you spectate, the flight
+Tab, F3, Enter, T and O work even while the mouse is released, except that a focused button,
+link or checkbox keeps Enter and Tab for itself (Enter presses it, Tab moves the focus) and a
+text field keeps every key except F3. While you spectate, the flight
 keys and the mouse fly the camera (Shift is faster, it passes through rock), the left mouse
 button follows the next ship and the right mouse button goes back to the free camera. Even a very quick tap of G or V counts.
 Mouse sensitivity is fixed in this build, and there are no settings for inverted look or key
@@ -178,15 +191,11 @@ dimmed, pilots who are out are struck through, and your own row is highlighted.
 **Results:** when a match ends, a full-screen result shows "Victory", "Defeat" or "Draw" (or
 who won, while you spectate), the team scores as bars or, in free-for-all modes, a podium of
 the top three, and every pilot with score, kills and deaths. Online it counts down to the next
-match and names its mode (see [After the match](#after-the-match)).
+match and names its mode (see [Between matches: the lobby](#between-matches-the-lobby)).
 
-**Lobby:** between matches you fly the next match's level with weapons off (warm-up). A card
-on the left shows the next mode with a one-line summary, the world code and rules, every pilot
-in the room with a tick when ready and their team pick, and what the room waits for. Press
-Enter when you're ready, T to pick a team, O to spectate. The countdown starts when enough
-pilots are there and everyone is ready, or when the warm-up timer runs out. While the mouse is
-free (Esc), the camera leaves your cockpit and flies a slow tour through the level; click into
-the game to fly your ship again.
+**Lobby:** between matches you fly the next match's level with weapons off (warm-up); a card
+on the left shows the next mode, the world, the rules and every pilot's ready tick and team
+pick. Enter readies you, T picks a team. See [Between matches: the lobby](#between-matches-the-lobby).
 
 **Debug overlay (F3):** frame rate and the slowest recent frame, ping, the connection type
 (WebTransport or WebSocket), prediction corrections, shot counters, terrain chunk counts, your
@@ -625,13 +634,35 @@ You collect a weapon, upgrade or gadget pickup by flying within about a ship len
 pickup that would do nothing for you (a full ammo count, a Scrap Laser at level 6, the gadget you
 already have) stays for someone else. Scrap piles and wrecks are scavenged with **R**.
 
-## Paint the Void
+## Game modes
 
-Two teams, **Orange** and **Blue**, try to paint as much of the level as they can.
+A server plays its modes in a rotation (the host's playlist) and you stay connected from one
+match to the next; see [Between matches: the lobby](#between-matches-the-lobby). The numbers
+below are the built-in rules; a server can change them, and the
+[mode reference](reference/modes.md) lists every built-in rule set with its numbers. The
+scoreline at the top of the screen always names the mode and what wins it ("First to 15
+kills", "Last ship flying wins", and so on).
 
-- The match lasts **5 minutes** (the server's rules can change this).
+**Teams or everyone for themselves.** Team modes have 2 to 4 teams: **Orange**, **Blue**,
+**Lime** and **Magenta**. The server puts you on the team with fewer players (or on the team you
+picked in the lobby, as long as the teams stay even). In free-for-all modes every other ship is
+an enemy, each pilot has a colour of their own, and the scoreline shows the top three and your
+place. Friendly fire (50% with the built-in team rules) only applies between teammates.
+
+**Lives and spectating.** In The Squeeze, Hot Reactor and Last Color Standing you can run out:
+once you are out, you **spectate** until the next match. Pilots who join one of these modes more
+than 10 seconds after the start (Hot Reactor: after its first detonation) spectate too. While
+you spectate, the flight keys and the mouse fly a free camera (Shift is faster, and it passes
+through rock), the left mouse button follows the next ship and the right mouse button goes
+back to the free camera.
+
+### Paint the Void
+
+Two to four teams try to paint as much of the level as they can.
+
+- The match lasts **5 minutes**.
 - Your team's score is the share of the **whole level's paintable surface** covered in your colour.
-  The score updates twice a second, and the HUD bars and the scoreboard show it in percent.
+  The score updates twice a second, and the HUD and the scoreboard show it in percent.
 - The paint's **effect colour** (red, blue, yellow) doesn't matter for the score; only the team
   does.
 - When the timer runs out, the team with more painted surface wins. Equal coverage is a draw.
@@ -640,8 +671,8 @@ Two teams, **Orange** and **Blue**, try to paint as much of the level as they ca
 - Painting over the other team's colour takes that surface from them.
 - Craters erase paint, both theirs and yours.
 
-Levels are large, so the percentages stay small: a close match can end with both teams
-under 1%. Only the comparison between the two teams counts.
+Levels are large, so the percentages stay small: a close match can end with every team
+under 1%. Only the comparison between the teams counts.
 
 Tactics:
 
@@ -653,22 +684,114 @@ Tactics:
 - Use the effect colours: sticky yellow around your painted areas slows raiders down.
 - Guard your team's painted areas and hunt the enemy painters.
 
-### After the match
+### Team Brawl
 
-Online, the result stays on screen for about 10 seconds (the server can change this). Then you
-move on to the next match of the server's rotation without leaving: the warm-up (the lobby
-card, see [The HUD](#the-hud)), the countdown and the next match load in place, on the same
-connection, with your name and settings. Servers with the lobby turned off start the next
-match right away.
+Team deathmatch with respawns (2 to 4 teams), or every pilot for themselves.
 
-An older server instead closes every connection after the result and starts a new match on the
-same level; your browser then rejoins automatically ("Match over. Joining the next match…") and
-keeps your name, ship choice, horizon assist setting and debug overlay. If it can't rejoin
-after about 12 tries, it shows an error. Reload the page to join again.
+- A kill scores **1 point** for you and your team. Destroying yourself (your own rocket, for
+  example) or a teammate costs your team a point.
+- The first team to the **kill target** wins at once. The target grows with the number of
+  players: 5 kills per player in a team, at least 15 and at most 50 (8 players in 2 teams: 20).
+  It never drops during a match, even when players leave.
+- Otherwise the team with the most kills wins when the **10-minute** timer runs out; equal
+  scores are a draw.
+- You respawn after 3 seconds. You start with the Scrap Laser, 3 Bolt Rockets and a Shield
+  (no Paint Thrower); everything else is a pickup.
 
-In practice mode, the result stays on screen. Reload the page for a new round.
+### The Squeeze
 
-## What the modes look like
+Every pilot for themselves, **one life**, and the level shrinks.
+
+- For the first minute nothing happens. Then the walls close in five **phases**: each one is
+  announced 20 seconds ahead (the next safe zone appears and the walls glow cyan), then the walls
+  grind inward for 30 seconds (amber, with glowing cracks) until only the next zone is left. The
+  zones get smaller every time and their centre moves.
+- A moving wall **crushes** you: 25 hull per second while you touch it, and the Shield doesn't
+  help. A ship the walls swallow is destroyed.
+- Closing walls shed **scrap debris** inward: something to scavenge on the way.
+- Kills score a point, but only one thing wins: being the **last ship flying**. If the last two
+  ships die in the same moment, it's a draw. After the fifth phase the walls keep closing slowly,
+  so every match ends.
+- The HUD shows the phase and its timer ("Phase 2 · walls close in 0:09", "walls closing") and
+  warns you when you are outside the next zone ("Walls close in 0:09: reach the next zone") or
+  being crushed.
+
+Tips: head for the next zone as soon as it is announced; the walls stop exactly on its edge.
+Fights next to a moving wall end badly for whoever gets pushed into it.
+
+### Heist
+
+Mine the **core** out of its vein at the bottom of the level and carry it to your team's
+**extraction zone**. Two teams; with fewer than 4 players it is every pilot for themselves, and
+any extraction zone counts.
+
+- The core sits in a knot of **hard rock** in a chamber deep down. Blast it free: any weapon's
+  craters count (4 to 5 Bolt Rockets do it). A gold outline on the rock shows where to dig.
+- Once the core is free, the chamber's rock turns weak and its ceiling comes down for
+  30 seconds: chunks of rock and debris fall.
+- Fly into the free core to **take it**. The carrier is marked for everyone (a gold halo and a
+  beam), flies at **75%** of its top speed and **can't boost**.
+- Destroy the carrier and the core drops where it was: anyone can take it, and after
+  20 seconds it returns to the vein.
+- Fly the core into your **extraction zone** (at the level's surface, or your spawn cavern in
+  fully enclosed levels) to score a delivery. The core is back in the vein, buried again, after
+  15 seconds.
+- First to **3 deliveries** wins, otherwise the most deliveries after **12 minutes** (equal: a
+  draw). Kills don't score.
+
+Tips: escort your carrier, it can't outrun anyone. Rockets dig fastest.
+
+### Hot Reactor
+
+Every pilot for themselves with **3 lives**, and a reactor nobody wants.
+
+- A few seconds after the start the reactor appears on a random pilot. You can't drop it:
+  **pass it** by being hit by another ship (the shooter gets it, even if your Shield took the
+  hit) or by **ramming** someone. A new holder can't lose it again for 1 second.
+- Its **fuse** runs 20 seconds, faster with every other ship within 15 u of the holder (two
+  ships close by: twice as fast). The fuse keeps running when the reactor changes hands.
+- When it **detonates**, the holder is destroyed and loses a life; the blast (10 u) hurts every
+  ship near it. A new reactor appears on a living pilot 3 seconds later.
+- Other deaths don't cost a life: you respawn after 3 seconds as usual. If someone destroys the
+  holder, the reactor goes to them. Destroying yourself while holding it sets it off.
+- The **last pilot with lives** wins. If the 15-minute timer runs out first, the most lives win.
+- The HUD shows who holds it and the fuse ("Reactor 6.5 s · <name>") and warns you when you
+  hold it or are too close.
+
+Tips: holding it, fly at other ships and ram them; not holding it, stay out of the red fuse
+sphere and don't shoot the holder.
+
+### Last Color Standing
+
+Every pilot for themselves on a **black-and-white level**.
+
+- You start with **100 colour**. Every time you are destroyed (by anyone or anything) you lose
+  **34**; damage alone takes nothing. At 0 colour you are out and spectate.
+- Ships keep the share of their colour their meter has left, so a pale ship is one death from
+  being out, and colourful ships are easy to spot. Your own meter is on the left of the HUD.
+- After **8 minutes** a stalemate drain starts: every pilot still in loses 1 colour every
+  2 seconds, so the match always ends.
+- The **last pilot with colour** wins; nobody left (the last two out at once) is a draw.
+
+### Instagib
+
+Instagib is a **mutator**: it changes the rules of any mode (the built-in **Instagib Brawl** is
+Team Brawl with it).
+
+- Everyone flies with the **Railspike** only, and it fires for free.
+- **Any direct hit from an enemy destroys you**, Shield or not. Your own shots, splash and
+  ramming work as usual.
+- No other weapons, gadgets or pickups (in Paint the Void you keep the Paint Thrower).
+- The HUD hides hull and energy; boost works as usual. Respawns are instant.
+- The scoreline reads "<mode> · Instagib" and the shot count "∞ · one hit kills".
+
+### Duels
+
+A duel is a private match for two: free-for-all Team Brawl, **first to 10 kills or 5
+minutes**, on the challenger's world (and with the challenger's rule set code, if they gave
+one). How to challenge someone: [Duels](#challenging-someone-to-a-duel).
+
+### What the modes look like
 
 Every mode marks its objectives in the world, not only on the HUD:
 
@@ -692,7 +815,47 @@ Every mode marks its objectives in the world, not only on the HUD:
 - **Four teams:** Orange, Blue, Lime and Magenta show on the ships' liveries, the paint, the
   paint shots and the respawn flash.
 
-## Share codes, rule set codes and invite links
+## Between matches: the lobby
+
+Online you never leave the server between matches. Every match runs through the same steps,
+all on the same connection (no reload, no reconnect):
+
+1. **Warm-up.** You fly the next match's level with weapons, gadgets and pickups off. A card on
+   the left shows the next mode with a one-line summary, the world code and rules, every pilot
+   in the room with a tick when ready and their team pick, and what the room waits for. While
+   the mouse is free (Esc), the camera leaves your cockpit and flies a slow tour through the
+   level; click into the game to fly your ship again.
+2. **Countdown** (10 seconds by default). It starts when enough pilots for the next mode are
+   there (Team Brawl needs 4, most modes 2) and either everyone pressed ready or the warm-up
+   timer (30 seconds by default) ran out. If pilots leave and there are too few, it stops.
+3. **The match**, on a fresh copy of the level.
+4. **Results** (about 10 seconds): "Victory", "Defeat" or "Draw" (or who won, while you
+   spectate), the team scores as bars or, in free-for-all modes, a podium of the top three, and
+   every pilot with score, kills and deaths, plus "Next: <mode> in N s". Then the next warm-up.
+
+In the warm-up and the countdown:
+
+| Key | Button | What it does |
+| --- | --- | --- |
+| Enter | Ready | Ready (or not ready) for the next match |
+| T | Team | Pick your team for the next match: Auto, then each team in turn. You get it as long as the teams stay even. |
+| O | Spectate | Spectate from the next match on (or play again). The lobby shows your choice; from the next match on you fly the spectator camera without a ship until you press O again. Warm-ups between matches are open to everyone. |
+
+If the room has too few or too many pilots for the next mode when the warm-up runs out, the
+server switches to another mode that fits. Pilots who join in the middle of a match play at once
+in modes with respawns, and spectate until the next match in modes with lives (see
+[Game modes](#game-modes)). Servers with the lobby turned off start the next match right after
+the results.
+
+An older server instead closes every connection after the result and starts a new match on the
+same level; your browser then rejoins automatically ("Match over. Joining the next match…") and
+keeps your name, ship choice, horizon assist setting and debug overlay. If it can't rejoin
+after about 12 tries, it shows an error. Reload the page to join again.
+
+In practice mode (always Paint the Void against dummies), the result stays on screen. Reload the
+page for a new round.
+
+## Share codes, rule set codes and the rule set editor
 
 ### Share codes (worlds)
 
@@ -733,11 +896,13 @@ world generator (version 3) start with `LS0C` to `LS0F`.
 
 ### Rule set codes
 
-A server's **rule set** decides the match length, respawn time, which weapons, gadgets and ship
+A server's **rule set** decides the mode and its settings (teams, kill target, lives and so
+on), mutators such as Instagib, the match length, respawn time, which weapons, gadgets and ship
 types are allowed, the starting loadout, the pickups, per-weapon tuning and friendly fire. A rule
 set fits into a short **rule set code** that starts with `LR`, for example `LR8V-6097-G000-TMBG`
-(the default Paint the Void rules). You don't need one to play: the server sends its rules when
-you join. Codes are for hosts and for sharing rule ideas.
+(the default Paint the Void rules). Each mode's default rules have a short code of their own.
+You don't need one to play: the server sends its rules when you join. Codes are for hosts, for
+custom matches and duels, and for sharing rule ideas.
 
 ### The rule set editor
 
@@ -745,8 +910,10 @@ Click **Rule set editor** on the start screen (or open the game page with `?edit
 can change every rule: weapon and gadget availability (loadout and pickup, pickup only, loadout
 only, banned), the starting loadout, pickup weights, respawn times and ammo, the Tectonic
 Charge's per-map limit, damage, fire rate and ammo multipliers per weapon, how each weapon meets a
-Shield, friendly fire, the allowed ship types, scrap piles, match and respawn times. Problems the
-server would refuse are listed in red. When the rules are valid, the **Share** section gives you:
+Shield, friendly fire, the allowed ship types, scrap piles, match and respawn times. It edits the
+rules of the mode the loaded code has (open a code of another mode with `?editor=rules&rules=LR…`);
+it has no mode picker and no fields for the mode's own settings (teams, kill target, lives and
+so on) yet. Problems the server would refuse are listed in red. When the rules are valid, the **Share** section gives you:
 
 - the **rule set code**,
 - an optional **World** field for a share code,
@@ -757,29 +924,81 @@ server would refuse are listed in red. When the rules are valid, the **Share** s
 The editor remembers the last code you made. Opening it with `?editor=rules&rules=LR…` loads that
 code. **Close** returns to the start screen.
 
-**Opening an invite link** shows the normal start screen; choose **Play online**. A link with a
-world and/or rule set code (like the editor's) opens a private **custom match** with them on the
-server that serves the page (or the one named by `join=`), and you play there; friends who open
-the same link get their own custom match, so to play together use a party invite (below). To look
-at an invite's rules, add `&editor=rules` to the link.
+An invite link with a world and/or rule set code opens a private **custom match** with them
+(see [Invite links](#invite-links)).
 
-### Server list, parties and duels
+## Playing with friends: server list, invites, parties and duels
 
-- **Server list:** the **Server list** link on the start screen lists the servers registered
-  with the server directory your host uses (name, region, mode, players, ping, world). **Join**
-  opens that server. If no directory is set up, the list says so; you can still join a server
-  by its address or an invite link.
-- **Parties:** in game, press Esc (to free the mouse) and click **Party & duels**, then
-  **Create party invite**. Send the link to your friends: it brings them into your room and, in
-  team modes, onto your team when the teams stay even (otherwise the party is split). The party
-  code (`P-…`) works only on that server.
-- **Duels:** the same panel lists the other players on the server with a **Duel** button; the
-  server list has one next to every listed player too. A duel is played on your current world
-  (from the server list: the world you enter, or a random one). The other player sees a
-  challenge with **Accept** and **Decline** for 30 seconds; when they accept, you both move to
-  a private two-player match (first to 10 kills or 5 minutes). Players on another server get
-  the challenge through the directory.
-- Your browser remembers a random player id for this; there are no accounts.
+Your browser keeps a random player id for all of this; there are no accounts or friends lists.
+It lives in the browser's storage, so another browser (or a private window) is a different
+player.
+
+### The server list
+
+Click **Server list** in the bottom right corner of the start screen (or open the game page
+with `?servers`). It lists the servers registered with the **server directory** your host uses:
+name, region, mode, players, **ping** (measured by your browser) and world, fullest servers
+first, and under each server the pilots on it. Only servers running the same build as the page
+are listed. **Join** switches the page to that server (an invite link to it); **Back** returns
+to the start screen. If the page's server uses no directory, the list says so; you can still join a server
+by its address or an invite link. A host can also hand you a list link with
+`?servers&directory=<directory address>`.
+
+### Invite links
+
+An invite link opens the game page and says where to play. Choose **Play online** after
+opening it:
+
+- with a **party code** (`party=P-…`): you join your friend's room on that server and, in team
+  modes, their team when the teams stay even;
+- with a **world and/or rule set code** but no party (for example the rule set editor's link,
+  `…/?world=LS…&rules=LR…`): the server opens a private **custom match** with them and you play
+  there. Friends who open the same link get a custom match of their own, so to play together use
+  a party invite instead;
+- with a **server address** (`join=host:port`): that server instead of the one that served the
+  page;
+- with a private **room code** (`room=R-…`): that private room.
+
+To look at an invite's rules without joining, add `&editor=rules` to the link.
+
+### Parties
+
+In game, press Esc (to free the mouse) and click **Party & duels** in the top left corner, then
+**Create party invite**. Send the link to your friends: it brings them into your room (the
+public rotation, or your private room) and, in team modes, onto your team as long as the teams
+stay within one player of each other (otherwise the party is split). A party code works only on
+that server and lasts while one of you is connected, and 10 minutes after the last one left.
+
+### Challenging someone to a duel
+
+- **On the same server:** the **Party & duels** panel lists the other players on the server
+  with a **Duel** button. The duel is played on your current world.
+- **From the server list:** every listed pilot has a **Duel** button. Two fields on the list
+  set the duel's world (a share code; empty: a random world) and an optional rule set code. The duel runs on the server that served your page, and a pilot on another listed server
+  gets the challenge through the directory.
+
+The other pilot sees a challenge at the top of the screen with **Accept** and **Decline** for
+30 seconds. When they accept, both of you move to a private two-player match (first to 10
+kills or 5 minutes, unless the challenge carried a rule set code). After the results the duel
+room starts a rematch on the same world; to go back to the public rotation, open the server's
+address again (or use the browser's back button). When all of the server's private rooms are in
+use, the duel can't start.
+
+## Settings
+
+Everything is on the start screen under **Options**, and the page remembers it per browser:
+
+| Setting | What it does |
+| --- | --- |
+| **Horizon assist** | On by default. Slowly levels your roll so "up" stays up. **H** toggles it in flight. |
+| **Field of view** | How wide you see, 80 to 120 degrees across a 16:9 screen (default 100). Narrower screens keep that width; wider screens (21:9) see a little more at the sides, up to 115 degrees. Boosting widens the view by 4 degrees. |
+| **Cockpit frame** | On by default. Shows the nose, the canopy frame and side parts of the ship you fly, so you can judge its size. |
+| **Fit ring** | On by default. A ring around the crosshair that shows how big your ship is at the rock ahead (see [Will I fit?](#will-i-fit)). |
+
+The pilot name, share code and ship are remembered too. **Graphics quality** is picked
+automatically after the first seconds of play (low, medium or high, by your GPU's speed); add
+`?quality=low`, `?quality=medium` or `?quality=high` to the page address to force one. There is
+no setting yet for mouse sensitivity, inverted look, key rebinding or sound.
 
 ## Troubleshooting
 
@@ -836,8 +1055,20 @@ The game can't draw without WebGPU. The error screen says which step failed:
 - **"Lost sync with the server":** the game received data it couldn't use, often because the page
   and the server come from different builds. Reload the page (a hard refresh with Ctrl+F5 helps
   after a server update).
-- **"Could not rejoin" after a match:** the next match didn't accept you in time. Reload to join
-  it.
+- **"Could not rejoin" after a match:** the next match didn't accept you in time (older servers
+  only). Reload to join it.
+- **"unknown room", "room closed" or "unknown party":** the private room of an invite or duel has
+  closed (rooms close when their last pilot leaves), the party ended (10 minutes after its last
+  member left), or the link is for another server. Ask for a new invite, or open the server's
+  plain address to join its rotation.
+- **The server list says there is no directory, or stays empty:** the page's server isn't
+  registered with a directory; ask the host for a list link (`?servers&directory=…`) or the
+  server's address. On an `https://` page, the directory must be served over `https://` too.
+- **A duel challenge never arrives:** the other pilot must have the game open (in a match or
+  the lobby, not on the start screen) on a server of the same build; across servers both servers
+  need the same directory. Challenges expire after 30 seconds.
+- **You stay a spectator:** you joined a mode with lives after its start, or you are out. You
+  play again in the next match.
 - **Lag or rubber-banding:** press F3 and check ping and the connection type. WebTransport is
   usually smoother than WebSocket. The browser picks WebTransport when it can and falls back to
   WebSocket otherwise. Being swapped by a Swap Harpoon or rewound by Borrowed Time is a real
@@ -851,24 +1082,27 @@ Advanced page options, added to the address (combine them with `&`):
 | `?transport=wt` | Always use WebTransport (fails instead of falling back) |
 | `?server=host:port` | Connect to a game server other than the one that served the page, for example `http://localhost:7777/?server=192.168.1.20:7777` |
 | `?editor=rules` | Open the rule set editor instead of the game (`&rules=LR…` loads a code, `&world=LS…` fills the world field) |
+| `?servers` | Open the server list (`&directory=<url>` names the directory) |
+| `?join=host:port`, `&party=P-…`, `&room=R-…`, `&code=LS…`, `&rules=LR…` | Invite link parts (see [Invite links](#invite-links)) |
+| `?quality=low`, `medium` or `high` | Force a graphics quality instead of the automatic pick |
+| `?shipshadows=off` | Ships near you cast no shadows (the rock's shadows stay) |
 
 ## Not in this build yet
 
-These are part of the game design but aren't in the Milestone 2 build:
+These are part of the game design but aren't in the Milestone 3 build:
 
-- **Game modes:** Paint the Void and Team Brawl (team deathmatch with 2 to 4 teams, or
-  free-for-all; the server's duel rule set plays free-for-all to 10 kills), plus the Instagib
-  mutator (Railspike only, every enemy hit kills, instant respawn), on servers whose playlist
-  includes them. Heist, Hot Reactor, The Squeeze, Last Color Standing, the co-op modes and The
-  Architect come later.
-- **World sliders:** Verticality, Gravity Chaos (gravity wells), Palette (black-and-white levels)
-  and Absurdity don't change the world yet, and there's no screen to set sliders or save a level.
+- **Co-op modes** (Deep Dig, Tethered, Escort the Intern) and **The Architect**.
+- **Pigment pickups** that give colour back in Last Color Standing, and black-and-white levels
+  as a general feature (the Palette slider only drains the colour of the picture).
+- **World sliders:** Verticality, Gravity Chaos (gravity wells) and Absurdity don't change the
+  world yet, and there's no screen to set sliders or save a level.
 - **Comedy events** ("the level has moods"): not yet.
+- **Voting for the next mode:** servers play their rotation in order.
 - **Sound:** none at all yet, so the Polite Laser's "excuse me" and the Tectonic Charge's
   rumble are banners only.
 - **Scorch fading and cosmetic chips:** scorch marks stay for the whole match; there are no
   client-only decals or small cosmetic debris chips.
-- **Accounts and friends lists:** parties live on one server; duel challenges reach players
-  on servers listed in the same directory only.
+- **Accounts, friends lists, ranked play and matchmaking by skill:** parties live on one
+  server; duel challenges reach players on servers listed in the same directory only.
 - **Settings:** no mouse sensitivity, invert-look or key rebinding options.
 - **Cosmetics, a WebGL2 fallback for browsers without WebGPU, and a desktop app.**

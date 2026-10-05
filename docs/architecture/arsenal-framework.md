@@ -351,111 +351,20 @@ twentieths, shield overrides that replace the rule set's), re-read before every 
 (`web/src/rules/catalog.ts`) is generated from the data by the Rust test
 `web_catalog_is_current` (`LS_BLESS_RULES_CATALOG=1 cargo test -p ls-sim --lib rulecode`).
 
-Built-in rule sets: `paint_the_void.ron` (default) and `sandbox_all_weapons.ron` (every weapon
-and gadget as a pickup with even weights and short respawns, every ship type; the arsenal e2e
-run uses it), plus one default rule set per implemented mode (`ModeKind::ruleset_file`):
-`last_color_standing.ron`.
+Built-in rule sets (`BUILTIN_RULESETS`): `paint_the_void.ron` (the default of rule set codes
+without a mode), `sandbox_all_weapons.ron` (every weapon and gadget as a pickup with even
+weights and short respawns, every ship type; the arsenal e2e run uses it), one default rule set
+per mode (`ModeKind::ruleset_file`: `team_brawl.ron`, `squeeze.ron`, `heist.ron`,
+`hot_reactor.ron`, `last_color_standing.ron`), `instagib_brawl.ron` and `duel.ron`; their
+numbers in [userDocs/reference/modes.md](../../userDocs/reference/modes.md).
 
 ## Mode framework (M3)
 
-Every mode is a module (`crates/ls-sim/src/modes/<id>.rs`) implementing `modes::ModeModule`,
-registered in `modes::MODULES` in `ModeKind` order (the rule set code's mode index; append
-only). Settings live in the mode's `ModeRules` variant (`ruleset.rs`, declared with
-`mode_settings!`: field, default, code precision); every mode has `teams`, `match_secs` and
-`respawn_secs`. Mutators (`crates/ls-sim/src/mutators/<id>.rs`, `MutatorModule`) rewrite the
-effective rule set before it resolves (`RuleSet::effective`), may change the respawn delay and
-damage, let weapons fire without paying their cost (`unlimited_ammo`, resolved into
-`ResolvedRules::free_fire`), and set HUD flags; they run after the mode's hooks.
-
-| Hook | When | Context |
-| --- | --- | --- |
-| `validate`, `team_counts` | `RuleSet::resolve` | the settings |
-| `on_join`, `late_join_spectates` | `World::add_player` | `ModeMut` / `ModeRef` |
-| `on_start` | first tick | `ModeCtx` (`Ctx` commands + mutable `ModeState`) |
-| `allow_respawn`, `on_spawn` | respawns | `ModeRef` / `ModeMut` + the ship |
-| `on_damage` | damage pipeline, after friendly fire | `ModeRef` + `ModeHit` |
-| `on_hit` | damage pipeline, after the mode's and mutators' `on_damage`, before the gadget | `ModeMut` + the final `ModeHit` (Hot Reactor passes the reactor to the shooter) |
-| `on_kill` | a ship died | `ModeMut` + `Kill` |
-| `on_pickup` | a ship touches a pickup | `ModeState` + the ship |
-| `on_tick`, `end_check` | stage 7 | `ModeCtx`, `ModeRef` |
-| `view` | `World::mode_view` | `ModeState` |
-| `move_limits` | a ship moves (stage 2) | the rules + the player's replicated mode flags; returns `MoveLimits` (speed cap scale, no boost). The client predictor applies the same limits from the flags in each snapshot (`Predictor::set_limits`) |
-| `material_at` | a hook asks for the rock material (`Ctx::material_at`, `Ctx::crater`) | `ModeState` + tick + point; `Some(id)` overrides the terrain's material |
-| `terrain_shell` | start of every tick, before anything moves: the shell the terrain adds (`SimTerrain::set_shell`) | `ModeState` + tick |
-
-The world keeps the generic `mode::ModeState` (part of the state hash: kind, teams, phase,
-timer, stage and stage end tick, paint coverage, team scores, score target, per-player
-`PlayerMode` with score, lives, meter and flags, objectives with position, holder and timer,
-module scratch values) and replicates it as `mode::ModeView` (`World::mode_view`: teams, phase
-with the winning side, timer, stage, team scores, top 32 players with lives and flags, up to 8
-objective markers, HUD `view_flags`). `World::results` is the results table (winner or draw,
-kills, deaths, mode score per player). Modules that do not override a hook get the generic
-fallback (kills score, a suicide or team kill costs a point, lives where the mode has them,
-end on one side left, `score_target` or the timer); the M3 modes not yet implemented
-(`ModeModule::implemented` false) are such stubs until their wave B package lands.
-
-Hot Reactor (`modes/hot_reactor.rs`, wave B4): the module docs list its rules and gap decisions;
-the reactor is objective kind `REACTOR` with the holder, the predicted detonation tick in
-`timer_end` and the fuse radius as `radius`; the holder has the `CARRIER` player flag.
-
-Team Brawl (`modes/team_brawl.rs`, wave B1): kills score for the killer and their team; a
-suicide (or a death without a killer) costs the victim's side and a team kill the killer's side
-`team_kill_penalty` points. `on_join` sets `score_target`: `kill_target`, or with 0
-`max(15, 5 x players / sides)` capped at 50 (sides = teams, or the players in free-for-all, so
-free-for-all plays to 15); it follows the most players the match has had and never drops. The
-first side to the target wins, else the timer (best score, a tie is a draw). Rule sets:
-`team_brawl.ron` (2 teams, 10 min), `instagib_brawl.ron` and `duel.ron` (free-for-all, first to 10
-or 5 min). Instagib (`mutators/instagib.rs`): the rewrite keeps only the Railspike (`LoadoutOnly`;
-Paint the Void also keeps its Paint Thrower), no secondaries, gadgets or pickups of any kind;
-the Railspike fires for free; a direct hit from an enemy weapon takes the whole hull and ignores
-the gadget (self-hits, splash, ramming and environment damage are unchanged, teammates take the
-friendly-fire share); respawns are instant (`respawn_ticks` 0, so the next tick); the
-`INSTAGIB` view flag hides hull and energy in the HUD. The lobby's warm-up rules drop the
-mutators. Replay goldens per rule set: `modes::team_brawl::tests` (60 s, 8 ships; native and
-wasm32).
-
-Heist (`modes/heist.rs`, wave B3) reads the level's Heist site from `MatchSetup::heist`
-(`ls_game::setup::heist_level`, from the generator's `ls_worldgen::HeistSite`): objective 0 is
-the core (`objective_kind::CORE`, its `state` byte one of `heist::core_state`: embedded, free,
-carried, dropped, respawning; `holder` the carrier, `timer_end` the return or respawn tick),
-objectives 1 and 2 the extraction zones (`team` the owner, `NO_SIDE` in free-for-all). The vein
-knot is hard rock and the collapsing chamber weak rock through `material_at`; the carrier has
-`player_flags::CARRIER` and moves under `move_limits`. Without a Heist site (test rooms) the
-core lies free between the spawn points and each team's zone is at its spawns.
-
-The Squeeze (`modes/the_squeeze.rs`, `data/rulesets/squeeze.ron`) is implemented: phases on a
-fixed timeline (warning with a `NEXT_ZONE` marker, then the close), safe zones from the
-`RNG_STREAM_SQUEEZE` stream, a solid shell the world hands the terrain every tick
-(`terrain_shell`, see [contracts.md](contracts.md#shell-layer-the-squeeze)), crushing through
-shields while touching a moving wall, wall scrap debris, one life and the last ship flying;
-the module docs have the rules and the replicated schedule.
-
-Teams are per match: `teams` 2-4 (the smallest team gets a joining player; a team without
-spawn points of its own uses any spawn point) or 0 = free-for-all, where every ship is its own
-side with its own side id in `ShipState::team` (lowest free id, at most 254 ships), so
-friendly fire, kill credit and every weapon's "enemy" test work unchanged; free-for-all spawns
-pick the spawn point farthest from the other living ships. Lives and elimination: a player
-whose `PlayerMode` is eliminated or spectating never respawns, leaves play at the end of the
-tick (`Event::Eliminated` when eliminated) and appears in the view with its flags. Players
-joining after `modes::LATE_JOIN_GRACE_TICKS` (10 s) in modes with lives spectate until the
-next match; `World::set_spectator` switches by choice.
-
-Last Color Standing (`modes/last_color_standing.rs`, free-for-all only): every player's
-`PlayerMode::meter` starts at `colour` (100) and every death drains `drain_per_kill` (34),
-whoever killed the ship; damage alone does not. At 0 the player is eliminated (spectates). From
-`stalemate_secs` (480) on, every player still in play loses 1 colour per
-`stalemate_drain_secs` (2 s), alive or dead, so the match always ends (`ModeState::stage` 0
-before the stalemate with `stage_end_tick` at its start, 1 during it). The mode score mirrors
-the colour (results list the most colourful first). The match ends when at most one player has
-colour (that player wins, nobody is a draw) or on the timer (most colour wins, a tie is a
-draw); late joiners spectate. The view sets `MONOCHROME` and `METER`. Tests:
-`modes/last_color_standing/tests.rs` (one per rule, default rule set and code, 60 s replay
-golden hash `LCS_REPLAY_GOLDEN_HASH`) and `ls-bots` `tests/last_color_standing_match.rs`
-(8 bots to a result in a `Room`, release).
-
-A two-team Paint the Void match runs exactly as in M2 through the framework (its state hash
-and `REPLAY_GOLDEN_HASH` are unchanged): the mode state beyond the M2 fields is hashed only
-when it differs from a fresh two-team Paint the Void state.
+Modes and mutators use the same pattern as weapons: one module per mode
+(`crates/ls-sim/src/modes/<id>.rs`, `ModeModule`) and per mutator (`mutators/<id>.rs`,
+`MutatorModule`), registered in order, with settings in the rule set. The hooks, the
+replicated mode state, teams, lives and spectators, and every mode as built are in
+[modes-and-lobby.md](modes-and-lobby.md#mode-framework).
 
 ## The arsenal as built
 

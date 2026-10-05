@@ -10,7 +10,8 @@ Details live in the other pages: [contracts.md](contracts.md) (types shared acro
 [game-glue.md](game-glue.md) (`ls-game`: client session, room, wire conventions),
 [server.md](server.md) (hosting, transports, bots, e2e), [netcode.md](netcode.md) and
 [determinism.md](determinism.md); the M2 weapons, gadgets, ship types and rule sets in
-[arsenal-framework.md](arsenal-framework.md).
+[arsenal-framework.md](arsenal-framework.md); the M3 modes, lobby, rooms, parties and duels in
+[modes-and-lobby.md](modes-and-lobby.md).
 
 ## Crates
 
@@ -18,10 +19,10 @@ Details live in the other pages: [contracts.md](contracts.md) (types shared acro
 | --- | --- | --- | --- |
 | `ls-math` | lib | `Vec3`, `Quat`, `Mat3`, `Aabb`, `Tick` (60 Hz, `DT`), `det` (libm transcendentals), `SplitMix64` / `Pcg32`, and the terrain contracts (`TerrainEdit`, `SurfaceStates`, `TerrainQuery`, `RayHit`, test terrains) | yes |
 | `ls-worldgen` | lib | `Sliders`, `ShareCode`, the SDF `Generator`, `ChunkStore` (32³ cells, lazy generation, edit log, surface layers: paint and timed surface states), rock material field (`material`: weak/rock/hard, crater strength), `surface_nets` and `dual_contouring` meshers, golden hashes | yes |
-| `ls-sim` | lib | `World::step`: flight model, ship types (`ShipTable`), resources, data-driven weapons (`WeaponTable`) with one behaviour module per weapon, gadgets, entities (debris, decoys, ghosts, dust), rule sets v2 and codes (`RuleSet`), projectiles, splash, craters and paint, pickups, respawns, Paint the Void; `state_hash`, `data_hash`. Sees terrain only through `TerrainQuery` + `SimTerrain` ([arsenal-framework.md](arsenal-framework.md)) | yes |
+| `ls-sim` | lib | `World::step`: flight model, ship types (`ShipTable`), resources, data-driven weapons (`WeaponTable`) with one behaviour module per weapon, gadgets, entities (debris, decoys, ghosts, dust), rule sets v2 and codes (`RuleSet`), projectiles, splash, craters and paint, pickups, respawns; game modes (one module per mode behind `ModeModule`: Paint the Void, Team Brawl, The Squeeze, Heist, Hot Reactor, Last Color Standing) and mutators (Instagib), teams 0-4, lives and spectators, the replicated `ModeView` and results; `state_hash`, `data_hash`. Sees terrain only through `TerrainQuery` + `SimTerrain` ([arsenal-framework.md](arsenal-framework.md)) | yes |
 | `ls-net` | lib | Wire protocol (version 5): bit packing, quantization (18 B ship state), `Message`s and handshake (data hash, ship choice, room and party codes), full and delta snapshots (ships, projectiles, generic entities, players, mode state; predicted deltas and projectile settling), events and cues, `Inventory` and `SelectShip`, match transitions (epochs), lobby and results messages, per-client `Relevance`, `SnapshotHistory`, the poll-based `Transport` trait and `MemoryTransport` | pure encoding |
 | `ls-game` | lib | Glue with no I/O: `GameTerrain`, deterministic match setup (spawn and pickup points), sim <-> net conversion, `ClientSession` (prediction, reconciliation, interpolation, clock), and (feature `server`) the authoritative `Room` with lag compensation | uses the above |
-| `ls-server` | bin + lib | Hosts one `Room`: 60 Hz sim thread, tokio I/O, HTTP static files, WebSocket `/ws`, WebTransport over UDP, `/cert-hash`, match restart, stats logging | no |
+| `ls-server` | bin + lib | Hosts a public room (lobby, warm-up, match rotation from a playlist) and up to `--private-rooms` private rooms, each a `Room` on its own 60 Hz sim thread, next rooms built on worker threads and swapped in without reconnects; tokio I/O, HTTP static files, WebSocket `/ws`, WebTransport over UDP, `/cert-hash`, a JSON API for presence, parties, custom matches and duels, the directory heartbeat, stats logging ([modes-and-lobby.md](modes-and-lobby.md)) | no |
 | `ls-wasm` | cdylib | wasm-bindgen API for the browser: share-code checks, `Game` (online `ClientSession` or offline practice `World`), chunk streaming and meshing, shot prediction per weapon (`shots.rs`: patterns, fans, helices, nothing for instant weapons), mechanics views (`mechanics.rs`: cues, charge meter, gadget state, ship choice), inventory, HUD and overlay data as flat arrays | no |
 | `ls-directory` | bin + lib | Optional server directory for the server list: heartbeats with a TTL, `GET /servers` (CORS, version/data-hash filter), invite relay; in memory, plain HTTP; `DirectoryClient` + `spawn_heartbeats` for `ls-server` ([directory.md](directory.md)) | no |
 | `ls-bots` | bin + lib | Headless clients: one thread per bot, `ClientSession` plus global navigation (`nav.rs`; one grid build per world per process, shared by its bots: `nav_cache.rs`), steering, aim and a brain that uses every weapon (`arsenal.rs`: roles and range bands), gadget and ship type; WebSocket or WebTransport, per-weapon stats, desync checks, exit codes | no |
@@ -62,7 +63,7 @@ flowchart LR
 
   subgraph server["ls-server process"]
     io["tokio I/O tasks<br/>HTTP + /ws + /cert-hash (TCP)<br/>WebTransport /wt (UDP)"]
-    simthread["sim thread, 60 Hz<br/>ls_game::server::Room<br/>(ls-sim World + GameTerrain)"]
+    simthread["sim thread per room, 60 Hz<br/>ls_game::server::Room + lobby<br/>(ls-sim World + GameTerrain)"]
     io <-- "PeerLink / SimLink<br/>(bounded channels)" --> simthread
   end
 

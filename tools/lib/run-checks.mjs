@@ -5,7 +5,7 @@
 //   tsc --noEmit (web)         web/**/*.ts (whole project; tsc 7 is fast)
 //   check-binds                code and config files
 //   line endings               no CR except *.ps1 (.gitattributes: LF)
-//   generated reference docs   data/{weapons,ships,gadgets,rulesets}/*
+//   generated reference docs   data/{weapons,ships,gadgets,rulesets}/*, web/src/rules/catalog.ts, the generator
 // Build output (target/, node_modules/, dist/, the wasm pkg) is never checked.
 
 import { spawnSync } from "node:child_process";
@@ -31,7 +31,9 @@ export function plan(files) {
   const rs = f.filter((x) => x.endsWith(".rs"));
   const ts = f.filter((x) => /^web\/.*\.ts$/.test(x));
   const text = f.filter((x) => !/\.(png|wasm|ico|jpg|gif|ps1|cmd|bat)$/.test(x));
-  const data = f.filter((x) => /^data\/(weapons|ships|gadgets|rulesets)\//.test(x));
+  const data = f.filter(
+    (x) => /^data\/(weapons|ships|gadgets|rulesets)\//.test(x) || x === "web/src/rules/catalog.ts" || x === "tools/gen-weapon-docs.mjs",
+  );
   return { rs, ts, text, data };
 }
 

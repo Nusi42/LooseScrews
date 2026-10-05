@@ -10,7 +10,9 @@ end-to-end picture; the exact rules and numbers live next to the code:
   conventions](game-glue.md#wire-conventions) table, lag compensation);
 - [arsenal-framework.md](arsenal-framework.md#replication-ls-net-protocol-4) (what the M2
   wire items mean: entities, players, cues, inventory, ship choice, data hash);
-- [server.md](server.md) (sockets, WebSocket and WebTransport mapping, backpressure).
+- [server.md](server.md) (sockets, WebSocket and WebTransport mapping, backpressure);
+- [modes-and-lobby.md](modes-and-lobby.md) (what the M3 mode state, lobby and transitions are
+  for: modes, the lobby state machine, rooms, parties, duels).
 
 The wire format is versioned by `ls_net::PROTOCOL_VERSION` (checked in `Hello`): 1 was M1;
 2 added the M2 entities, players, cues, data hash and ship choice; 3 predictive ship deltas;
@@ -264,8 +266,8 @@ client's cooldown estimate only for a key-press off or an instant use. Bots use 
 
 | Message | Channel | Direction | Contents |
 | --- | --- | --- | --- |
-| `Hello` | reliable | client to server | magic, protocol version, name, data hash, optional first ship type |
-| `Welcome` / `Reject` | reliable | server to client | see the handshake in [overview.md](overview.md#from-share-code-to-rendered-frame); `Reject` has a frozen layout and a reason (`DataMismatch` names both hashes) |
+| `Hello` | reliable | client to server | magic, protocol version, name, preferred team, data hash, optional first ship type, optional private room code (`R-..`) and party code (`P-..`) |
+| `Welcome` / `Reject` | reliable | server to client | see the handshake in [overview.md](overview.md#from-share-code-to-rendered-frame); the `Welcome` also carries the match epoch and the room code (empty for the public room) and comes again on the open connection at every match transition. `Reject` has a frozen layout and a reason (`DataMismatch` names both hashes; an unknown room or party code or a closed room is `Other` with a message such as "unknown room R-..", "room closed") |
 | `Input` | unreliable | client to server | newest 3 commands, `ack_snapshot` |
 | `Snapshot` | unreliable (reliable when too big) | server to client | above |
 | `Events` | reliable | server to client | events and cues of one snapshot interval |
@@ -274,7 +276,7 @@ client's cooldown estimate only for a key-press off or an instant use. Bots use 
 | `Inventory` | reliable | server to client | the own ship's weapons, ammo, levels, shot counts, module state bytes, selection and gadget, when they change |
 | `LobbyState` | reliable | server to client | lobby phase and its ticks left, room code, next mode, rule set and world, player range, teams, players (team pick, ready, spectator) |
 | `MatchResults` | reliable | server to client | once when the mode ends (and to players joining afterwards): winner side, team scores, rows (kills, deaths, score, name) |
-| `Ready` / `PickTeam` / `Spectate` | reliable | client to server | lobby requests, queued for the host's lobby (`Room::take_lobby_requests`) |
+| `Ready` / `PickTeam` / `Spectate` | reliable | client to server | lobby requests (ready for the next match, team for the next match or auto, spectate from the next match on), queued for the host's lobby (`Room::take_lobby_requests`) |
 | `Disconnect` | reliable | both | reason |
 
 ## Match transitions, lobby and mode state (protocol 5)
@@ -303,7 +305,14 @@ client's cooldown estimate only for a key-press off or an instant use. Bots use 
   `Room::broadcast`). `MatchResults` goes out once when the mode ends (kills and deaths are
   tallied from the simulation's kill events) and to clients joining a finished match.
 - **Hello.** Optional room code (private rooms) and party code (`P-XXXXXX`); the `Welcome`
-  echoes the room code.
+  echoes the room code. Everything else of the lobby features (presence, parties, custom
+  matches, duel challenges, the server list) goes over HTTP: the game server's JSON API and the
+  directory ([modes-and-lobby.md](modes-and-lobby.md#identity-parties-invite-links-duels)), not
+  protocol messages.
+- **Epochs.** `Welcome::epoch` is a `u8` that changes with every room on a connection (the
+  server gives each new room the previous one's epoch + 1, wrapping). `Input` carries the
+  client's epoch, `Snapshot` the room's; `Message::peek_snapshot_epoch` reads it before the
+  delta decode, so a delta against a baseline of the old match is dropped instead of failing.
 
 ## Terrain edit replication
 

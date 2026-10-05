@@ -7,6 +7,7 @@
 // count CPU work such as the initial terrain load).
 
 import type { ParticleQuality } from "./particles.ts";
+import type { VolumetricQuality } from "./volumetric.ts";
 
 export type QualityLevel = "low" | "medium" | "high";
 
@@ -24,6 +25,8 @@ export interface RenderQuality {
   particles: ParticleQuality;
   /** Screen-space light shafts from the sun in open levels (VQ7). */
   shafts: boolean;
+  /** Volumetric sun shafts through the shadow map (VQ9, volumetric.ts): march resolution divisor (0 = off) and steps. */
+  volumetric: VolumetricQuality;
 }
 
 /**
@@ -33,9 +36,9 @@ export interface RenderQuality {
  * is core WebGPU, so every adapter runs the same shaders).
  */
 export const QUALITY_PRESETS: Readonly<Record<QualityLevel, RenderQuality>> = {
-  high: { level: "high", msaa: 4, bloomMips: 6, terrainDetail: true, maxLights: 128, particles: { capacity: 32768, density: 1, motes: 1500, halfResPx: 32 }, shafts: true },
-  medium: { level: "medium", msaa: 4, bloomMips: 4, terrainDetail: true, maxLights: 32, particles: { capacity: 16384, density: 0.6, motes: 800, halfResPx: 20 }, shafts: false },
-  low: { level: "low", msaa: 1, bloomMips: 0, terrainDetail: false, maxLights: 16, particles: { capacity: 8192, density: 0.35, motes: 0, halfResPx: 12 }, shafts: false },
+  high: { level: "high", msaa: 4, bloomMips: 6, terrainDetail: true, maxLights: 128, particles: { capacity: 32768, density: 1, motes: 1500, halfResPx: 32 }, shafts: true, volumetric: { divisor: 2, steps: 24 } },
+  medium: { level: "medium", msaa: 4, bloomMips: 4, terrainDetail: true, maxLights: 32, particles: { capacity: 16384, density: 0.6, motes: 800, halfResPx: 20 }, shafts: false, volumetric: { divisor: 3, steps: 16 } },
+  low: { level: "low", msaa: 1, bloomMips: 0, terrainDetail: false, maxLights: 16, particles: { capacity: 8192, density: 0.35, motes: 0, halfResPx: 12 }, shafts: false, volumetric: { divisor: 0, steps: 0 } },
 };
 
 /** GPU frame budgets (ms) of "high" and "medium" (plan §3). */

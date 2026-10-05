@@ -596,10 +596,12 @@ async function main() {
       for (const w of compileWarnings) note(`WGSL warning: ${w}`);
       // The renderer builds the scene pipelines (terrain, instanced,
       // translucent), the light froxel builder (compute, VQ6), the particles
-      // (VQ5: particles, dust motes), the cockpit hull frame (VQ1) and the post
-      // chain (bloom down, bloom up, composite); later packages add more, so
-      // check that these are among them.
-      const required = ["terrain", "instanced", "translucent", "light clusters", "particles", "dust motes", "hull frame", "bloom down", "bloom up", "composite"];
+      // (VQ5: particles, dust motes), the cockpit hull frame (VQ1), the sun
+      // shadow map's caster and clear (VQ9; the volumetric shafts are built
+      // when a level with a sky first needs them) and the post chain (bloom
+      // down, bloom up, composite); later packages add more, so check that
+      // these are among them.
+      const required = ["terrain", "instanced", "translucent", "light clusters", "particles", "dust motes", "hull frame", "sun shadow caster", "sun shadow clear", "bloom down", "bloom up", "composite"];
       const missing = required.filter((l) => !s.pipelines.some((p) => p.label === l));
       check(
         `${label}: every render pipeline validates`,

@@ -958,7 +958,10 @@ frames without dynamic lights (`?lights=0`; compare the pass times with a `--lig
 the lights' shading cost), `--vfx off` draws the pre-VQ5 mesh effects instead of particles
 (`?vfx=off`, also in the game), `--query <k=v&...>` adds page parameters (`--query
 view=legacy`: the pre-VQ1 camera, 75° vertical FOV without cockpit frame or fit ring, for before
-shots of the FOV change; the fit scenes print the ring's state and the CPU time of its probes).
+shots of the FOV change; the fit scenes print the ring's state and the CPU time of its probes;
+`--query shadows=off`: the pre-VQ9 sun that shines through rock, for before shots and the sun
+occlusion's cost; `--query shadowbench=full` or `chunk` redraws the whole sun shadow map or
+one crater's two chunks every frame, so the `shadow` pass shows the update cost).
 Without
 `timestamp-query` or on a software adapter the budget is not checked. Measured on a much faster
 GPU than the reference, the check only catches gross regressions; read the absolute numbers on

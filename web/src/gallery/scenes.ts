@@ -18,9 +18,11 @@ export interface GalleryWorld {
  * island 40-150 u away, `border` a close-up of a rock material border
  * (decor.ts pickBorder; falls back to `closeup`); `sun` and `planet` look
  * from the spawn point toward the world's sun or planet
- * (renderer/atmosphere.ts, VQ7), the target a little off the screen centre.
+ * (renderer/atmosphere.ts, VQ7), the target a little off the screen centre;
+ * `shade` stands in rock's shadow and looks at rock the sun reaches through
+ * an opening (shadePose.ts, VQ9; falls back to `tunnel`).
  */
-export type PoseKind = "closeup" | "tunnel" | "vista" | "border" | "sun" | "planet";
+export type PoseKind = "closeup" | "tunnel" | "vista" | "border" | "sun" | "planet" | "shade";
 
 /**
  * What is placed in front of the camera besides terrain. `fit` carves a
@@ -54,6 +56,8 @@ export interface GalleryScene {
 }
 
 const CAVES: GalleryWorld = { seed: 7, enclosure: 50, density: 50 };
+/** Caverns just open enough to show the sky (Enclosure 47): the sun gets in through openings (VQ9). */
+const SUNLIT_CAVES: GalleryWorld = { seed: 7, enclosure: 47, density: 60 };
 
 export const SCENES: readonly GalleryScene[] = [
   { id: "cave-closeup", title: "Cave wall close-up", covers: "textures, polygon switches", world: CAVES, pose: "closeup", content: "none", time: 1.0 },
@@ -185,6 +189,33 @@ export const SCENES: readonly GalleryScene[] = [
     ship: 2,
   },
   { id: "cockpit-skitter", title: "Skitter cockpit", covers: "fit, ships", world: CAVES, pose: "tunnel", content: "none", time: 1.0, ship: 0 },
+  {
+    id: "cave-sunbeam",
+    title: "Sun through cave openings: shadowed rock, sunlit patches (VQ9)",
+    covers: "lighting, sun occlusion",
+    world: SUNLIT_CAVES,
+    pose: "shade",
+    content: "none",
+    time: 1.0,
+  },
+  {
+    id: "sun-shafts",
+    title: "Volumetric sun shaft through a rock arch into a cavern (VQ9)",
+    covers: "lighting, sun occlusion, atmosphere",
+    world: { seed: 11, enclosure: 45, density: 60 },
+    pose: "shade",
+    content: "none",
+    time: 1.0,
+  },
+  {
+    id: "dark-cave-fight",
+    title: "Fight in the cave's shade: shots, the explosion and engines light the rock (VQ9)",
+    covers: "lighting, sun occlusion, effects",
+    world: SUNLIT_CAVES,
+    pose: "shade",
+    content: "fight",
+    time: 2.15,
+  },
   { id: "cockpit-tug", title: "Tug cockpit", covers: "fit, ships", world: CAVES, pose: "tunnel", content: "none", time: 1.0, ship: 3 },
 ];
 
@@ -204,6 +235,11 @@ export const PASS_BUDGETS_MS: Readonly<Record<string, number>> = {
   lights: 1.0,
   sky: 0.6,
   post: 1.2,
+  // VQ9: shadow map updates (only on frames with a terrain change; a crater
+  // redraws two chunks' rectangles, a full redraw happens once at load) and
+  // the volumetric shafts (half resolution, 32 steps; skipped in sealed levels).
+  shadow: 0.3,
+  volumetric: 0.6,
 };
 
 /** Whole frame (sum of the passes) at "high" on the reference mid GPU. */

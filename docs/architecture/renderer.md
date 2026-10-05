@@ -1,7 +1,7 @@
 # Browser renderer
 
-The WebGPU renderer in `web/src/renderer/` (visual-quality-plan.md VQ2, VQ5, VQ6, VQ7 and
-VQ8). Terrain and objects come from the game (`game/chunks.ts`, `game/scene.ts`), particles from
+The WebGPU renderer in `web/src/renderer/` (visual-quality-plan.md VQ2, VQ5, VQ6, VQ7, VQ8
+and VQ9). Terrain and objects come from the game (`game/chunks.ts`, `game/scene.ts`), particles from
 the effect library (`game/vfx.ts`); this page covers what happens from there to the screen.
 Wave D of M3 extends it into the full renderer reference.
 
@@ -10,7 +10,9 @@ Wave D of M3 extends it into the full renderer reference.
 | Step | Target | Code |
 | --- | --- | --- |
 | Lights (compute, skipped without lights): one invocation per froxel of a 16x9x24 grid, every light's view-space sphere tested against the froxel's box, one 128-bit mask per froxel | storage buffer (3456 x 16 bytes) | `lights.ts`, `shaders/lights.ts` |
+| Sun shadow map (only on frames after a terrain change; skipped in sealed levels): the dirty rectangles of the map cleared and redrawn from the chunks that overlap them, depth only, back faces | `depth16unorm` 4096² over the whole level | `sunShadow.ts`, `shaders/shadow.ts` |
 | Scene: terrain chunks (frustum culled per chunk AABB), then opaque instances, then translucent instances (no depth write), then the cockpit hull frame (own depth range) | `rgba16float` HDR colour, MSAA 4x at "high"/"medium", resolved into the post chain's HDR texture; `depth24plus` (stored for the particles) | `renderer.ts`, `shaders/terrain.ts`, `shaders/objects.ts`, `hullFrame.ts` |
+| Volumetric sun shafts ("high"/"medium", caverns with openings to the sky): each pixel of a half (third) resolution target marches its view ray through the shadow map up to the scene depth; added onto the resolved scene with a 2x2 tent | `rgba16float` low-resolution target, then the HDR scene texture | `volumetric.ts`, `shaders/volumetric.ts` |
 | Sky (open levels only): drawn *under* the resolved scene, `out = scene + sky x (1 - alpha)` (geometry writes alpha 1, the clear is transparent black) | the HDR scene texture, single-sampled | `sky.ts`, `shaders/sky.ts` `SKY_WGSL` |
 | Light shafts ("high", open levels, sun on or near the screen): sky mask (scene alpha 0) at quarter resolution, radial blur toward the sun, added onto the scene | the HDR scene texture | `sky.ts` `encodeShafts`, `SHAFT_*_WGSL` |
 | Particles: sprites at least `halfResPx` wide into a half-resolution `rgba16float` target, composited onto the resolved scene; then dust motes and the smaller sprites at full resolution. No depth attachment: each fragment reads the scene depth (soft particles, occlusion) | the resolved HDR scene texture | `particles.ts`, `shaders/particles.ts`, `spriteAtlas.ts` |
@@ -19,8 +21,8 @@ Wave D of M3 extends it into the full renderer reference.
 | Composite: bloom (averaged over the mips, added), exposure, colour grade, vignette, AgX tonemap with a look, sRGB encode, half-LSB dither, optional film grain | the swapchain (`getPreferredCanvasFormat()`, non-sRGB, so the shader encodes) | `COMPOSITE_WGSL` |
 
 With `timestamp-query` every pass writes timestamps (`gpuTimer.ts`), labelled `terrain` and
-`objects` (or `scene` when `Renderer.detailedTiming` is off), `lights`, `sky` (the sky and the
-shafts), `particles` and `post`. Budgets per label are in `web/src/gallery/scenes.ts`
+`objects` (or `scene` when `Renderer.detailedTiming` is off), `lights`, `shadow` (map updates),
+`volumetric`, `sky` (the sky and the screen-space shafts), `particles` and `post`. Budgets per label are in `web/src/gallery/scenes.ts`
 (`PASS_BUDGETS_MS`); the F3 overlay and the visual gallery show the times
 ([dev-guide.md](../dev-guide.md#visual-gallery-and-gpu-budget)).
 
@@ -35,8 +37,9 @@ shafts), `particles` and `post`. Budgets per label are in `web/src/gallery/scene
   peak `EMISSIVE_PEAK` = 6 at a = 1: bolt cores and flashes bloom, a 0.1 hull glow barely
   shows). Terrain: hot rock seams about 4.5 (crust 0.15), charged sparks 7, glow 0.9-1.4, paint
   0.3-0.4 times its colour.
-- Lighting (`shaders/lighting.ts`, `light(n, p)`): sun 0.9, hemisphere ambient 0.035-0.11, the
-  camera headlight (a soft spot light, see below) and the dynamic point lights. Model materials
+- Lighting (`shaders/lighting.ts`, `light(n, p)`): sun 0.9 (times its visibility from the sun
+  shadow map, VQ9), hemisphere ambient 0.035-0.11, the camera headlight (a soft spot light, see
+  below) and the dynamic point lights. Model materials
   call `light_spec(n, p, v, power, &spec)`, which also returns the dynamic lights' Blinn-Phong
   highlight (`models/shading.ts` scales it per material: metal and glass glint, paint less).
 
@@ -149,6 +152,52 @@ tinted by the nebula; caverns (50) a warm dark haze, density 0.012 and a low-lyi
 mine shafts (100) a sodium-orange haze, density 0.014. Worlds in between blend these; any
 Enclosure below 50 shows the sky.
 
+## Sun occlusion (VQ9)
+
+Rock blocks the sun. `sunShadow.ts` (`Renderer.sunShadow`) keeps one orthographic depth map
+from the sun over the whole level (`depth16unorm`, 4096², about 0.09 u per texel over the
+256 x 128 x 256 u level, 32 MB), and the scene shaders multiply the sun by its visibility:
+
+- **Casters**: the terrain chunks' positions and indices (the drawn meshes, so in open levels the
+  hidden level-box walls do not cast), depth only, **back faces** as seen from the sun (cull
+  "front"). A lit surface lies in front of its own rock's far side, so lit rock has no acne
+  without a large bias, and a point is in shadow exactly when its ray toward the sun enters rock.
+  Ships do not cast (they receive).
+- **Updates**: terrain is static between edits, so the map is not redrawn per frame.
+  `setChunk` reports a chunk's old and new extent (`chunkChanged`); their projected texel
+  rectangles go into a dirty list (merged when they overlap, at most 6), and the next frame
+  clears each rectangle (a scissored full-screen triangle at depth 1) and redraws the chunks
+  whose rectangles overlap it. The region is the union of the chunks seen so far snapped to
+  the 32 u chunk grid (the whole level once loaded, since the streamer's view radius covers
+  it); a growing region or a new sun direction redraws everything. `clearChunks` starts over.
+- **Sealed levels** (no sky: `Atmosphere.open` 0, Enclosure >= 50): the level box's walls
+  enclose everything, so the sun never gets in; `setSealed(true)` makes `sun_visibility`
+  return 0 without a lookup and skips the map and the volumetric pass.
+- **Lookup** (`shaders/shadow.ts` `sun_visibility(p, n)`, group 0 bindings 8 uniform, 9 map,
+  10 comparison sampler): the receiver offset 0.12 u (plus half a texel) along the normal,
+  depth bias 0.06 u, an 8-tap Poisson PCF of bilinear compares over 1.6 texels, sharpened with a
+  smoothstep (soft but defined edges). `static_light` stores the result in `sun_vis_last`, which
+  the terrain's GGX sun highlight and the models' `model_spec` reuse (one lookup per fragment).
+  Outside the map (beyond the level) the sun is unblocked. `?shadows=off`
+  (`Renderer.create(canvas, { shadows: false })`) restores the pre-VQ9 light.
+- **Volumetric shafts** (`volumetric.ts`, `shaders/volumetric.ts`): at `RenderQuality.volumetric`
+  (high: half resolution, 24 steps; medium: a third, 16 steps; low: off) each pixel marches its
+  view ray (jittered with interleaved gradient noise, fixed per pixel so nothing shimmers) up to
+  the nearest scene depth of its 2x2 footprint or 60 u, sums the sunlit steps with the
+  extinction to the camera, and weights them with a Henyey-Greenstein phase (g 0.55-0.6, scaled
+  so isotropic is 1) and the sun's radiance (`SUN_RADIANCE`). The composite adds a 2x2 tent of
+  bilinear taps onto the resolved scene (alpha untouched, so the sky still draws under it).
+  Dust per world type (`VOLUMETRIC_LOOKS`, `volumetricLook(weights)`): 0.0013 per u in
+  caverns, 0.0016 in mines, faded in (smoothstep) from an enclosed weight (cave + mine) of
+  `DUST_FROM` 0.75 (Enclosure 37) to 1 (Enclosure 50). Open and half-open worlds have none and
+  skip the pass (black space stays black; VQ7's screen-space shafts carry the sun there), and
+  sealed worlds have no sun. So the shafts belong to caverns with a few openings to the sky
+  (Enclosure about 40-49): where an opening lets the sun in, the lit air between the shadowed
+  walls reads as a shaft. Points outside the shadow map hold no dust.
+- Costs (gallery, RTX 5080, 1920x1080, high): see visual-quality-plan.md "VQ9 as built".
+  `?shadowbench=full|chunk` redraws the whole map, or two chunks' rectangles (one crater's
+  remesh), every frame, so the gallery times the update (`shadow` label).
+
 ## Camera, cockpit frame and fit ring (VQ1)
 
 - **Field of view** (`game/camera.ts`): the player sets a horizontal FOV at the 16:9 reference
@@ -225,11 +274,11 @@ it (or on top of `renderer.atmosphere.grade`). The gallery previews a preset wit
 
 `quality.ts`: one `RenderQuality` object per level; later packages add their switches to it.
 
-| Level | MSAA | Bloom mips | Lights | Particles (ring, spawn density, motes, half-res above) | Light shafts | Notes |
-| --- | --- | --- | --- | --- | --- | --- |
-| high | 4x | 6 | 128 | 32 768, 1, 1500, 32 px | yes | default |
-| medium | 4x | 4 | 32 | 16 384, 0.6, 800, 20 px | no | WebGPU has no 2x MSAA (the plan's medium 2x); medium saves on bloom, lights, particles and shafts |
-| low | 1x | 0 | 16 | 8 192, 0.35, none, 12 px | no | still HDR + tonemap (rgba16float render targets are core WebGPU), one composite pass; terrain without the grain, vein and macro samples (`terrainDetail: false`) |
+| Level | MSAA | Bloom mips | Lights | Particles (ring, spawn density, motes, half-res above) | Light shafts | Volumetric shafts (VQ9) | Notes |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| high | 4x | 6 | 128 | 32 768, 1, 1500, 32 px | yes | 1/2 res, 24 steps | default |
+| medium | 4x | 4 | 32 | 16 384, 0.6, 800, 20 px | no | 1/3 res, 16 steps | WebGPU has no 2x MSAA (the plan's medium 2x); medium saves on bloom, lights, particles and shafts |
+| low | 1x | 0 | 16 | 8 192, 0.35, none, 12 px | no | off | still HDR + tonemap (rgba16float render targets are core WebGPU), one composite pass; terrain without the grain, vein and macro samples (`terrainDetail: false`) |
 
 `?quality=low|medium|high` forces a level. Otherwise the renderer starts at "high" and, once it
 has 5 s of GPU-timed frames, steps down once if the median GPU frame exceeds 8 ms ("medium") or
@@ -244,7 +293,7 @@ terrain detail when a level first needs them.
 | Rock texture array: 512², 2 layers, `rgba8unorm`, full mip chain, generated at start-up by two compute shaders (tiling gradient noise with integer hashes; layer 0 rock slope, height and vein ramp, layer 1 grain slope, height and speckle) | `rockTextures.ts` (`TerrainMaterial`, `ROCK_GEN_WGSL`, `ROCK_MIP_WGSL`) |
 | Per-world look: `TerrainParams` (strata axis tilted up to 28°, bands per u, texture offsets, strata contrast, vein amount) from `hashSeed(share code)`; set `Renderer.settings.terrainSeed` (main.ts and the gallery do) | `rockTextures.ts` `terrainParams` |
 | Vertex data: the packed `team` u32 (paint dilated next to paint) plus two `unorm8x4` per vertex: AO, weak, hard, paint coverage / hot, charged, glow, scorch, blurred over the mesh near borders (chunk-face vertices pinned) | `terrainBlend.ts` `terrainVertexData`, uploaded by `Renderer.setChunk` (`GpuMesh.extraBuffer`) |
-| Shading: triplanar rock and grain detail normals (surface gradient), macro blotch, strata, per-material albedo, roughness and F0, sharpened organic blends, paint picking and patterns, surface-state emission, GGX from the sun and the headlight, a normalised Blinn-Phong highlight from the dynamic lights (`light_spec`, power from the roughness, scaled by F0, capped at 3x), AO and cavity | `shaders/terrain.ts` (override `DETAIL` = `RenderQuality.terrainDetail`) |
+| Shading: triplanar rock and grain detail normals (surface gradient), macro blotch, strata, per-material albedo, roughness and F0, sharpened organic blends, paint picking and patterns, surface-state emission, GGX from the sun and the headlight, a normalised Blinn-Phong highlight from the dynamic lights (`light_spec`, power from the roughness, scaled by F0, capped at 3x), AO and cavity | `shaders/terrain.ts` (override `DETAIL` = `RenderQuality.terrainDetail`); the sun's diffuse and GGX highlight are shadowed (VQ9) |
 
 The terrain pipeline has its own layout: group 0 the frame uniforms, group 1 the texture
 array, an anisotropic (8x) trilinear repeat sampler and `TerrainParams`. Paint and state
@@ -257,7 +306,8 @@ ALU; `fwidth` is taken before the branch). Specular from VQ6's dynamic lights is
 `shaders/frame.ts` (the `Frame` uniform block, shared by every scene pipeline, the terrain
 attribute bit layout, sRGB helpers), `shaders/lighting.ts`, `shaders/terrain.ts`,
 `shaders/objects.ts` (instanced and translucent), `shaders/lights.ts` (the light froxel
-builder), `shaders/particles.ts` (particles, motes, half-resolution composite), `shaders/post.ts`, `shaders/sky.ts` (VQ7: the
+builder), `shaders/shadow.ts` (VQ9: the SunShadow struct and `sun_visibility`, included by
+`lighting.ts`; the caster pass), `shaders/volumetric.ts` (VQ9: the shaft march and composite), `shaders/particles.ts` (particles, motes, half-resolution composite), `shaders/post.ts`, `shaders/sky.ts` (VQ7: the
 environment and planet bakes, the sky pass, the shafts, gradient noise). Each package edits its
 own file (VQ3b terrain, VQ5 particles, VQ6 lighting, VQ7 sky); keep `FRAME_UNIFORM_FLOATS` and
 `Renderer.writeFrameUniforms` in sync with the `Frame` struct (`sky.test.ts` checks the sizes of

@@ -32,6 +32,8 @@ import { terrainVertexData } from "./terrainBlend.ts";
 import { QUALITY_PRESETS, QualityAuto, qualityFromSearch, type QualityLevel, type RenderQuality } from "./quality.ts";
 import { FRAME_UNIFORM_FLOATS, srgbToLinear, TEAM_SLOTS } from "./shaders/frame.ts";
 import { Sky } from "./sky.ts";
+import { SunShadow, sunShadowBindLayoutEntries } from "./sunShadow.ts";
+import { VOLUMETRIC_LOOKS, VolumetricShafts, volumetricLook } from "./volumetric.ts";
 import { INSTANCED_WGSL, TRANSLUCENT_WGSL } from "./shaders/objects.ts";
 import { TERRAIN_WGSL } from "./shaders/terrain.ts";
 
@@ -155,6 +157,9 @@ export interface FrameStats {
 
 const DEPTH_FORMAT: GPUTextureFormat = "depth24plus";
 
+/** Sun shadow map size (VQ9): 4096² depth16 (32 MB) covers the 256 x 128 x 256 u level at about 0.09 u per texel. */
+const SUN_SHADOW_SIZE = 4096;
+
 /**
  * Terrain meshes must use counter-clockwise front faces as seen from open
  * space. Switch to "none" if a mesher ever emits mixed winding.
@@ -267,6 +272,10 @@ export class Renderer {
   /** GPU particles and dust motes (VQ5); null when switched off (`particles: false`, `?vfx=off`). */
   readonly particles: ParticleSystem | null;
   private readonly sky: Sky;
+  /** Sun occlusion (VQ9): the shadow map over the level; `setEnabled(false)` (or `?shadows=off`) lets the sun through rock. */
+  readonly sunShadow: SunShadow;
+  /** Volumetric sun shafts through the shadow map (VQ9). */
+  readonly volumetric: VolumetricShafts;
   private readonly chunks = new Map<string, GpuMesh>();
   private readonly meshes: Record<MeshKind, GpuMesh>;
   private readonly batches: Record<RenderPass, Map<MeshKind, InstanceBatch>> = {
@@ -304,12 +313,18 @@ export class Renderer {
    */
   static async create(
     canvas: HTMLCanvasElement,
-    options: { quality?: QualityLevel; legacyModels?: boolean; particles?: boolean } = {},
+    options: { quality?: QualityLevel; legacyModels?: boolean; particles?: boolean; shadows?: boolean } = {},
   ): Promise<Renderer> {
     const search = typeof location === "undefined" ? "" : location.search;
     const forced = options.quality ?? qualityFromSearch(search);
-    const particles = options.particles ?? new URLSearchParams(search).get("vfx") !== "off";
-    return new Renderer(canvas, await initGpu(canvas), forced, options.legacyModels ?? false, particles);
+    const params = new URLSearchParams(search);
+    const particles = options.particles ?? params.get("vfx") !== "off";
+    const shadows = options.shadows ?? params.get("shadows") !== "off";
+    const renderer = new Renderer(canvas, await initGpu(canvas), forced, options.legacyModels ?? false, particles);
+    renderer.sunShadow.setEnabled(shadows);
+    const bench = params.get("shadowbench");
+    if (bench === "full" || bench === "chunk") renderer.sunShadow.bench = bench;
+    return renderer;
   }
 
   private constructor(canvas: HTMLCanvasElement, gpu: GpuContext, forced: QualityLevel | null, legacyModels: boolean, particles: boolean) {
@@ -352,9 +367,13 @@ export class Renderer {
         // The sky's environment cube for the fog (VQ7, sky.ts; frame.ts ENV_BINDING).
         { binding: 6, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, texture: { viewDimension: "cube" } },
         { binding: 7, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, sampler: { type: "filtering" } },
+        // The sun shadow map (VQ9, sunShadow.ts; shaders/shadow.ts).
+        ...sunShadowBindLayoutEntries(),
       ],
     });
     this.lightSystem = new LightSystem(device);
+    this.sunShadow = new SunShadow(device, Math.min(SUN_SHADOW_SIZE, device.limits.maxTextureDimension2D));
+    this.volumetric = new VolumetricShafts(device, this.sunShadow);
     this.bindGroup = device.createBindGroup({
       layout: bindGroupLayout,
       entries: [
@@ -362,6 +381,7 @@ export class Renderer {
         ...this.lightSystem.bindGroupEntries(),
         { binding: 6, resource: this.sky.envView },
         { binding: 7, resource: this.sky.envSampler },
+        ...this.sunShadow.bindGroupEntries(),
       ],
     });
     this.pipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [bindGroupLayout] });
@@ -496,6 +516,9 @@ export class Renderer {
   setAtmosphere(a: Atmosphere | null): void {
     this.sky.setAtmosphere(a);
     const s = this.settings;
+    this.volumetric.look = a ? volumetricLook(a.weights) : VOLUMETRIC_LOOKS.cave;
+    // VQ9: without a sky the level box is sealed and the sun never gets in.
+    this.sunShadow.setSealed(a !== null && a.open <= 0);
     if (!a) {
       this.settings = { ...s, fogColor: DEFAULT_SETTINGS.fogColor, fogDensity: DEFAULT_SETTINGS.fogDensity, sunDirection: DEFAULT_SETTINGS.sunDirection, heightFog: DEFAULT_SETTINGS.heightFog, skyHaze: 0, post: { ...s.post, grade: DEFAULT_POST.grade } };
       return;
@@ -510,7 +533,9 @@ export class Renderer {
 
   /** Adds or replaces the terrain chunk `key`; `null` or an empty mesh removes it. */
   setChunk(key: string, mesh: MeshData | null): void {
-    this.chunks.get(key)?.destroy();
+    const old = this.chunks.get(key);
+    const before = old?.aabb ?? null;
+    old?.destroy();
     this.chunks.delete(key);
     // Open levels: the sky shows where the level box's walls would be.
     const room = this.sky.visible ? this.sky.atmosphere?.room : null;
@@ -519,12 +544,14 @@ export class Renderer {
     if (mesh && mesh.indices.length > 0) {
       this.chunks.set(key, new GpuMesh(this.device, mesh, `chunk ${key}`, terrainVertexData(mesh)));
     }
+    this.sunShadow.chunkChanged(before, this.chunks.get(key)?.aabb ?? null);
   }
 
   clearChunks(): void {
     this.lightSystem.clearChunks();
     for (const mesh of this.chunks.values()) mesh.destroy();
     this.chunks.clear();
+    this.sunShadow.clear();
   }
 
   get chunkCount(): number {
@@ -599,6 +626,8 @@ export class Renderer {
     const timer = this.timer;
     timer?.beginFrame();
     this.lightSystem.encode(encoder, timer);
+    this.sunShadow.setSun(this.settings.sunDirection);
+    this.sunShadow.encode(encoder, this.chunks, timer);
     const split = this.detailedTiming && timer !== null;
     // With MSAA the scene renders into the multisampled target and the last
     // scene pass resolves it into the post chain's HDR texture.
@@ -625,8 +654,8 @@ export class Renderer {
           view: depthView,
           depthClearValue: 1,
           depthLoadOp: first ? "clear" : "load",
-          // The particle pass reads the depth after the scene (soft particles).
-          depthStoreOp: last && !this.particles ? "discard" : "store",
+          // The particle pass (soft particles) and the volumetric shafts read the depth after the scene.
+          depthStoreOp: last && !this.particles && quality.volumetric.divisor === 0 ? "discard" : "store",
         },
       });
       pass.setBindGroup(0, this.bindGroup);
@@ -668,6 +697,8 @@ export class Renderer {
     stats.triangles += this.hullFrame.draw(pass, samples, camera, this.sizer.aspect);
     pass.end();
 
+    // VQ9: sunlit air between the scene and the camera (reads the scene depth).
+    this.volumetric.encode(encoder, this.post.sceneHdr, this.depthTexture!, camera, this.sizer.aspect, quality.volumetric, timer);
     if (sky) this.sky.composite(encoder, this.post.sceneHdr, camera, time, timer);
     if (quality.shafts) this.sky.encodeShafts(encoder, this.post.sceneHdr, viewProj, timer);
     // Particles after the sky and shafts: smoke and glows draw over the finished backdrop.
@@ -689,6 +720,8 @@ export class Renderer {
     this.post.destroy();
     this.terrainMaterial.destroy();
     this.lightSystem.destroy();
+    this.sunShadow.destroy();
+    this.volumetric.destroy();
     this.particles?.destroy();
     this.sky.destroy();
     this.timer?.destroy();

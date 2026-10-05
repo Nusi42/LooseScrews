@@ -11,6 +11,7 @@
 // to 0 at the light's range by (1 - (d / range)^4)^2.
 
 import { CLUSTER_COUNT, CLUSTER_X, CLUSTER_Y, LIGHT_STRUCTS_WGSL, MAX_LIGHTS } from "./lights.ts";
+import { SUN_SHADOW_WGSL } from "./shadow.ts";
 
 export const LIGHTING_WGSL = /* wgsl */ `
 ${LIGHT_STRUCTS_WGSL}
@@ -18,6 +19,12 @@ ${LIGHT_STRUCTS_WGSL}
 @group(0) @binding(1) var<uniform> light_info: LightInfo;
 @group(0) @binding(2) var<storage, read> point_lights: array<PointLight, ${MAX_LIGHTS}>;
 @group(0) @binding(3) var<storage, read> light_masks: array<vec4<u32>, ${CLUSTER_COUNT}>;
+${SUN_SHADOW_WGSL}
+
+// Sun visibility (VQ9 shadow map) of the last static_light() call, for
+// materials that add their own sun highlight after lighting (terrain GGX,
+// model_spec).
+var<private> sun_vis_last: f32 = 1.0;
 
 // Froxel of a world position (CPU mirror: renderer/lights.ts clusterOf).
 fn cluster_index(world_pos: vec3f) -> u32 {
@@ -63,9 +70,11 @@ fn dynamic_lights(n: vec3f, world_pos: vec3f, v: vec3f, power: f32, spec: ptr<fu
   return sum;
 }
 
-// Sun, ambient and the headlight (no dynamic lights).
+// Sun (blocked by rock: the VQ9 shadow map), ambient and the headlight (no dynamic lights).
 fn static_light(n: vec3f, world_pos: vec3f) -> vec3f {
-  let sun = max(dot(n, frame.light_dir.xyz), 0.0) * vec3f(1.0, 0.93, 0.8);
+  // Rock blocks the sun (VQ9).
+  sun_vis_last = sun_visibility(world_pos, n);
+  let sun = max(dot(n, frame.light_dir.xyz), 0.0) * vec3f(1.0, 0.93, 0.8) * sun_vis_last;
   // Hemisphere ambient: cool sky light from above, dim bounce from below.
   let ambient = mix(vec3f(0.035, 0.035, 0.05), vec3f(0.11, 0.12, 0.16), n.y * 0.5 + 0.5);
   // Headlight so tunnels stay readable: a soft spot light along the view

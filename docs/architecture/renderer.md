@@ -83,8 +83,13 @@ orange, growing), mine or charge blast 160, ship death 130, reactor 14 pulsing.
   every weapon lights the cave without per-weapon code; `observeShips` emits the death blast.
   An effect system that emits its own impacts sets `watchProjectiles = false`.
 
-`main.ts` calls `observe`, `observeShips`, `sceneLights` and `frame` each frame and passes the
-result to `Renderer.setLights`; the gallery does the same for its synthetic scenes.
+`main.ts` calls `sceneLights` and `frame` each frame and passes the result to
+`Renderer.setLights`; the gallery does the same for its synthetic scenes. With VQ5's effects on
+(the default) the pulses come from the effect library: `Vfx.lightSink` is the `LightFx`, and
+`Vfx` emits a muzzle pulse per muzzle flash, `spark` or `plasma` per impact, `explosion` /
+`bigExplosion` per blast and `shipDeath` per death, so `watchProjectiles` is off and
+`observe` / `observeShips` only run with `?vfx=off`. Mechanics flashes (shockwaves and the
+like) stay with `sceneLights`.
 
 Hot rock: `LightSystem.setChunk` gathers the vertices of each chunk with a glowing surface
 state (hot, charged, glow) into 6 u cells and puts one light at each cell's centroid, 0.6 u off
@@ -239,7 +244,7 @@ terrain detail when a level first needs them.
 | Rock texture array: 512², 2 layers, `rgba8unorm`, full mip chain, generated at start-up by two compute shaders (tiling gradient noise with integer hashes; layer 0 rock slope, height and vein ramp, layer 1 grain slope, height and speckle) | `rockTextures.ts` (`TerrainMaterial`, `ROCK_GEN_WGSL`, `ROCK_MIP_WGSL`) |
 | Per-world look: `TerrainParams` (strata axis tilted up to 28°, bands per u, texture offsets, strata contrast, vein amount) from `hashSeed(share code)`; set `Renderer.settings.terrainSeed` (main.ts and the gallery do) | `rockTextures.ts` `terrainParams` |
 | Vertex data: the packed `team` u32 (paint dilated next to paint) plus two `unorm8x4` per vertex: AO, weak, hard, paint coverage / hot, charged, glow, scorch, blurred over the mesh near borders (chunk-face vertices pinned) | `terrainBlend.ts` `terrainVertexData`, uploaded by `Renderer.setChunk` (`GpuMesh.extraBuffer`) |
-| Shading: triplanar rock and grain detail normals (surface gradient), macro blotch, strata, per-material albedo, roughness and F0, sharpened organic blends, paint picking and patterns, surface-state emission, GGX from the sun and the headlight, AO and cavity | `shaders/terrain.ts` (override `DETAIL` = `RenderQuality.terrainDetail`) |
+| Shading: triplanar rock and grain detail normals (surface gradient), macro blotch, strata, per-material albedo, roughness and F0, sharpened organic blends, paint picking and patterns, surface-state emission, GGX from the sun and the headlight, a normalised Blinn-Phong highlight from the dynamic lights (`light_spec`, power from the roughness, scaled by F0, capped at 3x), AO and cavity | `shaders/terrain.ts` (override `DETAIL` = `RenderQuality.terrainDetail`) |
 
 The terrain pipeline has its own layout: group 0 the frame uniforms, group 1 the texture
 array, an anisotropic (8x) trilinear repeat sampler and `TerrainParams`. Paint and state

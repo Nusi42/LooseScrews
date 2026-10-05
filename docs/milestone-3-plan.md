@@ -237,7 +237,21 @@ Wave B integration (WIN1; together with VQ8+VQ2, VQ3a and VQ4, in the order B1, 
 
 Acceptance (wave C): see the milestone criteria below; each package's tests are part of `tools/ci.*` (release bot tests, browser smoke).
 
-#### As built (wave C)
+#### As built (wave C, round 1)
+
+Integration on WIN1: merged with `--no-ff` in the order C2 (WIN7), VQ3b (WIN2), VQ6 (WIN4), VQ5 (WIN3), VQ7 (WIN6), VQ1 (WIN5), C3 (WIN8); no branch carried build output or oversized files. C1 (mode visuals) is not in this round.
+- Renderer conflicts (`renderer.ts`, `quality.ts`, `main.ts`, the gallery, `gallery.mjs`, `smoke.mjs`, docs) resolved keeping every package: `RenderQuality` carries `terrainDetail` (VQ3b), `maxLights` (VQ6), `particles` (VQ5) and `shafts` (VQ7); the preset test checks field by field; the smoke requires terrain, instanced, translucent, light clusters, particles, dust motes, hull frame and the three post pipelines.
+- Binding clash: VQ6's lights and VQ7's environment cube both claimed group 0 bindings 1-2; the cube and its sampler moved to bindings 6-7 (`shaders/frame.ts`, renderer layout).
+- Frame order: lights (compute), scene (terrain, objects, translucent, hull frame), sky under the scene, shafts, then particles (so smoke and glows draw over the backdrop), post.
+- VQ5 -> VQ6: `Vfx.lightSink` emits muzzle, spark/plasma impact, explosion/bigExplosion and ship-death pulses into `LightFx`; `main.ts` sets it and turns `LightFx.watchProjectiles` off (the inferred-impact path only runs with `?vfx=off`). The gallery's `explosion` and `particles-stress` scenes take those lights too; the VQ6 light scenes keep mesh shot cores (they have no VQ5 history and rendered invisible after the merge).
+- VQ3b open item closed: dynamic lights now add a normalised Blinn-Phong highlight on rock (`light_spec`).
+- VQ7 hidden walls are stripped before VQ6 gathers hot-rock lights.
+- Stray latin-1 bytes in `tools/browser-smoke/gallery.mjs` (VQ5), `docs/architecture/renderer.md` and `docs/visual-quality-plan.md` (VQ7) converted to UTF-8.
+- Browser rule: every browser script launches headless by default with no headful fallback and injects `fake-pointer-lock.mjs`; the smoke's rule-editor page now also gets it.
+- Hashes: no re-bless. ls-sim, worldgen and the nine C3 mode replays match on native and wasm32 (`determinism-check.mjs`: 7 worlds, 9 mode replays).
+- Gallery `roundC1` (RTX 5080, 1080p, high): all 21 scenes within budget; frames 0.26-0.53 ms, particles-stress 21 767 particles with the particle pass 0.20 ms, light-storm lights 0.01 ms, fit-tunnel probes 0.17 ms CPU (artificial worst case).
+- CI: `pwsh tools/ci.ps1` green on the first run (fmt, reference docs, binds and tools tests, clippy, workspace tests, ls-server timing, ls-bots release incl. `mode_matches` and `social`, ls-game release, wasm32 unit tests, wasm build, web typecheck/260 tests/build, determinism cross-check, browser smoke 124 checks incl. fit ring, lobby and social phases); no flake re-runs.
+
 
 C2 as built (bots in modes):
 - As planned: an objective layer in `crates/ls-bots/src/brain/objective.rs` on top of the hunt/fight behaviour, fed from the replicated mode state (`ModeSense`): The Squeeze keeps the next zone once announced (else the current one) and ignores wander points and pickups outside it; Heist digs the embedded core with crater ordnance (about half the bots are miners that go even under fire), fetches a free or dropped core, flies it home without boost (before anything else, shooting on the way), escorts the own carrier and prefers and hunts the enemy carrier; Hot Reactor holders ram the nearest ship, everyone else never shoots the holder and keeps out of its fuse radius + 12 u; Last Color Standing weights targets and hunts by colour. Eliminated bots spectate (`Mode::Spectate`). Bots press Ready in the lobby. `ls-bots --directory <url>` joins the fullest server of this build with a free slot, `--accept-duels` accepts challenges (presence on the server and the directory's relayed invites), plays the duel in the challenger's room and returns, `--room` joins a private room. The server plays a team Heist free-for-all when it is planned for 1-3 players (`ls-server` `sim::heist_variant`).

@@ -1432,3 +1432,93 @@ fn online_hits_become_hit_cues() {
     assert_eq!(hit.pos, Vec3::new(1.0, 2.0, 3.0));
     assert!(l.core.take_feed().is_empty(), "hits stay out of the feed");
 }
+
+/// Like [`connect`], with `weapon` as the only primary.
+fn connect_with_primary(weapon: &str) -> Link {
+    let code = ShareCode::new(4242, Sliders::new(40, 30));
+    let cfg = RoomConfig {
+        pregenerate: false,
+        ..RoomConfig::default()
+    };
+    let mut config = MatchConfig::paint_the_void(code);
+    config.rules.starting_loadout.primaries = vec![weapon.into()];
+    config
+        .rules
+        .weapons
+        .insert(weapon.into(), ls_sim::Availability::LoadoutAndPickup);
+    let mut room = Room::new(config, cfg).unwrap();
+    let hello = Message::Hello(ls_game::client_hello("tester", None, None))
+        .encode()
+        .unwrap();
+    let id = room.join_packet(&hello).expect("join");
+    let out = room.take_outgoing();
+    let core = GameCore::online(&out[0].bytes).expect("welcome accepted");
+    Link { room, id, core }
+}
+
+#[test]
+fn own_leech_arc_beam_is_drawn_locally_at_once() {
+    let mut l = connect_with_primary("leech_arc");
+    for _ in 0..30 {
+        l.tick(Controls::default());
+    }
+    assert!(l.core.local_pose().is_some_and(|p| p.alive));
+    assert!(l.core.local_beam().is_none(), "no beam before firing");
+    l.core.take_cues();
+    let fire = Controls {
+        buttons: ls_sim::Buttons::FIRE_PRIMARY.0,
+        ..Default::default()
+    };
+    // The first frame that fires draws the beam: no round trip.
+    l.tick(fire);
+    let beam = l.core.local_beam().expect("beam on the firing frame");
+    let pose = l.core.local_pose().unwrap();
+    assert!(beam.from.distance(pose.pos) < 1e-4);
+    let along = (beam.to - beam.from).dot(pose.rot.forward());
+    assert!(
+        along > 0.5 && along <= 12.0 + 1e-3,
+        "along the aim: {along}"
+    );
+    for _ in 0..40 {
+        l.tick(fire);
+        assert!(l.core.local_beam().is_some(), "steady while held");
+    }
+    // The server's own beam cues are not drawn a second time.
+    let me = l.core.player();
+    assert!(!l
+        .core
+        .take_cues()
+        .iter()
+        .any(|c| c.kind() == ls_sim::CueKind::Beam && c.source == me));
+    // Released: the beam goes out within the fire interval.
+    for _ in 0..10 {
+        l.tick(Controls::default());
+    }
+    assert!(l.core.local_beam().is_none());
+}
+
+#[test]
+fn charge_start_cues_carry_the_charging_weapon() {
+    let mut l = connect_with_primary("fusion_charger");
+    for _ in 0..30 {
+        l.tick(Controls::default());
+    }
+    l.core.take_cues();
+    let fire = Controls {
+        buttons: ls_sim::Buttons::FIRE_PRIMARY.0,
+        ..Default::default()
+    };
+    let mut start = None;
+    for _ in 0..20 {
+        l.tick(fire);
+        start = start.or(l
+            .core
+            .take_cues()
+            .into_iter()
+            .find(|c| c.kind() == ls_sim::CueKind::ChargeStart));
+    }
+    let start = start.expect("a charge start cue");
+    let fusion = l.core.weapons().find("fusion_charger").unwrap();
+    assert_eq!(start.source, l.core.player());
+    assert_eq!(start.target, fusion.0, "the charging weapon");
+}

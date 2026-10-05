@@ -41,6 +41,8 @@ import { pickCloseup, pickLongest, pickVista, probeAround, raycast, rayMesh, sph
 import { FIT_TUNNEL_RADIUS, sceneById, type GalleryScene } from "./scenes.ts";
 import { applyDecor, decorSpots, pickBorder, type DecorSpot } from "./decor.ts";
 import { explosionAt, simulateVfx } from "./vfxScenes.ts";
+import { chargeAt, cloakAt, CLOAKED } from "./vqpScenes.ts";
+import { chargeLight } from "../game/chargeFx.ts";
 
 /** Frames rendered before the page reports ready. */
 const WARMUP_FRAMES = 20;
@@ -215,6 +217,7 @@ export function sceneContent(
   const shots: ProjectileState[] = [];
   const time = scene.time;
   let gadgets = new Set<number>();
+  let cloaked: ReadonlySet<number> = new Set<number>();
   let flashes: readonly Flash[] = [];
   const lightFx = new LightFx();
   lightFx.random = () => 0.5;
@@ -319,14 +322,25 @@ export function sceneContent(
   } else if (scene.content === "explosion") {
     // VQ5: a ship blowing up (gone at this time), a burning one; the effects are particles (vfxScenes.ts).
     ships.push(...explosionAt(cam, time, time).ships);
+  } else if (scene.content === "charge") {
+    // VQP: Fusion Charger charges (the glow is particles, vfxScenes.ts; the light grows with it).
+    const m = chargeAt(cam, time, time, scene.ship === undefined ? null : (LINEUP_RADII[scene.ship] ?? 0.5));
+    ships.push(...m.ships);
+    for (const g of m.charges) lights.push(chargeLight(g, () => 0.5));
+  } else if (scene.content === "cloak") {
+    ships.push(...cloakAt(cam));
+    cloaked = CLOAKED;
   }
-  sceneLights({ ships, shots, visuals, flashes, time, gadgetOf: (id) => (gadgets.has(id) ? "shield" : "") }, lights);
+  const gadgetOf = (id: number): string => (gadgets.has(id) ? "shield" : cloaked.has(id) ? "cloak" : "");
+  sceneLights({ ships, shots, visuals, flashes, time, gadgetOf }, lights);
   lightFx.frame(time, lights);
   const teamOf = (id: number): number | undefined => (id === 0 ? 0 : ships.find((s) => s.id === id)?.team);
   return buildScene(ships, shots, [], visuals, teamOf, time, {
-    gadgetOf: (id) => (gadgets.has(id) ? "shield" : ""),
+    gadgetOf,
     flashes,
     vfx,
+    // `?cloak=flat`: the pre-VQP translucent cloak (before shots).
+    refractCloak: typeof location === "undefined" || new URLSearchParams(location.search).get("cloak") !== "flat",
   });
 }
 
@@ -413,6 +427,16 @@ export async function runGallery(canvas: HTMLCanvasElement, ui: HTMLElement, loc
     const border = scene.pose === "border" ? pickBorder(probes, near, origin) : null;
     const sunPose = scene.pose === "sun" ? pickSunPose(near, probes, origin, atmosphere.sunDirection, atmosphere.room) : null;
     const pose = sunPose ?? pickPose(scene, origin, view.orientation, probes, border, { sun: atmosphere.sunDirection, planet: atmosphere.planet?.direction ?? null });
+    if (scene.belowCeiling !== undefined && atmosphere.room) {
+      pose.position = { ...pose.position, y: atmosphere.room.max.y - scene.belowCeiling };
+    }
+    if (scene.pitch) {
+      // Tilt the picked view up (or down) about its right axis.
+      const tilt = q.fromAxisAngle(q.right(pose.orientation), (scene.pitch * Math.PI) / 180);
+      pose.orientation = q.normalize(q.mul(tilt, pose.orientation));
+    }
+    // `?roomfade=off`: rock cut off sharply at the hidden walls (pre-VQP).
+    renderer.roomFade = new URLSearchParams(loc.search).get("roomfade") !== "off";
     view = { ...view, ...pose };
     status.camera = pose;
     if ((scene.decor ?? "none") !== "none") {
@@ -469,7 +493,7 @@ export async function runGallery(canvas: HTMLCanvasElement, ui: HTMLElement, loc
       const fallback = v3.addScaled(pose.position, impactDir, 16);
       const effectLights = scene.content === "explosion" || scene.content === "stress" ? new LightFx() : undefined;
       if (effectLights) effectLights.random = mulberry32(7);
-      simulateVfx(particles, scene, pose, visuals, impact ?? fallback, LINEUP_RADII, (id) => (scene.content === "fight" && id === 2 ? "shield" : ""), effectLights);
+      simulateVfx(particles, scene, pose, visuals, impact ?? fallback, LINEUP_RADII, (id) => (scene.content === "fight" && id === 2 ? "shield" : scene.content === "cloak" && CLOAKED.has(id) ? "cloak" : ""), effectLights);
       effectLights?.frame(scene.time, lights);
       status.particles = particles.liveCount();
     }

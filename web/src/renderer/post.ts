@@ -239,7 +239,8 @@ export class PostChain {
       label: "hdr scene",
       size: { width, height },
       format: HDR_FORMAT,
-      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+      // COPY_SRC: the cloak refraction copies it (cloak.ts).
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC,
     });
     const sceneView = this.sceneTexture.createView();
     const uniform = (texel: [number, number], mode: number): GPUBuffer => {

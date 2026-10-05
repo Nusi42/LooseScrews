@@ -26,7 +26,7 @@ Decisions taken before planning:
 | Carried over (from M1) | **Match rebuild blocks joins**: build the next match (0.6–1.6 s) off the sim thread and swap it in; matters more with lobby-driven rotation |
 | Carried over (from M2) | **Tectonic collapse tick spike**: spread the about 30 crack craters over the following ticks (sim behaviour change, bump `SIM_BEHAVIOR_VERSION`) |
 | Carried over (from M2) | **Weapon state on the wire**: `WeaponState::shots` in `Message::Inventory` (no inferred Scatter/Corkscrew fan phase) and a weapon-state byte in `NetWeapon` (Paint Thrower colour survives a rejoin) |
-| Carried over (from M2) | **Own Leech Arc beam drawn locally** instead of one round trip late |
+| Carried over (from M2) | **Own Leech Arc beam drawn locally** instead of one round trip late (done in VQP: `crates/ls-wasm/src/beam.rs`, see visual-quality-plan.md "VQP as built") |
 | Carried over (from M2) | **Bot navigation cost**: share one nav grid per match between bots in one process, or cache it per share code (2–3 s CPU per bot per match today) |
 
 Out of scope (M4+): coop modes (Deep Dig, Tethered, Escort the Intern), The Architect, pigment pickups and the stealth/power trade-off of monochrome levels (M4, comedy director and sliders), ranked playlists with a live balance list pushed from a central service, accounts and persistent friends lists, matchmaking by skill, regional orchestration (Agones/Nomad, M5), WebRTC fallback (M5). The remaining M5 carried-over items stay in M5.
@@ -266,6 +266,13 @@ C3 as built (end-to-end and smoke):
 - `tools/ci.ps1` / `ci.sh` run `cargo test -p ls-game --release` (setup sweep, Hot Reactor match, The Squeeze remesh benchmark; 386 s on the shared machine, 297 s of it `tests/squeeze.rs`) and build `ls-directory` for the smoke (B4's open item).
 - Pre-push flake (ls-server `tests/rooms` under load): reproduced with 24 parallel runs of the test binary (34 of 48 failed; `social` 7 of 48). Two causes: test connections held without reading are dropped by the server's 10 s idle timeout once a loaded machine stretches the test past it, and room status / counters (`rooms()`, `total_players()`, `stats()`) are published at the end of the tick that sent the `Welcome`, so reading them right after the `Welcome` races. The tests now keep held connections alive in the background (`KeepAlive` in `rooms.rs`, `Client` in `social.rs`) and wait for the published values: 0 of 72 failed for each under the same load. The pre-push hook also keeps each step's output in `target/pre-push/<n>-<step>.log`.
 - Result: the final `--playlist quick --count 8 --directory local` run passed all 45 checks (9 matches, every entry to a result, 18 room swaps, 144 in-place transitions, 1.00 full snapshot per join or transition, 0 desyncs, worst tick p99 2.5 ms (Heist), the listing following the rotation). Findings from the two runs before (shared, busy machine), for other packages: (1) full snapshots 1.02-1.09 per join or transition (164/160, 175/160), above the "at most 1" criterion; (2) after some warm-up swaps the server logged input starvation (66 missing inputs in a window) or a 5 s window with 8 players and no snapshots: the bots stall for seconds on a transition (level build per bot); (3) with walls closing at ~15 u/s (an earlier quick setting, 6x the default speed) one bot's prediction snapped 4-6 u 17 times against The Squeeze's moving shell (B2's known client misprediction at a moving wall; the quick playlist now closes at ~6 u/s); (4) tick p99 over 4 ms in some Paint the Void, Last Color Standing and Heist windows with step max 9-15 ms, while other builds were running; on a quiet machine this needs a re-run. Every entry reached its result and all transitions stayed on one connection.
+
+VQP as built (visual polish, WIN4; details in visual-quality-plan.md "VQP as built"): the
+carried-over **own Leech Arc beam** is drawn locally from the shot predictor's arcs
+(`Game.localBeam()`; test `own_leech_arc_beam_is_drawn_locally_at_once`: on the firing frame,
+without the server's cue), plus the Fusion Charger charge-up, cloak refraction, pillars fading
+at hidden walls, thin bores drawn at their true width (ls-worldgen mesh goldens re-blessed,
+`sdf` and `GENERATOR_VERSION` unchanged) and the canopy frame. Replay hashes unchanged.
 
 ### Wave D — review, docs, full CI
 

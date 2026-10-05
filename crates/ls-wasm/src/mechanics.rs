@@ -15,6 +15,8 @@ pub struct CueView {
     /// `ls_sim::CueKind` byte.
     pub kind: u8,
     /// Ship ids (wire id online, player id in practice), 255 for none.
+    /// `ChargeStart` cues carry the charging weapon id in `target` instead
+    /// (filled in by `GameCore`; the simulation leaves it empty).
     pub source: u8,
     pub target: u8,
     pub pos: Vec3,

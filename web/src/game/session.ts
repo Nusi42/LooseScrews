@@ -12,10 +12,12 @@ import {
   emptyGadget,
   parseCharge,
   parseCues,
+  parseLocalBeam,
   parseShipChoices,
   type ChargeMeter,
   type Cue,
   type GadgetState,
+  type LocalBeam,
   type ShipChoice,
 } from "./mechanics.ts";
 import {
@@ -92,6 +94,8 @@ export interface FrameResult {
   cues: Cue[];
   /** Charge in progress (Fusion Charger, Polite Laser), for the charge meter. */
   charge: ChargeMeter | null;
+  /** The own Leech Arc beam, drawn locally online (null when off and in practice). */
+  localBeam: LocalBeam | null;
   /** The own gadget. */
   gadget: GadgetState;
   /** Own Paint Thrower colour (1 red, 2 blue, 3 yellow) while it is the selected primary; 0 otherwise. */
@@ -338,6 +342,7 @@ export class GameSession {
       feed: this.game.takeFeed(),
       cues: parseCues(this.game.takeCues?.()),
       charge: parseCharge(this.game.charge?.()),
+      localBeam: parseLocalBeam(this.game.localBeam?.()),
       gadget: this.gadget(),
       paintColor: this.game.paintColor ?? 0,
       weaponsOffline: this.game.weaponsOfflineSecs ?? 0,

@@ -302,6 +302,9 @@ struct WeaponSpec {
     lifetime_ticks: u64,
     /// Ticks the own weapons go offline after firing (Borrowed Time).
     offline_ticks: u64,
+    /// An instant beam weapon (the Leech Arc): its paid shots are recorded
+    /// for the locally drawn beam ([`ShotPredictor::last_beam`]).
+    beam: bool,
 }
 
 impl WeaponSpec {
@@ -312,6 +315,7 @@ impl WeaponSpec {
             } else {
                 0
             },
+            beam: def.id == "leech_arc",
             model: ShotModel::for_weapon(def),
             n: def.projectiles.max(1) as usize,
             spread_deg: def.spread_deg,
@@ -351,6 +355,8 @@ pub struct ShotPredictor {
     charge: Option<ChargeMirror>,
     /// No shots before this tick (Borrowed Time takes the weapons offline).
     offline_until: u64,
+    /// The newest predicted arc of an instant beam weapon (tick, weapon).
+    last_beam: Option<(u64, WeaponId)>,
     /// The own Eyeball is guided: the world does not fire the secondary.
     guiding: bool,
 }
@@ -385,6 +391,13 @@ impl ShotPredictor {
     /// The charge in progress (charge weapons), if any.
     pub fn charge(&self) -> Option<ChargeMirror> {
         self.charge
+    }
+
+    /// The newest predicted arc of an instant beam weapon (the Leech Arc):
+    /// its tick and weapon. The host draws the own beam from it at once
+    /// instead of waiting a round trip for the server's beam cue.
+    pub fn last_beam(&self) -> Option<(u64, WeaponId)> {
+        self.last_beam
     }
 
     /// Shots of `w` predicted so far (the phase of its next volley).
@@ -644,6 +657,9 @@ impl ShotPredictor {
             // wait a round trip for the Rewound cue.
             self.set_offline_until(tick + spec.offline_ticks);
         }
+        if spec.beam {
+            self.last_beam = Some((tick, w));
+        }
         let phase = self.shot_count(w);
         self.shot_count.insert(w, phase.wrapping_add(1));
         if self.fired.len() >= MAX_FIRED_LOG {
@@ -853,6 +869,7 @@ impl ShotPredictor {
         self.stats.dropped += self.pending.iter().filter(|s| s.index != u8::MAX).count() as u64;
         self.pending.clear();
         self.charge = None;
+        self.last_beam = None;
     }
 }
 

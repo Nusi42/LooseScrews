@@ -29,6 +29,7 @@ import { PART_ENGINE } from "../renderer/models/kit.ts";
 import type { Rgb3 } from "../renderer/particles.ts";
 import { SPRITE } from "../renderer/spriteAtlas.ts";
 import type { LightPresetName } from "./lightFx.ts";
+import { chargeNow, type ChargeGlow } from "./chargeFx.ts";
 import { CUE, NO_SHIP, PAINT_COLORS, type Beam, type Cue, type Flash } from "./mechanics.ts";
 import {
   add,
@@ -226,6 +227,8 @@ export interface VfxFrame {
   hullOf?: (shipType: number) => number;
   /** Projectiles not drawn (the Eyeball the camera rides). */
   hideShot?: ((p: ProjectileState) => boolean) | undefined;
+  /** Charges in progress (chargeFx.ts ChargeTracker; VQP). */
+  charges?: readonly ChargeGlow[];
 }
 
 interface ShotTrack {
@@ -394,7 +397,20 @@ export class Vfx {
     this.drawFlashes(f);
     this.updateEntities(f);
     this.updateEmitters(f);
+    this.drawCharges(f);
     this.primed = true;
+  }
+
+  /** Fractional inflow sparks per charging ship, carried between frames. */
+  private chargeCarry = new Map<number, number>();
+
+  private drawCharges(f: VfxFrame): void {
+    const live = new Map<number, number>();
+    for (const g of f.charges ?? []) {
+      if (dist(g.pos, f.camera) > EXHAUST_RANGE) continue;
+      live.set(g.ship, chargeNow(this.sink, this.rng, g, f.time, Math.max(0, f.dt), this.chargeCarry.get(g.ship) ?? 0));
+    }
+    this.chargeCarry = live;
   }
 
   // ----- ships --------------------------------------------------------------------

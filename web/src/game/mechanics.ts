@@ -116,7 +116,27 @@ interface Timed {
 
 interface TimedBeam extends Timed {
   source: number;
+  /** Locked ship (NO_SHIP = none): the beam follows it. */
+  target: number;
   to: Vec3;
+}
+
+/** The own Leech Arc beam drawn locally (online; `Game.localBeam()`, crates/ls-wasm/src/beam.rs). */
+export interface LocalBeam {
+  from: Vec3;
+  to: Vec3;
+  /** Locked ship id, NO_SHIP for none. */
+  target: number;
+}
+
+/** Decodes `Game.localBeam()` (`[from x, y, z, to x, y, z, target]`; empty = no beam). */
+export function parseLocalBeam(a: ArrayLike<number> | undefined): LocalBeam | null {
+  if (!a || a.length < 7) return null;
+  return {
+    from: { x: a[0] ?? 0, y: a[1] ?? 0, z: a[2] ?? 0 },
+    to: { x: a[3] ?? 0, y: a[4] ?? 0, z: a[5] ?? 0 },
+    target: a[6] ?? NO_SHIP,
+  };
 }
 
 interface TimedFlash extends Timed {
@@ -258,7 +278,7 @@ export class EffectsState {
         this.flash(c.position, [1, 0.85, 0.6], c.value, now, c.value >= 40 ? 1.0 : 0.4, true);
         break;
       case CUE.beam:
-        this.beams.push({ start: now, end: now + Math.max(secs, 0.05), source: c.source, to: c.position });
+        this.beams.push({ start: now, end: now + Math.max(secs, 0.05), source: c.source, target: c.target, to: c.position });
         break;
       case CUE.swapped:
         if (c.source === me || c.target === me) this.banner("swap", "Swapped places!", "info", now, 1.5);
@@ -307,8 +327,12 @@ export class EffectsState {
     this.overcharge = false;
   }
 
-  /** What to draw at `now` (drops finished effects). */
-  frame(now: number, ctx: EffectsContext): EffectsFrame {
+  /**
+   * What to draw at `now` (drops finished effects). `local` is the own
+   * Leech Arc beam predicted by ls-wasm (online), drawn at full strength
+   * from the own ship to its lock.
+   */
+  frame(now: number, ctx: EffectsContext, local: LocalBeam | null = null): EffectsFrame {
     const alive = <T extends Timed>(xs: T[]): T[] => xs.filter((x) => x.end > now);
     this.beams = alive(this.beams);
     this.flashes = alive(this.flashes);
@@ -332,7 +356,14 @@ export class EffectsState {
     for (const b of this.beams) {
       const from = ctx.shipPos(b.source);
       if (!from) continue;
-      beams.push({ from, to: b.to, color: BEAM_COLOR, strength: (b.end - now) / Math.max(1e-6, b.end - b.start) });
+      // A locked beam stays on its target as it moves.
+      const to = (b.target !== NO_SHIP ? ctx.shipPos(b.target) : undefined) ?? b.to;
+      beams.push({ from, to, color: BEAM_COLOR, strength: (b.end - now) / Math.max(1e-6, b.end - b.start) });
+    }
+    if (local) {
+      const from = ctx.shipPos(ctx.player) ?? local.from;
+      const to = (local.target !== NO_SHIP ? ctx.shipPos(local.target) : undefined) ?? local.to;
+      beams.push({ from, to, color: BEAM_COLOR, strength: 1 });
     }
     const flashes: Flash[] = this.flashes.map((f) => {
       const t = (now - f.start) / Math.max(1e-6, f.end - f.start);

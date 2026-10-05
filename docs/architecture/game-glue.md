@@ -220,6 +220,13 @@ catch-up sends only the newest 8 `Input` messages (older ones would be late anyw
   counts (`ShotPredictor::on_inventory`: server count plus the shots predicted after the
   inventory's tick; volleys predicted after it with another phase are rebuilt); nothing is
   inferred from projectiles.
+- **Own Leech Arc beam** (`crates/ls-wasm/src/beam.rs`, `Game.localBeam()`): the predictor
+  records its Leech Arc arcs (`ShotPredictor::last_beam`); while one fired within the fire
+  interval the core aims the beam like the weapon module (nearest enemy in the 30° cone within
+  12 u with line of sight, lock kept in the 60° cone, else grounded on the rock ahead or full
+  range) on the ships as drawn, so the own beam shows with the click instead of a round trip
+  later. The server's own `Beam` cues are not passed on (they only correct the lock).
+  `ChargeStart` cues carry the charging weapon in `target` for the charge-up effect.
 - **Paint Thrower colour**: from the inventory's weapon state byte (a V press guesses ahead
   until an inventory at least as new as the press arrives) and the `PaintColor` cues, so a
   client that missed the cues (a rejoin, a transition) still shows the server's colour.

@@ -78,6 +78,7 @@ import { showShowcase, wantsShowcase } from "./renderer/models/showcase.ts";
 import { WreckTypes } from "./game/wrecks.ts";
 import { LightFx, sceneLights } from "./game/lightFx.ts";
 import { Vfx } from "./game/vfx.ts";
+import { chargeLight, ChargeTracker } from "./game/chargeFx.ts";
 import { parseInvite } from "./rules/model.ts";
 import type { WasmApi } from "./wasm/api.ts";
 
@@ -272,6 +273,7 @@ function runGame(
     let wrecks = new WreckTypes();
     // Dynamic lights (VQ6): timed pulses (muzzle, impacts, explosions); effect systems emit into it too.
     const lightFx = new LightFx();
+    const charging = new ChargeTracker(); // VQP charge-up effects
     // VQ5 particle effects (null with `?vfx=off`: the mesh effects draw instead).
     const particles = renderer.particles;
     const vfx = particles ? new Vfx(particles) : null;
@@ -411,6 +413,7 @@ function runGame(
         wrecks = new WreckTypes();
         lightFx.clear();
         vfx?.reset();
+        charging.forget();
         particles?.clear();
         spectator = null;
         lobbyClock.reset();
@@ -441,7 +444,7 @@ function runGame(
         weaponsOfflineSecs: r.weaponsOffline,
       };
       effects.apply(r.cues, time, fxCtx);
-      const fx = effects.frame(time, fxCtx);
+      const fx = effects.frame(time, fxCtx, r.localBeam);
       // Eyeball: while the own missile is guided, the camera rides it.
       const guided = guidedProjectile(r.projectiles, game.player);
       const shipUp = r.pose ? q.up(r.pose.orientation) : q.up(camera.current.orientation);
@@ -476,6 +479,18 @@ function runGame(
         return "";
       };
       const hideShot = guided ? (p: (typeof r.projectiles)[number]) => p === guided : undefined;
+      charging.apply(r.cues, time, game.player, r.projectiles);
+      const charges = charging.glows({
+        now: time,
+        player: game.player,
+        pose: flow.spectating || guided ? null : r.pose,
+        ownRadius: game.shipRadius ?? TINKER_RADIUS,
+        ownShipType: r.players.find((p) => p.id === game.player)?.shipType ?? 1,
+        own: r.charge,
+        ships: r.ships,
+        shots: r.projectiles,
+        visualOf: (w) => session.visuals[game.projectileVisual?.(w) ?? -1],
+      });
       vfx?.update({
         time,
         dt,
@@ -493,6 +508,7 @@ function runGame(
         gadgetOf,
         hullOf: (t) => session.shipChoices().find((c) => c.shipType === t)?.hull ?? 100,
         hideShot,
+        charges,
       });
       renderer.setScene(
         buildScene(r.ships, r.projectiles, r.entities, session.visuals, session.teamOf(r.ships), time, {
@@ -505,6 +521,7 @@ function runGame(
           wreckTypeOf: (e) => wrecks.typeOf(e),
           teams: r.mode.teams,
           vfx: vfx !== null,
+          refractCloak: true,
         }),
       );
       // Without VQ5 effects the light pulses come from watching projectiles and ships.
@@ -524,6 +541,7 @@ function runGame(
         nowTick: game.nowTick?.() ?? 0,
         time,
       });
+      for (const g of charges) lights.push(chargeLight(g));
       renderer.setLights(lightFx.frame(time, lights));
       // Inside a dust cloud the fog closes in (visibility is cut).
       const atmo = renderer.atmosphere ?? DEFAULT_SETTINGS;

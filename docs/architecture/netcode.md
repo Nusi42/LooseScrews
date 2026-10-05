@@ -106,8 +106,9 @@ server's projectile when a snapshot shows a match (the difference fades as a ren
 Unmatched predictions disappear after 4 ticks. Each weapon has a `ShotModel` mirroring its
 module's `fire`: the generic pattern, the Scatter Laser's alternating fan and the Corkscrew's
 helix (their phase from the server's shot counts in the inventory, protocol 5), the Scrap Shotgun's centre pellet
-only (its cone is random), and nothing for the Leech Arc (instant), Borrowed Time and the Prox
-Mine (the cost is still predicted). Charge weapons are predicted on release; Borrowed Time
+only (its cone is random), and nothing for the Leech Arc (instant; its beam is drawn locally
+from the predicted arcs, `crates/ls-wasm/src/beam.rs`), Borrowed Time and the Prox Mine (the
+cost is still predicted). Charge weapons are predicted on release; Borrowed Time
 takes the weapons offline locally as it fires. Bots do not predict shots.
 
 ## Interpolation (other ships and projectiles)

@@ -315,6 +315,10 @@ fn fs_main(in: VsOut) -> @location(0) vec4f {
   let lit = light_spec(n, p, v, power, &dyn_spec);
   let dyn_gloss = dyn_spec * min(f0 * (power + 8.0) / 25.13, 3.0);
   let color = albedo * lit * occl + (spec + dyn_gloss) * occl + emissive;
-  return vec4f(apply_fog(color, p), 1.0);
+  // Open levels: rock fades into the sky before a hidden wall (premultiplied;
+  // the sky is drawn under the scene by its alpha). VQP.
+  let cover = room_fade(p);
+  if (cover < 0.01) { discard; }
+  return vec4f(apply_fog(color, p) * cover, cover);
 }
 `;

@@ -65,7 +65,7 @@ Open the game page. The start screen has these fields:
 | **Ship** | The ship type you fly first: Skitter, Tinker (default), Hauler or Tug (see [Ship types](#ship-types)). If the server's rules don't allow it, you get the Tinker or the first allowed type. You can change ships later in the ship bay (**B**). |
 | **Horizon assist** | On by default. Slowly levels your roll so "up" stays up. You can toggle it in flight with **H**. |
 | **View: Field of view** | How wide you see, 80 to 120 degrees across a 16:9 screen (default 100). Narrower screens keep that width; wider screens (21:9) see a little more at the sides, up to 115 degrees. Boosting widens the view by 4 degrees for a sense of speed. |
-| **View: Cockpit frame** | On by default. Shows the nose, canopy pillars and side parts (pods, armour plates, grapple arms) of the ship you fly, so you can judge its size. |
+| **View: Cockpit frame** | On by default. Shows the nose, the canopy frame (pillars and the bow across the top) and side parts (pods, armour plates, grapple arms) of the ship you fly, so you can judge its size. |
 | **View: Fit ring** | On by default. A thin ring around the crosshair that shows how big your ship is at the rock ahead (see [Will I fit?](#will-i-fit)). |
 
 The page remembers your name, code, ship, horizon assist and view settings for next time. The
@@ -361,8 +361,12 @@ Paid with energy; the bolts fly at about laser speed, so good pilots dodge them.
 - **Fusion Charger:** hold the trigger to charge for up to 2 s (the charge meter shows it), then
   release: 12 damage uncharged up to 48 at full charge, with matching knockback. Holding past
   full charge burns 10 hull per second (never below 1). The shot melts a channel 1 to 5 u deep
-  through rock (thin walls are melted through) and shoves debris aside. *Tip:* charge behind
-  cover, release as you peek out.
+  through rock (thin walls are melted through) and shoves debris aside. While you charge, energy
+  gathers in a glowing orb at your nose; it grows, pulses faster and crackles as the charge
+  fills, flares at full charge and turns red and unstable when you overcharge. **Everyone sees
+  it** (and the cave lights up around you), so a ship with a growing purple orb is about to
+  fire a heavy shot. The channels it melts are drawn as wide as they really are, so you can see
+  whether your ship fits through. *Tip:* charge behind cover, release as you peek out.
 - **Corkscrew:** 5 bolts in a line that spins around your aim, widening as it flies. Only the
   centre bolt reliably connects at range. The spinning bolts etch spiral grooves into walls.
   *Tip:* point blank, every bolt hits.
@@ -373,8 +377,9 @@ Paid with energy; the bolts fly at about laser speed, so good pilots dodge them.
   10 arcs per second: 2 damage and 2 energy drained into your tank per arc. It stays locked on
   that target while it stays within 12 u and roughly in front of you, even if someone else
   comes closer. Beyond 12 u it does nothing (and still costs energy). Rock the arc touches stays
-  **charged** for 15 s and drains 5 energy per second from ships that scrape it. *Tip:* the
-  drain feeds your own weapons; stick to your target like glue.
+  **charged** for 15 s and drains 5 energy per second from ships that scrape it. Your own arc
+  shows the moment you fire (online too, without waiting for the server) and follows its
+  target. *Tip:* the drain feeds your own weapons; stick to your target like glue.
 
 ### Kinetic primaries
 
@@ -518,8 +523,10 @@ starts switched off). All numbers: [gadget reference](reference/gadgets.md).
   and the Shield drops when your energy runs out. *Tip:* switch it on for heavy fights and rocket
   duels, off to save energy for your weapons.
 - **Cloak** (toggle, 5 energy, 3 energy per second, **3x drain while you move**): enemies don't
-  see you unless they are within 6 u, or you fired in the last half second. Teammates see a
-  shimmer. *Tip:* sit still on a route the enemy uses and fire at point blank.
+  see you unless they are within 6 u, or you fired in the last half second. Where a cloaked ship
+  can be seen (teammates always, enemies up close), it shows only as a bending of the view
+  behind it, like a lens, with a faint shimmer at its edges in its team colour. *Tip:* sit still
+  on a route the enemy uses and fire at point blank.
 - **Decoy** (instant, 30 energy, 10 s cooldown): launches a copy of your ship along your aim. It
   draws fire (projectiles hit it, Seekers and Swarm blobs chase it) and has as much integrity as
   your ship's max hull. After 6 s it snaps back to you like a rubber band, very fast, and hits

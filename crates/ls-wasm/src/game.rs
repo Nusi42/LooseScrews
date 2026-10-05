@@ -56,6 +56,7 @@ use ls_sim::{
 };
 use ls_worldgen::{ChunkCoord, Generator, Mesh, ShareCode};
 
+use crate::beam::{aim_beam, BeamParams, LocalBeam};
 use crate::controls::{Controls, FixedStep, LookAccumulator};
 use crate::inventory::{resolve_select, Inventory, LoadoutView};
 use crate::mechanics::{
@@ -486,6 +487,9 @@ pub struct GameCore {
     /// Chunks of the previous match's level the host still shows: reported
     /// by [`GameCore::take_unloads`] after a transition.
     unload_backlog: Vec<ChunkCoord>,
+    /// Online: the ship the locally drawn Leech Arc beam is locked on
+    /// ([`GameCore::local_beam`]).
+    beam_lock: Option<u8>,
 }
 
 /// What the online core derives from a session's rule set: the resolved
@@ -568,6 +572,7 @@ impl GameCore {
             transitions: 0,
             transition_pending: false,
             unload_backlog: Vec::new(),
+            beam_lock: None,
         })
     }
 
@@ -645,6 +650,7 @@ impl GameCore {
             transitions: 0,
             transition_pending: false,
             unload_backlog: Vec::new(),
+            beam_lock: None,
         })
     }
 
@@ -1580,7 +1586,18 @@ impl GameCore {
 
     /// Records a cue for the host; the own gadget cues also restart the
     /// gadget cooldown estimate (online).
-    fn on_cue(&mut self, cue: CueView) {
+    fn on_cue(&mut self, mut cue: CueView) {
+        // A charge start carries the charging weapon in `target` (the sim
+        // leaves it empty), so the host can colour the charge-up effect.
+        if cue.kind() == ls_sim::CueKind::ChargeStart && cue.target == u8::MAX {
+            cue.target = self.selected_primary_of(cue.source).unwrap_or(u8::MAX);
+        }
+        // Online, the own Leech Arc beam is drawn locally (`local_beam`):
+        // the server's beam cue only corrects its lock.
+        if self.is_online() && cue.kind() == ls_sim::CueKind::Beam && cue.source == self.player() {
+            self.beam_lock = (cue.target != u8::MAX).then_some(cue.target);
+            return;
+        }
         // Borrowed Time: the rewound ship's weapons go offline for the
         // weapon's `offline_secs` (the cue's value is the rewind).
         if cue.kind() == ls_sim::CueKind::Rewound && cue.target == self.player() {
@@ -1617,6 +1634,29 @@ impl GameCore {
             }
         }
         push_cue(&mut self.cues, cue);
+    }
+
+    /// The weapon a ship is charging or has selected as its primary (online:
+    /// the newest snapshot's ship flags; practice: the world's ship).
+    fn selected_primary_of(&self, id: u8) -> Option<u8> {
+        match &self.mode {
+            Mode::Online(o) => {
+                if id == o.session.player() {
+                    if let Some(c) = o.shots.charge() {
+                        return Some(c.weapon.0);
+                    }
+                }
+                let snap = o.session.latest_snapshot()?;
+                let ship = snap.ships.iter().find(|s| s.id == id)?;
+                Some(ship_flags::weapon(ship.flags))
+            }
+            Mode::Practice(p) => {
+                let ship = p.world.ship(ls_sim::PlayerId(u16::from(id)))?;
+                ship.charge
+                    .map(|c| c.weapon.0)
+                    .or_else(|| ship.primary.map(|w| w.0))
+            }
+        }
     }
 
     /// Game cues since the last call (oldest first).
@@ -1686,6 +1726,44 @@ impl GameCore {
                 )
             }
         }
+    }
+
+    /// The own Leech Arc beam, predicted locally (online; practice draws
+    /// the simulation's beam cues, which arrive at once): while the shot
+    /// predictor fired an arc within the weapon's fire interval, the beam
+    /// from the own ship to its lock or along the aim (see [`crate::beam`]).
+    pub fn local_beam(&mut self) -> Option<LocalBeam> {
+        let Mode::Online(o) = &self.mode else {
+            return None;
+        };
+        let (tick, w) = o.shots.last_beam()?;
+        let now = o.session.next_input_tick().saturating_sub(1);
+        let def = self.weapons.get(w);
+        // Arcs come every fire interval while the trigger is held; one
+        // missed tick of slack keeps the beam steady between them.
+        if now > tick + def.fire_interval_ticks() + 1 {
+            self.beam_lock = None;
+            return None;
+        }
+        let params = BeamParams::of(def);
+        let pose = self.local_pose().filter(|p| p.alive)?;
+        let ships = self.remote_ships();
+        let terrain = self.terrain();
+        let beam = aim_beam(
+            pose.pos,
+            pose.rot.forward(),
+            self.team(),
+            &ships,
+            self.beam_lock,
+            params,
+            |a, b| {
+                let to = b - a;
+                crate::probe::raycast(terrain, a, to, to.length()).is_none()
+            },
+            |o, d, max| crate::probe::raycast(terrain, o, d, max),
+        );
+        self.beam_lock = beam.target;
+        Some(beam)
     }
 
     /// The charge in progress of a hold-to-charge weapon, for the charge

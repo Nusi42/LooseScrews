@@ -31,7 +31,11 @@ export type Action =
   | "shipSelect"
   // Interface keys (work with or without pointer lock).
   | "scoreboard"
-  | "toggleDebug";
+  | "toggleDebug"
+  // Lobby (M3): ready, team pick, spectate.
+  | "ready"
+  | "cycleTeam"
+  | "toggleSpectate";
 
 export const KEY_BINDINGS: Readonly<Record<string, Action>> = {
   KeyW: "forward",
@@ -74,10 +78,16 @@ export const KEY_BINDINGS: Readonly<Record<string, Action>> = {
   // Hold for the scoreboard; F3 toggles the debug overlay.
   Tab: "scoreboard",
   F3: "toggleDebug",
+  // Lobby between matches: Enter toggles ready, T cycles the team pick
+  // (auto, then each team), O spectates the next match (or plays again).
+  Enter: "ready",
+  NumpadEnter: "ready",
+  KeyT: "cycleTeam",
+  KeyO: "toggleSpectate",
 };
 
 /** Actions handled even while the pointer is not locked (overlays, not flying). */
-export const UI_ACTIONS: ReadonlySet<Action> = new Set<Action>(["scoreboard", "toggleDebug"]);
+export const UI_ACTIONS: ReadonlySet<Action> = new Set<Action>(["scoreboard", "toggleDebug", "ready", "cycleTeam", "toggleSpectate"]);
 
 /** Weapon-slot actions in key order (Digit1 = index 0, Digit0 = index 9). */
 export const WEAPON_ACTIONS: readonly Action[] = [

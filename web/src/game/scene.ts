@@ -13,6 +13,7 @@ import type { Vec3 } from "../math/vec3.ts";
 import { shipMeshKind, wreckMeshKind, type MeshKind } from "../renderer/models/index.ts";
 import { emptyScene, type Instance, type Rgb, type SceneInstances } from "../renderer/renderer.ts";
 import { PAINT_COLORS, type Beam, type Flash } from "./mechanics.ts";
+import { sideColor, TEAM_PALETTE } from "./sides.ts";
 import {
   PROJ_ARMED,
   PROJ_STUCK,
@@ -24,15 +25,15 @@ import {
   type VisualDef,
 } from "./views.ts";
 
-/** Hull colour per 0-based team (a darker shade of the paint colour). */
-export const TEAM_HULL: readonly Rgb[] = [
-  [0.95, 0.5, 0.2],
-  [0.25, 0.6, 0.95],
-];
-const NEUTRAL_HULL: Rgb = [0.8, 0.8, 0.8];
+/** Hull colour per 0-based team (a darker shade of the paint colour); see game/sides.ts. */
+export const TEAM_HULL: readonly Rgb[] = TEAM_PALETTE;
 
-export function teamHull(team: number): Rgb {
-  return TEAM_HULL[team] ?? NEUTRAL_HULL;
+/**
+ * Hull colour of a side: the team palette in team modes, a distinct colour
+ * per ship in free-for-all (`teams` 0, side ids 0-253).
+ */
+export function teamHull(team: number, teams = 2): Rgb {
+  return sideColor(team, teams);
 }
 
 /** How one visual shape is drawn. */
@@ -141,11 +142,12 @@ export function addShips(
   ships: readonly ShipState[],
   gadgetOf: (id: number) => string = () => "",
   time = 0,
+  teams = 2,
 ): void {
   for (const s of ships) {
     if (!s.alive) continue;
     const scale = (s.radius || TINKER_RADIUS) / TINKER_RADIUS;
-    const color = teamHull(s.team);
+    const color = teamHull(s.team, teams);
     const gadget = s.gadgetActive ? gadgetOf(s.id) : "";
     const mesh = shipMeshKind(s.shipType);
     // The hull's livery takes the team colour; engines glow brighter while boosting.
@@ -241,6 +243,7 @@ export function addProjectiles(
   visuals: readonly VisualDef[],
   teamOf: (owner: number) => number | undefined,
   time: number,
+  teams = 2,
 ): void {
   for (const p of shots) {
     const visual = visuals[p.visual];
@@ -252,7 +255,7 @@ export function addProjectiles(
       const paint = PAINT_COLORS[projectilePaintColor(p.state)];
       const team = teamOf(p.owner);
       if (projectilePaintColor(p.state) !== 0 && paint) color = paint;
-      else if (team !== undefined) color = teamHull(team);
+      else if (team !== undefined) color = teamHull(team, teams);
     }
     const scale = style.size * (visual?.scale ?? 1);
     let rotation = alongVelocity(p.velocity);
@@ -312,6 +315,7 @@ export function addEntities(
   visuals: readonly VisualDef[],
   time: number,
   hulls: EntityHulls = {},
+  teams = 2,
 ): void {
   for (const e of entities) {
     if (e.kind === "marker" && !visuals[e.visual]) continue;
@@ -327,7 +331,7 @@ export function addEntities(
       mesh = wreckMeshKind(hulls.wreckTypeOf?.(e) ?? 1);
     }
     let color = visual?.color ?? WHITE;
-    if (style.teamHull) color = teamHull(e.team);
+    if (style.teamHull) color = teamHull(e.team, teams);
     let scale = style.size * (visual?.scale ?? 1);
     if (style.radiusScaled && e.radius > 0) scale = e.radius * 2 * (visual?.scale ?? 1);
     if (e.kind === "scrapPile" || e.kind === "wreck") scale *= scrapScale(e.state[0]);
@@ -388,6 +392,8 @@ export interface SceneExtras extends EntityHulls {
   flashes?: readonly Flash[];
   /** Projectiles not to draw (e.g. the Eyeball the camera rides). */
   hideShot?: ((p: ProjectileState) => boolean) | undefined;
+  /** Teams of the match (0 = free-for-all: every side its own colour); default 2. */
+  teams?: number;
 }
 
 /** Builds the whole instance scene for one frame. */
@@ -401,12 +407,13 @@ export function buildScene(
   extras: SceneExtras = {},
 ): SceneInstances {
   const scene = emptyScene();
-  addShips(scene, ships, extras.gadgetOf, time);
+  const teams = extras.teams ?? 2;
+  addShips(scene, ships, extras.gadgetOf, time, teams);
   const hide = extras.hideShot;
-  addProjectiles(scene, hide ? shots.filter((p) => !hide(p)) : shots, visuals, teamOf, time);
+  addProjectiles(scene, hide ? shots.filter((p) => !hide(p)) : shots, visuals, teamOf, time, teams);
   // Ship types of the ships in view, unless the caller knows every player's.
   const shipTypeOf = extras.shipTypeOf ?? ((id: number) => ships.find((s) => s.id === id)?.shipType);
-  addEntities(scene, entities, visuals, time, { shipTypeOf, wreckTypeOf: extras.wreckTypeOf });
+  addEntities(scene, entities, visuals, time, { shipTypeOf, wreckTypeOf: extras.wreckTypeOf }, teams);
   addEffects(scene, extras.beams ?? [], extras.flashes ?? [], time);
   return scene;
 }

@@ -149,6 +149,25 @@ export interface GameHandle {
   readonly paintColor?: number;
   /** Seconds until the own weapons are back online after a Borrowed Time rewind (0 = online). */
   readonly weaponsOfflineSecs?: number;
+  // Modes and lobby (M3, protocol 5); optional so older fakes keep working.
+  /** Mode state JSON (game/modeState.ts `parseModeState`). */
+  modeState?(): string;
+  /** Lobby state JSON, `undefined` before the server sent one (and offline). */
+  lobbyState?(): string | undefined;
+  /** Match results JSON, `undefined` until the match ended (online only). */
+  results?(): string | undefined;
+  /** True once after each match transition (a new Welcome on the open connection). */
+  takeMatchTransition?(): boolean;
+  /** Match transitions handled so far. */
+  readonly transitions?: number;
+  /** Room code of the match (empty: the public room or practice). */
+  readonly roomCode?: string;
+  /** `Ready` packet (send reliably; `undefined` offline). */
+  readyPacket?(ready: boolean): Uint8Array | undefined;
+  /** `PickTeam` packet (`team` < 0 = auto-balance). */
+  pickTeamPacket?(team: number): Uint8Array | undefined;
+  /** `Spectate` packet (spectate from the next match on, or play again). */
+  spectatePacket?(spectate: boolean): Uint8Array | undefined;
   free(): void;
 }
 
@@ -167,6 +186,8 @@ export interface WasmApi {
   helloPacketAs?(name: string, preferredTeam: number, shipType: number): Uint8Array;
   /** Gadget string ids in id order (players' `gadget`). */
   gadgetIds?(): string[];
+  /** Mode ids in ModeKind index order (`kind` of the mode state). */
+  modeIds?(): string[];
   /** `Disconnect` reason of a server that starts a new match (rejoin, not an error). */
   matchRestartReason(): string;
   weaponIds(): string[];

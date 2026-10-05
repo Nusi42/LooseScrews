@@ -115,9 +115,14 @@ same place as on a US keyboard (W, A, S, D and so on).
 | H | Toggle horizon assist |
 | Tab (hold) | Show the scoreboard |
 | F3 | Toggle the debug overlay |
+| Enter | Lobby: ready (or not ready) for the next match |
+| T | Lobby: pick your team for the next match (Auto, then each team in turn) |
+| O | Spectate from the next match on, or play again |
 | Esc | Release the mouse |
 
-Tab and F3 work even while the mouse is released. Even a very quick tap of G or V counts.
+Tab, F3, Enter, T and O work even while the mouse is released. While you spectate, the flight
+keys and the mouse fly the camera (Shift is faster, it passes through rock), the left mouse
+button follows the next ship and the right mouse button goes back to the free camera. Even a very quick tap of G or V counts.
 Mouse sensitivity is fixed in this build, and there are no settings for inverted look or key
 rebinding yet.
 
@@ -126,12 +131,14 @@ rebinding yet.
 | Where | What it shows |
 | --- | --- |
 | Center | Crosshair. Your shots fly straight out along it. |
-| Top center | Match timer (minutes:seconds) and one bar per team with that team's share of the level's surface in percent: Orange on top, Blue below. |
+| Top center | The **scoreline**: the mode, the match timer (minutes:seconds, red in the last 30 seconds), one score per team in the team colours (Orange, Blue, Lime, Magenta; in Paint the Void the team's share of the surface in percent) or, in free-for-all modes, the top three pilots and your own place, and the score that wins. Below it the mode's stage where it has one (The Squeeze's phase and its timer). |
+| Left, above the meters | In modes with lives your **lives**, in Last Color Standing your **colour** meter |
+| In the view | **Objective markers**: the safe zone and the next zone, the core and who carries it, extraction zones, the reactor with its fuse. Markers outside the view sit at the screen edge with an arrow pointing the way. |
 | Left panel | **Hull**, **Energy** and **Boost** meters with their values. The hull bar changes colour below 25%. |
 | Right panel | The selected primary and how many shots you can afford, the selected secondary with its count, then the **weapon panel**: every carried primary with its number key, every secondary (key X) and your gadget (key G), the selected ones highlighted. Weapons with levels show them (for example "L2/6" for a Scrap Laser at level 2). The gadget line shows "on", "off", "ready" or the cooldown in seconds. Below it, while the Paint Thrower is selected, the **paint colour** ("V paint: Red · bouncy (stripes)"). At the bottom your **Scrap**. |
 | Bottom center | "Horizon assist: on (H)" or "off", and "Scavenging" while you hold R |
 | Below the crosshair | The **charge meter** while you charge the Fusion Charger or the Polite Laser ("Fusion Charger: 60%", "full, release to fire", "OVERCHARGE, release!"), and "Weapons offline 2.4 s" after a Borrowed Time rewind |
-| Upper middle, below the timer | **Warning banners** (see below) |
+| Upper middle, below the timer | **Warning banners** (see below) and mode alerts: "Outside the safe zone", "You carry the core", "You hold the reactor!" |
 | Above the crosshair | Status messages: "Waiting for the server", "Syncing with the server", "Destroyed, respawning", "Match over: Orange wins (your team)" |
 | Top right (kill feed) | The last few events, for example "bot3 destroyed You", "You self-destructed", or the match result. Lines fade after about 6 seconds. |
 | Over ships | Pilot names: teammates within 90 u, enemies within 45 u |
@@ -154,13 +161,21 @@ cloaked, the screen edges shimmer. While you guide an Eyeball, the view rides th
 a frame and the hint "Eyeball view · mouse steers the missile · your ship drifts without
 thrust · the view returns when it hits".
 
-**Scoreboard (hold Tab):** both teams with their paint share, and every pilot with kills and
-deaths. Online, kills and deaths count from the moment you joined. Pilots waiting to respawn
-are dimmed, and your own row is highlighted.
+**Scoreboard (hold Tab):** every team with its score (one list in free-for-all modes), and
+every pilot with the mode score, kills, deaths and, in modes with lives, the lives left.
+Online, kills and deaths count from the moment you joined. Pilots waiting to respawn are
+dimmed, pilots who are out are struck through, and your own row is highlighted.
 
-**End of match:** when the timer runs out, a full-screen result shows the winning team (or a
-draw), each team's paint share and the scoreboard. Online it counts down to the next match (see
-[After the match](#after-the-match)).
+**Results:** when a match ends, a full-screen result shows "Victory", "Defeat" or "Draw" (or
+who won, while you spectate), the team scores as bars or, in free-for-all modes, a podium of
+the top three, and every pilot with score, kills and deaths. Online it counts down to the next
+match and names its mode (see [After the match](#after-the-match)).
+
+**Lobby:** between matches you fly the next match's level with weapons off (warm-up). A card
+on the left shows the next mode with a one-line summary, the world code and rules, every pilot
+in the room with a tick when ready and their team pick, and what the room waits for. Press
+Enter when you're ready, T to pick a team, O to spectate. The countdown starts when enough
+pilots are there and everyone is ready, or when the warm-up timer runs out.
 
 **Debug overlay (F3):** frame rate and the slowest recent frame, ping, the connection type
 (WebTransport or WebSocket), prediction corrections, shot counters, terrain chunk counts, your
@@ -608,12 +623,16 @@ Tactics:
 
 ### After the match
 
-Online, the result stays on screen for about 10 seconds (the server can change this). Then the
-server closes every connection and starts a new match **on the same level and rules**. The
-craters, paint and debris are gone, and teams are assigned again. Your browser rejoins
-automatically ("Match over. Joining the next match…") and keeps your name, ship choice, horizon
-assist setting and debug overlay. If it can't rejoin after about 12 tries, it shows an error.
-Reload the page to join again.
+Online, the result stays on screen for about 10 seconds (the server can change this). Then you
+move on to the next match of the server's rotation without leaving: the warm-up (the lobby
+card, see [The HUD](#the-hud)), the countdown and the next match load in place, on the same
+connection, with your name and settings. Servers with the lobby turned off start the next
+match right away.
+
+An older server instead closes every connection after the result and starts a new match on the
+same level; your browser then rejoins automatically ("Match over. Joining the next match…") and
+keeps your name, ship choice, horizon assist setting and debug overlay. If it can't rejoin
+after about 12 tries, it shows an error. Reload the page to join again.
 
 In practice mode, the result stays on screen. Reload the page for a new round.
 

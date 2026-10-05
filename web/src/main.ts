@@ -16,8 +16,17 @@
 // While the tab is hidden (no animation frames) a timer keeps the online
 // session alive with idle input, so the server neither drops the player
 // after its idle timeout nor keeps repeating held buttons.
-// When the server restarts a finished match it closes the connection; the
-// client then reconnects and rejoins with the same settings (game/rejoin.ts).
+// M3 (modes and lobby): the mode HUD (ui/modeHud.ts) shows the scoreline,
+// timer, stage, lives, colour meter and objective markers of any mode; the
+// lobby card (ui/lobby.ts) shows during warm-up and countdown (Enter ready,
+// T team, O spectate); the results screen (ui/results.ts) after each match;
+// eliminated players and spectators fly the spectator camera
+// (game/spectator.ts). A match transition (a new Welcome on the open
+// connection) swaps the level, rules and visuals in place without a reload
+// (`FrameResult.transition`). `#ui[data-stage]` and `#ui[data-matches]`
+// expose the lobby stage and the match count to the browser smoke test.
+// An older server that closes the connection after a match is still
+// rejoined with the same settings (game/rejoin.ts).
 
 import { InputController } from "./input/input.ts";
 import { GpuUnavailableError } from "./renderer/gpu.ts";
@@ -47,7 +56,13 @@ import * as q from "./math/quat.ts";
 import { showErrorScreen } from "./ui/errorScreen.ts";
 import { Hud } from "./ui/hud.ts";
 import { NameTags, nameTagModel } from "./ui/nameTags.ts";
-import { EndScreen, endScreenModel, Scoreboard, scoreboardModel } from "./ui/scoreboard.ts";
+import { Scoreboard, scoreboardModel } from "./ui/scoreboard.ts";
+import { LobbyOverlay, lobbyModel, nextTeamPick } from "./ui/lobby.ts";
+import { ModeHud, modeHudModel, objectiveMarkers } from "./ui/modeHud.ts";
+import { practiceResults, ResultsScreen, resultsModel } from "./ui/results.ts";
+import { LobbyClock, matchFlow, type FlowView } from "./game/matchFlow.ts";
+import { SpectatorCamera } from "./game/spectator.ts";
+import { emptyInput } from "./input/input.ts";
 import { showLoading, showStartScreen, type StartOptions } from "./ui/startScreen.ts";
 import { loadWasm } from "./wasm/load.ts";
 import { runGallery, wantsGallery } from "./gallery/gallery.ts";
@@ -215,21 +230,30 @@ function runGame(
 ): Promise<GameEnd> {
   return new Promise((resolve) => {
     const game = session.game;
-    const camera = new ShipCamera(boundsCenter(game.bounds()));
+    let camera = new ShipCamera(boundsCenter(game.bounds()));
     const chunks = new ChunkLoader((key, mesh) => renderer.setChunk(key, mesh));
 
     const hud = new Hud(ui);
     hud.show(true);
+    const modeHud = new ModeHud(ui);
     const scoreboard = new Scoreboard(ui);
-    const endScreen = new EndScreen(ui);
+    const results = new ResultsScreen(ui);
+    const lobby = new LobbyOverlay(ui, {
+      ready: (ready) => session.setReady(ready),
+      team: (team) => session.pickTeam(team),
+      spectate: (spectate) => session.setSpectate(spectate),
+    });
+    const lobbyClock = new LobbyClock();
+    let spectator: SpectatorCamera | null = null;
+    let flow: FlowView = { stage: "match", showLobby: false, showResults: false, spectating: false };
     const overlay = new DebugOverlay(ui);
     if (prefs.debugOverlay) overlay.toggle();
     const nameTags = new NameTags(ui);
     const fpsMeter = new FpsMeter();
     const effectsOverlay = new EffectsOverlay(ui);
     const shipPanel = new ShipPanel(ui);
-    const effects = new EffectsState();
-    const wrecks = new WreckTypes();
+    let effects = new EffectsState();
+    let wrecks = new WreckTypes();
     let shipBayOpen = false;
     let shipError = "";
     let dead = false;
@@ -282,8 +306,12 @@ function runGame(
       effectsOverlay.dispose();
       shipPanel.dispose();
       nameTags.dispose();
+      modeHud.dispose();
       scoreboard.dispose();
-      endScreen.dispose();
+      results.dispose();
+      lobby.dispose();
+      delete ui.dataset["stage"];
+      delete ui.dataset["matches"];
       overlay.dispose();
       resolve(end);
     };
@@ -339,12 +367,38 @@ function runGame(
         else shipError = "The rule set does not allow that ship";
         state.weaponKey = 0;
       }
-      const r = session.frame(dt, state);
+      // Spectating: the keys and mouse fly the spectator camera, not the (absent) ship.
+      const r = session.frame(dt, flow.spectating ? { ...emptyInput(), pointerLocked: state.pointerLocked } : state);
       if (r.disconnected) {
         end(r);
         return;
       }
-      dead = r.pose !== null && !r.pose.alive;
+      if (r.transition) {
+        // The next match on the same connection: new level, rules, team and
+        // visuals. Old chunks come back from takeUnloads; reset the rest.
+        camera = new ShipCamera(boundsCenter(game.bounds()));
+        initialLoad = true;
+        effects = new EffectsState();
+        wrecks = new WreckTypes();
+        spectator = null;
+        lobbyClock.reset();
+        shipBayOpen = false;
+        shipError = "";
+        if (!renderer.isLost) renderer.clearInstances();
+      }
+      flow = matchFlow({ online: session.isOnline, lobby: r.lobby, mode: r.mode, results: r.results, own: game.player });
+      ui.dataset["stage"] = flow.stage;
+      ui.dataset["matches"] = String(session.matchCount + 1);
+      const names = new Map(r.players.map((p) => [p.id, p.name]));
+      const lobbySecs = lobbyClock.secsLeft(r.lobby, now);
+      const lobbyNow = flow.showLobby && r.lobby ? lobbyModel(r.lobby, game.player, names, lobbySecs) : null;
+      if (r.lobby) {
+        const me = r.lobby.players.find((p) => p.id === game.player);
+        if (state.toggleReady && flow.showLobby && !me?.spectator) session.setReady(!(me?.ready ?? false));
+        if (state.cycleTeam && flow.showLobby && r.lobby.teams > 0) session.pickTeam(nextTeamPick(me?.team ?? -1, r.lobby.teams));
+        if (state.toggleSpectate) session.setSpectate(!(me?.spectator ?? false));
+      }
+      dead = r.pose !== null && !r.pose.alive && !flow.spectating;
 
       const time = now / 1000;
       const shipPos = shipPositionLookup(game.player, r.pose, r.ships);
@@ -360,7 +414,14 @@ function runGame(
       const guided = guidedProjectile(r.projectiles, game.player);
       const shipUp = r.pose ? q.up(r.pose.orientation) : q.up(camera.current.orientation);
       const ride = guided ? eyeballPose(guided, shipUp) : null;
-      const view = camera.update(r.pose, ride, shakeOffset(fx.shake, time));
+      if (flow.spectating) {
+        spectator ??= new SpectatorCamera(camera.current);
+        const s = session.controls.settings;
+        spectator.update(dt, state, r.ships, s.lookSensitivity, game.bounds(), s.invertY);
+      } else {
+        spectator = null;
+      }
+      const view = camera.update(r.pose, spectator ? spectator.view : ride, shakeOffset(fx.shake, time));
       chunkStats = chunks.update(game, view.position, initialLoad ? LOADING_BUDGET : PLAY_BUDGET);
       if (initialLoad && chunkStats.pending === 0) initialLoad = false;
 
@@ -381,6 +442,7 @@ function runGame(
           hideShot: guided ? (p) => p === guided : undefined,
           shipTypeOf: (id) => players.find((p) => p.id === id)?.shipType,
           wreckTypeOf: (e) => wrecks.typeOf(e),
+          teams: r.mode.teams,
         }),
       );
       // Inside a dust cloud the fog closes in (visibility is cut).
@@ -400,24 +462,69 @@ function runGame(
           canvas.clientHeight,
           game.team,
         ),
+        r.mode.teams,
       );
 
-      // End-of-match screen replaces the Tab scoreboard while the result shows.
-      const info = session.matchInfo();
-      const ownTeam = game.team;
-      const wantBoard = info.over || state.scoreboard;
-      if (wantBoard) {
-        const board = scoreboardModel(session.scoreboard(), info, ownTeam, session.isOnline);
-        if (info.over) endScreen.update(endScreenModel(info, ownTeam, session.isOnline), board);
-        else scoreboard.update(board);
+      // Mode HUD, objective markers, lobby card, results and the Tab scoreboard.
+      const ownSide = game.team;
+      const nowTick = game.nowTick?.() ?? 0;
+      const hudModel = modeHudModel({
+        mode: r.mode,
+        stage: flow.stage,
+        own: game.player,
+        ownSide,
+        nowTick,
+        timeLeft: r.hud.timeLeft ?? 0,
+        names,
+        ownPos: r.pose && r.pose.alive ? r.pose.position : null,
+        spectating: flow.spectating,
+        following: spectator?.following ?? null,
+      });
+      modeHud.update(hudModel);
+      modeHud.updateMarkers(
+        flow.showResults || flow.showLobby
+          ? []
+          : objectiveMarkers(
+              r.mode,
+              game.player,
+              names,
+              nowTick,
+              renderer.viewProjection(view),
+              view.position,
+              canvas.clientWidth,
+              canvas.clientHeight,
+            ),
+      );
+      hud.setInstagib(hudModel.instagib);
+      hud.setSpectating(flow.spectating);
+      hud.show(!flow.showResults);
+      if (lobbyNow) lobby.update(lobbyNow);
+      lobby.show(lobbyNow !== null && !flow.showResults);
+      if (flow.showResults) {
+        const res = r.results ?? practiceResults(r.mode, session.scoreboard(), names);
+        results.update(
+          resultsModel({
+            results: res,
+            own: game.player,
+            ownSide,
+            online: session.isOnline,
+            modeFlags: r.mode.flags,
+            scoreTotal: r.mode.scoreTotal,
+            lobby: r.lobby,
+            secsLeft: lobbySecs,
+            names,
+          }),
+        );
       }
-      endScreen.show(info.over);
-      scoreboard.show(!info.over && state.scoreboard);
+      results.show(flow.showResults);
+      const showBoard = !flow.showResults && state.scoreboard;
+      if (showBoard) scoreboard.update(scoreboardModel(session.scoreboard(), r.mode, ownSide, session.isOnline));
+      scoreboard.show(showBoard);
 
       hud.updateFeed(r.feed, now);
       const status = initialLoad
         ? `Loading terrain (${chunkStats.pending} chunks left)`
-        : info.over
+        : flow.showResults || flow.spectating || !r.mode.running
           ? ""
           : (r.hud.status ?? "");
       hud.update({
@@ -436,7 +543,14 @@ function runGame(
         eyeball: guided !== null,
         cloaked: r.gadget.active && r.gadget.key === "cloak",
       });
-      shipPanel.update(shipPanelModel(bay || shipBayOpen || dead ? session.shipChoices() : [], shipBayOpen, dead, shipError));
+      shipPanel.update(
+        shipPanelModel(
+          !flow.showResults && (bay || shipBayOpen || dead) ? session.shipChoices() : [],
+          shipBayOpen && !flow.showResults,
+          dead && !flow.showResults,
+          shipError,
+        ),
+      );
 
       overlayTimer -= dt;
       if (overlay.visible && overlayTimer <= 0) {

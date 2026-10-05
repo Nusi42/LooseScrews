@@ -3,15 +3,7 @@
 
 import { DEBUG_STATS_LEN, MATCH_INFO_LEN, SCORE_STRIDE } from "../wasm/api.ts";
 
-/** Seconds the server shows the result before it restarts (ls-server `--intermission` default). */
-export const DEFAULT_INTERMISSION_SECS = 10;
-
-/** Team names, matching the paint colours (ls-wasm `team_name`). */
-export const TEAM_NAMES: readonly string[] = ["Orange", "Blue"];
-
-export function teamName(team: number): string {
-  return TEAM_NAMES[team] ?? `Team ${team + 1}`;
-}
+export { TEAM_NAMES, teamName } from "./sides.ts";
 
 export interface DebugStats {
   /** Smoothed round trip in ms, null before the first pong (and offline). */
@@ -105,21 +97,13 @@ export function playerName(row: Pick<ScoreRow, "id" | "isYou" | "name">): string
   return name || `Player ${row.id + 1}`;
 }
 
-/** Team share of the paintable surface in percent (0 when unknown). */
-export function paintPercent(info: MatchInfo, team: number): number {
-  if (!(info.surfaceCells > 0)) return 0;
-  return (100 * (info.teamCells[team] ?? 0)) / info.surfaceCells;
-}
-
-/** Seconds until the server restarts the match (rounded up, never negative). */
-export function intermissionLeft(info: MatchInfo, intermissionSecs = DEFAULT_INTERMISSION_SECS): number {
-  return Math.max(0, Math.ceil(intermissionSecs - info.secsSinceEnd));
-}
-
-/** Rows grouped per team (0, 1, then any others), keeping ls-wasm's order inside a team. */
-export function rowsByTeam(rows: readonly ScoreRow[]): Array<{ team: number; rows: ScoreRow[] }> {
+/**
+ * Rows grouped per team (every team `0..teamCount` listed, then any others),
+ * keeping ls-wasm's order inside a team.
+ */
+export function rowsByTeam(rows: readonly ScoreRow[], teamCount = 2): Array<{ team: number; rows: ScoreRow[] }> {
   const teams = new Map<number, ScoreRow[]>();
-  for (const t of [0, 1]) teams.set(t, []);
+  for (let t = 0; t < teamCount; t++) teams.set(t, []);
   for (const r of rows) {
     const list = teams.get(r.team) ?? [];
     list.push(r);

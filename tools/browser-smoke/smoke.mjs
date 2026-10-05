@@ -35,7 +35,10 @@
 // Paint Thrower, Eyeball, Decoy; no Hauler): open the ship bay (B) and pick a
 // ship, hold the Fusion Charger (charge meter), fire the Leech Arc (no
 // predicted bolt), cycle the paint colour with V (HUD follows the server),
-// launch the Eyeball (guided view), use the Decoy (cooldown shown); open the rule set editor
+// launch the Eyeball (guided view), use the Decoy (cooldown shown); lobby: a third
+// ls-server with the lobby on (tools/browser-smoke/lobby.ron, a 12 s match): the lobby card
+// in warm-up, ready with Enter, the countdown, the match, the results screen and the next
+// match's warm-up and match on the same page and connection (no reload, one join); open the rule set editor
 // (?editor=rules), change the rules, read the generated code and check that
 // ls-server accepts it (--ruleset <code>). Fails on console errors, page
 // errors, WebGPU validation or uncaptured errors, error screens, blank frames,
@@ -723,7 +726,38 @@ async function main() {
       }
     }
 
-    // --- 4: rule set editor ---
+    // --- 4: lobby -> match -> results -> next match without a reload (M3, B6) ---
+    phase = "lobby";
+    {
+      const lport = await freePort();
+      const lbase = `http://127.0.0.1:${lport}`;
+      const largs = [
+        "--bind", `127.0.0.1:${lport}`, "--warmup", "30", "--countdown", "2", "--intermission", "4",
+        "--web-root", opts.webRoot, "--code", opts.code, "--ruleset", join(here, "lobby.ron"),
+      ];
+      if (opts.transport === "ws") largs.push("--no-webtransport");
+      const lserver = run(opts.serverBin, largs, join(opts.outDir, "server-lobby.log"));
+      try {
+        if (check("lobby: server with the lobby on starts", await waitForLine(lserver, /listening \(http \+ websocket/, 60_000))) {
+          const page = await newGamePage();
+          const err = await startGame(page, "online", "SmokeLobby", lbase);
+          if (check("lobby: joins (HUD shown, no error screen)", err === null, err ?? "")) {
+            await lobbyCycle(page, (name) => shot(page, name));
+            const joins = lserver.text.split(/\r?\n/).filter((l) => /player joined/.test(l)).length;
+            check("lobby: one join for both matches (no reconnect)", joins === 1, `${joins} joins`);
+            await gpuReport(page, "lobby");
+          }
+          consoleCheck("lobby", "lobby");
+          await page.close();
+        }
+        const errors = lserver.text.split(/\r?\n/).filter((l) => /\bERROR\b|panicked/.test(l));
+        check("lobby: server logs no errors or panics", errors.length === 0, errors.slice(0, 3).join(" | "));
+      } finally {
+        await stop(lserver);
+      }
+    }
+
+    // --- 5: rule set editor ---
     phase = "editor";
     {
       const page = await browser.newPage();
@@ -799,6 +833,62 @@ async function main() {
   console.log(`browser-smoke: screenshots and logs in ${opts.outDir}`);
   console.log(failed.length ? `browser-smoke: FAILED (${failed.length} of ${results.length} checks)` : `browser-smoke: passed (${results.length} checks)`);
   return failed.length ? 1 : 0;
+}
+
+/**
+ * Lobby phase: warm-up (lobby card) -> Enter (ready) -> countdown -> match ->
+ * results -> the next match's warm-up -> Enter -> next match, all on one
+ * page (a reload would reset `window.__lsPage`) and one connection. The
+ * client exposes the stage and the match count as `#ui[data-stage]` and
+ * `#ui[data-matches]` (each match transition, warm-up rooms included,
+ * counts one).
+ */
+async function lobbyCycle(page, screenshot) {
+  const stage = () => page.$eval("#ui", (ui) => `${ui.dataset.stage ?? "?"} #${ui.dataset.matches ?? "?"}`).catch(() => "?");
+  await page.evaluate(() => (window.__lsPage = 1));
+  const inWarmup = await waitIn(page, () => document.getElementById("ui")?.dataset.stage === "warmup" && document.querySelector(".lobby:not(.hidden)"), 20_000);
+  if (!check("lobby: warm-up shows the lobby card", inWarmup, await stage())) return;
+  const mode = await visibleText(page, ".lobby-mode");
+  check("lobby: the card names the next mode", mode === "Paint the Void", mode);
+  await screenshot("lobby-warmup");
+  const matches0 = Number(await page.$eval("#ui", (ui) => ui.dataset.matches ?? "0"));
+  for (let round = 1; round <= 2; round++) {
+    await page.keyboard.press("Enter");
+    const ready = await waitIn(page, () => document.querySelector(".lobby-player.you.ready"), 5000);
+    check(`lobby: Enter readies up (round ${round})`, ready);
+    const target = matches0 + (round === 1 ? 1 : 3);
+    const started = await waitIn(
+      page,
+      (n) => document.getElementById("ui")?.dataset.stage === "match" && Number(document.getElementById("ui")?.dataset.matches) === n,
+      20_000,
+      target,
+    );
+    if (!check(`lobby: countdown leads into match ${round} on the same connection`, started, await stage())) return;
+    check(`lobby: the card hides in match ${round}`, (await visibleText(page, ".lobby")) === "");
+    const timer = await visibleText(page, ".mode-timer");
+    check(`lobby: the mode HUD shows the match timer (match ${round})`, /^\d+:\d\d$/.test(timer), timer);
+    await screenshot(`lobby-match-${round}`);
+    if (round === 2) break;
+    const over = await waitIn(page, () => document.querySelector(".results:not(.hidden)"), 30_000);
+    if (!check("lobby: the results screen shows after the match", over, await stage())) return;
+    const title = await visibleText(page, ".results-title");
+    const footer = await visibleText(page, ".results-footer");
+    check("lobby: results name the outcome and what comes next", /Victory|Defeat|Draw|wins/.test(title) && /Next/.test(footer), `${title} · ${footer}`);
+    await sleep(700); // let the results card animate in
+    await screenshot("lobby-results");
+    const back = await waitIn(
+      page,
+      (n) => document.getElementById("ui")?.dataset.stage === "warmup" && Number(document.getElementById("ui")?.dataset.matches) === n,
+      20_000,
+      matches0 + 2,
+    );
+    if (!check("lobby: back to the warm-up of the next match", back, await stage())) return;
+    check("lobby: the results screen hides in the warm-up", (await visibleText(page, ".results")) === "");
+  }
+  const same = await page.evaluate(() => window.__lsPage === 1);
+  check("lobby: no page reload across the matches", same);
+  const still = await page.$eval("#ui", (ui) => ui.querySelector(".error-screen")?.textContent ?? null);
+  check("lobby: no error screen", still === null, still ?? "");
 }
 
 /** The "Rule set code" output of the editor, or null while the rules have problems. */

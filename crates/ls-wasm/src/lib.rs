@@ -35,7 +35,7 @@ pub mod game;
 pub mod inventory;
 pub mod level;
 pub mod mechanics;
-pub mod modes;
+mod modes;
 pub mod probe;
 pub mod scene;
 pub mod sharecode;
@@ -291,6 +291,22 @@ pub fn entity_kind_names() -> Vec<String> {
         .collect()
 }
 
+/// Id of a comedy event (`ls_sim::EventKind` index, `data/events/<id>.ron`),
+/// "" for none or unknown.
+pub fn event_id(event: u8) -> String {
+    ls_sim::EventKind::from_index(event).map_or_else(String::new, |k| k.id().to_string())
+}
+
+/// Event ids in `EventKind` order (`data/events/<id>.ron`; the `event`
+/// index of the mood view indexes this list).
+#[wasm_bindgen(js_name = eventIds)]
+pub fn event_ids() -> Vec<String> {
+    ls_sim::EventKind::ALL
+        .iter()
+        .map(|k| k.id().to_string())
+        .collect()
+}
+
 /// Lower camel case name of an entity kind (the web client's keys).
 pub fn entity_kind_name(k: ls_sim::ReplicatedKind) -> &'static str {
     use ls_sim::ReplicatedKind::*;
@@ -306,6 +322,14 @@ pub fn entity_kind_name(k: ls_sim::ReplicatedKind) -> &'static str {
         DustCloud => "dustCloud",
         Marker => "marker",
         PigmentPickup => "pigmentPickup",
+        Drone => "drone",
+        Duck => "duck",
+        Hat => "hat",
+        CatPaw => "catPaw",
+        GossipFace => "gossipFace",
+        DiscoBall => "discoBall",
+        Mimic => "mimic",
+        Well => "well",
     }
 }
 
@@ -924,6 +948,82 @@ impl Game {
         self.core.pick_team_packet(u8::try_from(team).ok())
     }
 
+    /// The asteroid belt of a belt level as JSON (`level::belt_json`),
+    /// `undefined` on classic levels.
+    #[wasm_bindgen(js_name = beltSite)]
+    pub fn belt_site(&self) -> Option<String> {
+        self.core.belt().map(level::belt_json)
+    }
+
+    /// Gravity wells now, `level::WELL_STRIDE` floats each: `[x, y, z,
+    /// range, peakAccel, coreRadius (0 for dynamic), startTick, endTick
+    /// (-1 for static)]`, static wells first (`ls_sim::WellField`).
+    pub fn wells(&self) -> Vec<f32> {
+        level::wells_array(&self.core.wells())
+    }
+
+    /// The level's up (unit vector; +Y unless Bored level turned it).
+    pub fn up(&self) -> Vec<f32> {
+        let u = self.core.up();
+        vec![u.x, u.y, u.z]
+    }
+
+    /// Monochrome level (Palette 80+): pigment rules and the ink look.
+    #[wasm_bindgen(getter)]
+    pub fn monochrome(&self) -> bool {
+        self.core.monochrome()
+    }
+
+    /// Radiation dose rate (hull per second) at a point (the HUD meter);
+    /// 0 on classic levels.
+    #[wasm_bindgen(js_name = doseRateAt)]
+    pub fn dose_rate_at(&self, x: f32, y: f32, z: f32) -> f32 {
+        self.core.dose_rate_at(Vec3::new(x, y, z))
+    }
+
+    /// Drifting boulders of the belt at `tick` (fractional ticks
+    /// interpolate), `BOULDER_STRIDE` floats each: `[x, y, z, qx, qy, qz,
+    /// qw, radius]`; empty on classic levels. Pure function of the tick
+    /// (the simulation's orbit function), so every client agrees.
+    #[wasm_bindgen(js_name = boulderPoses)]
+    pub fn boulder_poses(&self, tick: f64) -> Vec<f32> {
+        self.core
+            .belt()
+            .map_or_else(Vec::new, |b| level::boulder_poses(b, tick))
+    }
+
+    /// `ArchitectAction` packet placing a stroke (protocol 6; send reliably;
+    /// `undefined` offline).
+    #[wasm_bindgen(js_name = architectActionPacket)]
+    pub fn architect_action_packet(
+        &self,
+        stroke: u8,
+        x: f32,
+        y: f32,
+        z: f32,
+        radius: f32,
+    ) -> Option<Vec<u8>> {
+        self.core
+            .architect_action_packet(stroke, Vec3::new(x, y, z), radius)
+    }
+
+    /// Protocol 6 ship bits, 3 numbers per ship: `[id, pigmented (0/1),
+    /// hats]` (`ls_net::ship_ext`).
+    #[wasm_bindgen(js_name = shipExt)]
+    pub fn ship_ext(&self) -> Vec<u8> {
+        self.core
+            .ship_ext()
+            .into_iter()
+            .flat_map(|(id, e)| {
+                [
+                    id,
+                    u8::from(e & ls_net::ship_ext::PIGMENTED != 0),
+                    ls_net::ship_ext::hats(e),
+                ]
+            })
+            .collect()
+    }
+
     /// `Spectate` packet (spectate from the next match on, or play again).
     #[wasm_bindgen(js_name = spectatePacket)]
     pub fn spectate_packet(&self, spectate: bool) -> Option<Vec<u8>> {
@@ -1364,8 +1464,8 @@ mod tests {
     #[test]
     fn name_lists_cover_every_kind_and_shape() {
         let kinds = super::entity_kind_names();
-        assert_eq!(kinds.len(), 11);
-        assert_eq!(kinds[10], "pigmentPickup");
+        assert_eq!(kinds.len(), 19);
+        assert_eq!(kinds[ls_sim::ReplicatedKind::Well as usize], "well");
         assert_eq!(kinds[ls_sim::ReplicatedKind::Wreck as usize], "wreck");
         assert_eq!(
             kinds[ls_sim::ReplicatedKind::DustCloud as usize],

@@ -21,7 +21,9 @@ use ls_sim::terrain::segment_sphere;
 use ls_sim::{Event, InputCmd, PlayerId, ReplicatedKind, ShipState, ShipType, World};
 
 use crate::client::INTERP_DELAY_TICKS;
-use crate::convert::{entity_to_net, events_to_net, net_to_input, projectile_to_net};
+use crate::convert::{
+    entity_to_net, events_to_net, net_to_input, projectile_to_net, well_entities,
+};
 use crate::mode::{legacy_scores, mode_view_to_net, results_to_net};
 use crate::setup::{build_match, MatchConfig};
 use crate::{GameError, GameTerrain, NetConv};
@@ -114,7 +116,13 @@ pub struct RoomStats {
     /// `Input` messages of another match epoch (the previous match's,
     /// still in flight after a transition), dropped.
     pub stale_epoch_inputs: u64,
+    /// `ArchitectAction`s dropped because the queue was full.
+    pub dropped_architect_actions: u64,
 }
+
+/// Most `ArchitectAction`s queued between two
+/// [`Room::take_architect_actions`] calls (the rest are dropped and counted).
+pub const MAX_QUEUED_ARCHITECT_ACTIONS: usize = 64;
 
 /// A lobby request from a client (`Message::Ready`, `PickTeam`,
 /// `Spectate`), queued for the host's lobby ([`Room::take_lobby_requests`]).
@@ -208,6 +216,9 @@ pub struct Room {
     /// The results, once the mode ended (sent once, and to late joiners).
     results: Option<MatchResultsMsg>,
     lobby_requests: Vec<(u8, LobbyRequest)>,
+    /// `ArchitectAction`s (protocol 6) received since the last
+    /// [`Room::take_architect_actions`], with the sender's player.
+    architect_actions: Vec<(PlayerId, ls_net::ArchitectActionMsg)>,
 }
 
 impl Room {
@@ -246,6 +257,7 @@ impl Room {
             room_code: String::new(),
             results: None,
             lobby_requests: Vec::new(),
+            architect_actions: Vec::new(),
         })
     }
 
@@ -310,7 +322,9 @@ impl Room {
     }
     /// The mode state as snapshots carry it (wire ids).
     pub fn net_mode_state(&self) -> ls_net::NetModeState {
-        mode_view_to_net(&self.mode_view(), |p| wire_id(&self.clients, p))
+        let mut m = mode_view_to_net(&self.mode_view(), |p| wire_id(&self.clients, p));
+        m.mood.up = self.world.up();
+        m
     }
     /// The match results once the mode ended (also sent to every client as
     /// `Message::MatchResults`, once, and to clients joining afterwards).
@@ -325,6 +339,15 @@ impl Room {
     /// last call, in order, with the sender's wire id.
     pub fn take_lobby_requests(&mut self) -> Vec<(u8, LobbyRequest)> {
         std::mem::take(&mut self.lobby_requests)
+    }
+
+    /// The Architect's stroke requests (`Message::ArchitectAction`, protocol
+    /// 6) received since the last call, in order, with the sender's player.
+    /// The Architect mode (B4) validates kind, budget, cooldown, range and
+    /// radius and counts rejects; the room only checks that the values are
+    /// finite (the decoder does) and that the sender is a player.
+    pub fn take_architect_actions(&mut self) -> Vec<(PlayerId, ls_net::ArchitectActionMsg)> {
+        std::mem::take(&mut self.architect_actions)
     }
     /// Queues a message for one client (e.g. `Message::LobbyState`).
     /// Returns false for unknown clients or messages that cannot be encoded.
@@ -564,6 +587,18 @@ impl Room {
                     .push((client, LobbyRequest::Spectate(spectate)));
                 Ok(())
             }
+            Message::ArchitectAction(a) => {
+                if let Some(c) = self.clients.get(&client) {
+                    // Bounded: a client cannot grow the queue without limit
+                    // between two takes.
+                    if self.architect_actions.len() < MAX_QUEUED_ARCHITECT_ACTIONS {
+                        self.architect_actions.push((c.player, a));
+                    } else {
+                        self.stats.dropped_architect_actions += 1;
+                    }
+                }
+                Ok(())
+            }
             Message::Ping {
                 nonce,
                 client_time_ms,
@@ -748,6 +783,8 @@ impl Room {
         let view = self.mode_view();
         let scores = legacy_scores(&view);
         let mut mode = mode_view_to_net(&view, |p| wire_id(&self.clients, p));
+        // Protocol 6: the level's up (Bored level) travels with the mood.
+        mode.mood.up = self.world.up();
         if !view.is_running() {
             // Ended (possibly early): `end_tick` is the last simulated tick,
             // so clients freeze their prediction exactly where the server
@@ -772,12 +809,19 @@ impl Room {
         projectiles.sort_by_key(|p| p.id);
         debug_assert!(projectiles.windows(2).all(|w| w[0].id < w[1].id));
         projectiles.dedup_by_key(|p| p.id);
-        let entities: Vec<NetEntity> = self
+        let mut entities: Vec<NetEntity> = self
             .world
             .entity_views()
             .iter()
             .map(|v| entity_to_net(v, v.owner.and_then(|o| wire_id(&self.clients, o))))
             .collect();
+        // Protocol 6: dynamic gravity wells as well entities (the client
+        // predictor rebuilds them; ids above the simulation's 15-bit ones).
+        entities.extend(well_entities(
+            self.world.dynamic_wells(),
+            self.world.tick(),
+            |p| wire_id(&self.clients, p),
+        ));
         let players: Vec<ls_net::NetPlayer> = self
             .clients
             .iter()
@@ -789,6 +833,7 @@ impl Room {
         let log = self.terrain.edit_log();
 
         let mut inventories: Vec<(u8, Message)> = Vec::new();
+        let now = self.world.tick();
         // Clients still setting up (no input yet) get no snapshots.
         let ids: Vec<u8> = self
             .clients
@@ -812,7 +857,7 @@ impl Room {
                     .iter()
                     .filter_map(|(&sid, c)| {
                         let s = self.world.ship(c.player)?;
-                        Some(self.conv.ship_to_net(sid, s, sid == id))
+                        Some(self.conv.ship_to_net_at(sid, s, sid == id, now))
                     })
                     .collect();
                 let c = &self.clients[&id];

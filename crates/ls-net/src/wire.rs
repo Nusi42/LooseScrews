@@ -68,6 +68,132 @@ pub mod ship_flags {
     }
 }
 
+/// Bits of [`NetShip::ext`] (protocol 6): ship state beyond the 16 core
+/// flag bits, sent in a trailer only when non-zero (so a ship without it
+/// still costs exactly 18 bytes).
+pub mod ship_ext {
+    /// Pigmented on a monochrome level (drawn in colour, revealed to
+    /// everyone; `docs/milestone-4-plan.md` §3.4).
+    pub const PIGMENTED: u8 = 1 << 0;
+    /// Hats worn (Hat rain), saturating at 31, in bits 3-7.
+    pub const HATS_SHIFT: u32 = 3;
+    pub const HATS_MASK: u8 = 0b1_1111 << HATS_SHIFT;
+    /// Most hats the wire shows on one ship.
+    pub const MAX_HATS: u8 = 31;
+
+    #[inline]
+    pub fn hats(ext: u8) -> u8 {
+        (ext & HATS_MASK) >> HATS_SHIFT
+    }
+
+    /// `ext` with the hat count set (saturating at [`MAX_HATS`]).
+    #[inline]
+    pub fn with_hats(ext: u8, hats: u32) -> u8 {
+        (ext & !HATS_MASK) | ((hats.min(MAX_HATS as u32) as u8) << HATS_SHIFT)
+    }
+}
+
+/// Wire bits of a projectile's kind byte (protocol 6). Weapon kinds are
+/// below 128; bit 7 carries the `CHICKEN` flag (Rubber chickens: drawn as a
+/// rubber chicken, same flight), so the flag costs nothing on the wire.
+/// [`NetProjectile::chicken`] is the decoded flag, [`NetProjectile::kind`]
+/// never has bit 7 set.
+pub mod proj_wire {
+    pub const CHICKEN: u8 = 1 << 7;
+    pub const KIND_MASK: u8 = 0x7f;
+}
+
+/// Layout of a dynamic gravity well entity (protocol 6;
+/// `ReplicatedKind::Well`, built by `ls_game::convert::well_entities` from
+/// `ls_sim::gravity::DynamicWell`). The client predictor rebuilds the well:
+///
+/// ```text
+/// state[0]    range in RANGE_UNIT (0.25 u) steps (up to 63.75 u)
+/// state[1]    peak pull in PEAK_UNIT (0.125 u/s^2) steps (up to 31.875)
+/// state[2..4] low 16 bits of the end tick (exclusive; little-endian)
+/// visual      low 16 bits of the start tick (no visual: clients draw
+///             wells from the well list, not the visual table)
+/// ```
+///
+/// Both ticks decode to the value nearest the snapshot's tick with those
+/// low bits (wells last far less than 9 minutes), so the entity never
+/// changes while the well lives, a telegraphed well starts on its tick and
+/// one the client learns of late is replayed from its exact start. Range
+/// and pull are exact when the simulation creates wells on this grid
+/// ([`well_state::quantize_range`], [`well_state::quantize_peak`]); the
+/// position is an entity position (about 0.03 u steps).
+pub mod well_state {
+    /// Range step (u).
+    pub const RANGE_UNIT: f32 = 0.25;
+    /// Peak pull step (u/s^2).
+    pub const PEAK_UNIT: f32 = 0.125;
+
+    fn byte(v: f32, unit: f32) -> u8 {
+        let q = ls_math::det::round(v / unit);
+        if q.is_nan() {
+            0
+        } else {
+            q.clamp(0.0, 255.0) as u8
+        }
+    }
+
+    /// `range` rounded to the wire grid (clamped to 0..=63.75 u).
+    pub fn quantize_range(range: f32) -> f32 {
+        byte(range, RANGE_UNIT) as f32 * RANGE_UNIT
+    }
+
+    /// `peak` (u/s^2) rounded to the wire grid (clamped to 0..=31.875).
+    pub fn quantize_peak(peak: f32) -> f32 {
+        byte(peak, PEAK_UNIT) as f32 * PEAK_UNIT
+    }
+
+    /// State bytes and visual field of a well with `range` (u), peak pull
+    /// `peak` (u/s^2), active from `start_tick` to `end_tick` (exclusive).
+    pub fn encode(range: f32, peak: f32, start_tick: u64, end_tick: u64) -> ([u8; 4], u16) {
+        let end = (end_tick as u16).to_le_bytes();
+        (
+            [
+                byte(range, RANGE_UNIT),
+                byte(peak, PEAK_UNIT),
+                end[0],
+                end[1],
+            ],
+            start_tick as u16,
+        )
+    }
+
+    /// A decoded well: range (u), peak pull (u/s^2), start and end tick.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct WellState {
+        pub range: f32,
+        pub peak: f32,
+        pub start_tick: u64,
+        pub end_tick: u64,
+    }
+
+    /// The tick nearest to `now` whose low 16 bits are `low`.
+    pub fn nearest_tick(low: u16, now: u64) -> u64 {
+        let mut t = (now & !0xffff) | low as u64;
+        if t + 0x8000 < now {
+            t += 0x1_0000;
+        } else if t > now + 0x8000 && t >= 0x1_0000 {
+            t -= 0x1_0000;
+        }
+        t
+    }
+
+    /// Decodes a well entity (`state`, `visual`) of the snapshot of tick
+    /// `now`.
+    pub fn decode(state: [u8; 4], visual: u16, now: u64) -> WellState {
+        WellState {
+            range: state[0] as f32 * RANGE_UNIT,
+            peak: state[1] as f32 * PEAK_UNIT,
+            start_tick: nearest_tick(visual, now),
+            end_tick: nearest_tick(u16::from_le_bytes([state[2], state[3]]), now),
+        }
+    }
+}
+
 /// Private resource state of a ship, quantized to one byte each. The server
 /// normally sends it only for the receiving player's own ship (it is not part
 /// of the 18-byte core state). The simulation defines the scaling
@@ -90,6 +216,8 @@ pub struct NetShip {
     pub rot: Quat,
     /// See [`ship_flags`]; bit 15 is ignored.
     pub flags: u16,
+    /// [`ship_ext`] bits (protocol 6: pigment, hats); 0 for most ships.
+    pub ext: u8,
     pub status: Option<ShipStatus>,
 }
 
@@ -103,6 +231,8 @@ pub struct PackedShip {
     pub vel: PackedVec3,
     /// Bit 15 must be clear.
     pub flags: u16,
+    /// [`ship_ext`] bits.
+    pub ext: u8,
     pub status: Option<ShipStatus>,
 }
 
@@ -125,11 +255,15 @@ pub struct NetProjectile {
     /// Weapon-defined state bits (stuck, armed, returning, ...; see
     /// `ls_sim::proj_flags`).
     pub state: u8,
+    /// Drawn as a rubber chicken (protocol 6, `ls_sim::proj_flags::CHICKEN`;
+    /// bit 7 of the kind byte on the wire, see [`proj_wire`]).
+    pub chicken: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PackedProjectile {
     pub id: u16,
+    /// Wire kind byte: the weapon kind, plus [`proj_wire::CHICKEN`].
     pub kind: u8,
     pub owner: u8,
     pub pos: PackedVec3,
@@ -452,6 +586,7 @@ impl Quantizer {
             rot: pack_quat(s.rot),
             vel: self.pack_ship_velocity(s.vel),
             flags: s.flags & !ship_flags::WIRE_RESERVED,
+            ext: s.ext,
             status: s.status,
         }
     }
@@ -463,14 +598,19 @@ impl Quantizer {
             vel: self.unpack_ship_velocity(s.vel),
             rot: unpack_quat(s.rot),
             flags: s.flags,
+            ext: s.ext,
             status: s.status,
         }
     }
 
     pub fn pack_projectile(&self, p: &NetProjectile) -> PackedProjectile {
+        debug_assert!(
+            p.kind & proj_wire::CHICKEN == 0,
+            "weapon kinds are below 128"
+        );
         PackedProjectile {
             id: p.id,
-            kind: p.kind,
+            kind: (p.kind & proj_wire::KIND_MASK) | if p.chicken { proj_wire::CHICKEN } else { 0 },
             owner: p.owner,
             pos: self.pack_position(p.pos),
             vel: self.pack_projectile_velocity(p.vel),
@@ -481,11 +621,12 @@ impl Quantizer {
     pub fn unpack_projectile(&self, p: &PackedProjectile) -> NetProjectile {
         NetProjectile {
             id: p.id,
-            kind: p.kind,
+            kind: p.kind & proj_wire::KIND_MASK,
             owner: p.owner,
             pos: self.unpack_position(p.pos),
             vel: self.unpack_projectile_velocity(p.vel),
             state: p.state,
+            chicken: p.kind & proj_wire::CHICKEN != 0,
         }
     }
 
@@ -986,6 +1127,67 @@ mod tests {
     }
 
     #[test]
+    fn protocol_6_ship_ext_and_chicken_bits() {
+        let e = ship_ext::with_hats(ship_ext::PIGMENTED, 7);
+        assert_eq!(ship_ext::hats(e), 7);
+        assert_ne!(e & ship_ext::PIGMENTED, 0);
+        assert_eq!(
+            ship_ext::hats(ship_ext::with_hats(0, 500)),
+            ship_ext::MAX_HATS
+        );
+        assert_eq!(ship_ext::with_hats(e, 0), ship_ext::PIGMENTED);
+        let q = Quantizer::default();
+        let p = NetProjectile {
+            id: 9,
+            kind: 37,
+            owner: 2,
+            pos: Vec3::splat(5.0),
+            vel: Vec3::X,
+            state: 0xff,
+            chicken: true,
+        };
+        let packed = q.pack_projectile(&p);
+        assert_eq!(packed.kind, 37 | proj_wire::CHICKEN);
+        let back = q.unpack_projectile(&packed);
+        assert_eq!((back.kind, back.chicken, back.state), (37, true, 0xff));
+        let plain = q.unpack_projectile(&q.pack_projectile(&NetProjectile {
+            chicken: false,
+            ..p
+        }));
+        assert_eq!((plain.kind, plain.chicken), (37, false));
+    }
+
+    #[test]
+    fn well_state_round_trips_on_its_grid() {
+        let (st, visual) = well_state::encode(16.0, 9.0, 69_000, 70_000);
+        let w = well_state::decode(st, visual, 69_990);
+        assert_eq!(
+            (w.range, w.peak, w.start_tick, w.end_tick),
+            (16.0, 9.0, 69_000, 70_000)
+        );
+        // Start and end are recovered across the 16-bit wrap, before and
+        // after the snapshot's tick.
+        for now in [65_530u64, 65_536, 70_000, 69_000, 100, 200_000] {
+            for (start, end) in [
+                (now, now + 360),
+                (now + 120, now + 1920),
+                (now.saturating_sub(300), now + 60),
+                (now.saturating_sub(5), now),
+            ] {
+                let (st, v) = well_state::encode(10.0, 4.0, start, end);
+                let d = well_state::decode(st, v, now);
+                assert_eq!((d.start_tick, d.end_tick), (start, end), "now {now}");
+            }
+        }
+        // Clamped and NaN-safe; grid helpers.
+        let (st, v) = well_state::encode(1e9, f32::NAN, 0, 0);
+        let d = well_state::decode(st, v, 0);
+        assert_eq!((d.range, d.peak), (63.75, 0.0));
+        assert_eq!(well_state::quantize_range(16.1), 16.0);
+        assert_eq!(well_state::quantize_peak(9.06), 9.0);
+    }
+
+    #[test]
     fn relevance_filters_snapshots() {
         struct HideShip3;
         impl Relevance for HideShip3 {
@@ -1002,6 +1204,7 @@ mod tests {
             vel: Vec3::ZERO,
             rot: Quat::IDENTITY,
             flags: 0,
+            ext: 0,
             status: None,
         };
         let entity = |id, kind| NetEntity {

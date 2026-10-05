@@ -134,6 +134,11 @@ pub struct ClientSession {
     lobby: Option<LobbyStateMsg>,
     /// Results of this match, once it ended.
     results: Option<MatchResultsMsg>,
+    /// The level's static gravity wells and asteroid belt (M4), from the
+    /// match setup of the pristine level, like the server's.
+    well_sites: Vec<ls_math::level::WellSite>,
+    belt: Option<ls_math::level::BeltSite>,
+    monochrome: bool,
 }
 
 /// Snapshots of entities kept for interpolation.
@@ -191,6 +196,13 @@ impl ClientSession {
         let setup = match_setup(&code, &rules, &GameTerrain::from_code(&code)?)?;
         let mut predictor = Predictor::new(ships.get(ship_type).clone(), config);
         predictor.set_ship_type(ship_type, ships.get(ship_type).clone());
+        predictor.set_seed(crate::setup::match_seed(&code));
+        // The level's static wells, as `World::new` builds them.
+        predictor.set_wells(ls_sim::WellField::new(
+            &setup.wells,
+            setup.gravity_chaos,
+            ls_sim::GravitySettings::builtin(),
+        ));
         predictor.set_spawn_poses(
             setup
                 .spawns
@@ -217,6 +229,9 @@ impl ClientSession {
             pings: VecDeque::new(),
             next_nonce: 0,
             ticks_since_ping: PING_INTERVAL_TICKS,
+            well_sites: setup.wells.clone(),
+            belt: setup.belt.clone(),
+            monochrome: setup.monochrome,
             pickup_points: setup.pickup_points,
             match_end_tick: None,
             entity_history: VecDeque::new(),
@@ -330,6 +345,45 @@ impl ClientSession {
     /// The message that asks to spectate (or to play again).
     pub fn spectate(&self, spectate: bool) -> Message {
         Message::Spectate { spectate }
+    }
+
+    /// The level's static gravity well sites (Gravity Chaos; shepherd moons
+    /// on belt levels), as the server's match setup has them.
+    pub fn well_sites(&self) -> &[ls_math::level::WellSite] {
+        &self.well_sites
+    }
+
+    /// The well field the prediction uses: the level's static wells and the
+    /// dynamic wells of the newest snapshot.
+    pub fn wells(&self) -> &ls_sim::WellField {
+        &self.predictor.env().wells
+    }
+
+    /// Monochrome level (pigment rules, the ink look).
+    pub fn monochrome(&self) -> bool {
+        self.monochrome
+    }
+
+    /// The asteroid belt of a belt level (slots, gates, exit, boulder
+    /// orbits), as the server's match setup has it.
+    pub fn belt(&self) -> Option<&ls_math::level::BeltSite> {
+        self.belt.as_ref()
+    }
+
+    /// The comedy director's state and the level's up of the newest
+    /// snapshot (protocol 6; the default, calm with up +Y, before it).
+    pub fn mood(&self) -> &ls_net::NetMoodView {
+        &self.mode().mood
+    }
+
+    /// The message that places an Architect stroke (protocol 6; the server
+    /// validates it).
+    pub fn architect_action(&self, stroke: u8, center: Vec3, radius: f32) -> Message {
+        Message::ArchitectAction(ls_net::ArchitectActionMsg {
+            stroke,
+            center,
+            radius,
+        })
     }
 
     /// Players of the newest snapshot (names, teams, ship types, gadgets).
@@ -748,6 +802,17 @@ impl ClientSession {
             .map_or(0, |p| p.flags);
         self.predictor.set_limits(
             ls_sim::modes::module(self.rules.mode.kind()).move_limits(&self.rules.mode, own_flags),
+        );
+        // Dynamic wells (protocol 6 well entities), event movement effects
+        // and the level's up (mood view).
+        self.predictor
+            .set_dynamic_wells(crate::convert::wells_from_entities(
+                &snap.entities,
+                tick as u64,
+            ));
+        self.predictor.set_mood(
+            &crate::mode::mood_from_net(&snap.mode.mood),
+            snap.mode.mood.up,
         );
         let reconcile = snap.ships.iter().find(|s| s.id == self.player).map(|own| {
             // The players list carries the full side id (free-for-all

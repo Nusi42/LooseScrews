@@ -7,7 +7,12 @@
 //!   players: [{id, side, score, lives, meter, flags}], objectives: [{id,
 //!   kind, team, holder, state, timerEnd, radius, pos: [x, y, z]}]}`;
 //!   `winner`, `holder` and `team` are -1 for none, `lives` -1 for no limit,
-//!   `mode` is the mode id (`team_brawl`, ...).
+//!   `mode` is the mode id (`team_brawl`, ...). Protocol 6 adds `mood`:
+//!   `{mood, moodId ("calm" | "bored" | "grumpy" | "giddy"), event (-1 =
+//!   none), eventId ("" = none), phase, phaseId ("announce" | "active" |
+//!   "ending" | "" without an event), target (-1 = none), activeTick,
+//!   phaseEndTick, params: [8 bytes], up: [x, y, z]}` (the comedy
+//!   director's state and the level's up, `ls_net::NetMoodView`).
 //! - [`lobby_json`]: `{phase ("lobby" | "countdown" | "match" |
 //!   "results"), phaseTicksLeft, roomCode, nextMode, nextModeId,
 //!   nextRuleset, nextShareCode, minPlayers, maxPlayers, teams, players:
@@ -16,7 +21,7 @@
 //!   rows: [{id, side, kills, deaths, score, name}]}` (best first).
 
 use ls_net::mode::{NONE, UNLIMITED_LIVES};
-use ls_net::{LobbyPhase, LobbyStateMsg, MatchResultsMsg, NetModeState};
+use ls_net::{LobbyPhase, LobbyStateMsg, MatchResultsMsg, NetModeState, NetMoodView};
 use ls_sim::ModeKind;
 
 use crate::json_str;
@@ -92,6 +97,46 @@ pub fn mode_state_json(m: &NetModeState) -> String {
         ),
         ("players", array(players)),
         ("objectives", array(objectives)),
+        ("mood", mood_json(&m.mood)),
+    ])
+}
+
+/// Mood ids by index (`ls_sim` moods, append only).
+pub const MOOD_IDS: [&str; 4] = ["calm", "bored", "grumpy", "giddy"];
+/// Event phase ids by `ls_net::mood_phase` value.
+pub const MOOD_PHASE_IDS: [&str; 3] = ["announce", "active", "ending"];
+
+/// The `mood` object of [`mode_state_json`].
+pub fn mood_json(m: &NetMoodView) -> String {
+    let up = |v: f32| {
+        if v.is_finite() {
+            format!("{v}")
+        } else {
+            "0".into()
+        }
+    };
+    object(&[
+        ("mood", m.mood.to_string()),
+        (
+            "moodId",
+            json_str(MOOD_IDS.get(m.mood as usize).copied().unwrap_or("")),
+        ),
+        ("event", opt(m.event, NONE)),
+        ("eventId", json_str(&crate::event_id(m.event))),
+        ("phase", m.phase.to_string()),
+        (
+            "phaseId",
+            json_str(if m.event == NONE {
+                ""
+            } else {
+                MOOD_PHASE_IDS.get(m.phase as usize).copied().unwrap_or("")
+            }),
+        ),
+        ("target", opt(m.target, NONE)),
+        ("activeTick", m.active_tick.to_string()),
+        ("phaseEndTick", m.phase_end_tick.to_string()),
+        ("params", array(m.params.iter().map(|b| b.to_string()))),
+        ("up", array([up(m.up.x), up(m.up.y), up(m.up.z)])),
     ])
 }
 

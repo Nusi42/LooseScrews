@@ -48,8 +48,10 @@
 //!
 //! A full ship is exactly [`SHIP_CORE_BITS`] = 144 bits (18 bytes):
 //! position 3 x 16, orientation 32, velocity 3 x 16, flags 16. Flag bit 15
-//! signals that a 4-byte [`ShipStatus`] follows, so the common case (other
-//! players' ships) costs no extra bit.
+//! signals a trailer (protocol 6): 1 bit "status" [+ the 4-byte
+//! [`ShipStatus`]], then the `ext` byte ([`crate::wire::ship_ext`]: pigment,
+//! hats) as 1 bit "non-zero" [+ u8]. The common case (other players' ships
+//! without pigment or hats) costs no extra bit.
 //!
 //! Delta fields are compared as packed integers, so a delta decodes to
 //! exactly the packed snapshot the server encoded: compression never adds
@@ -72,7 +74,7 @@
 //! orientation  1 bit "changed"; if changed 1 bit "same dropped component":
 //!              a non-zero residual group of the three 10-bit field
 //!              differences, else the raw 32-bit quaternion
-//! flags        1 bit "changed" [+ u16]
+//! flags        1 bit "changed" [+ u16 flags + ext (1 bit non-zero [+ u8])]
 //! status       1 bit "changed" [+ 1 bit present + 4 bytes]
 //! ```
 //!
@@ -347,20 +349,45 @@ fn read_status(r: &mut BitReader) -> Result<ShipStatus, DecodeError> {
     })
 }
 
-/// Writes the 144-bit core state (plus status if present).
+/// Writes the 144-bit core state, plus the trailer (status and ext bits)
+/// when either is present.
 pub fn write_ship_full(w: &mut BitWriter, s: &PackedShip) {
     write_vec16(w, s.pos);
     w.write_u32(s.rot);
     write_vec16(w, s.vel);
+    let trailer = s.status.is_some() || s.ext != 0;
     let flags = s.flags
-        | if s.status.is_some() {
+        | if trailer {
             ship_flags::WIRE_RESERVED
         } else {
             0
         };
     w.write_u16(flags);
-    if let Some(st) = &s.status {
-        write_status(w, st);
+    if trailer {
+        w.write_bool(s.status.is_some());
+        if let Some(st) = &s.status {
+            write_status(w, st);
+        }
+        write_ext(w, s.ext);
+    }
+}
+
+/// `ext` byte: 1 bit "non-zero" [+ u8].
+fn write_ext(w: &mut BitWriter, ext: u8) {
+    w.write_bool(ext != 0);
+    if ext != 0 {
+        w.write_u8(ext);
+    }
+}
+
+fn read_ext(r: &mut BitReader) -> Result<u8, DecodeError> {
+    if r.read_bool()? {
+        match r.read_u8()? {
+            0 => Err(DecodeError::Invalid("zero ship ext sent as present")),
+            v => Ok(v),
+        }
+    } else {
+        Ok(0)
     }
 }
 
@@ -369,10 +396,19 @@ pub fn read_ship_full(r: &mut BitReader, id: u8) -> Result<PackedShip, DecodeErr
     let rot = r.read_u32()?;
     let vel = read_vec16(r)?;
     let raw = r.read_u16()?;
-    let status = if raw & ship_flags::WIRE_RESERVED != 0 {
-        Some(read_status(r)?)
+    let (status, ext) = if raw & ship_flags::WIRE_RESERVED != 0 {
+        let status = if r.read_bool()? {
+            Some(read_status(r)?)
+        } else {
+            None
+        };
+        let ext = read_ext(r)?;
+        if status.is_none() && ext == 0 {
+            return Err(DecodeError::Invalid("empty ship trailer"));
+        }
+        (status, ext)
     } else {
-        None
+        (None, 0)
     };
     Ok(PackedShip {
         id,
@@ -380,6 +416,7 @@ pub fn read_ship_full(r: &mut BitReader, id: u8) -> Result<PackedShip, DecodeErr
         rot,
         vel,
         flags: raw & !ship_flags::WIRE_RESERVED,
+        ext,
         status,
     })
 }
@@ -1035,9 +1072,11 @@ fn write_ship_delta(
             w.write_u32(q);
         }
     }
-    w.write_bool(s.flags != b.flags);
-    if s.flags != b.flags {
+    let flags = s.flags != b.flags || s.ext != b.ext;
+    w.write_bool(flags);
+    if flags {
         w.write_u16(s.flags);
+        write_ext(w, s.ext);
     }
     w.write_bool(s.status != b.status);
     if s.status != b.status {
@@ -1084,14 +1123,14 @@ fn read_ship_delta(
     } else {
         b.rot
     };
-    let flags = if r.read_bool()? {
+    let (flags, ext) = if r.read_bool()? {
         let f = r.read_u16()?;
         if f & ship_flags::WIRE_RESERVED != 0 {
             return Err(DecodeError::Invalid("reserved ship flag in delta"));
         }
-        f
+        (f, read_ext(r)?)
     } else {
-        b.flags
+        (b.flags, b.ext)
     };
     let status = if r.read_bool()? {
         if r.read_bool()? {
@@ -1108,6 +1147,7 @@ fn read_ship_delta(
         rot,
         vel,
         flags,
+        ext,
         status,
     })
 }
@@ -1973,6 +2013,13 @@ mod tests {
                 rng.next_u32() as u16,
             ],
             flags: rng.next_u32() as u16 & !ship_flags::WIRE_RESERVED,
+            // Protocol 6 ext bits on some ships (without consuming the RNG,
+            // so the other random streams stay as they were).
+            ext: if id % 5 == 0 {
+                id.wrapping_mul(8) | 1
+            } else {
+                0
+            },
             status: status.then(|| ShipStatus {
                 hull: rng.next_u32() as u8,
                 energy: rng.next_u32() as u8,
@@ -1985,7 +2032,12 @@ mod tests {
     fn random_projectile(rng: &mut Pcg32, id: u16) -> PackedProjectile {
         PackedProjectile {
             id,
-            kind: rng.below(8) as u8,
+            kind: rng.below(8) as u8
+                | if id % 7 == 0 {
+                    crate::wire::proj_wire::CHICKEN
+                } else {
+                    0
+                },
             owner: rng.below(32) as u8,
             state: rng.below(4) as u8,
             pos: [
@@ -2141,6 +2193,7 @@ mod tests {
             }
             if rng.chance(0.1) {
                 s.flags ^= 1 << rng.below(15);
+                s.ext ^= crate::wire::ship_ext::PIGMENTED;
             }
             if rng.chance(0.1) {
                 s.status = match s.status {
@@ -2394,6 +2447,7 @@ mod tests {
                 vel: Vec3::new(rng.range_f32(-30.0, 30.0), 0.0, 12.0),
                 rot: Quat::from_axis_angle(Vec3::Y, rng.range_f32(-3.0, 3.0)),
                 flags: ship_flags::ALIVE | ship_flags::BOOSTING,
+                ext: 0,
                 status: None,
             };
             let mut w = BitWriter::new();
@@ -2401,7 +2455,8 @@ mod tests {
             assert_eq!(w.bit_len(), SHIP_CORE_BITS);
             assert!(w.finish().len() <= 18);
         }
-        // Each additional ship grows a full snapshot by exactly 144 bits.
+        // Each additional ship grows a full snapshot by exactly 144 bits;
+        // one with ext bits (pigment, hats) by a 10-bit trailer more.
         let mut snap = PackedSnapshot::default();
         let mut last = {
             let mut w = BitWriter::new();
@@ -2409,10 +2464,12 @@ mod tests {
             w.bit_len()
         };
         for id in 0..MAX_SHIPS {
-            snap.ships.push(random_ship(&mut rng, id, false));
+            let ship = random_ship(&mut rng, id, false);
+            let trailer = if ship.ext != 0 { 1 + 1 + 8 } else { 0 };
+            snap.ships.push(ship);
             let mut w = BitWriter::new();
             write_snapshot(&mut w, &snap, None).unwrap();
-            assert_eq!(w.bit_len() - last, SHIP_CORE_BITS);
+            assert_eq!(w.bit_len() - last, SHIP_CORE_BITS + trailer);
             last = w.bit_len();
         }
     }
@@ -2439,6 +2496,7 @@ mod tests {
                 ),
                 rot: Quat::from_axis_angle(Vec3::new(0.3, 1.0, -0.2), rng.range_f32(-3.0, 3.0)),
                 flags: ship_flags::with_team(ship_flags::ALIVE, id % 2),
+                ext: 0,
                 status: None,
             })
             .collect();
@@ -2512,6 +2570,7 @@ mod tests {
                         rng.range_f32(-3.0, 3.0),
                     ),
                     flags: ship_flags::with_team(ship_flags::ALIVE, id % 2),
+                    ext: 0,
                     status: None,
                 },
                 thrust: Vec3::ZERO,
@@ -2802,6 +2861,7 @@ mod tests {
                     vel: v,
                     rot: Quat::IDENTITY,
                     flags: ship_flags::ALIVE,
+                    ext: 0,
                     status: None,
                 })
             };
@@ -2838,6 +2898,7 @@ mod tests {
                 vel,
                 rot: Quat::IDENTITY,
                 flags: ship_flags::ALIVE,
+                ext: 0,
                 status: None,
             })
         };
@@ -2879,6 +2940,7 @@ mod tests {
                     rng.next_u32() & !(0x3FF << 10) // field 1 = 0
                 },
                 flags: rng.next_u32() as u16 & !ship_flags::WIRE_RESERVED,
+                ext: 0,
                 status: None,
             };
             let (a, b) = (ship(), ship());
@@ -2910,6 +2972,7 @@ mod tests {
             vel: [0; 3],
             rot: (3 << 30) | (1000 << 20) | (511 << 10) | 511,
             flags: 0,
+            ext: 0,
             status: None,
         };
         let base = PackedSnapshot {
@@ -2963,6 +3026,7 @@ mod tests {
                 pos: Vec3::splat(10.0),
                 vel: Vec3::X * 30.0,
                 state: 0,
+                chicken: false,
             }],
             ..Default::default()
         });
@@ -3093,6 +3157,7 @@ mod tests {
                             pos: s.ship.pos + dir * 0.7,
                             vel: dir * speed,
                             state: 0,
+                            chicken: false,
                         },
                         weapon: w,
                         reach: rng.range_f32(4.0, 60.0),
@@ -3302,6 +3367,7 @@ mod tests {
             pos,
             vel,
             state: 0,
+            chicken: false,
         };
         let snap = |tick, projectiles| {
             quant.pack_snapshot(&Snapshot {

@@ -5,19 +5,58 @@
 //! generic view (`docs/milestone-3-plan.md` §3.1).
 
 use ls_net::mode::NONE;
+use ls_net::NetMoodView;
 use ls_net::{
     mode_phase, MatchResultsMsg, NetModePlayer, NetModeState, NetObjective, ResultRow, MAX_SHIPS,
 };
 use ls_sim::mode::ObjectiveView;
 use ls_sim::modes::the_squeeze;
-use ls_sim::{MatchPhase, MatchResults, ModeKind, ModeView, PlayerId, ShellSphere};
+use ls_sim::{
+    EventKind, EventPhase, MatchPhase, MatchResults, ModeKind, ModeView, Mood, MoodView, PlayerId,
+    ShellSphere,
+};
 
 fn tick32(t: u64) -> u32 {
     t.min(u32::MAX as u64) as u32
 }
 
+/// The wire form of the comedy director's view (protocol 6) with the
+/// level's `up` (`World::up`). `wire` maps the target to its wire id.
+pub fn mood_to_net(
+    m: &MoodView,
+    up: ls_math::Vec3,
+    wire: impl Fn(PlayerId) -> Option<u8>,
+) -> NetMoodView {
+    NetMoodView {
+        mood: m.mood.index(),
+        event: m.event.map_or(NONE, |k| k.index()),
+        phase: m.phase.index(),
+        target: m.target.and_then(wire).unwrap_or(NONE),
+        active_tick: tick32(m.active_tick),
+        phase_end_tick: tick32(m.phase_end_tick),
+        params: m.params,
+        up: if up.is_finite() { up } else { ls_math::Vec3::Y },
+    }
+}
+
+/// The simulation's view of a replicated mood (client predictor: event
+/// movement effects are pure functions of it). The target becomes
+/// `PlayerId(wire id)`, the id the client gives its own ship.
+pub fn mood_from_net(n: &NetMoodView) -> MoodView {
+    MoodView {
+        mood: Mood::from_index(n.mood).unwrap_or_default(),
+        event: EventKind::from_index(n.event),
+        phase: EventPhase::from_index(n.phase).unwrap_or_default(),
+        phase_end_tick: n.phase_end_tick as u64,
+        active_tick: n.active_tick as u64,
+        target: (n.target != NONE).then_some(PlayerId(n.target as u16)),
+        params: n.params,
+    }
+}
+
 /// The wire form of a mode view. `wire` maps simulation players to wire
-/// ids; players without one (not connected) are left out.
+/// ids; players without one (not connected) are left out. The mood's `up`
+/// is world +Y here; the room and the practice core set the world's.
 pub fn mode_view_to_net(view: &ModeView, wire: impl Fn(PlayerId) -> Option<u8>) -> NetModeState {
     let (phase, winner) = match view.phase {
         MatchPhase::Running => (mode_phase::RUNNING, NONE),
@@ -74,6 +113,7 @@ pub fn mode_view_to_net(view: &ModeView, wire: impl Fn(PlayerId) -> Option<u8>) 
             .take(ls_net::MAX_MODE_TEAMS)
             .copied()
             .collect(),
+        mood: mood_to_net(&view.mood, ls_math::Vec3::Y, &wire),
         players,
         objectives,
     }

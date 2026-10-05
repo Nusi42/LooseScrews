@@ -245,6 +245,9 @@ struct Practice {
     prev: Vec<ShipState>,
     /// Seconds since the match ended (the world stops ticking then).
     over_secs: f32,
+    /// The level's static gravity wells and asteroid belt (M4).
+    well_sites: Vec<ls_math::level::WellSite>,
+    belt: Option<ls_math::level::BeltSite>,
 }
 
 #[derive(Debug)]
@@ -619,6 +622,7 @@ impl GameCore {
         let cfg = MatchConfig::paint_the_void(code);
         let mut terrain = GameTerrain::new(gen);
         let setup = match_setup(&cfg.code, &cfg.rules, &terrain)?;
+        let (well_sites, belt) = (setup.wells.clone(), setup.belt.clone());
         let mut world = World::new(cfg.world_config(setup))?;
         if pregenerate {
             terrain.generate_all();
@@ -638,6 +642,8 @@ impl GameCore {
                 me,
                 prev,
                 over_secs: 0.0,
+                well_sites,
+                belt,
             })),
             step: FixedStep::default(),
             look: LookAccumulator::default(),
@@ -1137,10 +1143,13 @@ impl GameCore {
     /// practice between the last two ticks like the ships.
     pub fn entities(&self) -> Vec<EntityDraw> {
         match &self.mode {
+            // Well entities carry their start tick in `visual`; wells are
+            // drawn from `wells()` instead (practice has no well entities).
             Mode::Online(o) => o
                 .session
                 .entities()
                 .iter()
+                .filter(|e| e.kind != ls_sim::ReplicatedKind::Well as u8)
                 .map(EntityDraw::from_net)
                 .collect(),
             Mode::Practice(p) => {
@@ -1954,7 +1963,9 @@ impl GameCore {
             Mode::Online(o) => o.session.mode().clone(),
             Mode::Practice(p) => {
                 let view = p.world.mode_view();
-                ls_game::mode::mode_view_to_net(&view, |pl| u8::try_from(pl.0).ok())
+                let mut m = ls_game::mode::mode_view_to_net(&view, |pl| u8::try_from(pl.0).ok());
+                m.mood.up = p.world.up();
+                m
             }
         }
     }
@@ -1987,6 +1998,95 @@ impl GameCore {
     /// `Ready` for the next match (send reliably; `None` offline).
     pub fn ready_packet(&self, ready: bool) -> Option<Vec<u8>> {
         self.lobby_packet(Message::Ready { ready })
+    }
+
+    /// The level's static gravity well sites (M4).
+    pub fn well_sites(&self) -> &[ls_math::level::WellSite] {
+        match &self.mode {
+            Mode::Online(o) => o.session.well_sites(),
+            Mode::Practice(p) => &p.well_sites,
+        }
+    }
+
+    /// The level's gravity wells now (static and dynamic; M4).
+    pub fn wells(&self) -> ls_sim::WellField {
+        match &self.mode {
+            Mode::Online(o) => o.session.wells().clone(),
+            Mode::Practice(p) => p.world.well_field().clone(),
+        }
+    }
+
+    /// The level's up (Bored level turns it; M4).
+    pub fn up(&self) -> Vec3 {
+        match &self.mode {
+            Mode::Online(o) => o.session.mood().up,
+            Mode::Practice(p) => p.world.up(),
+        }
+    }
+
+    /// Monochrome level (M4).
+    pub fn monochrome(&self) -> bool {
+        match &self.mode {
+            Mode::Online(o) => o.session.monochrome(),
+            Mode::Practice(p) => p.world.setup().monochrome,
+        }
+    }
+
+    /// Radiation dose rate (hull/s) at `p`: the world's (with the mode's
+    /// scale) in practice; online the unscaled law of the level's belt
+    /// (Belt Up's `radiation_scale` is 1 by default; B6 may pass its scale).
+    pub fn dose_rate_at(&self, p: Vec3) -> f32 {
+        match &self.mode {
+            Mode::Online(o) => o.session.belt().map_or(0.0, |b| {
+                ls_sim::radiation::dose_rate(b, ls_sim::radiation::RadiationSettings::builtin(), p)
+            }),
+            Mode::Practice(pr) => pr.world.dose_rate(p),
+        }
+    }
+
+    /// The asteroid belt of a belt level (M4).
+    pub fn belt(&self) -> Option<&ls_math::level::BeltSite> {
+        match &self.mode {
+            Mode::Online(o) => o.session.belt(),
+            Mode::Practice(p) => p.belt.as_ref(),
+        }
+    }
+
+    /// `ArchitectAction` placing a stroke (online only; the server
+    /// validates it).
+    pub fn architect_action_packet(
+        &self,
+        stroke: u8,
+        center: Vec3,
+        radius: f32,
+    ) -> Option<Vec<u8>> {
+        self.lobby_packet(Message::ArchitectAction(ls_net::ArchitectActionMsg {
+            stroke,
+            center,
+            radius,
+        }))
+    }
+
+    /// Protocol 6 `ext` bits (`ls_net::ship_ext`: pigment, hats) of every
+    /// ship this client knows, as `(id, ext)` (online: the newest snapshot).
+    pub fn ship_ext(&self) -> Vec<(u8, u8)> {
+        match &self.mode {
+            Mode::Online(o) => o
+                .session
+                .latest_snapshot()
+                .map(|s| s.ships.iter().map(|x| (x.id, x.ext)).collect())
+                .unwrap_or_default(),
+            Mode::Practice(p) => p
+                .world
+                .ships()
+                .map(|s| {
+                    (
+                        s.player.0 as u8,
+                        ls_game::convert::ship_ext(s, p.world.tick()),
+                    )
+                })
+                .collect(),
+        }
     }
 
     /// `PickTeam` for the next match (`None` team = auto-balance).

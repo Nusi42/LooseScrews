@@ -18,7 +18,10 @@ use std::collections::VecDeque;
 use ls_math::terrain::TerrainQuery;
 use ls_math::{Quat, Vec3};
 use ls_net::NetShip;
-use ls_sim::{simulate_movement, InputCmd, MoveLimits, ShipState, ShipTuning, ShipType};
+use ls_sim::{
+    simulate_movement, simulate_movement_env, DynamicWell, InputCmd, MoodView, MoveLimits,
+    ShipState, ShipTuning, ShipType, WellField,
+};
 
 use crate::convert::{rotation_error, NetConv};
 
@@ -55,6 +58,36 @@ impl PredictionConfig {
             snap_distance: 4.0,
             smoothing_keep_per_tick: 0.8,
             history_ticks: 256,
+        }
+    }
+}
+
+/// The level around the own ship that the simulation's movement reads
+/// besides the terrain (M4): the comedy director's view (event movement
+/// effects: impulses, forces, plane locks) and the level's up (horizon
+/// assist). All of it is replicated (`NetMoodView`), so the predictor
+/// moves the ship exactly as `World::step` does.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PredictEnv {
+    /// Match seed (`ls_game::setup::match_seed`): event effects are pure
+    /// functions of the view, the seed and the tick.
+    pub seed: u64,
+    /// The director's view (`None`: no event running, nothing to apply).
+    pub mood: Option<MoodView>,
+    /// The level's up (`World::up`).
+    pub up: Vec3,
+    /// The level's static wells (from the match setup) and the dynamic
+    /// wells of the newest snapshot (`World::well_field`).
+    pub wells: WellField,
+}
+
+impl Default for PredictEnv {
+    fn default() -> Self {
+        PredictEnv {
+            seed: 0,
+            mood: None,
+            up: Vec3::Y,
+            wells: WellField::default(),
         }
     }
 }
@@ -114,6 +147,12 @@ pub struct Predictor {
     /// The mode's movement limits on the local ship (Heist carrier), from
     /// the replicated mode flags.
     limits: MoveLimits,
+    /// Mood, up and wells (M4).
+    env: PredictEnv,
+    /// The dynamic wells changed since the last reconciliation: replay the
+    /// history from the anchored state before comparing (the wells carry
+    /// their exact start, so the replay matches the server).
+    wells_changed: bool,
 }
 
 impl Predictor {
@@ -130,7 +169,52 @@ impl Predictor {
             spawn_poses: Vec::new(),
             freeze_after: None,
             limits: MoveLimits::NONE,
+            env: PredictEnv::default(),
+            wells_changed: false,
         }
+    }
+
+    /// The match seed event effects are derived from (set once per match).
+    pub fn set_seed(&mut self, seed: u64) {
+        self.env.seed = seed;
+    }
+
+    /// The comedy director's replicated view and the level's up (M4,
+    /// protocol 6 `NetMoodView`). Applies to the ticks predicted or replayed
+    /// from now on; the next reconciliation replays the ticks after the
+    /// snapshot with it (the server's state at the snapshot already has
+    /// the effect of the earlier ticks).
+    pub fn set_mood(&mut self, mood: &MoodView, up: Vec3) {
+        self.env.mood = mood.event.is_some().then_some(*mood);
+        self.env.up = if up.is_finite() && up != Vec3::ZERO {
+            up
+        } else {
+            Vec3::Y
+        };
+    }
+
+    /// The level's well field: static wells from the match setup (set once
+    /// per match; replaces the dynamic ones too).
+    pub fn set_wells(&mut self, wells: WellField) {
+        self.env.wells = wells;
+    }
+
+    /// The dynamic wells (rebuilt from the newest snapshot's well
+    /// entities, `ls_game::convert::wells_from_entities`). A changed list
+    /// makes the next [`Predictor::reconcile`] replay the stored inputs from
+    /// the anchored state first: a well the client learns of after it
+    /// started (a Paperweight landing) then pulls from its exact start tick,
+    /// as on the server, instead of costing a correction.
+    pub fn set_dynamic_wells(&mut self, wells: Vec<DynamicWell>) {
+        if wells != self.env.wells.dynamics {
+            self.env.wells.dynamics = wells;
+            self.wells_changed = true;
+        }
+    }
+
+    /// Mood, up and wells the prediction applies.
+    pub fn env(&self) -> &PredictEnv {
+        &self.env
     }
 
     /// The mode's movement limits for the local ship (`ModeModule::move_limits`
@@ -270,6 +354,7 @@ impl Predictor {
             &self.tuning,
             self.limits,
             self.freeze_after,
+            &self.env,
             terrain,
         );
     }
@@ -295,6 +380,11 @@ impl Predictor {
         conv: &NetConv,
         terrain: &T,
     ) -> Reconcile {
+        if std::mem::take(&mut self.wells_changed) {
+            if let Some((t, s)) = self.base.clone() {
+                self.rebase(t, s, terrain);
+            }
+        }
         let player = self
             .ship()
             .map_or(ls_sim::PlayerId(server.id as u16), |s| s.player);
@@ -448,8 +538,9 @@ impl Predictor {
         let tuning = self.tuning.clone();
         let freeze = self.freeze_after;
         let limits = self.limits;
+        let env = &self.env;
         for e in self.entries.iter_mut() {
-            step_ship(&mut s, &e.cmd, &tuning, limits, freeze, terrain);
+            step_ship(&mut s, &e.cmd, &tuning, limits, freeze, env, terrain);
             e.state = Some(s.clone());
         }
     }
@@ -457,22 +548,47 @@ impl Predictor {
 
 /// One predicted tick: dead ships do not move (as in `World::step`; the
 /// server respawns them), nothing moves after the match ended, and the
-/// mode's limits apply as on the server.
+/// mode's limits, the running event's movement effects, the wells and the
+/// level's up apply as on the server (the input for tick `k` is the
+/// server step that produces tick `k`).
 fn step_ship<T: TerrainQuery + ?Sized>(
     s: &mut ShipState,
     cmd: &InputCmd,
     tuning: &ShipTuning,
     limits: MoveLimits,
     freeze_after: Option<u64>,
+    env: &PredictEnv,
     terrain: &T,
 ) {
-    if s.alive && freeze_after.is_none_or(|f| cmd.tick <= f) {
-        if limits.is_none() {
-            simulate_movement(s, cmd, tuning, terrain);
-        } else {
-            let (t, c) = limits.apply(tuning, cmd);
-            simulate_movement(s, &c, &t, terrain);
-        }
+    if !(s.alive && freeze_after.is_none_or(|f| cmd.tick <= f)) {
+        return;
+    }
+    let now = cmd.tick;
+    let fx = env.mood.as_ref().map_or(ls_sim::MoveEffects::NONE, |m| {
+        ls_sim::director::move_effects(m, env.seed, now, s)
+    });
+    let pos_before = s.pos;
+    if !fx.is_none() {
+        ls_sim::director::apply_move_effects_before(s, &fx);
+    }
+    // Wells and the level's up exactly as `World::step` (a level without
+    // wells and with +Y up runs the plain flight model).
+    let plain = env.wells.is_empty() && env.up == Vec3::Y;
+    let (t, c);
+    let (tuning, cmd) = if limits.is_none() {
+        (tuning, cmd)
+    } else {
+        (t, c) = limits.apply(tuning, cmd);
+        (&t, &c)
+    };
+    if plain {
+        simulate_movement(s, cmd, tuning, terrain);
+    } else {
+        let me = env.wells.move_env(s.pos, now, tuning, env.up);
+        simulate_movement_env(s, cmd, tuning, terrain, &me);
+    }
+    if !fx.is_none() {
+        ls_sim::director::apply_move_effects_after(s, &fx, pos_before);
     }
 }
 
@@ -545,6 +661,104 @@ mod tests {
         let s = pred.stats();
         assert!(s.corrected + s.snapped <= 2, "{s:?}");
         assert!(pred.ship().unwrap().pos.distance(server.pos) < 0.02);
+    }
+
+    /// M4: a static well, a dynamic well that starts and ends mid-flight
+    /// (the client learns of it from the first snapshot that shows it) and
+    /// a turned level up (horizon assist) are predicted as the server moves
+    /// the ship: reconciliation errors stay under 0.05 u. Without the field
+    /// the prediction keeps correcting.
+    #[test]
+    fn wells_and_up_are_predicted() {
+        use ls_sim::{simulate_movement_env, DynamicWell, GravitySettings, MoodView, WellField};
+        let assist = |tick| {
+            crate::convert::quantize_input(&InputCmd {
+                buttons: ls_sim::Buttons::HORIZON_ASSIST,
+                ..cmd(tick)
+            })
+        };
+        for informed in [true, false] {
+            let (conv, room, start) = setup();
+            let settings = GravitySettings::builtin();
+            let site = ls_math::level::WellSite {
+                pos: start.pos + Vec3::new(12.0, 0.0, -10.0),
+                core_radius: 2.0,
+                hollow_radius: 8.0,
+                strength: 1.0,
+                range: 40.0,
+                kind: Default::default(),
+            };
+            let mut field = WellField::new(&[site], 100, settings);
+            assert!(!field.statics.is_empty());
+            let mut dynamic = DynamicWell {
+                key: 1,
+                pos: start.pos + Vec3::new(-6.0, 4.0, -20.0),
+                peak_accel: 9.0,
+                range: 16.0,
+                start_tick: 120,
+                end_tick: 260,
+                owner: None,
+            };
+            let up = Vec3::new(0.6, 0.8, 0.0);
+            let mut server = start.clone();
+            let mut truth = vec![server.clone()];
+            let mut pred = Predictor::new(conv.tuning().clone(), PredictionConfig::for_conv(&conv));
+            if informed {
+                pred.set_wells(WellField::new(&[site], 100, settings));
+                pred.set_mood(&MoodView::default(), up);
+            }
+            pred.reconcile(0, &conv.ship_to_net(0, &server, true), &conv, &room);
+            let mut worst = 0.0f32;
+            let mut dyn_pull = 0.0f32;
+            for tick in 1..400u64 {
+                if tick == 120 {
+                    // Dropped just ahead of the ship (a Paperweight).
+                    dynamic.pos = server.pos + Vec3::new(3.0, 1.0, -4.0);
+                    field.dynamics.push(dynamic);
+                }
+                if dynamic.active(tick) {
+                    let only = WellField {
+                        statics: Vec::new(),
+                        dynamics: vec![dynamic],
+                        settings: Some(*settings),
+                    };
+                    dyn_pull = dyn_pull.max(only.accel_at(server.pos, tick).length());
+                }
+                let c = assist(tick);
+                let env = field.move_env(server.pos, tick, conv.tuning(), up);
+                simulate_movement_env(&mut server, &c, conv.tuning(), &room, &env);
+                truth.push(server.clone());
+                pred.predict(c, &room);
+                if tick >= 6 && tick % 2 == 0 {
+                    let t = tick - 6;
+                    // The snapshot of tick `t` shows the dynamic well while
+                    // it exists in the world (from its start to its end).
+                    if informed && (120..260).contains(&t) {
+                        pred.set_dynamic_wells(vec![dynamic]);
+                    } else if informed {
+                        pred.set_dynamic_wells(Vec::new());
+                    }
+                    let net = conv.quantize_ship(&conv.ship_to_net(0, &truth[t as usize], true));
+                    pred.reconcile(t, &net, &conv, &room);
+                    worst = worst.max(pred.stats().last_error);
+                }
+            }
+            let s = pred.stats();
+            eprintln!(
+                "wells and up, informed {informed}: worst {worst:.5} u, dynamic pull up to {dyn_pull:.2} u/s^2, {s:?}"
+            );
+            assert!(
+                dyn_pull > 2.0,
+                "the dynamic well pulls the ship: {dyn_pull}"
+            );
+            if informed {
+                assert!(worst < 0.05, "worst {worst}: {s:?}");
+                assert!(s.corrected <= 4, "{s:?}");
+                assert!(pred.ship().unwrap().pos.distance(server.pos) < 0.05);
+            } else {
+                assert!(s.corrected > 10, "wells unknown mispredict: {s:?}");
+            }
+        }
     }
 
     /// A Heist carrier (slower, no boost) predicts without corrections when

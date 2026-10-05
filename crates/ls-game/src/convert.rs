@@ -12,12 +12,12 @@
 
 use ls_math::{Aabb, Quat, Vec3};
 use ls_net::{
-    buttons, ship_flags, NetEntity, NetEvent, NetInput, NetPlayer, NetProjectile, NetShip,
-    QuantConfig, Quantizer, ShipStatus,
+    buttons, ship_flags, well_state, NetEntity, NetEvent, NetInput, NetPlayer, NetProjectile,
+    NetShip, QuantConfig, Quantizer, ShipStatus,
 };
 use ls_sim::{
-    Buttons, EntityView, Event, InputCmd, PlayerId, Projectile, ShipState, ShipTable, ShipTuning,
-    ShipType, WeaponTable,
+    Buttons, DynamicWell, EntityView, Event, InputCmd, PlayerId, Projectile, ReplicatedKind,
+    ShipState, ShipTable, ShipTuning, ShipType, WeaponTable,
 };
 
 use crate::GameError;
@@ -99,8 +99,18 @@ impl NetConv {
         }
     }
 
-    /// Wire form of a ship. `with_status` adds the private resource bytes
-    /// (sent only to the ship's owner).
+    /// Wire form of a ship at tick `now`: [`NetConv::ship_to_net`] plus the
+    /// protocol 6 `ext` bits ([`ship_ext`]).
+    pub fn ship_to_net_at(&self, id: u8, ship: &ShipState, with_status: bool, now: u64) -> NetShip {
+        NetShip {
+            ext: ship_ext(ship, now),
+            ..self.ship_to_net(id, ship, with_status)
+        }
+    }
+
+    /// Wire form of a ship (`ext` 0; see [`NetConv::ship_to_net_at`]).
+    /// `with_status` adds the private resource bytes (sent only to the
+    /// ship's owner).
     pub fn ship_to_net(&self, id: u8, ship: &ShipState, with_status: bool) -> NetShip {
         let mut flags = 0u16;
         if ship.alive {
@@ -121,6 +131,7 @@ impl NetConv {
             vel: ship.vel,
             rot: ship.orientation,
             flags,
+            ext: 0,
             status: with_status.then(|| self.status(ship)),
         }
     }
@@ -275,6 +286,80 @@ const BUTTON_MAP: [(Buttons, u16); 8] = [
     (Buttons::WEAPON_MODE, buttons::WEAPON_MODE),
 ];
 
+/// The protocol 6 `ext` bits of a ship at tick `now` (`ls_net::ship_ext`):
+/// pigmented (monochrome levels) and the number of hats worn (Hat rain,
+/// saturating; B3 adds the count with its ship state).
+pub fn ship_ext(ship: &ShipState, now: u64) -> u8 {
+    if ship.pigmented(now) {
+        ls_net::ship_ext::PIGMENTED
+    } else {
+        0
+    }
+}
+
+/// First wire id of the well entities (apart from the simulation's 15-bit
+/// entity ids).
+pub const WELL_ENTITY_ID_BASE: u16 = 0x8000;
+
+/// The world's dynamic gravity wells as `ReplicatedKind::Well` entities in
+/// the snapshot of tick `now` (protocol 6; layout `ls_net::well_state`):
+/// id `0x8000 |` the well key (the next free one on a clash), position the
+/// centre, owner the placer's wire id, `visual` the start tick's low bits.
+/// Wells that ended are left out. Sorted by id.
+pub fn well_entities(
+    wells: &[DynamicWell],
+    now: u64,
+    wire_id: impl Fn(PlayerId) -> Option<u8>,
+) -> Vec<NetEntity> {
+    let mut out: Vec<NetEntity> = Vec::new();
+    for w in wells {
+        if now >= w.end_tick {
+            continue;
+        }
+        let (state, visual) = well_state::encode(w.range, w.peak_accel, w.start_tick, w.end_tick);
+        let mut id = WELL_ENTITY_ID_BASE | (w.key as u16 & 0x7fff);
+        while out.iter().any(|e| e.id == id) {
+            id = WELL_ENTITY_ID_BASE | (id.wrapping_add(1) & 0x7fff);
+        }
+        out.push(NetEntity {
+            id,
+            kind: ReplicatedKind::Well as u8,
+            visual,
+            owner: w.owner.and_then(&wire_id).unwrap_or(NO_SHIP),
+            team: u8::MAX,
+            pos: w.pos,
+            vel: Vec3::ZERO,
+            rot: Quat::IDENTITY,
+            state,
+        });
+    }
+    out.sort_by_key(|e| e.id);
+    out
+}
+
+/// The dynamic wells of a snapshot of tick `tick` (its well entities; the
+/// client predictor's field). Keys are the entity ids, owners `PlayerId(wire
+/// id)`.
+pub fn wells_from_entities(entities: &[NetEntity], tick: u64) -> Vec<DynamicWell> {
+    entities
+        .iter()
+        .filter(|e| e.kind == ReplicatedKind::Well as u8)
+        .map(|e| {
+            let w = well_state::decode(e.state, e.visual, tick);
+            DynamicWell {
+                key: e.id as u32,
+                pos: e.pos,
+                peak_accel: w.peak,
+                range: w.range,
+                start_tick: w.start_tick,
+                end_tick: w.end_tick,
+                owner: (e.owner != NO_SHIP).then_some(PlayerId(e.owner as u16)),
+            }
+        })
+        .filter(|w| w.end_tick > tick && w.peak_accel > 0.0 && w.range > 0.0)
+        .collect()
+}
+
 /// Wire form of a projectile: id truncated to 16 bits (wraps), `kind` is the
 /// weapon id, `owner` the shooter's wire id ([`NO_SHIP`] if they left),
 /// `state` the replicated projectile flags (`ls_sim::proj_flags`).
@@ -286,6 +371,7 @@ pub fn projectile_to_net(p: &Projectile, owner: Option<u8>) -> NetProjectile {
         pos: p.pos,
         vel: p.vel,
         state: p.net_state(),
+        chicken: p.flags & ls_sim::proj_flags::CHICKEN != 0,
     }
 }
 
@@ -382,6 +468,19 @@ pub fn events_to_net(
                 pos: c.pos,
                 value: c.value,
             }),
+            // A comedy event's announcement (protocol 6): banner, sting and
+            // announcer line on every client at once (the mood view carries
+            // the same state for late joiners).
+            Event::Director(ls_sim::DirectorEvent::Announced { kind, target, .. }) => {
+                out.push(NetEvent::Cue {
+                    tick,
+                    kind: ls_sim::CueKind::EventAnnounce as u8,
+                    source: NO_SHIP,
+                    target: target.and_then(&wire_id).unwrap_or(NO_SHIP),
+                    pos: Vec3::ZERO,
+                    value: kind.index() as u16,
+                })
+            }
             _ => {}
         }
     }
@@ -778,5 +877,102 @@ mod tests {
             );
             assert!(worst <= PER_SNAPSHOT, "age {age}, turn {turn}: {worst} B");
         }
+    }
+
+    #[test]
+    fn well_entities_round_trip_through_the_wire() {
+        let well = |key, start, end, pos| DynamicWell {
+            key,
+            pos,
+            peak_accel: 9.0,
+            range: 16.0,
+            start_tick: start,
+            end_tick: end,
+            owner: Some(PlayerId(4)),
+        };
+        let now = 70_000;
+        let wells = [
+            well(7, 69_000, 70_360, Vec3::new(40.0, 20.0, 30.0)),
+            // Telegraphed: starts 120 ticks after the snapshot.
+            well(9, 70_120, 71_920, Vec3::new(60.0, 22.5, 31.25)),
+            // Same key: gets the next id.
+            well(7, 69_500, 70_500, Vec3::new(10.0, 10.0, 10.0)),
+            // Ended: left out.
+            well(1, 60_000, 70_000, Vec3::ZERO),
+        ];
+        let ents = well_entities(&wells, now, |p| Some(p.0 as u8 + 10));
+        assert_eq!(ents.len(), 3);
+        assert_eq!(
+            ents.iter().map(|e| e.id).collect::<Vec<_>>(),
+            vec![0x8007, 0x8008, 0x8009]
+        );
+        assert!(ents
+            .iter()
+            .all(|e| e.kind == ReplicatedKind::Well as u8 && e.owner == 14));
+        // Through the codec (entity positions are quantized).
+        let c = conv();
+        let snap = ls_net::Snapshot {
+            tick: now as u32,
+            entities: ents,
+            ..Default::default()
+        };
+        let back = c
+            .quantizer()
+            .unpack_snapshot(&c.quantizer().pack_snapshot(&snap));
+        let got = wells_from_entities(&back.entities, now);
+        assert_eq!(got.len(), 3);
+        for (g, w) in got.iter().zip([&wells[0], &wells[2], &wells[1]]) {
+            assert_eq!((g.peak_accel, g.range), (9.0, 16.0));
+            assert_eq!(g.end_tick, w.end_tick);
+            assert_eq!(g.start_tick, w.start_tick);
+            assert!(g.pos.distance(w.pos) < 0.03, "{:?} {:?}", g.pos, w.pos);
+            assert_eq!(g.owner, Some(PlayerId(14)));
+        }
+        // The telegraphed well starts exactly on its tick.
+        assert_eq!(got[2].start_tick, 70_120);
+        assert!(!got[2].active(70_119) && got[2].active(70_120));
+    }
+
+    #[test]
+    fn ship_ext_carries_pigment() {
+        let c = conv();
+        let mut s = ShipState::new(
+            PlayerId(1),
+            0,
+            ShipType::Tinker,
+            c.tuning(),
+            Vec3::splat(5.0),
+            Quat::IDENTITY,
+        );
+        assert_eq!(ship_ext(&s, 100), 0);
+        s.pigment_until = 200;
+        assert_eq!(ship_ext(&s, 100), ls_net::ship_ext::PIGMENTED);
+        assert_eq!(ship_ext(&s, 200), 0);
+        assert_eq!(
+            c.ship_to_net_at(1, &s, false, 150).ext,
+            ls_net::ship_ext::PIGMENTED
+        );
+        assert_eq!(c.ship_to_net(1, &s, false).ext, 0);
+    }
+
+    #[test]
+    fn announcements_become_cues() {
+        let ev = [Event::Director(ls_sim::DirectorEvent::Announced {
+            kind: ls_sim::EventKind::DuckParade,
+            target: Some(PlayerId(3)),
+            forced: false,
+        })];
+        let net = events_to_net(&ev, 9, |p| Some(p.0 as u8));
+        assert_eq!(
+            net,
+            vec![NetEvent::Cue {
+                tick: 9,
+                kind: ls_sim::CueKind::EventAnnounce as u8,
+                source: NO_SHIP,
+                target: 3,
+                pos: Vec3::ZERO,
+                value: ls_sim::EventKind::DuckParade.index() as u16,
+            }]
+        );
     }
 }

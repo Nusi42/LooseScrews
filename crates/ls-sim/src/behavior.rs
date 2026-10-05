@@ -107,6 +107,14 @@ pub enum CueKind {
     /// Pigment: `source` took a pigment pickup at `pos` (`value` 1 for a
     /// dropped splash, 0 for a regular pickup).
     Pigment = 15,
+    /// A comedy event's 3 s announcement (protocol 6): `value` =
+    /// `EventKind` index, `target` = the player it names (255 none), `pos`
+    /// = the in-world tell (paw shadow, drone entry, ...; the target's
+    /// ship or zero when the event gives none).
+    EventAnnounce = 16,
+    /// The Architect's stroke telegraph: `source` = the architect, `pos` =
+    /// centre, `value` = stroke kind << 8 | radius in u (clamped to 255).
+    StrokeTelegraph = 17,
     /// Free for modules; `value` is module-defined.
     Custom = 255,
 }
@@ -131,6 +139,8 @@ impl CueKind {
             13 => PaintColor,
             14 => CaveInWarning,
             15 => Pigment,
+            16 => EventAnnounce,
+            17 => StrokeTelegraph,
             _ => Custom,
         }
     }

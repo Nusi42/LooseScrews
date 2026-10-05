@@ -459,7 +459,9 @@ export async function runGallery(canvas: HTMLCanvasElement, ui: HTMLElement, loc
     const impact = hit ? v3.addScaled(pose.position, impactDir, Math.max(4, hit.t - 0.6)) : null;
     const lights: PointLight[] = [];
     const particles = renderer.particles;
-    renderer.setScene(sceneContent(scene, pose, visuals, impact, lights, particles !== null));
+    // The light scenes (VQ6) have no VQ5 history (their tinted volley is not
+    // simulated), so their shots keep the mesh cores.
+    renderer.setScene(sceneContent(scene, pose, visuals, impact, lights, particles !== null && scene.content !== "lights"));
     if (particles) {
       // VQ5: the particles of the scene's synthetic history up to its time (vfxScenes.ts).
       // Scenes whose effects come only from VQ5 also take its effect lights (VQ6

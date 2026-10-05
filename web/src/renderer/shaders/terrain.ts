@@ -307,7 +307,14 @@ fn fs_main(in: VsOut) -> @location(0) vec4f {
   let sun_rad = vec3f(1.0, 0.93, 0.8) * 0.9;
   let head_rad = vec3f(1.0, 0.97, 0.92) * frame.light_dir.w / (1.0 + 0.004 * d * d);
   let spec = ggx(n, v, sun_l, rough, f0) * sun_rad + ggx(n, v, v, rough, f0) * head_rad;
-  let color = albedo * light(n, p) * occl + spec * occl + emissive;
+  // Dynamic lights (VQ6) also glint: their Blinn-Phong highlight at the
+  // roughness' equivalent power, normalised and scaled by the Fresnel base.
+  let a2 = max(rough * rough * rough * rough, 2e-3);
+  let power = clamp(2.0 / a2 - 2.0, 2.0, 512.0);
+  var dyn_spec = vec3f(0.0);
+  let lit = light_spec(n, p, v, power, &dyn_spec);
+  let dyn_gloss = dyn_spec * min(f0 * (power + 8.0) / 25.13, 3.0);
+  let color = albedo * lit * occl + (spec + dyn_gloss) * occl + emissive;
   return vec4f(apply_fog(color, p), 1.0);
 }
 `;

@@ -829,6 +829,7 @@ async function main() {
     {
       const page = await browser.newPage();
       if (summary.mode === "headful") await page.setViewport({ width: 1280, height: 900 });
+      await page.evaluateOnNewDocument(fakePointerLock); // never lock the OS cursor
       watchPage(page, consoleLog, () => phase);
       await page.goto(`${base}/?editor=rules`, { waitUntil: "load" });
       const shown = await page

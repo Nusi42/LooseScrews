@@ -109,14 +109,19 @@ fn fs_main(in: PostVsOut) -> @location(0) vec4f {
 export const KEEP_ALPHA = 0.0625;
 
 /** Floats in the composite uniform (struct Post below). */
-export const POST_UNIFORM_FLOATS = 24;
+export const POST_UNIFORM_FLOATS = 36;
 
 /**
  * Final composite into the swapchain: exposure, colour grade (ASC CDL slope /
  * offset / power, saturation, monochrome) in scene-linear, bloom, vignette,
  * AgX (Troy Sobotka's AgX, Benjamin Wrensch's polynomial fit) with a look
  * (power, saturation), sRGB encoding, a ±0.5 LSB dither against banding in
- * dark gradients and optional film grain.
+ * dark gradients and optional film grain. With the Palette slider's ink look
+ * (M4 A7, renderer/ink.ts) after the tonemap: toon bands in display
+ * lightness, paper grain, the monochrome ink on paper (tone lifted toward the
+ * paper, distant rock fading into a pale mist, a brushed wash in the sky) and
+ * the ink pass's outlines and hatching. Kept pixels (KEEP_ALPHA) skip the
+ * monochrome and the hatching, not the outlines.
  */
 export const COMPOSITE_WGSL = /* wgsl */ `
 ${FULLSCREEN_VS}
@@ -127,11 +132,15 @@ struct Post {
   look: vec4f,            // x = AgX look power, y = AgX look saturation, z = monochrome 0..1, w = vignette
   misc: vec4f,            // x = film grain, y = time (s), z = bloom mips, w = 1 when bloom is on
   mono_tint: vec4f,       // rgb colour kept by the monochrome grade, w = how much of it is kept
+  ink_look: vec4f,        // ink (M4 A7): x toon, y paper grain, z monochrome ink, w contrast
+  ink_paper: vec4f,       // rgb paper (linear), w = 1 when the ink look is on
+  ink_color: vec4f,       // rgb ink (linear), w = 1 when the ink lines are valid this frame
 };
 @group(0) @binding(0) var scene: texture_2d<f32>;
 @group(0) @binding(1) var bloom: texture_2d<f32>;
 @group(0) @binding(2) var samp: sampler;
 @group(0) @binding(3) var<uniform> post: Post;
+@group(0) @binding(4) var ink_lines: texture_2d<f32>;
 
 const LUMA = vec3f(0.2126, 0.7152, 0.0722);
 
@@ -181,10 +190,68 @@ fn hash12(p: vec2f) -> f32 {
   return fract((p3.x + p3.y) * p3.z);
 }
 
+fn vnoise(p: vec2f) -> f32 {
+  let i = floor(p);
+  let f = p - i;
+  let u = f * f * (3.0 - 2.0 * f);
+  return mix(mix(hash12(i), hash12(i + vec2f(1.0, 0.0)), u.x), mix(hash12(i + vec2f(0.0, 1.0)), hash12(i + vec2f(1.0, 1.0)), u.x), u.y);
+}
+
+// Paper: fine tooth, a softer mottle and faint horizontal fibres (screen
+// space: the paper is the screen). About -0.5..0.5.
+fn paper_grain(px: vec2f) -> f32 {
+  let tooth = vnoise(px * 0.55);
+  let mottle = vnoise(px * 0.09 + vec2f(17.0, 3.0));
+  let fibre = vnoise(vec2f(px.x * 0.03, px.y * 0.4) + vec2f(5.0, 41.0));
+  return 0.45 * tooth + 0.35 * mottle + 0.2 * fibre - 0.5;
+}
+
+// Soft steps: x in [0, 1] held on n plateaus, each step blended over 2 soft.
+fn soft_bands(x: f32, n: f32, soft: f32) -> f32 {
+  let y = x * n;
+  let i = floor(y);
+  return (i + smoothstep(0.5 - soft, 0.5 + soft, y - i)) / n;
+}
+
+// The ink look on the tonemapped colour (display-linear).
+fn ink(c: vec3f, px: vec2f, keep: f32) -> vec3f {
+  let lines = select(vec4f(0.0), textureLoad(ink_lines, vec2i(px), 0), post.ink_color.w > 0.5);
+  let sky = lines.a;
+  let l = max(dot(c, LUMA), 0.0);
+  let pl = pow(l, 1.0 / 2.2);
+  // Toon: soft plateaus of lightness, softer in the sky.
+  let toon = post.ink_look.x * (1.0 - 0.7 * sky);
+  let pb = mix(pl, soft_bands(pl, 4.0, 0.14), toon);
+  var out = c * select(pow(pb / max(pl, 1e-4), 2.2), 0.0, pl < 1e-4);
+  let grain = paper_grain(px) * post.ink_look.y;
+  let mono = post.ink_look.z * (1.0 - keep);
+  if (mono > 0.0) {
+    // Ink on paper: the tone lifted toward the paper (lit rock is paper,
+    // shade is ink and hatching), more contrast toward Palette 100.
+    let k = post.ink_look.w;
+    var m = smoothstep(mix(0.04, 0.08, k), mix(0.74, 0.58, k), pb);
+    // Distant rock fades into a pale mist like an ink-wash landscape, the
+    // sky is the same pale wash with soft blotches, bright things paper.
+    m = mix(m, 0.74, lines.b * (1.0 - sky) * 0.85);
+    let wash = vnoise(px * vec2f(0.0022, 0.0045)) * 0.65 + vnoise(px * vec2f(0.007, 0.016) + vec2f(31.0, 7.0)) * 0.35;
+    let sky_m = 0.64 + 0.2 * smoothstep(0.3, 0.75, wash) + 0.35 * smoothstep(0.12, 0.7, pb);
+    m = mix(m, min(sky_m, 1.0), sky);
+    let paper = post.ink_paper.rgb * (1.0 + 0.22 * grain);
+    out = mix(out, mix(post.ink_color.rgb, paper, m), mono);
+  } else {
+    out *= 1.0 + 0.1 * grain;
+  }
+  // Lines only ever darken (ink over a darker sky must not show as a lighter line).
+  let inked = clamp(lines.r + lines.g * (1.0 - keep), 0.0, 1.0);
+  return mix(out, min(out, post.ink_color.rgb), inked);
+}
+
 fn grade(c: vec3f, keep_px: f32) -> vec3f {
   var g = pow(max(c * post.slope_exposure.rgb + post.offset_bloom.rgb, vec3f(0.0)), post.power_sat.rgb);
   let luma = dot(g, LUMA);
-  g = max(vec3f(luma) + post.power_sat.w * (g - vec3f(luma)), vec3f(0.0));
+  // Kept colour (paint, pigment: KEEP_ALPHA) is not desaturated by the Palette slider either.
+  let sat = mix(post.power_sat.w, max(post.power_sat.w, 1.0), keep_px);
+  g = max(vec3f(luma) + sat * (g - vec3f(luma)), vec3f(0.0));
   // Monochrome (Last Color Standing): grey, except saturated colours whose
   // hue matches mono_tint (compared on the chroma, the colour minus its grey).
   let mono = post.look.z * (1.0 - keep_px);
@@ -221,6 +288,9 @@ fn fs_main(in: PostVsOut) -> @location(0) vec4f {
   let q = (in.uv - 0.5) * vec2f(size.x / size.y, 1.0);
   hdr *= 1.0 - post.look.w * smoothstep(0.35, 1.1, dot(q, q) * 1.6);
   var ldr = agx_eotf(agx_look(agx(hdr)));
+  if (post.ink_paper.w > 0.5) {
+    ldr = ink(ldr, in.clip.xy, keep_px);
+  }
   if (post.misc.x > 0.0) {
     let n = hash12(in.clip.xy + fract(post.misc.y * 7.13) * 431.0) - 0.5;
     ldr *= 1.0 + post.misc.x * n;

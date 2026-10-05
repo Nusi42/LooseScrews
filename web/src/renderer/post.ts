@@ -7,9 +7,13 @@
 //
 // The colour grade is the hook for per-world looks (VQ7: caves warm, mines
 // sodium, sky cold) and for Last Color Standing's monochrome (C1): set
-// `Renderer.settings.post.grade` (GRADE_PRESETS or your own).
+// `Renderer.settings.post.grade` (GRADE_PRESETS or your own). The ink look
+// of the Palette slider (M4 A7, ink.ts) is `settings.post.ink`: toon bands,
+// paper, grain and the monochrome ink after the tonemap, plus the line work
+// of the ink pass (`setInkLines`).
 
 import type { GpuTimer } from "./gpuTimer.ts";
+import { inkActive, NO_INK, type InkLook } from "./ink.ts";
 import type { Rgb } from "./renderer.ts";
 import {
   BLOOM_DOWN_WGSL,
@@ -76,6 +80,8 @@ export interface PostSettings {
   agxPower: number;
   agxSaturation: number;
   grade: ColorGrade;
+  /** The Palette slider's ink look (ink.ts); NO_INK = off. */
+  ink: InkLook;
 }
 
 export const DEFAULT_POST: PostSettings = {
@@ -87,10 +93,14 @@ export const DEFAULT_POST: PostSettings = {
   agxPower: 1.3,
   agxSaturation: 1.25,
   grade: NEUTRAL_GRADE,
+  ink: NO_INK,
 };
 
-/** Packs the composite uniform (struct Post in shaders/post.ts). */
-export function packPostUniforms(s: PostSettings, time: number, bloomMips: number, out = new Float32Array(POST_UNIFORM_FLOATS)): Float32Array {
+/**
+ * Packs the composite uniform (struct Post in shaders/post.ts). `lines`: the
+ * ink pass drew this frame's line work (outlines, hatching).
+ */
+export function packPostUniforms(s: PostSettings, time: number, bloomMips: number, out = new Float32Array(POST_UNIFORM_FLOATS), lines = false): Float32Array {
   const g = s.grade;
   out.set([g.slope[0], g.slope[1], g.slope[2], s.exposure], 0);
   out.set([g.offset[0], g.offset[1], g.offset[2], bloomMips > 0 ? s.bloomStrength : 0], 4);
@@ -100,6 +110,10 @@ export function packPostUniforms(s: PostSettings, time: number, bloomMips: numbe
   // The kept colour is compared in linear light.
   const lin = (c: number) => (c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4));
   out.set([lin(g.monoTint[0]), lin(g.monoTint[1]), lin(g.monoTint[2]), g.monoKeep], 20);
+  const ink = s.ink ?? NO_INK;
+  out.set([ink.toon, ink.grain, ink.mono, ink.contrast], 24);
+  out.set([lin(ink.paper[0]), lin(ink.paper[1]), lin(ink.paper[2]), inkActive(ink) ? 1 : 0], 28);
+  out.set([lin(ink.ink[0]), lin(ink.ink[1]), lin(ink.ink[2]), lines ? 1 : 0], 32);
   return out;
 }
 
@@ -144,6 +158,10 @@ export class PostChain {
   private readonly postBuffer: GPUBuffer;
   private readonly postData = new Float32Array(POST_UNIFORM_FLOATS);
   private readonly black: GPUTexture;
+  /** Stands in for the ink lines when the ink pass does not run. */
+  private readonly noLines: GPUTexture;
+  private inkLines: GPUTexture | null = null;
+  private compositeInk: GPUTexture | null = null;
   private sceneTexture: GPUTexture | null = null;
   private levels: BloomLevel[] = [];
   private composite: GPUBindGroup | null = null;
@@ -174,6 +192,8 @@ export class PostChain {
         { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: tex },
         { binding: 2, visibility: GPUShaderStage.FRAGMENT, sampler: { type: "filtering" } },
         { binding: 3, visibility: GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } },
+        // The ink pass's lines (ink.ts; a 1x1 stand-in when it did not run).
+        { binding: 4, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
       ],
     });
     const fullscreen = (label: string, code: string, layout: GPUBindGroupLayout, target: GPUColorTargetState): GPURenderPipeline => {
@@ -207,6 +227,17 @@ export class PostChain {
       format: HDR_FORMAT,
       usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.RENDER_ATTACHMENT,
     });
+    this.noLines = device.createTexture({
+      label: "no ink lines",
+      size: { width: 1, height: 1 },
+      format: "rgba8unorm",
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.RENDER_ATTACHMENT,
+    });
+  }
+
+  /** This frame's ink lines (ink.ts `InkPass`), or null when the pass did not run. */
+  setInkLines(lines: GPUTexture | null): void {
+    this.inkLines = lines;
   }
 
   /** The single-sample HDR scene texture (MSAA resolve target, or the scene target without MSAA). */
@@ -282,21 +313,32 @@ export class PostChain {
       srcView = view;
       srcSize = [w, h];
     }
-    this.composite = device.createBindGroup({
+    this.composite = null;
+  }
+
+  /** The composite's bind group for the current ink lines (rebuilt when the lines' texture changes). */
+  private compositeGroup(): GPUBindGroup {
+    const lines = this.inkLines ?? this.noLines;
+    if (this.composite && this.compositeInk === lines) return this.composite;
+    if (!this.sceneTexture) throw new Error("PostChain.resize was not called");
+    this.compositeInk = lines;
+    this.composite = this.device.createBindGroup({
       layout: this.compositeLayout,
       entries: [
-        { binding: 0, resource: sceneView },
+        { binding: 0, resource: this.sceneTexture.createView() },
         { binding: 1, resource: (this.levels[0]?.texture ?? this.black).createView() },
         { binding: 2, resource: this.sampler },
         { binding: 3, resource: { buffer: this.postBuffer } },
+        { binding: 4, resource: lines.createView() },
       ],
     });
+    return this.composite;
   }
 
   /** Bloom chain plus composite into `target` (timed as "post"). */
   encode(encoder: GPUCommandEncoder, target: GPUTextureView, settings: PostSettings, time: number, timer: GpuTimer | null): void {
-    if (!this.composite) throw new Error("PostChain.resize was not called");
-    this.device.queue.writeBuffer(this.postBuffer, 0, packPostUniforms(settings, time, this.levels.length, this.postData));
+    const composite = this.compositeGroup();
+    this.device.queue.writeBuffer(this.postBuffer, 0, packPostUniforms(settings, time, this.levels.length, this.postData, this.inkLines !== null));
     const first = this.levels[0];
     if (first && first.uniforms[0]) {
       this.device.queue.writeBuffer(first.uniforms[0], 0, new Float32Array([1 / this.size.width, 1 / this.size.height, 1, Math.max(0, settings.bloomThreshold)]));
@@ -329,7 +371,7 @@ export class PostChain {
     }
     const p = pass("composite", target, false);
     p.setPipeline(this.compositePipeline);
-    p.setBindGroup(0, this.composite);
+    p.setBindGroup(0, composite);
     p.draw(3);
     p.end();
   }
@@ -341,6 +383,7 @@ export class PostChain {
       for (const b of l.uniforms) b.destroy();
     }
     this.black.destroy();
+    this.noLines.destroy();
     this.postBuffer.destroy();
   }
 }

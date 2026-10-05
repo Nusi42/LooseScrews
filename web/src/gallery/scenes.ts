@@ -10,6 +10,8 @@ export interface GalleryWorld {
   seed: number;
   enclosure: number;
   density: number;
+  /** Palette slider for the look (render only, M4 A7; the code keeps 0, the generator ignores it); default 0. */
+  palette?: number;
 }
 
 /**
@@ -68,6 +70,8 @@ export interface GalleryScene {
   belowCeiling?: number;
   /** "mode" content: which mode's visuals (M3 C1, modeScenes.ts). */
   mode?: ModeSceneKind;
+  /** Ship types (lineup) drawn with their colour kept through the monochrome ink (pigmented, M4 A7 keep mask). */
+  keepShips?: readonly number[];
 }
 
 const CAVES: GalleryWorld = { seed: 7, enclosure: 50, density: 50 };
@@ -75,6 +79,52 @@ const CAVES: GalleryWorld = { seed: 7, enclosure: 50, density: 50 };
 const SUNLIT_CAVES: GalleryWorld = { seed: 7, enclosure: 47, density: 60 };
 /** The start screen's first backdrop world (attract/backdrop.ts BACKDROP_WORLDS[0]). */
 const BACKDROP: GalleryWorld = { seed: 6, enclosure: 35, density: 65 };
+
+/** M4 A7: the Palette steps (§3.3 of milestone-4-plan.md) on caves (with the four hulls), mines and open sky. */
+const PALETTE_STEPS = [0, 40, 65, 85, 100] as const;
+
+function paletteScenes(): GalleryScene[] {
+  const out: GalleryScene[] = [];
+  for (const p of PALETTE_STEPS) {
+    out.push({ id: `palette-${p}`, title: `Palette ${p}: caves with the four hulls`, covers: "palette, ink", world: { ...CAVES, palette: p }, pose: "tunnel", content: "lineup", time: 1.0 });
+  }
+  for (const p of PALETTE_STEPS) {
+    out.push({ id: `palette-${p}-mine`, title: `Palette ${p}: mine shaft`, covers: "palette, ink", world: { seed: 7, enclosure: 100, density: 30, palette: p }, pose: "tunnel", content: "none", time: 1.0 });
+  }
+  for (const p of PALETTE_STEPS) {
+    out.push({ id: `palette-${p}-sky`, title: `Palette ${p}: open sky with islands`, covers: "palette, ink", world: { seed: 7, enclosure: 20, density: 70, palette: p }, pose: "vista", content: "none", time: 1.0 });
+  }
+  out.push({
+    id: "palette-100-paint",
+    title: "Palette 100: paint keeps its colour in the ink world",
+    covers: "palette, ink, paint",
+    world: { ...CAVES, palette: 100 },
+    pose: "closeup",
+    content: "none",
+    decor: "paint",
+    time: 1.0,
+  });
+  out.push({
+    id: "palette-100-pigment",
+    title: "Palette 100: Skitter and Hauler pigmented (colour kept), Tinker and Tug grey",
+    covers: "palette, ink, ships",
+    world: { ...CAVES, palette: 100 },
+    pose: "tunnel",
+    content: "lineup",
+    time: 1.0,
+    keepShips: [0, 2],
+  });
+  out.push({
+    id: "palette-85-fight",
+    title: "Palette 85: fight frame with an explosion in the ink world",
+    covers: "palette, ink, effects",
+    world: { ...CAVES, palette: 85 },
+    pose: "tunnel",
+    content: "fight",
+    time: 2.15,
+  });
+  return out;
+}
 
 export const SCENES: readonly GalleryScene[] = [
   { id: "cave-closeup", title: "Cave wall close-up", covers: "textures, polygon switches", world: CAVES, pose: "closeup", content: "none", time: 1.0 },
@@ -273,6 +323,7 @@ export const SCENES: readonly GalleryScene[] = [
   { id: "start-flythrough", title: "Start flythrough, later in the flight", covers: "first impression", world: BACKDROP, pose: "tunnel", content: "none", time: 24.0, page: "start" },
   { id: "lobby-flythrough", title: "Lobby card over the cinematic flight", covers: "first impression", world: BACKDROP, pose: "tunnel", content: "none", time: 16.0, page: "lobby" },
   { id: "ship-bay", title: "Ship bay: the four hulls turning", covers: "first impression, ships", world: BACKDROP, pose: "tunnel", content: "none", time: 6.0, page: "bay" },
+  ...paletteScenes(),
 ];
 
 export function sceneById(id: string): GalleryScene | undefined {
@@ -298,6 +349,8 @@ export const PASS_BUDGETS_MS: Readonly<Record<string, number>> = {
   volumetric: 0.6,
   // M3 C1 mode effects (modeFx.ts): zones, beams and halos cost little; a Squeeze wall filling the screen is the worst case.
   mode: 1.0,
+  // M4 A7: the Palette slider's ink lines (outlines and hatching; only from Palette 50).
+  ink: 0.8,
   // FI: the hull view behind the ship cards (attract/shipBay.ts; its own small canvas, "medium").
   bay: 0.8,
 };

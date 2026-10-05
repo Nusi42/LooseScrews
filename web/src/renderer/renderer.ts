@@ -5,8 +5,9 @@
 // The scene renders linear HDR radiance into an rgba16float target with
 // MSAA (quality.ts presets); in open levels sky.ts draws the sky under the
 // resolved scene and adds light shafts (VQ7); particles.ts draws the GPU
-// particles and dust motes on top (VQ5); post.ts adds bloom, grades, tonemaps
-// (AgX) and encodes sRGB into the swapchain. Passes are timed with timestamp queries
+// particles and dust motes on top (VQ5); ink.ts draws the Palette slider's
+// outlines and hatching (M4 A7); post.ts adds bloom, grades, tonemaps (AgX),
+// lays the ink look over it and encodes sRGB into the swapchain. Passes are timed with timestamp queries
 // when the device has them (gpuTimer.ts).
 //
 // The game calls `setChunk(key, mesh)` with meshes produced by ls-wasm and
@@ -24,6 +25,7 @@ import { contextOn, initGpu, watchDevice, type DeviceWatch, type GpuContext } fr
 import { GpuTimer, type GpuTimings } from "./gpuTimer.ts";
 import { LightSystem, lightBindLayoutEntries, type PointLight } from "./lights.ts";
 import { HullFrame } from "./hullFrame.ts";
+import { InkPass, needsLinePass, NO_INK } from "./ink.ts";
 import { ModeFxPass, type ModeVolume } from "./modeFx.ts";
 import { GpuMesh, type MeshData } from "./mesh.ts";
 import { LEGACY_MESH_BUILDERS, MESH_BUILDERS, MESH_KINDS, SHIP_MESH_KINDS, WRECK_MESH_KINDS, type MeshKind } from "./models/index.ts";
@@ -317,6 +319,8 @@ export class Renderer {
   /** Dynamic point lights (VQ6, lights.ts): this frame's lights from `setLights`. */
   private readonly lightSystem: LightSystem;
   private lights: readonly PointLight[] = [];
+  /** The Palette slider's line work (M4 A7, ink.ts); runs only when `settings.post.ink` asks for lines. */
+  private readonly ink: InkPass;
   /** Mode effects (M3 C1, modeFx.ts): this frame's volumes from `setModeVolumes`. */
   private readonly modeFx: ModeFxPass;
   private modeVolumes: readonly ModeVolume[] = [];
@@ -437,6 +441,7 @@ export class Renderer {
     this.post = new PostChain(device, gpu.format);
     this.particles = particles ? new ParticleSystem(device, this.frameBuffer, this.qualityLevel.particles) : null;
     this.modeFx = new ModeFxPass(device);
+    this.ink = new InkPass(device);
 
     this.timer = GpuTimer.create(device);
 
@@ -558,10 +563,10 @@ export class Renderer {
     // VQ9: without a sky the level box is sealed and the sun never gets in.
     this.sunShadow.setSealed(a !== null && a.open <= 0);
     if (!a) {
-      this.settings = { ...s, fogColor: DEFAULT_SETTINGS.fogColor, fogDensity: DEFAULT_SETTINGS.fogDensity, sunDirection: DEFAULT_SETTINGS.sunDirection, heightFog: DEFAULT_SETTINGS.heightFog, skyHaze: 0, post: { ...s.post, grade: DEFAULT_POST.grade } };
+      this.settings = { ...s, fogColor: DEFAULT_SETTINGS.fogColor, fogDensity: DEFAULT_SETTINGS.fogDensity, sunDirection: DEFAULT_SETTINGS.sunDirection, heightFog: DEFAULT_SETTINGS.heightFog, skyHaze: 0, post: { ...s.post, grade: DEFAULT_POST.grade, ink: NO_INK } };
       return;
     }
-    this.settings = { ...s, fogColor: a.fogColor, fogDensity: a.fogDensity, sunDirection: a.sunDirection, heightFog: a.heightFog, skyHaze: 1, post: { ...s.post, grade: a.grade } };
+    this.settings = { ...s, fogColor: a.fogColor, fogDensity: a.fogDensity, sunDirection: a.sunDirection, heightFog: a.heightFog, skyHaze: 1, post: { ...s.post, grade: a.grade, ink: a.ink } };
   }
 
   /** The active atmosphere, or null. */
@@ -716,7 +721,7 @@ export class Renderer {
           depthClearValue: 1,
           depthLoadOp: first ? "clear" : "load",
           // The particle pass (soft particles), the volumetric shafts, the mode effects and the cloak pass read the depth after the scene.
-          depthStoreOp: last && !this.particles && quality.volumetric.divisor === 0 && refracted === 0 && this.modeVolumes.length === 0 ? "discard" : "store",
+          depthStoreOp: last && !this.particles && quality.volumetric.divisor === 0 && refracted === 0 && this.modeVolumes.length === 0 && !needsLinePass(this.settings.post.ink) ? "discard" : "store",
         },
       });
       pass.setBindGroup(0, this.bindGroup);
@@ -775,6 +780,12 @@ export class Renderer {
     }, timer);
     // Particles after the sky and shafts: smoke and glows draw over the finished backdrop.
     this.particles?.encode(encoder, sceneView, this.depthTexture!, camera, { width: this.canvas.width, height: this.canvas.height }, timer);
+    // M4 A7: the Palette slider's outlines and hatching from the finished scene and its depth.
+    const inkLook = this.settings.post.ink;
+    const lines = needsLinePass(inkLook)
+      ? this.ink.encode(encoder, this.post.sceneHdr, this.depthTexture!, camera, this.sizer.aspect, inkLook, this.settings.post.exposure, this.settings.fogDensity, timer)
+      : null;
+    this.post.setInkLines(lines);
     this.post.encode(encoder, this.context.getCurrentTexture().createView(), this.settings.post, time, timer);
     timer?.endFrame(encoder);
     this.device.queue.submit([encoder.finish()]);
@@ -797,6 +808,7 @@ export class Renderer {
     this.volumetric.destroy();
     this.particles?.destroy();
     this.modeFx.destroy();
+    this.ink.destroy();
     this.sky.destroy();
     this.timer?.destroy();
     this.frameBuffer.destroy();

@@ -18,13 +18,14 @@ Wave D of M3 extends it into the full renderer reference.
 | Mode effects (M3 C1; skipped without volumes): one fullscreen triangle, additive, reading the scene depth: The Squeeze's glowing walls and next zone, zones, beams and halos | the resolved HDR scene texture | `modeFx.ts`, `shaders/modeFx.ts` |
 | Cloak refraction (only while a cloaked ship is in view): a copy of the scene, then the cloaked hulls drawn into the scene sampling the copy through their surface (no depth attachment; each fragment reads the scene depth) | the HDR scene texture (needs `COPY_SRC`) | `cloak.ts`, `shaders/cloak.ts` |
 | Particles: sprites at least `halfResPx` wide into a half-resolution `rgba16float` target, composited onto the resolved scene; then dust motes and the smaller sprites at full resolution. No depth attachment: each fragment reads the scene depth (soft particles, occlusion) | the resolved HDR scene texture | `particles.ts`, `shaders/particles.ts`, `spriteAtlas.ts` |
+| Ink lines (M4 A7; only from Palette 50, `needsLinePass`): outlines from the scene depth and world-space hatching from the scene's tone, see "Ink look" | `rgba8unorm` full resolution (r outline, g hatch, b fog fade, a sky) | `ink.ts`, `shaders/ink.ts` |
 | Bloom down: 13-tap filter, the first step with a Karis average and a soft-knee threshold | up to 6 half-size `rgba16float` mips | `post.ts`, `shaders/post.ts` `BLOOM_DOWN_WGSL` |
 | Bloom up: 3x3 tent, added onto the next larger mip | the same mips | `BLOOM_UP_WGSL` |
-| Composite: bloom (averaged over the mips, added), exposure, colour grade, vignette, AgX tonemap with a look, sRGB encode, half-LSB dither, optional film grain | the swapchain (`getPreferredCanvasFormat()`, non-sRGB, so the shader encodes) | `COMPOSITE_WGSL` |
+| Composite: bloom (averaged over the mips, added), exposure, colour grade, vignette, AgX tonemap with a look, the ink look (from Palette 50: toon bands, paper grain, ink on paper, the ink lines), sRGB encode, half-LSB dither, optional film grain | the swapchain (`getPreferredCanvasFormat()`, non-sRGB, so the shader encodes) | `COMPOSITE_WGSL` |
 
 With `timestamp-query` every pass writes timestamps (`gpuTimer.ts`), labelled `terrain` and
 `objects` (or `scene` when `Renderer.detailedTiming` is off), `lights`, `shadow` (map updates),
-`volumetric`, `sky` (the sky and the screen-space shafts), `mode`, `particles` and `post`. Budgets per label are in `web/src/gallery/scenes.ts`
+`volumetric`, `sky` (the sky and the screen-space shafts), `mode`, `particles`, `ink` and `post`. Budgets per label are in `web/src/gallery/scenes.ts`
 (`PASS_BUDGETS_MS`); the F3 overlay and the visual gallery show the times
 ([dev-guide.md](../dev-guide.md#visual-gallery-and-gpu-budget)).
 
@@ -114,7 +115,7 @@ renders the same frames without lights for the comparison.
 decoded in TS: `decodeShareCode`, same layout and CRC as ls-worldgen): the world type weights
 from Enclosure (sky / cave / mine, blended like the generator's openness fields), the colour
 grade (`GRADE_PRESETS` caves, mines and sky blended by those weights; the Palette slider lowers
-the saturation toward the design doc's ink look), the fog (density, haze colours, height fog)
+the saturation and from 50 adds the ink look, see "Ink look" below), the fog (density, haze colours, height fog)
 and, from the seed, the sky: sun direction (28-58° up; also the terrain's sun light), sun
 colour, one of six nebula palettes, the galactic band, and a planet (gas giant with optional
 rings, ocean world or dry/icy world, 8-15° across, 75-145° from the sun). The game calls
@@ -268,6 +269,70 @@ keep. Change a grade by assigning `renderer.settings.post.grade`; it applies on 
 it (or on top of `renderer.atmosphere.grade`). The gallery previews a preset with `--grade
 <preset>` (`?grade=`).
 
+## Ink look (Palette, M4 A7)
+
+The Palette slider (milestone-4-plan.md §3.3) turns the world from full colour into
+black-and-white ink. `ink.ts` maps the slider to an `InkLook` (`inkForPalette`; the atmosphere
+carries it as `Atmosphere.ink`, `setAtmosphere` puts it into `settings.post.ink`) and the grade's
+saturation factor (`paletteSaturation`, used by `worldGrade`):
+
+| Palette | Saturation | Ink |
+| --- | --- | --- |
+| 0-49 | 1 down to 0.5 | none (no ink pass, the composite skips the ink branch) |
+| 50-79 | 0.5 down to 0.4 | over the colour image: outlines 0.35 -> 0.9, toon bands 0.3 -> 0.9, paper grain 0.25 -> 0.6 |
+| 80-100 (`MONOCHROME_PALETTE`, a monochrome level) | (kept colours only) | ink on paper: outlines, toon, grain and the monochrome at 1, hatching 0.75 -> 1, contrast 0 -> 1 |
+
+**Ink pass** (`InkPass`, `shaders/ink.ts`, timed as `ink`): one fullscreen triangle after the
+particles, reading the scene depth (first sample) and the resolved HDR scene, writing an
+`rgba8unorm` target. Outlines: the Laplacian of 1/depth along four axes at a step of
+`lineScale` px (1 at 1080p, thicker above). 1/depth is affine in screen space on any plane, so
+the measure is zero on flat rock and large at creases and silhouettes; divided by 1/depth and
+scaled by `height / (2 step tan(fovY/2))` it is a change of surface slope per pixel, independent
+of distance and resolution. Convex creases and the near side of silhouettes ink from a slope
+change of 0.7 (full at 1.8), concave creases from 1.0 (full at 2.4) while they are small (the
+far side of a silhouette is a jump, not a crease); lines fade into the fog like the rock.
+Hatching is world space, so it sticks to the rock while the camera moves: three families of
+parallel planes (`HATCH_DIRECTIONS`, not axis aligned) cut every surface in lines; a family
+whose lines on screen grow wider apart than 2.2-3.5 x the target spacing (nearly parallel to the
+surface) fades out and the others cover. The spacing follows the pixel footprint in octaves
+(`HATCH_SPACING_PX` = 6 px at 1080p): every second line of one octave is the next octave, and
+the two are blended by the fractional octave, so the density on screen stays constant at any
+distance without popping; lines closer than 2 px fade to their mean coverage. Each family starts
+below a tone (`HATCH_THRESHOLDS` 0.62, 0.42, 0.24, from an AgX-like estimate of the pixel's
+display lightness) and widens with darkness up to 0.42 of the spacing. The cockpit frame's
+squeezed depth range is decoded with its own projection (`INK_FRAME_DEPTH`, equal to the
+constants in `hullFrame.ts`) and hatched in camera space, since it flies with the camera.
+
+**Composite** (`shaders/post.ts` `ink`, after the AgX tonemap, display-linear): toon bands are
+four soft plateaus of the display lightness (the colour scaled, so the hue stays; softer in the
+sky); paper grain is screen-space value noise (tooth, mottle, fibres: the paper is the screen).
+The monochrome maps the banded lightness onto ink (`INK`, blue-black) to paper (`PAPER`, warm
+off-white) with a curve that lifts lit rock to paper (`smoothstep(0.04..0.08, 0.74..0.58)` from
+contrast 0 to 1); distant rock (the ink target's fog fade) fades into a pale mist (0.74) and
+the sky is the same pale wash with soft blotches and bright things (sun, planet, nebula cores)
+as paper, so far islands dissolve into the sky like an ink-wash landscape. Outlines and hatching
+then darken toward the ink (`min`, so a line over a darker sky never shows lighter).
+
+**Keep mask: paint and pigment.** Pixels whose scene alpha marks a kept colour (see "Last
+Color Standing keep mask" below) skip the monochrome, the hatching and the Palette's
+desaturation (the grade uses `max(saturation, 1)` there), not the outlines: pigmented ships
+(`Instance.keepColor` 1, B5) and painted rock (the terrain shader writes `1 + paint coverage x
+KEEP_ALPHA`, in every level) stay in full colour. Measured on the gallery's paint decor
+(`paint-edge` at Palette 0 against `palette-100-paint`): interior paint keeps 0.73 of 0.82 mean
+HSV saturation with a mean hue shift of 2.5 degrees (the old 90 % desaturation left 0.13).
+
+**Cost** (gallery, RTX 5080, 1920x1080, "high"): the ink pass 0.04-0.05 ms, the composite
++0.03-0.05 ms over Palette 0 (`post` 0.08 -> 0.11-0.13 ms) in every palette scene. At the VQ
+plans' factor of about 8-10 for the reference mid GPU that is about 0.3-0.45 ms for the pass and
+0.3-0.5 ms in the composite, inside the plan's 0.8 ms ink share (estimated; the integrated GPU
+of the development machine was not available to headless WebGPU for a floor run).
+`PASS_BUDGETS_MS.ink` = 0.8 ms.
+
+Gallery scenes: `palette-{0,40,65,85,100}` (caves with the four hulls), `palette-<p>-mine`,
+`palette-<p>-sky`, `palette-100-paint` (paint keeps its colour), `palette-100-pigment` (two hulls
+with `keepColor`), `palette-85-fight`; any scene takes `--query palette=<0..100>` (`?palette=`,
+render only: the share code keeps its own value).
+
 ## Mode effects (M3 C1)
 
 `modeFx.ts` `ModeFxPass` draws the mode visuals that are not meshes or particles, analytically
@@ -299,7 +364,8 @@ does not use otherwise) write alpha `1 + keep x KEEP_ALPHA` (`shaders/post.ts`, 
 composite reads `keep = (alpha - 1) / KEEP_ALPHA` and scales the monochrome blend by
 `1 - keep`. KEEP_ALPHA is small so the blends that read the scene alpha (the sky drawn under
 the scene subtracts at most 1/16 of the sky behind a kept ship) stay close to an alpha of 1;
-translucent passes and smoke over a ship reduce the keep like coverage. `game/modeVisuals.ts`
+translucent passes and smoke over a ship reduce the keep like coverage. Painted rock writes the
+keep too (M4 A7: paint keeps its colour in every level, also in Last Color Standing). `game/modeVisuals.ts`
 sets `monochromeGrade` (a little darker and more contrasty) on top of the world's grade, eased
 in over 1.2 s, and gives ships the share of their side colour their colour meter has left
 (`colourMeterStyle`) with keep 1. The own cockpit frame does the same (D5):
@@ -459,7 +525,7 @@ ALU; `fwidth` is taken before the branch). Specular from VQ6's dynamic lights is
 attribute bit layout, sRGB helpers), `shaders/lighting.ts`, `shaders/terrain.ts`,
 `shaders/objects.ts` (instanced and translucent), `shaders/lights.ts` (the light froxel
 builder), `shaders/shadow.ts` (VQ9: the SunShadow struct and `sun_visibility`, included by
-`lighting.ts`; the caster pass), `shaders/volumetric.ts` (VQ9: the shaft march and composite), `shaders/modeFx.ts` (M3 C1's mode effects), `shaders/particles.ts` (particles, motes, half-resolution composite), `shaders/cloak.ts` (VQP: the cloak refraction), `shaders/post.ts`, `shaders/sky.ts` (VQ7: the
+`lighting.ts`; the caster pass), `shaders/volumetric.ts` (VQ9: the shaft march and composite), `shaders/ink.ts` (M4 A7: the ink lines), `shaders/modeFx.ts` (M3 C1's mode effects), `shaders/particles.ts` (particles, motes, half-resolution composite), `shaders/cloak.ts` (VQP: the cloak refraction), `shaders/post.ts`, `shaders/sky.ts` (VQ7: the
 environment and planet bakes, the sky pass, the shafts, gradient noise). Each package edits its
 own file (VQ3b terrain, VQ5 particles, VQ6 lighting, VQ7 sky); keep `FRAME_UNIFORM_FLOATS` and
 `Renderer.writeFrameUniforms` in sync with the `Frame` struct (`sky.test.ts` checks the sizes of

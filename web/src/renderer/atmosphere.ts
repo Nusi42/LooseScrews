@@ -12,12 +12,15 @@
 // - The seed picks the sky (nebula palette, sun, planet, galactic band), so a
 //   share code always shows the same sky.
 // - The Palette slider (game design doc: "Full color" .. "black-and-white ink
-//   style, via desaturated") lowers the grade's saturation.
+//   style, via desaturated"; milestone-4-plan.md §3.3) lowers the grade's
+//   saturation to 50 % at 49, fades the ink look in from 50 and makes a
+//   monochrome ink level from 80 (ink.ts `inkForPalette`).
 //
 // Colours are display (sRGB) values like every other authored colour.
 
 import type { Vec3 } from "../math/vec3.ts";
 import type { MeshData } from "./mesh.ts";
+import { inkForPalette, paletteSaturation, type InkLook } from "./ink.ts";
 import { GRADE_PRESETS, type ColorGrade } from "./post.ts";
 
 type Rgb = readonly [number, number, number];
@@ -35,6 +38,8 @@ export interface WorldSliders {
 
 export interface WorldCode {
   version: number;
+  /** Level archetype (generator version 4+: 0 classic, 1 asteroid belt; 0 for older codes). */
+  archetype: number;
   seed: bigint;
   sliders: WorldSliders;
 }
@@ -43,6 +48,10 @@ const CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 const CODE_SYMBOLS = 26;
 const TOTAL_BITS = 130n;
 const DATA_BITS = 121n;
+/** Generator version 4 codes (milestone-4-plan.md §3.8): version 8, archetype 3, seed 64, sliders 47 (one base-101 number), CRC-8. */
+const DATA_BITS_V4 = 122n;
+const SLIDER_BASE = 101n;
+const SLIDER_NAMES = ["enclosure", "density", "verticality", "gravityChaos", "palette", "absurdity", "instability"] as const;
 
 function crc8(bytes: readonly number[]): number {
   let crc = 0;
@@ -56,7 +65,10 @@ function crc8(bytes: readonly number[]): number {
 /**
  * Decodes a share code (ls-worldgen sharecode.rs: 8 bit version, 64 bit
  * seed, 7 x 7 bit sliders, CRC-8, one padding bit, as 26 Crockford base32
- * symbols after `LS`). Null when it is not a valid code.
+ * symbols after `LS`; from generator version 4: 8 bit version, 3 bit
+ * archetype, 64 bit seed, the seven sliders as one 47 bit base-101 number
+ * (Enclosure the most significant digit), CRC-8). Null when it is not a
+ * valid code.
  */
 export function decodeShareCode(text: string): WorldCode | null {
   const cleaned = text.toUpperCase().replace(/[\s-]+/g, "");
@@ -70,12 +82,28 @@ export function decodeShareCode(text: string): WorldCode | null {
     bits = (bits << 5n) | BigInt(v);
   }
   const read = (offset: bigint, n: bigint): bigint => (bits >> (TOTAL_BITS - offset - n)) & ((1n << n) - 1n);
+  const crcOk = (dataBits: bigint): boolean => {
+    // The CRC covers the data bits packed MSB first into 16 bytes.
+    const packed = read(0n, dataBits) << (128n - dataBits);
+    const bytes: number[] = [];
+    for (let i = 15; i >= 0; i--) bytes.push(Number((packed >> BigInt(i * 8)) & 0xffn));
+    return crc8(bytes) === Number(read(dataBits, 8n));
+  };
+  const version = Number(read(0n, 8n));
+  if (version >= 4) {
+    if (!crcOk(DATA_BITS_V4)) return null;
+    let packed = read(75n, 47n);
+    const values: number[] = [];
+    for (let i = 0; i < SLIDER_NAMES.length; i++) {
+      values.unshift(Number(packed % SLIDER_BASE));
+      packed /= SLIDER_BASE;
+    }
+    if (packed !== 0n) return null;
+    const sliders = Object.fromEntries(SLIDER_NAMES.map((k, i) => [k, values[i] ?? 0])) as unknown as WorldSliders;
+    return { version, archetype: Number(read(8n, 3n)), seed: read(11n, 64n), sliders };
+  }
   if (read(TOTAL_BITS - 1n, 1n) !== 0n) return null;
-  // The CRC covers the 121 data bits packed MSB first into 16 bytes.
-  const packed = read(0n, DATA_BITS) << (128n - DATA_BITS);
-  const bytes: number[] = [];
-  for (let i = 15; i >= 0; i--) bytes.push(Number((packed >> BigInt(i * 8)) & 0xffn));
-  if (crc8(bytes) !== Number(read(DATA_BITS, 8n))) return null;
+  if (!crcOk(DATA_BITS)) return null;
   const s = (i: number): number => Number(read(72n + BigInt(i * 7), 7n));
   const sliders: WorldSliders = {
     enclosure: s(0),
@@ -87,7 +115,7 @@ export function decodeShareCode(text: string): WorldCode | null {
     instability: s(6),
   };
   if (Object.values(sliders).some((v) => v > 100)) return null;
-  return { version: Number(read(0n, 8n)), seed: read(8n, 64n), sliders };
+  return { version, archetype: 0, seed: read(8n, 64n), sliders };
 }
 
 /** World-type weights from Enclosure (0..100), as the generator blends its openness fields. */
@@ -174,6 +202,8 @@ export interface Atmosphere {
   /** Height fog: density at `baseY`, falling off by `falloff` per u upwards. */
   heightFog: { density: number; falloff: number; baseY: number };
   grade: ColorGrade;
+  /** The Palette slider's ink look (M4 A7, ink.ts). */
+  ink: InkLook;
   /** Light shaft strength (screen-space, from the sun; 0 = off). */
   shafts: number;
 }
@@ -202,7 +232,7 @@ function pick<T>(xs: readonly T[], r: number): T {
   return xs[Math.min(xs.length - 1, Math.floor(r * xs.length))] as T;
 }
 
-/** The colour grade of a world: the presets blended by world type, desaturated by the Palette slider. */
+/** The colour grade of a world: the presets blended by world type, desaturated by the Palette slider (ink.ts `paletteSaturation`). */
 export function worldGrade(weights: { sky: number; cave: number; mine: number }, palette: number): ColorGrade {
   const { sky, caves, mines } = GRADE_PRESETS;
   const p = Math.min(Math.max(palette, 0), 100) / 100;
@@ -210,7 +240,7 @@ export function worldGrade(weights: { sky: number; cave: number; mine: number },
     slope: blend3(weights, sky.slope, caves.slope, mines.slope),
     offset: blend3(weights, sky.offset, caves.offset, mines.offset),
     power: blend3(weights, sky.power, caves.power, mines.power),
-    saturation: blend(weights, sky.saturation, caves.saturation, mines.saturation) * (1 - 0.9 * p),
+    saturation: blend(weights, sky.saturation, caves.saturation, mines.saturation) * paletteSaturation(p * 100),
     monochrome: 0,
     monoTint: [1, 1, 1],
     monoKeep: 0,
@@ -221,8 +251,9 @@ export function worldGrade(weights: { sky: number; cave: number; mine: number },
  * The atmosphere of the world with share code `code` (any string; an
  * undecodable one gets the caverns look from a hash of the text) and level
  * box `bounds` ([minX, minY, minZ, maxX, maxY, maxZ], ls-wasm `Game.bounds()`).
+ * `overrides.palette` replaces the code's Palette slider (gallery scenes).
  */
-export function atmosphereFor(code: string, bounds?: ArrayLike<number>): Atmosphere {
+export function atmosphereFor(code: string, bounds?: ArrayLike<number>, overrides: { palette?: number } = {}): Atmosphere {
   const world = decodeShareCode(code);
   let seed32: number;
   if (world) {
@@ -233,7 +264,7 @@ export function atmosphereFor(code: string, bounds?: ArrayLike<number>): Atmosph
   }
   const rnd = seededRandom(seed32 ^ 0x5b7c1a93);
   const weights = worldWeights(world?.sliders.enclosure ?? 50);
-  const palette = world?.sliders.palette ?? 0;
+  const palette = overrides.palette ?? world?.sliders.palette ?? 0;
 
   let room: Atmosphere["room"] = null;
   if (bounds && bounds.length >= 6) {
@@ -304,6 +335,7 @@ export function atmosphereFor(code: string, bounds?: ArrayLike<number>): Atmosph
     fogDensity,
     heightFog,
     grade: worldGrade(weights, palette),
+    ink: inkForPalette(palette),
     shafts: weights.sky > 0 ? 0.6 + 0.4 * weights.sky : 0,
   };
 }

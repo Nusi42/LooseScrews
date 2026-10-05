@@ -48,6 +48,9 @@ node tools/work-folders.mjs status                    # uncommitted / unpushed p
   when `data/` changed. It reads the working-tree copy of each file, so stage the whole file
   you fixed.
 - **pre-push** runs the fast CI subset; `node tools/hooks/pre-push.mjs --list` prints the steps.
+  Each step's output is also kept in `target/pre-push/<n>-<step>.log` (overwritten by the next
+  push); a failed step names its log, so a failure is readable even when the pushing terminal
+  cut the output short.
 - **Claude Code** runs the same per-file checks after every edit (`.claude/settings.json` →
   `tools/post-edit.mjs`). It finds the clone from the edited file, not from the session folder
   (a session may run in the master), and skips files of the master checkout. Findings go back
@@ -229,14 +232,16 @@ Invites, parties and duels go through the game server's JSON API (`/api/...`,
 | Rule set codes and the web catalog | `cargo test -p ls-sim --lib rulecode` | Includes `web_catalog_is_current`; regenerate with `LS_BLESS_RULES_CATALOG=1` ([section 9](#rule-set-codes-and-the-editor)) |
 | Snapshot bandwidth | `cargo test -p ls-net --lib busy_fight_with_projectiles_fits_the_budget -- --nocapture` | Prints mean and worst delta size per seed and baseline age ([netcode](architecture/netcode.md#snapshots-and-deltas)); `cargo test -p ls-game --lib busy_fight_fits_the_bandwidth_budget` is the ship-physics variant |
 | Match setup sweep | `cargo test -p ls-game --release --lib setup` | 8 seeds x 25 slider mixes (1 seed in debug) |
+| ls-game in release | `cargo test -p ls-game --release` | Part of CI: the setup sweep, the Hot Reactor 8-bot match with the default rule set, The Squeeze's 8-seed shell remesh benchmark (`tests/squeeze.rs`, about 5 minutes) |
+| Per-mode replay hashes | `cargo test -p ls-sim --lib golden` | One 40 s scripted 8-ship replay per built-in rule set (`ls_sim::golden`) against `crates/ls-sim/tests/fixtures/mode_replays.txt`, native and wasm32; `node tools/determinism-check.mjs` compares the WASM build too. Re-bless: `LS_BLESS_MODE_REPLAYS=1 cargo test -p ls-sim --lib golden` ([determinism](architecture/determinism.md#per-mode-replay-hashes)) |
 | One crate / one test | `cargo test -p ls-sim replay_golden_hash` | Standard cargo filters |
 | Worldgen golden hashes | `cargo test -p ls-worldgen --release --test golden` | See [determinism](architecture/determinism.md) |
 | Unit tests on wasm32 | see [determinism.md](architecture/determinism.md#the-wasm-cross-check) | Needs `CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=wasm-bindgen-test-runner`; do not pass `-q` |
-| WASM vs native hashes | `node tools/determinism-check.mjs` | Needs the package from `cd web && npm run build:wasm` (or `--pkg <dir>`) |
+| WASM vs native hashes | `node tools/determinism-check.mjs` | Worldgen golden hashes and the per-mode replay hashes; needs the package from `cd web && npm run build:wasm` (or `--pkg <dir>`) |
 | Lints and format | `cargo clippy --workspace --all-targets -- -D warnings` and `cargo fmt --all` | CI runs `cargo fmt --all -- --check` |
 | Generated player reference | `node tools/gen-weapon-docs.mjs --check` | Fails when `userDocs/reference/*.md` differ from `data/`; regenerate without `--check` ([section 5](#generated-player-reference)) |
 | Web | `cd web && npm run typecheck && npm test` | `src/**/*.test.ts` via `node --test`; Node strips types, so use `.ts` import extensions and erasable-only syntax (no enums, no parameter properties) |
-| Browser smoke test | `pwsh tools/browser-smoke.ps1` or `tools/browser-smoke.sh` (`-SkipBuild` / `--skip-build`) | Headless Chrome or Edge with WebGPU (puppeteer-core in `tools/browser-smoke`): practice render, online flight firing weapons, the wave C mechanics against a second server with `tools/browser-smoke/mechanics.ron` (ship bay, charge meter, Leech Arc, V paint colour, Eyeball view, Decoy cooldown), the rule set editor and a server accepting its code. Screenshots and logs in `target/browser-smoke`; `node tools/browser-smoke/smoke.mjs --help`. Skips (exit 0) without Chrome or Edge |
+| Browser smoke test | `pwsh tools/browser-smoke.ps1` or `tools/browser-smoke.sh` (`-SkipBuild` / `--skip-build`) | Headless Chrome or Edge with WebGPU (puppeteer-core in `tools/browser-smoke`): practice render, online flight firing weapons, the wave C mechanics against a second server with `tools/browser-smoke/mechanics.ron` (ship bay, charge meter, Leech Arc, V paint colour, Eyeball view, Decoy cooldown), lobby and match transitions, the server list, invite links, a party and a duel ([section 12](#12-browser-smoke-test)), the rule set editor and a server accepting its code. Screenshots and logs in `target/browser-smoke`; `node tools/browser-smoke/smoke.mjs --help`. Skips (exit 0) without Chrome or Edge |
 
 Rust tests sit next to the code (`#[cfg(test)] mod tests`) or in each crate's `tests/`.
 A test module that should also run on wasm32 opts in with
@@ -258,10 +263,11 @@ player reference pages, [below](#generated-player-reference)); `node tools/check
 the tools tests (`node --test "tools/test/*.test.mjs"`: hooks, guards, settings); clippy with `-D warnings`;
 `cargo test --workspace`;
 the strict `ls-server` timing test alone (`--ignored --test-threads=1`; the parallel run only
-checks a loose bound); `cargo test -p ls-bots --release`; the wasm32 unit tests (skipped with a message if
+checks a loose bound); `cargo test -p ls-bots --release`; `cargo test -p ls-game --release`
+(the match-setup sweep, the Hot Reactor match, The Squeeze's remesh benchmark); the wasm32 unit tests (skipped with a message if
 `wasm-bindgen-test-runner` or `node` is missing); `cargo build -p ls-wasm` for wasm32; in
-`web/`: `npm ci`, `typecheck`, `test`, `build`; `tools/determinism-check.mjs`; finally the
-browser smoke test (skipped without Chrome or Edge, or with `LS_SKIP_BROWSER_SMOKE=1`; a
+`web/`: `npm ci`, `typecheck`, `test`, `build`; `tools/determinism-check.mjs` (worldgen and
+per-mode replay hashes); finally the browser smoke test (it also builds `ls-directory`) (skipped without Chrome or Edge, or with `LS_SKIP_BROWSER_SMOKE=1`; a
 browser without a WebGPU adapter fails it, so set the variable on such machines). Stop any
 `npm run dev` (Vite) first: on Windows it locks `web/node_modules` and `npm ci` fails. Run it
 before handing in a change. It honours `CARGO_TARGET_DIR`. Note that it rebuilds
@@ -291,6 +297,8 @@ pwsh tools/e2e.ps1 --count 8 --duration 330        # a full 5-minute match plus 
 pwsh tools/e2e.ps1 --transport wt                   # bots over WebTransport
 pwsh tools/e2e.ps1 --ruleset data/rulesets/sandbox_all_weapons.ron --count 8 --duration 330   # every weapon as a pickup
 pwsh tools/e2e.ps1 --ruleset tools/e2e-rulesets/sandbox_debris.ron --count 8 --duration 330 --min-debris 64
+pwsh tools/e2e.ps1 --count 8 --playlist quick --directory local   # every mode in rotation, ~11 min (M3)
+pwsh tools/e2e.ps1 --count 8 --playlist default --duration 3600   # the M3 soak: the default rotation for an hour
 node tools/e2e.mjs --help
 ```
 
@@ -316,6 +324,24 @@ node tools/e2e.mjs --server-bin target/<area>/release/ls-server --bots-bin targe
 ```
 
 (add `.exe` on Windows). The e2e run is not part of `tools/ci.*`.
+
+**Rotation (M3).** `--playlist quick` writes a playlist of every mode (Team Brawl, The
+Squeeze, Paint the Void, Hot Reactor, Heist, Last Color Standing) plus Instagib Brawl into
+`<log-dir>/playlist/`, each built-in rule set shortened to `--match-secs` (45; The Squeeze's
+phases to 3 s + 5 x (3 s warning + 12 s close), Last Color Standing's stalemate to half the match), on random
+worlds, and runs the server with the lobby on (`--warmup 10 --countdown 2 --intermission 3`).
+`--playlist default` plays the server's built-in rotation at full length, `--playlist <file>`
+any playlist file. The bot run time defaults to every entry once (lobby and build time
+included). Per entry it checks that a match reached its result (printed: mode, winner, time
+left) and tick p99 per entry; for the transitions that every bot joined exactly once (no
+reconnect), no disconnects, the bots' in-place transitions equal the players the server moved
+into each next room (warm-up and match rooms), nobody was refused by a next room, and at most
+one full snapshot per join or transition. `--directory local` starts an `ls-directory` on a
+free port (`--directory <url>` uses a running one) and registers the server: the list must
+show it with its name, players, protocol and data hash (as `/api/info`), its mode and world
+must follow the rotation, and the entry must go when the server shuts down. With
+`--bots-directory auto` the bots find the server through the directory when `ls-bots` has a
+`--directory` flag (C2), else they join by address.
 
 ## 7. Profiling tips
 
@@ -839,7 +865,7 @@ node tools/browser-smoke/smoke.mjs --help
 ```
 
 The wrappers take the server from `$CARGO_TARGET_DIR/release` and install puppeteer-core in
-`tools/browser-smoke` on first use; extra arguments go to `smoke.mjs`. Phases (60 checks):
+`tools/browser-smoke` on first use; extra arguments go to `smoke.mjs`. Phases (about 115 checks):
 
 1. **Practice:** every WGSL module and render pipeline is created under an error scope; the
    level renders for `--practice-secs`.
@@ -851,7 +877,19 @@ The wrappers take the server from `$CARGO_TARGET_DIR/release` and install puppet
    the banned Hauler card, picking the Skitter as "(next)"), the charge meter, no predicted
    bolt for the Leech Arc, V switching the paint colour as confirmed by the server, the Eyeball
    view and the Decoy cooldown.
-4. **Editor:** `?editor=rules`, a change, the new code, and another `ls-server --ruleset <code>`
+4. **Lobby:** a third server with the lobby on (`tools/browser-smoke/lobby.ron`): warm-up card,
+   ready, countdown, match, results, the next match's warm-up and match on one page and one
+   connection.
+5. **Social** (`social.mjs`): a local `ls-directory` and two servers (A: Paint the Void, B:
+   Team Brawl), players in separate browser contexts (own identities): a party invite link from
+   the "Party & duels" panel puts a friend in the leader's room and team; an invite link with a
+   world and a rule set code opens a private custom match with that world; B's server list
+   (`?servers`) shows both servers with mode, players, region and ping and the leader in A's
+   roster; a duel challenged from that list is relayed through the directory, accepted in the
+   leader's toast, and both play in a private two-player room on B with the challenger's seed,
+   without the challenge being offered again or the pages reloading. Needs `ls-directory` next
+   to the server binary (`--directory-bin`).
+6. **Editor:** `?editor=rules`, a change, the new code, and another `ls-server --ruleset <code>`
    that must start with the same `rules_code`.
 
 Every phase fails on console or page errors, WebGPU validation or uncaptured errors, a lost

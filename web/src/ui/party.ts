@@ -214,6 +214,57 @@ export function noteText(n: Note): string {
   }
 }
 
+/**
+ * Whether an "accepted" note's room is where this page already plays (its
+ * invite link's `room=`, or the running session's room): the server keeps
+ * the note in the inbox until the challenge expires, so the page the note
+ * led to sees it again and must not follow it once more (that reloaded the
+ * challenger's page every poll for 30 s).
+ */
+export function alreadyInRoom(n: Note, pageHref: string, currentRoom: string | null): boolean {
+  if (!n.room) return false;
+  const room = n.room.toUpperCase();
+  return parseJoin(pageHref).room === room || (currentRoom ?? "").toUpperCase() === room;
+}
+
+export const ANSWERED_KEY = "ls.answeredDuels";
+
+/** Challenge note ids this tab answered, with their expiry (ms), still valid at `now`. */
+export function answeredDuels(store: KeyValueStore | null, now: number): Map<string, number> {
+  const out = new Map<string, number>();
+  try {
+    const raw = store?.getItem(ANSWERED_KEY);
+    const v = raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
+    for (const [id, until] of Object.entries(v)) if (typeof until === "number" && until > now) out.set(id, until);
+  } catch {
+    /* unreadable: nothing answered */
+  }
+  return out;
+}
+
+/**
+ * Remembers that the challenge note `id` was answered (until `until`, ms):
+ * the server and the directory keep a challenge until it expires, so the
+ * page an accepted duel leads to would offer the same challenge again.
+ */
+export function rememberAnswered(store: KeyValueStore | null, id: string, until: number, now: number): void {
+  const m = answeredDuels(store, now);
+  m.set(id, until);
+  try {
+    store?.setItem(ANSWERED_KEY, JSON.stringify(Object.fromEntries(m)));
+  } catch {
+    /* not stored: this page only */
+  }
+}
+
+function tabStore(): KeyValueStore | null {
+  try {
+    return sessionStorage;
+  } catch {
+    return null;
+  }
+}
+
 /** Players one can challenge: everyone in the roster but oneself, by name. */
 export function duelTargets(roster: readonly RosterEntry[], self: string): RosterEntry[] {
   return roster.filter((p) => p.id !== self).sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
@@ -434,12 +485,15 @@ function mountSocial(o: MountOptions): void {
     o.navigate(inviteLink(o.pageHref, { address, room, directory: o.directory }));
   };
   const show = (notes: Note[]): void => {
+    const answered = answeredDuels(tabStore(), Date.now());
     for (const n of inbox.fresh(notes, Date.now())) {
       if (n.kind === "duel") {
+        if (answered.has(n.id)) continue;
         const target = n.address ?? o.address;
         let t: HTMLElement | null = null;
         const answer = (accept: boolean): void => {
           t?.remove();
+          rememberAnswered(tabStore(), n.id, Date.now() + Math.max(0, n.expires_in_ms) + 60_000, Date.now());
           const api = target === o.address ? o.server : new ServerApi(httpBaseFor(target, location.protocol));
           api
             .answer(n.from_id, o.identity.id, accept)
@@ -450,6 +504,7 @@ function mountSocial(o: MountOptions): void {
         };
         t = toast(noteText(n), Math.max(1000, n.expires_in_ms), [button("Accept", () => answer(true)), button("Decline", () => answer(false), true)]);
       } else if (n.kind === "accepted" && n.room) {
+        if (alreadyInRoom(n, o.pageHref, o.current()?.room ?? null)) continue;
         toast(noteText(n), 4000);
         goTo(n.address ?? o.address, n.room);
       } else {
@@ -483,10 +538,23 @@ function mountSocial(o: MountOptions): void {
   const panel = el("div", "ls-social-panel");
   panel.style.display = "none";
   document.body.append(btn, panel);
+  // The last party invite (or error), kept across re-renders: the roster
+  // fetch re-renders the panel and used to wipe a link created meanwhile.
+  let invite: { party: string; link: string } | { error: string } | null = null;
   const render = (): void => {
     panel.replaceChildren();
     panel.appendChild(el("h3", "", "Party"));
     const out = el("div", "muted", "Invite friends into your room (and team).");
+    if (invite && "error" in invite) {
+      out.replaceChildren(el("div", "", `No party: ${invite.error}`));
+    } else if (invite) {
+      const link = invite.link;
+      out.replaceChildren(el("div", "", `Party ${invite.party}`));
+      const input = el("input");
+      input.value = link;
+      input.readOnly = true;
+      out.append(input, button("Copy link", () => copy(link)));
+    }
     panel.appendChild(out);
     panel.appendChild(
       button("Create party invite", () => {
@@ -494,14 +562,13 @@ function mountSocial(o: MountOptions): void {
         o.server
           .party({ room: s?.room || null, player: s ? s.player : null })
           .then((r) => {
-            const link = inviteLink(o.pageHref, { address: r.address || o.address, party: r.party, directory: o.directory });
-            out.replaceChildren(el("div", "", `Party ${r.party}`));
-            const input = el("input");
-            input.value = link;
-            input.readOnly = true;
-            out.append(input, button("Copy link", () => copy(link)));
+            invite = { party: r.party, link: inviteLink(o.pageHref, { address: r.address || o.address, party: r.party, directory: o.directory }) };
+            render();
           })
-          .catch((err: unknown) => out.replaceChildren(el("div", "", `No party: ${err instanceof Error ? err.message : String(err)}`)));
+          .catch((err: unknown) => {
+            invite = { error: err instanceof Error ? err.message : String(err) };
+            render();
+          });
       }),
     );
     panel.appendChild(el("h3", "", "Duel a player"));

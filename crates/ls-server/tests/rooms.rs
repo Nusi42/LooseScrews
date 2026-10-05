@@ -2,6 +2,14 @@
 //! a row on one WebSocket connection (a new `Welcome` instead of a
 //! disconnect), joins during the next-match build, private rooms next to the
 //! public room, and `--ruleset`-style configs without a playlist.
+//!
+//! Load robustness (these ran flaky under a parallel `cargo test` load, e.g.
+//! in the pre-push hook): the sim thread publishes room status and counters
+//! (`rooms()`, `total_players()`, `stats()`) at the end of the tick that sent
+//! a `Welcome`, so the tests wait for them ([`wait_until`]) instead of
+//! reading them once; and a connection the test holds without reading is
+//! kept alive ([`KeepAlive`]), since the server drops a client that is
+//! silent for its 10 s idle timeout, which a loaded machine can exceed.
 
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
@@ -106,6 +114,45 @@ async fn next_welcome(ws: &mut Ws, name: &str) -> Welcome {
     }
 }
 
+/// A connection held open in the background: pings every 500 ms and drains
+/// what arrives, so the server's idle timeout never drops it however long
+/// the test takes. Dropping it closes the connection.
+struct KeepAlive(tokio::task::JoinHandle<()>);
+
+impl KeepAlive {
+    fn new(mut ws: Ws) -> KeepAlive {
+        KeepAlive(tokio::spawn(async move {
+            let ping = Message::Ping {
+                nonce: 2,
+                client_time_ms: 0,
+            }
+            .encode()
+            .unwrap();
+            loop {
+                if ws
+                    .send(WsMessage::Binary(ping.clone().into()))
+                    .await
+                    .is_err()
+                {
+                    return;
+                }
+                let until = tokio::time::Instant::now() + Duration::from_millis(500);
+                while let Ok(m) = tokio::time::timeout_at(until, ws.next()).await {
+                    if !matches!(m, Some(Ok(_))) {
+                        return;
+                    }
+                }
+            }
+        }))
+    }
+}
+
+impl Drop for KeepAlive {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
 fn rules_name(w: &Welcome) -> String {
     RuleSet::from_ron(&w.ruleset_name, std::str::from_utf8(&w.ruleset).unwrap())
         .unwrap()
@@ -153,9 +200,9 @@ async fn matches_rotate_on_one_connection_and_joins_never_wait_for_a_build() {
     assert_eq!(rules_name(&wb), "First");
     assert!(took < BUILD_DELAY / 2, "Welcome took {took:?}");
 
-    // Both get the second match's Welcome on the same connection.
-    let a2 = next_welcome(&mut a, "a").await;
-    let b2 = next_welcome(&mut b, "b").await;
+    // Both get the second match's Welcome on the same connection (read
+    // together, so neither sits silent while the other waits).
+    let (a2, b2) = tokio::join!(next_welcome(&mut a, "a"), next_welcome(&mut b, "b"));
     assert_eq!(rules_name(&a2), "Second");
     assert_eq!(rules_name(&b2), "Second");
     assert_ne!(a2.epoch, w1.epoch, "the next room has its own epoch");
@@ -164,10 +211,15 @@ async fn matches_rotate_on_one_connection_and_joins_never_wait_for_a_build() {
 
     // And a third match, still on the same connections.
     end_match(&server).await;
-    let a3 = next_welcome(&mut a, "a").await;
-    let _ = next_welcome(&mut b, "b").await;
+    let (a3, _) = tokio::join!(next_welcome(&mut a, "a"), next_welcome(&mut b, "b"));
     assert_eq!(rules_name(&a3), "First");
 
+    // Counters are published at the end of the tick that sent the Welcome.
+    let (_a, _b) = (KeepAlive::new(a), KeepAlive::new(b));
+    wait_until("3 matches and 2 players in the stats", || {
+        server.stats().matches == 3 && server.total_players() == 2
+    })
+    .await;
     let st = server.stats();
     assert_eq!(st.matches, 3);
     assert_eq!(st.connections, 2, "no reconnects");
@@ -206,7 +258,8 @@ async fn private_rooms_run_next_to_the_public_room_and_close_when_empty() {
     let addr: SocketAddr = "127.0.0.1:1".parse().unwrap();
     let hub = server.hub().clone();
 
-    let (_public, _, _) = connect(server.local_addr(), "pub").await;
+    let (public, _, _) = connect(server.local_addr(), "pub").await;
+    let _public = KeepAlive::new(public);
 
     let mut duel = RuleSet::paint_the_void();
     duel.name = "Duel".into();
@@ -224,7 +277,8 @@ async fn private_rooms_run_next_to_the_public_room_and_close_when_empty() {
 
     let hello = |n: &str| ls_game::client_hello(n, None, None);
     // Over a real WebSocket, with the code in the Hello.
-    let (_ws, w0, _) = connect_to(server.local_addr(), "w", Some(code.as_str())).await;
+    let (ws, w0, _) = connect_to(server.local_addr(), "w", Some(code.as_str())).await;
+    let _ws = KeepAlive::new(ws);
     assert_eq!(rules_name(&w0), "Duel");
     let p1 = hub
         .open_in(Some(code.as_str()), "test", addr, hello("x"), 1200)
@@ -240,6 +294,12 @@ async fn private_rooms_run_next_to_the_public_room_and_close_when_empty() {
     assert_eq!(w1.share_code, world.encode().unwrap());
     assert_ne!(w1.player_id, w2.player_id);
 
+    // Room status is published at the end of the tick that welcomed p2.
+    wait_until("the duel room's status to count 3 players", || {
+        let rooms = server.rooms();
+        rooms.len() == 2 && rooms[1].0.players == 3 && server.total_players() == 4
+    })
+    .await;
     let rooms = server.rooms();
     assert_eq!(rooms.len(), 2, "{rooms:?}");
     assert_eq!(rooms[0].0.label, "public");

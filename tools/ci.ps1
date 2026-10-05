@@ -39,6 +39,9 @@ try {
     Step 'cargo test -p ls-bots --release (bot end-to-end tests are ignored in debug builds)'
     Invoke-Checked cargo @('test', '-p', 'ls-bots', '--release')
 
+    Step 'cargo test -p ls-game --release (The Squeeze remesh benchmark, Hot Reactor 8-bot match, match-setup sweep)'
+    Invoke-Checked cargo @('test', '-p', 'ls-game', '--release')
+
     Step 'unit tests on wasm32: ls-math, ls-net, ls-sim, ls-worldgen, ls-game (Node via wasm-bindgen-test-runner)'
     if ((Get-Command wasm-bindgen-test-runner -ErrorAction SilentlyContinue) -and (Get-Command node -ErrorAction SilentlyContinue)) {
         $env:CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER = 'wasm-bindgen-test-runner'
@@ -77,7 +80,7 @@ try {
         if ($LASTEXITCODE -ne 0) {
             Write-Host 'skipped: no Chrome or Edge found (set LS_BROWSER to use another Chromium browser)'
         } else {
-            Invoke-Checked cargo @('build', '--release', '-p', 'ls-server')
+            Invoke-Checked cargo @('build', '--release', '-p', 'ls-server', '-p', 'ls-directory')
             # The web client was built above.
             & (Join-Path $Root 'tools/browser-smoke.ps1') -SkipBuild
         }

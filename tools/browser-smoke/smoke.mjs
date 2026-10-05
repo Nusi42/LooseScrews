@@ -19,6 +19,7 @@
 //   --practice-secs <s>     practice render time [5]
 //   --fly-secs <s>          online flight time [10]
 //   --mech-secs <s>         extra settle time in the mechanics phase [1]
+//   --directory-bin <path>  ls-directory for the social phase [next to --server-bin]
 //   --require-browser       fail (exit 1) instead of skipping (exit 0) when no
 //                           Chrome/Edge is found
 //   --allow-fallback        accept a software (fallback) WebGPU adapter
@@ -39,7 +40,13 @@
 // ls-server with the lobby on (tools/browser-smoke/lobby.ron, a 12 s match): the lobby card
 // in warm-up, ready with Enter, the countdown, the match, the results screen and the next
 // match's warm-up and match on the same page and connection (no reload, one join); the
-// fit ring before a 1.2 u tunnel (?gallery=fit-tunnel, fit-tunnel.png); open the rule set editor
+// fit ring before a 1.2 u tunnel (?gallery=fit-tunnel, fit-tunnel.png);
+// social (social.mjs): a
+// local ls-directory with two servers, three players in separate browser contexts: a party invite link puts a
+// friend in the leader's room and team, a custom-match invite link (world + rule set code) opens a private
+// room with that world, the server list (?servers) shows both servers with mode, players and ping and the
+// leader in the roster, and a duel challenged from the list is relayed through the directory, accepted in a
+// toast and played by both in a private two-player room with the challenger's seed; open the rule set editor
 // (?editor=rules), change the rules, read the generated code and check that
 // ls-server accepts it (--ruleset <code>). Fails on console errors, page
 // errors, WebGPU validation or uncaptured errors, error screens, blank frames,
@@ -53,6 +60,7 @@ import { createServer } from "node:net";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { fakePointerLock } from "./fake-pointer-lock.mjs";
+import { socialPhase } from "./social.mjs";
 
 import { assertWorkFolder } from "../lib/work-folder.mjs";
 
@@ -80,6 +88,7 @@ const defaults = {
   "practice-secs": "5",
   "fly-secs": "10",
   "mech-secs": "1",
+  "directory-bin": "",
 };
 
 function die(msg) {
@@ -131,6 +140,9 @@ function parseArgs(argv) {
     practiceSecs: secs("practice-secs"),
     flySecs: secs("fly-secs"),
     mechSecs: secs("mech-secs"),
+    directoryBin: o["directory-bin"]
+      ? resolve(o["directory-bin"])
+      : join(dirname(resolve(o["server-bin"])), `ls-directory${exe}`),
     requireBrowser: o["require-browser"],
     allowFallback: o["allow-fallback"],
     findOnly: o["find-browser"],
@@ -760,7 +772,7 @@ async function main() {
       }
     }
 
-    // --- fit ring (VQ1): the gallery's fixed pose before a 1.2 u tunnel ---
+    // --- 5: fit ring (VQ1): the gallery's fixed pose before a 1.2 u tunnel ---
     phase = "fit";
     {
       const page = await newGamePage();
@@ -783,7 +795,36 @@ async function main() {
       await page.close();
     }
 
-    // --- 5: rule set editor ---
+    // --- 6: social: server list, invite links, party, duel (M3, B7/C3) ---
+    phase = "social";
+    if (!existsSync(opts.directoryBin)) {
+      check("social: ls-directory binary present", false, `${opts.directoryBin} missing (cargo build --release -p ls-directory)`);
+    } else {
+      await socialPhase({
+        opts,
+        browser,
+        serverBin: opts.serverBin,
+        directoryBin: opts.directoryBin,
+        run,
+        stop,
+        waitForLine,
+        freePort,
+        check,
+        note,
+        sleep,
+        shot,
+        gpuReport,
+        waitIn,
+        visibleText,
+        watchPage,
+        consoleLog,
+        gpuInstrumentation,
+        fakePointerLock,
+      });
+    }
+    consoleCheck("social", "social");
+
+    // --- 7: rule set editor ---
     phase = "editor";
     {
       const page = await browser.newPage();

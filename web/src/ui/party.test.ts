@@ -2,6 +2,9 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { GameHandle, WasmApi } from "../wasm/api.ts";
 import {
+  alreadyInRoom,
+  answeredDuels,
+  rememberAnswered,
   duelTargets,
   IDENTITY_KEY,
   inviteLink,
@@ -14,7 +17,7 @@ import {
   type KeyValueStore,
 } from "./party.ts";
 import { modeName, serverRows } from "./serverList.ts";
-import type { ServerEntry } from "../net/social.ts";
+import type { Note, ServerEntry } from "../net/social.ts";
 
 const PAGE = "https://play.example.com/?transport=ws&editor=x";
 
@@ -205,4 +208,33 @@ test("server list rows: build filter, order, ping and mode names", () => {
   assert.equal(serverRows([entry("A", "a:1", 0)], new Map())[0]!.ping, "…");
   assert.equal(modeName("lobby"), "lobby");
   assert.equal(modeName(""), "-");
+});
+
+test("an accepted duel is not followed again from inside its room", () => {
+  const note: Note = {
+    id: "c1-accepted",
+    kind: "accepted",
+    from_id: "p-b",
+    from_name: "Bea",
+    room: "R-ABC123",
+    address: "127.0.0.1:7777",
+    expires_in_ms: 20_000,
+  };
+  const page = "http://127.0.0.1:7777/?join=127.0.0.1%3A7777&room=R-ABC123";
+  assert.equal(alreadyInRoom(note, page, null), true, "the invite link's room");
+  assert.equal(alreadyInRoom(note, "http://127.0.0.1:7777/", "r-abc123"), true, "the session's room");
+  assert.equal(alreadyInRoom(note, "http://127.0.0.1:7777/?servers", ""), false, "elsewhere: follow it");
+  const { room: _room, ...roomless } = note;
+  assert.equal(alreadyInRoom(roomless, page, null), false);
+});
+
+test("answered challenges are remembered per tab until they expire", () => {
+  const data = new Map<string, string>();
+  const store: KeyValueStore = { getItem: (k) => data.get(k) ?? null, setItem: (k, v) => void data.set(k, v) };
+  rememberAnswered(store, "c1", 2000, 0);
+  rememberAnswered(store, "c2", 500, 0);
+  assert.deepEqual([...answeredDuels(store, 1000).keys()], ["c1"], "c2 expired");
+  assert.equal(answeredDuels(null, 0).size, 0);
+  data.set("ls.answeredDuels", "not json");
+  assert.equal(answeredDuels(store, 0).size, 0);
 });

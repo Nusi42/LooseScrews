@@ -41,7 +41,7 @@ use ls_game::MatchConfig;
 use ls_math::terrain::TerrainEdit;
 use ls_math::TICK_HZ;
 use ls_net::{Channel, Hello, Message, Reject, RejectReason, Transport, TransportError};
-use ls_sim::RuleSet;
+use ls_sim::{MatchPhase, RuleSet};
 use tokio::sync::oneshot;
 use tracing::{debug, info, warn};
 
@@ -818,11 +818,25 @@ impl Sim {
                 }
             }
             Action::MatchOver => {
-                let winner = format!("{:?}", self.room.world().mode().phase);
+                let world = self.room.world();
+                let mode = world.mode();
+                let winner = format!("{:?}", mode.phase);
+                // Machine-readable fields for tools/e2e.mjs (per-mode checks).
+                let winner_side = match mode.phase {
+                    MatchPhase::Ended { winner: Some(w) } => w.to_string(),
+                    _ => "draw".to_string(),
+                };
+                let mode_id = mode.kind.id();
+                let left_s = mode.remaining_ticks(world.tick()) as f64 / f64::from(TICK_HZ);
+                let entry = self.rotation.entry(self.current.index).source.clone();
                 let planned = self.plan_next();
                 info!(
                     room = %label,
                     players,
+                    mode = mode_id,
+                    entry = %entry,
+                    winner_side = %winner_side,
+                    left_s,
                     result = %winner,
                     next = %self.rotation.entry(planned.index).source,
                     next_share_code = %planned.share_code,
@@ -1362,7 +1376,7 @@ mod tests {
     use crate::link::{link_pair, ConnInfo, LinkConfig, LinkCounters, OutFrame, PeerLink};
     use crate::playlist::{PlaylistEntry, WorldChoice};
     use crate::rules::ServerRules;
-    use ls_game::ls_sim::MatchPhase;
+
     use ls_game::ls_worldgen::{ShareCode, Sliders};
 
     fn code() -> ShareCode {

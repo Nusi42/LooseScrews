@@ -124,6 +124,15 @@ pub fn golden_hashes(code: &str) -> Result<Vec<String>, JsError> {
     Ok(h.to_hex().to_vec())
 }
 
+/// Per-mode replay hashes (`ls_sim::golden::mode_replay_hashes`): one line
+/// `<rule set file> <0x hash>` per built-in rule set. Compare with
+/// `crates/ls-sim/tests/fixtures/mode_replays.txt` to cross-check WASM
+/// against native (`tools/determinism-check.mjs`).
+#[wasm_bindgen(js_name = modeReplayHashes)]
+pub fn mode_replay_hashes() -> Vec<String> {
+    ls_sim::golden::mode_replay_hashes()
+}
+
 /// The first packet to send after the WebSocket opens (`Hello`).
 /// `preferred_team` < 0 lets the server choose.
 #[wasm_bindgen(js_name = helloPacket)]

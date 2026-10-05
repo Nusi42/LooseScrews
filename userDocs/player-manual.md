@@ -12,7 +12,7 @@ the game's data files, so those pages always match the build.
 
 - [What Loose Screws is](#what-loose-screws-is)
 - [What you need](#what-you-need)
-- [Starting a game](#starting-a-game)
+- [Starting a game](#starting-a-game) ([the world workshop](#the-world-workshop))
 - [Controls](#controls)
 - [The HUD](#the-hud)
 - [Ship types](#ship-types)
@@ -103,12 +103,51 @@ Then choose one of the two buttons:
   place to try every weapon you find. A practice round lasts the full 5 minutes. When it ends,
   reload the page for another round.
 
+Below the buttons, **Make a world** opens the [world workshop](#the-world-workshop).
+
 Building a world takes a moment ("Generating world…" or "Connecting…"). When the game starts,
 the HUD shows "Loading terrain (N chunks left)" while the level streams in around you.
 
 **Click the game view to take control.** The browser locks the mouse to the game. Press **Esc**
 to release it. While the mouse is released, the HUD shows "Click to fly · Esc releases the
 mouse" and your ship doesn't respond to flight keys.
+
+
+## The world workshop
+
+**Make a world** on the start screen opens the workshop: you build a world from a seed and
+seven sliders and see it at once. The flythrough behind the panel becomes your world; every
+change rebuilds it about a third of a second after you stop moving a slider (the old view
+blurs while the new one is built, "Building the preview… n %" in the top right corner, then
+"Live preview").
+
+| Part | What it does |
+| --- | --- |
+| **Classic / Asteroid belt** | The kind of level. Classic is the cave, mine and open-sky world of every mode. An asteroid belt is a ring of asteroids around an open centre, built for the Belt Up race (it shows greyed out until this build can generate belts). |
+| **Seed** | Any whole number. The same seed with the same sliders always makes the same world. The dice rolls a new one. |
+| **Enclosure** | Open space and sky islands at 0, caverns in the middle, mine shafts at 100. On a belt: the size of the asteroids (the biggest are hollow from 60 up). |
+| **Density** | How much rock fills the space: pillars, boulders and floating rock. On a belt: asteroids and drifting boulders per sector. |
+| **Verticality** | The shape of the level, from flat and wide (320 × 64 × 320 u) to tall and narrow (192 × 224 × 192 u). On a belt: how thick the belt is. |
+| **Gravity Chaos** | Gravity wells that pull you in, none at 0 up to seven strong ones at 100. On a belt: shepherd moons along the ring (from 20 up). |
+| **Palette** | Full colour at 0, muted, then ink outlines, then a black-and-white ink world with pigment pickups from 80 up. |
+| **Absurdity** | How often the level plays a joke on everyone (comedy events); 0 means none. A host's rules can cap it. |
+| **Instability** | How easily the rock gives way and tunnels cave in; 0 means never. |
+
+Each slider shows what its value means next to it (for example "Caverns open to the sky" or
+"3 gravity wells, gentle pull"). Below the sliders:
+
+- The **share code** of your world. **Save** copies it, so you can paste it into a chat, the
+  start screen's share code field or a host's command line.
+- **Fly it** starts [practice](#starting-a-game) on your world.
+- **Host it** shows an **invite link**: opening it on this server starts a private match on
+  your world (the server's rules), and anyone with the link can join. On an asteroid belt it
+  proposes the **Belt Up** race ("Race it as Belt Up", on by default). **Pick rules** opens the
+  [rule set editor](#the-rule-set-editor) on your world, and the line under "Your own server"
+  is the command that hosts it on your own machine.
+
+The back arrow (or **Esc**) returns to the start screen with your world's code in the share
+code field. The workshop remembers your last world. A link with `?workshop` opens the
+workshop directly, `?workshop=<share code>` on that world.
 
 ## Controls
 
@@ -897,10 +936,11 @@ world generator (version 4) start with `LS0G`.
   it casts shadows, and where caverns open to the sky, sunlight falls through the openings in
   visible shafts. Inside the rock, and in closed worlds (Enclosure 50 and above, which have no
   sky), caves are dark: your headlight, shots, explosions, engines and glowing rock light them.
-  The edge of an open world is invisible; a faint blue grid shows it when you fly close. Every classic level also has
+  The edge of an open world is invisible; a faint blue grid shows it when you fly close. Every level also has
   a network of caverns and tunnels that links both teams' ends (and a cavern at each of the
-  other two ends for teams 3 and 4). There's no screen to set sliders yet: random practice
-  worlds and server worlds pick them for you.
+  other two ends for teams 3 and 4). The
+  [world workshop](#the-world-workshop) sets every slider and the seed; random practice worlds
+  and server worlds pick them for you.
 
 ### Rule set codes
 
@@ -1112,8 +1152,8 @@ These are part of the game design but aren't in the Milestone 3 build:
 - **Co-op modes** (Deep Dig, Tethered, Escort the Intern) and **The Architect**.
 - **Pigment pickups** that give colour back in Last Color Standing, and black-and-white levels
   as a general feature (the Palette slider only drains the colour of the picture).
-- **World sliders:** gravity wells don't pull yet, Absurdity doesn't change anything yet, and
-  there's no screen to set sliders or save a level.
+- **World sliders:** Absurdity only announces comedy events so far (what they do comes later),
+  and gravity wells, cave-ins and radiation are felt but not yet drawn or heard.
 - **Comedy events** ("the level has moods"): not yet.
 - **Voting for the next mode:** servers play their rotation in order.
 - **Sound:** no music yet, and no recorded voices: the announcer speaks in made-up robot

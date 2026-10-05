@@ -215,6 +215,12 @@ export interface ShareCodeInfoHandle {
   readonly ok: boolean;
   readonly code: string;
   readonly error: string;
+  /** Seed as a decimal u64 (valid codes). */
+  readonly seed?: string;
+  /** The seven sliders in share-code order (valid codes). */
+  readonly sliders?: Uint8Array;
+  /** Level archetype id (`levelArchetypes()` index). */
+  readonly archetype?: number;
   free(): void;
 }
 
@@ -229,6 +235,8 @@ export interface WasmApi {
   levelWells?(code: string): Float32Array;
   /** Asteroid belt of a code (empty for classic levels): centre, inner and outer radius, half thickness, cocoon, exit, gate radii, 8 start slots (x, y, z), then the clear corridor's centre line (x, y, z per point, a closed loop from gate 0). */
   levelBelt?(code: string): Float32Array;
+  /** Level archetypes this build generates, by archetype id ("classic", "belt"). */
+  levelArchetypes?(): string[];
   helloPacket(name: string, preferredTeam: number): Uint8Array;
   /** Hello asking for a ship type (ls-sim ShipType index). */
   helloPacketAs?(name: string, preferredTeam: number, shipType: number): Uint8Array;

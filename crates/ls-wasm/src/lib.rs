@@ -164,6 +164,15 @@ pub fn make_share_code(seed: &str, sliders: &[u8], archetype: u8) -> Result<Stri
     sharecode::make_share_code(seed, sliders, archetype).map_err(|e| JsError::new(&e))
 }
 
+/// Level archetype names this build generates, by archetype id.
+#[wasm_bindgen(js_name = levelArchetypes)]
+pub fn level_archetypes() -> Vec<String> {
+    sharecode::ARCHETYPES
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
+}
+
 /// Golden hashes of a share code (`ls_worldgen::golden::golden_hashes`) as
 /// lowercase hex in fixture order: sdf, surface_nets, dual_contouring,
 /// edited. Compare with `crates/ls-worldgen/tests/fixtures/golden_hashes.txt`

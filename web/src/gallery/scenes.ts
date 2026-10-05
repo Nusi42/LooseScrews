@@ -87,7 +87,9 @@ export interface GalleryScene {
    * the start screen, the lobby card or the in-game ship bay; `time` is how
    * long the backdrop flies before the shot. Pose and content do not apply.
    */
-  page?: "start" | "lobby" | "bay";
+  page?: "start" | "lobby" | "bay" | "workshop";
+  /** "workshop" page: the world in the workshop (and behind it). */
+  workshop?: WorkshopScene;
   /**
    * Own ship type (ls-sim ShipType index) whose cockpit frame and fit ring
    * show (VQ1); absent = no cockpit, the plain camera.
@@ -109,6 +111,17 @@ export interface GalleryScene {
   keepShips?: readonly number[];
   /** An announcer caption over the frame (M4 A6, ui/announcer.ts): voice pack and line trigger. */
   caption?: { pack: "tired" | "overexcited" | "passiveAggressive"; trigger: string };
+}
+
+/** A world made in the workshop (ui/workshop.ts) for the "workshop" gallery pages (M4 A8). */
+export interface WorkshopScene {
+  /** Seed as a decimal u64. */
+  seed: string;
+  /** The seven sliders in share-code order. */
+  sliders: readonly number[];
+  archetype: "classic" | "belt";
+  /** Show the host box open. */
+  host?: boolean;
 }
 
 const CAVES: GalleryWorld = { seed: 7, enclosure: 50, density: 50 };
@@ -382,6 +395,10 @@ export const SCENES: readonly GalleryScene[] = [
   // M4 A1: level shapes, gravity wells and the asteroid belt (generator version 4).
   ...LEVEL_SCENES,
   ...paletteScenes(),
+  // World workshop (M4 A8): the workshop page over the preview of the world it makes.
+  { id: "workshop", title: "World workshop over its preview", covers: "world workshop", world: BACKDROP, pose: "tunnel", content: "none", time: 8.0, page: "workshop", workshop: { seed: "6", sliders: [38, 60, 50, 30, 0, 40, 30], archetype: "classic" } },
+  { id: "workshop-tall", title: "World workshop: a tall world (Verticality 90)", covers: "world workshop", world: BACKDROP, pose: "tunnel", content: "none", time: 8.0, page: "workshop", workshop: { seed: "5150", sliders: [55, 45, 90, 0, 20, 60, 50], archetype: "classic" } },
+  { id: "workshop-belt", title: "World workshop: an asteroid belt, hosting as Belt Up", covers: "world workshop, Belt Up", world: BACKDROP, pose: "tunnel", content: "none", time: 8.0, page: "workshop", workshop: { seed: "77", sliders: [50, 60, 50, 30, 0, 30, 20], archetype: "belt", host: true } },
 ];
 
 export function sceneById(id: string): GalleryScene | undefined {

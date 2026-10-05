@@ -1,5 +1,6 @@
 // Visual gallery pages of the first-impression pass (FI): the start screen,
-// the lobby card and the in-game ship bay over the live backdrop, rendered
+// the lobby card and the in-game ship bay over the live backdrop (and, M4
+// A8, the world workshop over the preview of its world), rendered
 // like the other gallery scenes (gallery/gallery.ts hands scenes with a
 // `page` here). The backdrop steps at a fixed 60 Hz from a fixed seed up to
 // the scene's time, then holds that frame (camera, ships, shots and shader
@@ -15,6 +16,7 @@ import type { GpuTimings } from "../renderer/gpuTimer.ts";
 import { LobbyOverlay, lobbyModel } from "../ui/lobby.ts";
 import { ShipPanel, shipPanelModel } from "../ui/shipSelect.ts";
 import { setStartWorld, showStartScreen } from "../ui/startScreen.ts";
+import { draftKind, showWorkshop, slidersFrom, wasmCodec } from "../ui/workshop.ts";
 import { loadWasm } from "../wasm/load.ts";
 import { Backdrop } from "./backdrop.ts";
 import { PanelBay, ShipBayView } from "./shipBay.ts";
@@ -72,7 +74,20 @@ export async function runPageScene(canvas: HTMLCanvasElement, ui: HTMLElement, s
   const override = /^(\d+)_(\d+)_(\d+)$/.exec(params.get("world") ?? "");
   const w = override ? { seed: Number(override[1]), enclosure: Number(override[2]), density: Number(override[3]) } : scene.world;
   const flyTime = Number(params.get("t") ?? "") || scene.time;
-  status.shareCode = api.randomShareCode(w.seed, 0, w.enclosure, w.density);
+  let caption: string | null = null;
+  const ws = scene.workshop;
+  const codec = wasmCodec(api);
+  if (scene.page === "workshop" && ws) {
+    // `&seed=<u64>` tries other seeds (curating the workshop shots).
+    const seed = /^\d{1,20}$/.test(params.get("seed") ?? "") ? (params.get("seed") as string) : ws.seed;
+    const draft = { seed, sliders: slidersFrom(ws.sliders), archetype: ws.archetype };
+    const made = codec.encode(draft);
+    if (!made.ok) throw new Error(`workshop world: ${made.error}`);
+    status.shareCode = made.code;
+    caption = `${draftKind(draft)} · ${made.code}`;
+  } else {
+    status.shareCode = api.randomShareCode(w.seed, 0, w.enclosure, w.density);
+  }
   const renderer = await Renderer.create(canvas);
   renderer.detailedTiming = true;
   status.canTime = renderer.canTime;
@@ -82,6 +97,8 @@ export async function runPageScene(canvas: HTMLCanvasElement, ui: HTMLElement, s
   if (scene.page === "start") {
     let view: ShipBayView | null = null;
     void showStartScreen(ui, undefined, {
+      // The "Make a world" entry shows (the workshop has its own pages).
+      workshop: () => new Promise(() => {}),
       ships: (host, cards) => {
         const slots = (sel: number) =>
           cards.map((c, i) => ({ shipType: i, el: c.querySelector<HTMLElement>(".ship-pick-model") ?? c, selected: i === sel, allowed: true, team: i % 2 }));
@@ -104,6 +121,15 @@ export async function runPageScene(canvas: HTMLCanvasElement, ui: HTMLElement, s
         };
       },
     });
+  } else if (scene.page === "workshop") {
+    const root = document.createElement("div");
+    root.className = "screen start-screen shown in-workshop";
+    root.innerHTML = `<div class="start-shade" aria-hidden="true"></div><footer class="start-footer"><span class="start-world"></span></footer>`;
+    ui.appendChild(root);
+    const handle = showWorkshop(root, { codec, code: status.shareCode, remember: false, pageHref: "https://play.example/" });
+    handle.setPreview({ code: status.shareCode, progress: 1, ready: true });
+    if (ws?.host) handle.showHost();
+    if (handle.draft.archetype !== ws?.archetype) throw new Error("workshop scene: the archetype did not round-trip through the share code");
   } else if (scene.page === "lobby") {
     const lobbyCard = new LobbyOverlay(ui, { ready: () => {}, team: () => {}, spectate: () => {} });
     const { lobby, names } = sampleLobby(status.shareCode);
@@ -131,7 +157,7 @@ export async function runPageScene(canvas: HTMLCanvasElement, ui: HTMLElement, s
   }
   if (!backdrop.ready) throw new Error("backdrop terrain did not finish loading");
   document.body.classList.add("backdrop-live");
-  setStartWorld(ui, describeWorld(status.shareCode));
+  setStartWorld(ui, caption ?? describeWorld(status.shareCode));
   const steps = Math.round(flyTime * 60);
   for (let i = 0; i < steps; i++) {
     backdrop.step(1 / 60);

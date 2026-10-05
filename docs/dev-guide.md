@@ -167,8 +167,14 @@ effective rules after the balance list and bans.
 In the browser, `?transport=ws` or `?transport=wt` forces a transport; F3 toggles the debug
 overlay, Tab shows the scoreboard, B opens the ship bay (1-4 pick the type for the next
 life), V switches the selected primary's weapon mode (Paint Thrower colour), G uses the
-gadget. The start screen also offers offline practice on any share code (no server needed)
-and links the rule set editor (`?editor=rules`, [section 9](#rule-set-codes-and-the-editor)).
+gadget. The start screen also offers offline practice on any share code (no server needed),
+links the rule set editor (`?editor=rules`, [section 9](#rule-set-codes-and-the-editor)) and
+opens the world workshop ("Make a world", `web/src/ui/workshop.ts`; `?workshop` or
+`?workshop=<code>` opens it at once): seven sliders, a seed and the level archetype with a
+live preview (the start backdrop regenerated on the new code), Save (copy the code), Fly it
+(practice) and Host it (an invite link with `code=`, Belt Up proposed on belt worlds). Codes
+are made and read by ls-wasm (`makeShareCode`, `checkShareCode`, `levelArchetypes`), never in
+TypeScript; `SliderPanel` is the slider block The Architect's UI reuses.
 
 To use another port, pass `--bind 127.0.0.1:<port>` and open that port; keep one port per
 server process (two servers on one port fail to bind).
@@ -949,6 +955,13 @@ The wrappers take the server from `$CARGO_TARGET_DIR/release` and install puppet
    gesture (`audio-probe.mjs` records each one with `navigator.userActivation`); the sound check
    page lists every registered sound, starts on a click, keeps at most 32 voices under a
    64-sound burst and speaks an announcer line.
+8. **Workshop** (`workshop.mjs`, M4 A8): "Make a world" on the start screen, the preview flies
+   the workshop's world (`body[data-preview-code]`), a new seed and two sliders change the code
+   and the preview regenerates on it, Save copies a code that decodes to that seed and those
+   sliders (ls-wasm under Node from `web/src/wasm/pkg`, and the workshop reopened on
+   `?workshop=<code>`), Fly it starts practice on that world (the F3 overlay shows the code).
+   Once more as an asteroid belt when the build generates belts (generator version 4); without
+   one the belt pass is noted and skipped.
 
 Every phase fails on console or page errors, WebGPU validation or uncaptured errors, a lost
 device, error screens, and server errors or panics. Screenshots, the browser console and the
@@ -1037,7 +1050,11 @@ First-impression pages (FI): the scenes `start-screen`, `start-flythrough`, `lob
 and `ship-bay` (`page` in `scenes.ts`) render the real start screen, the lobby card and the
 in-game ship bay over the live backdrop (`web/src/attract/galleryPages.ts`): the flythrough
 steps at a fixed 60 Hz from a fixed seed up to the scene's time and then holds the frame; the
-hull views' GPU time is reported as the pass `bay`. To curate the backdrop's worlds
+hull views' GPU time is reported as the pass `bay`. The world workshop pages `workshop`,
+`workshop-tall` (Verticality 90) and `workshop-belt` (an asteroid belt with the host box open;
+it fails until the build generates belts) show the workshop over the preview of its own world
+(`workshop` in `scenes.ts`: seed, sliders, archetype); `--query seed=<n>` tries other seeds.
+To curate the backdrop's worlds
 (`BACKDROP_WORLDS` in `web/src/attract/backdrop.ts`) try others with `--scenes start-flythrough
 --query world=<seed>_<enclosure>_<density>&t=<seconds>`.
 

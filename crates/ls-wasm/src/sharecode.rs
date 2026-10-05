@@ -63,33 +63,40 @@ pub fn random_share_code(entropy: u64, enclosure: u8, density: u8) -> Result<Str
         .map_err(|e| e.to_string())
 }
 
+/// Level archetypes this build generates, by share-code archetype id
+/// (`ls_worldgen::Archetype` index; the workshop's archetype switch, M4 A8).
+pub const ARCHETYPES: &[&str] = &["classic", "belt"];
+
 /// [`random_share_code`]'s seed for `entropy` with all seven sliders
 /// (clamped to 0..=100) and an archetype index.
 pub fn world_share_code(entropy: u64, sliders: &[u8], archetype: u8) -> Result<String, String> {
     let seed = SplitMix64::new(entropy).next_u64();
-    make_share_code(&seed.to_string(), sliders, archetype)
+    let clamped: Vec<u8> = sliders.iter().map(|s| (*s).min(100)).collect();
+    make_share_code(&seed.to_string(), &clamped, archetype)
 }
 
-/// The share code for a seed (decimal), seven sliders (clamped to 0..=100)
-/// and an archetype index, at the current generator version.
+/// The share code of a world made in the workshop: `seed` as a decimal u64,
+/// the seven sliders in share-code order (each 0-100) and the archetype id
+/// (an index into [`ARCHETYPES`]), at the current generator version.
 pub fn make_share_code(seed: &str, sliders: &[u8], archetype: u8) -> Result<String, String> {
-    let seed: u64 = seed
-        .trim()
-        .parse()
-        .map_err(|_| format!("seed {seed:?} is not a whole number"))?;
-    if sliders.len() != 7 {
-        return Err(format!("need 7 sliders, got {}", sliders.len()));
-    }
-    let mut a = [0u8; 7];
-    for (v, s) in a.iter_mut().zip(sliders) {
-        *v = (*s).min(100);
-    }
-    let archetype =
-        Archetype::from_index(archetype).ok_or(format!("unknown level archetype {archetype}"))?;
-    let sliders = Sliders::from_array(a).map_err(|e| e.to_string())?;
+    let seed: u64 = seed.trim().parse().map_err(|_| {
+        format!("Seed {seed:?} is not a whole number from 0 to 18446744073709551615")
+    })?;
+    let array: [u8; 7] = sliders
+        .try_into()
+        .map_err(|_| format!("Expected 7 sliders, got {}", sliders.len()))?;
+    let sliders = Sliders::from_array(array).map_err(|e| capitalize(&e.to_string()))?;
+    let archetype = Archetype::from_index(archetype)
+        .filter(|_| usize::from(archetype) < ARCHETYPES.len())
+        .ok_or_else(|| {
+            format!(
+                "Level archetype {archetype} needs a newer generator (this build has version {})",
+                ls_worldgen::GENERATOR_VERSION
+            )
+        })?;
     ShareCode::with_archetype(seed, sliders, archetype)
         .encode()
-        .map_err(|e| e.to_string())
+        .map_err(|e| capitalize(&e.to_string()))
 }
 
 fn capitalize(s: &str) -> String {
@@ -154,6 +161,38 @@ mod tests {
     }
 
     #[test]
+    fn workshop_codes_round_trip_every_slider() {
+        let sliders = [0, 100, 37, 63, 1, 99, 50];
+        for seed in ["0", "42", "18446744073709551615"] {
+            let code = make_share_code(seed, &sliders, 0).unwrap();
+            let CodeCheck::Valid {
+                seed: s,
+                sliders: back,
+                ..
+            } = check_share_code(&code)
+            else {
+                panic!("workshop code invalid: {code}");
+            };
+            assert_eq!(s.to_string(), seed);
+            assert_eq!(back, sliders);
+        }
+        let CodeCheck::Valid {
+            seed,
+            sliders: real,
+            ..
+        } = check_share_code(REAL)
+        else {
+            panic!("fixture code invalid");
+        };
+        assert_eq!(make_share_code(&seed.to_string(), &real, 0).unwrap(), REAL);
+        assert!(make_share_code("-1", &sliders, 0).is_err());
+        assert!(make_share_code("seed", &sliders, 0).is_err());
+        assert!(make_share_code("1", &sliders[..6], 0).is_err());
+        assert!(make_share_code("1", &[101, 0, 0, 0, 0, 0, 0], 0).is_err());
+        assert!(make_share_code("1", &sliders, ARCHETYPES.len() as u8).is_err());
+    }
+
+    #[test]
     fn random_codes_are_valid_and_depend_on_entropy() {
         let a = random_share_code(1, 40, 30).unwrap();
         let b = random_share_code(2, 40, 30).unwrap();
@@ -189,7 +228,11 @@ mod tests {
         assert!(make_share_code("x", &[0; 7], 0).is_err());
         assert!(make_share_code("1", &[0; 6], 0).is_err());
         assert!(make_share_code("1", &[0; 7], 5).is_err());
-        assert!(make_share_code("1", &[200; 7], 1).is_ok());
+        assert!(make_share_code("1", &[200; 7], 1).is_err());
+        assert!(
+            world_share_code(1, &[200; 7], 1).is_ok(),
+            "world codes clamp"
+        );
         // The gallery's worlds: random_share_code's seed with any sliders.
         let a = random_share_code(5, 40, 30).unwrap();
         let b = world_share_code(5, &[40, 30, 50, 0, 0, 20, 30], 0).unwrap();

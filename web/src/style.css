@@ -2,6 +2,7 @@
 @import "./attract/attract.css";
 @import "./ui/announcer.css";
 @import "./audio/audio.css";
+@import "./ui/workshop.css";
 
 :root {
   --bg: #0b0d12;

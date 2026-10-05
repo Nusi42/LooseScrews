@@ -53,7 +53,10 @@
 // ls-server accepts it (--ruleset <code>); audio (M4 A6): no AudioContext before
 // a user gesture (practice and the ?audio=demo page, audio-probe.mjs), the
 // sound check page lists every sound, starts on a click, holds the 32-voice
-// cap under a 64-sound burst and speaks an announcer line. Fails on console errors, page
+// cap under a 64-sound burst and speaks an announcer line; the world workshop (workshop.mjs,
+// M4 A8): Make a world, two sliders and the seed changed, the preview
+// regenerates, Save copies a code that decodes to them, Fly it practises on it
+// (and once more as an asteroid belt when the build has belts). Fails on console errors, page
 // errors, WebGPU validation or uncaptured errors, error screens, blank frames,
 // no confirmed shots online, or server errors. Screenshots go to --out-dir.
 // Exit codes: 0 passed (or skipped: no browser), 1 failed, 2 usage error,
@@ -67,6 +70,7 @@ import { fileURLToPath } from "node:url";
 import { fakePointerLock } from "./fake-pointer-lock.mjs";
 import { audioProbe } from "./audio-probe.mjs";
 import { socialPhase } from "./social.mjs";
+import { workshopPhase } from "./workshop.mjs";
 
 import { assertWorkFolder } from "../lib/work-folder.mjs";
 
@@ -936,6 +940,10 @@ async function main() {
       consoleCheck("audio", "audio");
       await page.close();
     }
+    // --- 9: world workshop (M4 A8) ---
+    phase = "workshop";
+    await workshopPhase({ opts, base, query, newPage: newGamePage, check, note, sleep, shot, gpuReport, sceneCheck, waitLoaded, overlayText });
+    consoleCheck("workshop", "workshop");
 
     // Server health over the whole run.
     const serverText = server.text;

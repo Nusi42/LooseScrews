@@ -473,11 +473,13 @@ pub struct RuleSet {
 const PAINT_THE_VOID_RON: &str = include_str!("../../../data/rulesets/paint_the_void.ron");
 const SANDBOX_ALL_WEAPONS_RON: &str =
     include_str!("../../../data/rulesets/sandbox_all_weapons.ron");
+const HOT_REACTOR_RON: &str = include_str!("../../../data/rulesets/hot_reactor.ron");
 
 /// Embedded rule set files (data hash).
-pub const BUILTIN_RULESETS: [(&str, &str); 2] = [
+pub const BUILTIN_RULESETS: [(&str, &str); 3] = [
     ("rulesets/paint_the_void.ron", PAINT_THE_VOID_RON),
     ("rulesets/sandbox_all_weapons.ron", SANDBOX_ALL_WEAPONS_RON),
+    ("rulesets/hot_reactor.ron", HOT_REACTOR_RON),
 ];
 
 impl RuleSet {

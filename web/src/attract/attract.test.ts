@@ -7,7 +7,7 @@ import { mulberry32 } from "../renderer/spriteAtlas.ts";
 import type { VisualDef } from "../game/views.ts";
 import { catmullRom, coneDirection, DEFAULT_PATH, FlightPath, sphereDirs, type LevelProbe } from "./flightPath.ts";
 import { CinematicCamera, DEFAULT_CINEMATIC, nlerp, pathFrame, RESPAWN_SECS, Squadron } from "./cinematic.ts";
-import { BAY_DEPTH, BAY_FOV_Y, bayLayout, studioLights, turntable } from "./shipBay.ts";
+import { BAY_DEPTH, BAY_FOV_Y, bayLayout, PanelBay, studioLights, turntable, type BaySlot } from "./shipBay.ts";
 import { describeWorld, worldKind } from "./worlds.ts";
 import { BACKDROP_WORLDS, frameYawFor } from "./backdrop.ts";
 import { OWN_SHIP_MIN_DISTANCE, LobbyCinematic } from "./lobby.ts";
@@ -227,4 +227,31 @@ test("lobby cinematic needs probes, starts from the view and hides the own ship 
   assert.ok(lobby.ownShip(1, 0, pose, 1, 0.5).alive, `camera within ${OWN_SHIP_MIN_DISTANCE} u after 3 s`);
   assert.equal(lobby.update(1 / 60, game, false, view), null);
   assert.equal(lobby.active, false);
+});
+
+test("the in-game ship bay repaints its hulls in the new team's livery after a match transition", async () => {
+  const g = globalThis as Record<string, unknown>;
+  const savedRaf = g["requestAnimationFrame"];
+  g["requestAnimationFrame"] = () => 0;
+  try {
+    const shown: BaySlot[][] = [];
+    const view = {
+      canvas: { classList: { add: () => {} } } as unknown as HTMLCanvasElement,
+      setSlots: (s: readonly BaySlot[]) => void shown.push([...s]),
+      show: () => {},
+      dispose: () => {},
+    };
+    const host = { classList: { add: () => {} } } as unknown as HTMLElement;
+    const bay = new PanelBay(host, {} as GPUDevice, 1, "medium", async () => view);
+    const el = {} as HTMLElement;
+    bay.update([{ el, shipType: 0, allowed: true, selected: true }]);
+    await new Promise((r) => setTimeout(r, 0));
+    assert.equal(shown.at(-1)?.[0]?.team, 1);
+    bay.setTeam(0);
+    assert.equal(bay.team, 0);
+    assert.equal(shown.at(-1)?.[0]?.team, 0, "the showing hulls repaint at once");
+    bay.dispose();
+  } finally {
+    g["requestAnimationFrame"] = savedRaf;
+  }
 });

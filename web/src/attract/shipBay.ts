@@ -204,26 +204,53 @@ export class ShipBayView {
  * ShipBayView filling the panel, created on the first show, drawing only
  * while the panel shows. Hulls wear the own team's livery.
  */
+/** What PanelBay drives of a ShipBayView (a stand-in in tests). */
+export type BayView = Pick<ShipBayView, "canvas" | "setSlots" | "show" | "dispose">;
+
 export class PanelBay implements CardBackdrop {
   private readonly host: HTMLElement;
   private readonly device: GPUDevice;
   private readonly quality: QualityLevel;
-  private view: ShipBayView | null = null;
+  private readonly createView: (host: HTMLElement, device: GPUDevice, quality: QualityLevel) => Promise<BayView>;
+  private view: BayView | null = null;
   private creating = false;
   private disposed = false;
   private cards: readonly CardSlot[] | null = null;
-  team: number;
+  private teamLivery: number;
 
-  constructor(host: HTMLElement, device: GPUDevice, team = 0, quality: QualityLevel = "medium") {
+  constructor(
+    host: HTMLElement,
+    device: GPUDevice,
+    team = 0,
+    quality: QualityLevel = "medium",
+    // The real hull view by default (a stand-in view in tests).
+    createView: (host: HTMLElement, device: GPUDevice, quality: QualityLevel) => Promise<BayView> = ShipBayView.create,
+  ) {
     this.host = host;
     this.device = device;
-    this.team = team;
+    this.teamLivery = team;
     this.quality = quality;
+    this.createView = createView;
   }
 
   /** The hull view once created (gallery). */
   get hullView(): ShipBayView | null {
-    return this.view;
+    return this.view instanceof ShipBayView ? this.view : null;
+  }
+
+  /** Team livery of the hulls. */
+  get team(): number {
+    return this.teamLivery;
+  }
+
+  /**
+   * Changes the livery (a match transition can move the player to another
+   * team); the hulls showing now repaint at once.
+   */
+  setTeam(team: number): void {
+    if (team === this.teamLivery) return;
+    this.teamLivery = team;
+    this.apply();
   }
 
   update(cards: readonly CardSlot[] | null): void {
@@ -231,7 +258,7 @@ export class PanelBay implements CardBackdrop {
     if (this.disposed) return;
     if (cards && !this.view && !this.creating) {
       this.creating = true;
-      ShipBayView.create(this.host, this.device, this.quality)
+      this.createView(this.host, this.device, this.quality)
         .then((v) => {
           this.creating = false;
           if (this.disposed) {
@@ -258,7 +285,7 @@ export class PanelBay implements CardBackdrop {
       v.show(false);
       return;
     }
-    v.setSlots(cards.map((c) => ({ shipType: c.shipType, el: c.el, selected: c.selected, allowed: c.allowed, team: this.team })));
+    v.setSlots(cards.map((c) => ({ shipType: c.shipType, el: c.el, selected: c.selected, allowed: c.allowed, team: this.teamLivery })));
     v.show(true);
   }
 

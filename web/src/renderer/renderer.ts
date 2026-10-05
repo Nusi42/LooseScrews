@@ -20,7 +20,7 @@ import { stripRoomWalls, type Atmosphere } from "./atmosphere.ts";
 import { CanvasSizer } from "./canvas.ts";
 import { CloakPass } from "./cloak.ts";
 import { Frustum } from "./frustum.ts";
-import { contextOn, initGpu, type GpuContext } from "./gpu.ts";
+import { contextOn, initGpu, watchDevice, type DeviceWatch, type GpuContext } from "./gpu.ts";
 import { GpuTimer, type GpuTimings } from "./gpuTimer.ts";
 import { LightSystem, lightBindLayoutEntries, type PointLight } from "./lights.ts";
 import { HullFrame } from "./hullFrame.ts";
@@ -311,7 +311,8 @@ export class Renderer {
   private depthTexture: GPUTexture | null = null;
   private msaaTexture: GPUTexture | null = null;
   private startTime = performance.now();
-  private deviceLost = false;
+  /** Device loss and uncaptured errors; stopped in `destroy` (the device can be shared). */
+  private readonly deviceWatch: DeviceWatch;
   private lastGpuError: string | null = null;
   private readonly timer: GpuTimer | null;
   private readonly auto: QualityAuto;
@@ -367,16 +368,10 @@ export class Renderer {
 
     // Validation errors outside error scopes would otherwise only show up as a
     // console warning; log them and keep the latest for the HUD debug line.
-    device.addEventListener("uncapturederror", (event) => {
-      const message = (event as GPUUncapturedErrorEvent).error.message;
+    this.deviceWatch = watchDevice(device, (message) => {
       this.lastGpuError = message;
       console.error("WebGPU:", message);
     });
-    device.lost
-      .then(() => {
-        this.deviceLost = true;
-      })
-      .catch(() => {});
 
     this.frameBuffer = device.createBuffer({
       label: "frame uniforms",
@@ -498,7 +493,7 @@ export class Renderer {
 
   /** True once the GPU device is lost; the frame loop should stop. */
   get isLost(): boolean {
-    return this.deviceLost;
+    return this.deviceWatch.lost;
   }
 
   /** Message of the most recent uncaptured WebGPU error, if any. */
@@ -785,6 +780,7 @@ export class Renderer {
     this.timer?.destroy();
     this.frameBuffer.destroy();
     this.sizer.dispose();
+    this.deviceWatch.stop();
     if (this.ownsDevice) this.device.destroy();
   }
 

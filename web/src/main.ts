@@ -214,6 +214,11 @@ async function start(): Promise<void> {
   }
   loading.remove();
   intro.stop();
+  if (renderer.isLost) {
+    // Lost while connecting: the `lost` handler shows the error; leave the server at once.
+    session.dispose();
+    return;
+  }
   if (options.mode === "online") social.attach(prefs.name, () => (active ? sessionView(active.game) : null));
   const weaponNames = api.weaponNames();
 
@@ -318,16 +323,16 @@ function runGame(
       }
     };
     shipPanel.onPick = pickShip;
-    shipPanel.backdrop = new PanelBay(shipPanel.root, renderer.device, game.team >= 0 ? game.team : 0, renderer.quality.level === "low" ? "low" : "medium");
+    const panelBay = new PanelBay(shipPanel.root, renderer.device, Math.max(0, game.team), renderer.quality.level === "low" ? "low" : "medium");
+    shipPanel.backdrop = panelBay;
     const input = new InputController(canvas);
     input.onLockChange = (locked) => hud.showPrompt(!locked);
     hud.showPrompt(true);
     input.requestLock(); // may succeed while the Play click still counts as a user gesture
 
     const mode = session.isOnline ? "online" : "practice";
-    const codeLabel = game.shareCode;
-    if (session.isOnline && options.shareCode && options.shareCode !== codeLabel) {
-      hud.updateFeed([`The server plays ${codeLabel}; your code works in practice`], performance.now());
+    if (session.isOnline && options.shareCode && options.shareCode !== game.shareCode) {
+      hud.updateFeed([`The server plays ${game.shareCode}; your code works in practice`], performance.now());
     }
 
     let last = performance.now();
@@ -446,6 +451,8 @@ function runGame(
         lobbyClock.reset();
         shipBayOpen = false;
         shipError = "";
+        // The next match can put the player on another team: the bay's hulls wear its livery.
+        panelBay.setTeam(Math.max(0, game.team));
         if (!renderer.isLost) renderer.clearInstances();
       }
       flow = matchFlow({ online: session.isOnline, lobby: r.lobby, mode: r.mode, results: r.results, own: game.player });
@@ -729,7 +736,7 @@ function runGame(
               drawn: frameStats.chunksDrawn,
               triangles: frameStats.triangles,
             },
-            shareCode: codeLabel,
+            shareCode: game.shareCode, // the current match's world (a transition changes it)
             speed,
             gpuError: renderer.lastError ?? null,
             gpu: renderer.gpuTimings(),

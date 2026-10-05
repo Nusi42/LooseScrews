@@ -98,17 +98,26 @@ export function showServerList(parent: HTMLElement, o: ServerListOptions): Promi
     parent.appendChild(root);
     const status = document.createElement("div");
     status.className = "muted";
+    status.setAttribute("role", "status");
     const seed = document.createElement("input");
     seed.placeholder = "Duel world (share code; empty: random)";
+    seed.setAttribute("aria-label", "Duel world share code");
     const rulesInput = document.createElement("input");
     rulesInput.placeholder = "Duel rule set code (optional)";
+    rulesInput.setAttribute("aria-label", "Duel rule set code");
     const table = document.createElement("table");
     let info: InfoReply | null = null;
     let entries: ServerEntry[] = [];
     let pings = new Map<string, number | null>();
     let waiting: ReturnType<typeof setInterval> | null = null;
+    // Each load (Refresh) numbers itself; an older one still waiting for the
+    // directory or pings drops its results instead of mixing them in.
+    let loads = 0;
+    let closed = false;
 
     const close = (): void => {
+      closed = true;
+      loads++;
       if (waiting) clearInterval(waiting);
       root.remove();
       resolve();
@@ -222,23 +231,33 @@ export function showServerList(parent: HTMLElement, o: ServerListOptions): Promi
     };
 
     const load = async (): Promise<void> => {
+      const id = ++loads;
+      const current = (): boolean => id === loads && !closed;
       status.textContent = "Loading…";
       try {
         info = await o.originApi.info();
       } catch {
         info = null;
       }
+      if (!current()) return;
       const url = o.directory ?? info?.directory ?? null;
       if (!url) {
         status.textContent = "No server directory: open the page with ?directory=http://host:port, or ask the host to run ls-server --directory.";
         return;
       }
+      let listed: ServerEntry[];
       try {
-        entries = await new DirectoryApi(url).servers(info?.protocol, info?.data_hash);
+        listed = await new DirectoryApi(url).servers(info?.protocol, info?.data_hash);
       } catch (err) {
+        if (!current()) return;
+        // No stale rows from an earlier load to join.
+        entries = [];
+        table.replaceChildren();
         status.textContent = `Directory unreachable (${url}): ${err instanceof Error ? err.message : String(err)}`;
         return;
       }
+      if (!current()) return;
+      entries = listed;
       status.textContent = entries.length ? `${entries.length} server(s) from ${url}` : `No servers registered with ${url}.`;
       pings = new Map();
       render();
@@ -247,6 +266,7 @@ export function showServerList(parent: HTMLElement, o: ServerListOptions): Promi
         (a) => probe(wsUrlFor(a, o.pageProtocol)),
         undefined,
         (a, ms) => {
+          if (!current()) return;
           pings.set(a, ms);
           render();
         },

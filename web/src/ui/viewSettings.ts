@@ -25,12 +25,25 @@ export interface KeyValueStore {
   setItem(key: string, value: string): void;
 }
 
-function defaultStore(): KeyValueStore | null {
+/** Where the settings live without localStorage (blocked storage): this page only. */
+const pageCopy = new Map<string, string>();
+const pageStore: KeyValueStore = {
+  getItem: (key) => pageCopy.get(key) ?? null,
+  setItem: (key, value) => void pageCopy.set(key, value),
+};
+
+/**
+ * localStorage, or the page's own copy when storage is blocked (private
+ * windows, disabled site data): the start screen's choices then still reach
+ * the game on this page instead of falling back to the defaults.
+ */
+function defaultStore(): KeyValueStore {
   try {
-    return typeof localStorage === "undefined" ? null : localStorage;
+    if (typeof localStorage !== "undefined" && localStorage) return localStorage;
   } catch {
-    return null;
+    /* access throws when site data is blocked */
   }
+  return pageStore;
 }
 
 /** Settings from any parsed value: unknown or broken fields take their defaults. */

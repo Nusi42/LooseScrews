@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { FEED_LINES, FEED_MS, formatTimer, meterPercent, pushFeed } from "./hud.ts";
 import { checkShareCode, normalizeShareCode, SHARE_CODE_PRINTED_LEN } from "./shareCode.ts";
-import { cleanName, DEFAULT_NAME, readShareCode } from "./startScreen.ts";
+import { cleanName, DEFAULT_NAME, readShareCode, readStored } from "./startScreen.ts";
 
 // Printed by ls-worldgen (crates/ls-worldgen/tests/fixtures/golden_hashes.txt).
 const REAL_CODE = "LS0C-0000-0000-000A-K4M6-8001-8F1Y";
@@ -75,4 +75,16 @@ test("pilot names are trimmed to the server's limits", () => {
   assert.equal(cleanName("a\u0007b"), "ab");
   const long = cleanName("é".repeat(40));
   assert.ok(new TextEncoder().encode(long).length <= 32);
+});
+
+test("damaged stored start preferences fall back to the defaults", () => {
+  // `null` used to throw on `stored.shipType` and stop the page at "Failed to start".
+  for (const raw of [null, "", "null", "42", '"x"', "[1]", "{", "true"]) assert.deepEqual(readStored(raw), {}, String(raw));
+  assert.deepEqual(readStored('{"name":7,"horizonAssist":"no","shipType":"2","shareCode":null}'), {});
+  assert.deepEqual(readStored('{"name":"Ace","horizonAssist":false,"shipType":2,"shareCode":"LS1"}'), {
+    name: "Ace",
+    horizonAssist: false,
+    shipType: 2,
+    shareCode: "LS1",
+  });
 });

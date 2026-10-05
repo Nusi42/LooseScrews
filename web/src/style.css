@@ -1655,6 +1655,13 @@ button {
   .mode-bar {
     max-width: calc(100vw - 32px);
   }
+  /* Online, the "Party & duels" button (ui/party.ts, top left) would cover the bar's left end. */
+  body:has(.ls-social-btn) .mode-bar {
+    top: 52px;
+  }
+  body:has(.ls-social-btn) .mode-stage {
+    top: 142px;
+  }
   .mode-status {
     display: none;
   }

@@ -91,7 +91,7 @@ flowchart LR
 1. **Share code.** The server gets `--code` (or makes a random one) and a rule set
    (`--ruleset` file or `LR...` rule set code, default the embedded Paint the Void rules, plus
    `--ban` and `--balance-list`; see [server.md](server.md#cli)). `ls_server::match_config` decodes
-   the code (`ShareCode`: generator version, seed, 7 sliders, CRC-8) and validates the rule set
+   the code (`ShareCode`: generator version, level archetype, seed, 7 sliders, CRC-8) and validates the rule set
    against the built-in weapon table (`RuleSet::resolve`).
 2. **Server world.** `ls_game::setup::build_match` creates the `Generator` from the code (the
    last generator stage carves the connection network of caverns and tunnels that links both

@@ -102,9 +102,9 @@ or run the built program directly (`target/release/ls-server`, on Windows
 random worlds, beginning with a warm-up for Team Brawl, and prints (shortened):
 
 ```
-INFO ls_server::sim: match ready room=public entry=team_brawl share_code=LS0E-NKVJ-FW3J-YCN9-B4M6-8001-8F1T ruleset=Team Brawl warmup=true build_ms=496
+INFO ls_server::sim: match ready room=public entry=team_brawl share_code=LS0G-APFE-9ZGE-BSJN-5C58-T2XM-57KF ruleset=Team Brawl warmup=true build_ms=496
 INFO ls_server::sim: rules: Team Brawl LR8V-63T6-X000-NNJ0 (banned weapons: paint_thrower) room=public
-INFO ls_server: share code LS0E-NKVJ-FW3J-YCN9-B4M6-8001-8F1T - open http://localhost:7777 to play
+INFO ls_server: share code LS0G-APFE-9ZGE-BSJN-5C58-T2XM-57KF - open http://localhost:7777 to play
 ```
 
 ("banned weapons: paint_thrower" is normal: only Paint the Void hands out the Paint Thrower.)
@@ -163,7 +163,7 @@ Examples:
 
 ```sh
 # A fixed world, 8 players, on the default port
-ls-server --code LS0F-143C-ZQW8-CCHA-V4M6-8001-8FAE
+ls-server --code LS0G-C4GD-KYZH-1HJ5-BC58-T2XM-57NT
 
 # Every weapon and gadget as a pickup (the built-in sandbox rules)
 ls-server --ruleset data/rulesets/sandbox_all_weapons.ron
@@ -193,15 +193,20 @@ ls-server --directory http://192.168.1.20:7780 --server-name "Scrap Den" --regio
 
 ## Choosing the world: share codes
 
-A share code such as `LS0F-143C-ZQW8-CCHA-V4M6-8001-8FAE` rebuilds exactly the same world on the
-server and in every browser. It stores a random seed, the seven world sliders and the world
-generator version. This build's generator (version 3) makes codes starting `LS0C` to `LS0F`
-and carves a network of caverns and tunnels that links both teams' ends into every level,
-plus the Heist core vein at the bottom and the extraction caverns at the top (every level has
-them; only Heist uses them). Of
-the sliders, **Enclosure** and **Density** shape the world and **Instability** sets how far a
-Tectonic Charge's cracks spread; **Palette** only changes the look in the browser (desaturated
-colours); the others have no effect yet.
+A share code such as `LS0G-C4GD-KYZH-1HJ5-BC58-T2XM-57NT` rebuilds exactly the same world on the
+server and in every browser. It stores a random seed, the seven world sliders, the kind of
+level (a classic level or an asteroid belt) and the world generator version. This build's
+generator (version 4) makes codes starting `LS0G` and carves a network of caverns and tunnels
+that links both teams' ends into every classic level, plus a cavern at each of the other two
+ends for teams 3 and 4, the Heist core vein at the bottom and the extraction caverns at the
+top (every classic level has them; only Heist uses them). Of the sliders, **Enclosure** and
+**Density** shape the world, **Verticality** picks the level's shape (from 320 x 64 x 320 u,
+flat and wide, to 192 x 224 x 192 u, tall and narrow, with the caverns stretched to match),
+**Gravity Chaos** places up to seven gravity wells (rock cores in hollows; their pull arrives
+in a later build), **Instability** sets how far a Tectonic Charge's cracks spread, and
+**Palette** only changes the look in the browser (desaturated colours); Absurdity has no
+effect yet. An **asteroid belt** level is a ring of asteroids around an open centre, the same
+from every one of its 8 start slots, made for the Belt Up racing mode.
 
 - **Keep a level:** start with `--code <code>`. Without `--code`, every server start builds a
   new random world. The server logs the code at startup ("match ready share_code=…").
@@ -212,8 +217,8 @@ colours); the others have no effect yet.
 - **Invalid codes** stop the server at startup with a reason, for example
   `share code checksum mismatch (typo?)`,
   `share code must have 26 symbols after the prefix, found 5`, or a message that the code was
-  made by a different generator version. Milestone 1 codes (`LS04…`, `LS06…`) are from
-  generator version 1 and no longer load.
+  made by a different generator version. Codes of earlier generator versions (Milestone 1
+  `LS04…`, Milestone 3 `LS0C…` to `LS0F…`) no longer load.
 - Players always play the world the server runs. A code a player types on the start screen is
   only used for practice mode.
 
@@ -443,7 +448,7 @@ server would refuse in red, and, once the rules are valid, shows:
 - the **rule set code**,
 - a **World** field (an optional share code),
 - an **invite link** (`http://<server>/?world=LS…&rules=LR…`),
-- the **host command**, for example `ls-server --code LS0F-143C-ZQW8-CCHA-V4M6-8001-8FAE --ruleset LR8V-…`.
+- the **host command**, for example `ls-server --code LS0G-C4GD-KYZH-1HJ5-BC58-T2XM-57NT --ruleset LR8V-…`.
 
 Copy the host command, add your other flags, and start the server. The editor needs no GPU
 and no game connection, and it remembers the last code it made. `?editor=rules&rules=LR…`
@@ -804,7 +809,7 @@ Playlist(
         // A built-in rule set by id, a random world, 4 to 32 players.
         (rules: "team_brawl", min_players: 4),
         // Your own rule set file (relative to the playlist file) on a fixed world.
-        (rules: "my_rules.ron", world: Code("LS0C-0000-0000-0000-8006-8001-8F9M")),
+        (rules: "my_rules.ron", world: Code("LS0G-0000-0000-0000-1001-6RFX-250V")),
         // A rule set code (here: Team Brawl with 3 teams, no Railspike), a random world with
         // slider ranges, at most 8 players.
         (rules: "LR8V-63T6-XB09-C1W0-0GG1-3038-2C", world: RandomSliders(enclosure: (20, 60), density: (30, 70)), max_players: 8),
@@ -816,7 +821,14 @@ Playlist(
   example `team_brawl`, `instagib_brawl` (Team Brawl with the Instagib mutator) or `duel`
   (free-for-all, first to 10 kills)), a rule set file or an `LR…` code. `--ban` and `--balance-list` apply to every entry.
 - `world`: `Random` (default: a new random world with the default sliders every time),
-  `RandomSliders(enclosure: (low, high), density: (low, high))` or `Code("LS…")`.
+  `RandomSliders(...)` with a `(low, high)` range for any of the seven sliders (`enclosure`,
+  `density`, `verticality`, `gravity_chaos`, `palette`, `absurdity`, `instability`) and
+  optionally `archetype: Belt` for asteroid belts, or `Code("LS…")`. Sliders you leave out
+  take the default ranges: for classic worlds Enclosure 50 and Density 40 (as before),
+  Verticality 20-80, Gravity Chaos 0-60, Palette 0-50, Absurdity 10-60, Instability 10-60; for
+  belts Enclosure 30-70, Density 40-80, Verticality 30-70, Gravity Chaos 0-50, Palette 0-50,
+  Absurdity 10-60, Instability 10-40. `Random` (the default) is `RandomSliders()` with the
+  classic ranges.
 - `min_players` (default 1) and `max_players` (default 32): the entry is skipped while the
   player count is outside this range. If no entry fits, the playlist's first `team_brawl` entry is played (with 2
   teams from 4 players on, free-for-all below), otherwise the next entry anyway.

@@ -57,11 +57,11 @@ test("WASM golden hashes match the native fixture", { skip }, async () => {
 
 test("WASM share-code check, hello packet and practice game", { skip }, async () => {
   const wasm = await load();
-  const ok = wasm.checkShareCode("ls0c 0000 0000 000a k4m6 8001 8f1y");
+  const ok = wasm.checkShareCode("ls0g 0000 0000 0001 ac58 t2xm 57nd");
   assert.equal(ok.ok, true);
-  assert.equal(ok.code, "LS0C-0000-0000-000A-K4M6-8001-8F1Y");
+  assert.equal(ok.code, "LS0G-0000-0000-0001-AC58-T2XM-57ND");
   ok.free();
-  const bad = wasm.checkShareCode("LS0C-0000-0000-000A-K4M7-8001-8F1Y");
+  const bad = wasm.checkShareCode("LS0G-0000-0000-0001-AC59-T2XM-57ND");
   assert.equal(bad.ok, false);
   assert.match(bad.error, /checksum/i);
   bad.free();
@@ -138,7 +138,7 @@ test("WASM mechanics API: ship choice, cues, gadget, charge, paint colour, mesh 
   const wasm = await load();
   assert.deepEqual(wasm.gadgetIds?.(), ["cloak", "decoy", "shield"]);
   assert.ok((wasm.helloPacketAs?.("tester", -1, 0).length ?? 0) > 4);
-  const game = wasm.Game.practiceAs!("LS0C-0000-0000-000A-K4M6-8001-8F1Y", 1, 2);
+  const game = wasm.Game.practiceAs!("LS0G-0000-0000-0001-AC58-T2XM-57ND", 1, 2);
   try {
     const choices = parseShipChoices(game.shipChoices?.());
     assert.equal(choices.length, 4);

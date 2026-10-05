@@ -19,6 +19,18 @@
 //!   Enclosure 100 (fully enclosed) the team spawn caverns themselves. The
 //!   site draws from its own random stream, so the hubs and tunnels above
 //!   are those of generator version 2.
+//! - **Team 2/3 caverns** (generator version 4): a spawn-sized cavern at each
+//!   z end of the level (centre x, low z for team 2, high z for team 3),
+//!   each linked to the two middle hubs of the nearer row; their own
+//!   random stream ([`TEAM_CAVE_SALT`]).
+//! - **Upper hub layer** (generator version 4, Verticality
+//!   [`UPPER_LAYER_VERTICALITY`] and above): the base hubs move down to 0.3
+//!   of the room height and a second 4 x 2 layer of hubs sits at 0.74,
+//!   chained along x per row, linked to the base layer above both team
+//!   ends and across the rows once; own random stream ([`UPPER_HUB_SALT`]).
+//!
+//! Hub order in [`Network::hubs`]: the 8 base hubs (column-major), the two
+//! team 2/3 caverns, then the upper layer (column-major).
 //!
 //! Shapes follow the Enclosure character: below [`BOXY_ENCLOSURE`] hubs are
 //! spheres and tunnels are capsules bent through a jittered midpoint (cave
@@ -69,6 +81,20 @@ pub const EXTRACTION_RADIUS: f32 = 7.0;
 pub const SURFACE_ENCLOSURE_LIMIT: u8 = 100;
 /// Salt of the Heist site's random stream ("HEIST_SI").
 const HEIST_SALT: u64 = 0x4845_4953_545f_5349;
+/// Salt of the team 2/3 caverns' random stream ("TEAMCAVE").
+pub const TEAM_CAVE_SALT: u64 = 0x5445_414d_4341_5645;
+/// Salt of the upper hub layer's random stream ("UPPERHUB").
+pub const UPPER_HUB_SALT: u64 = 0x5550_5045_5248_5542;
+/// From this Verticality on, the network has a second (upper) hub layer.
+pub const UPPER_LAYER_VERTICALITY: u8 = 60;
+/// Number of base hubs (4 columns x 2 rows).
+pub const BASE_HUBS: usize = 8;
+/// Team 2/3 cavern positions along z (fractions of the room).
+pub const TEAM_CAVE_Z: [f32; 2] = [0.08, 0.92];
+/// Base and upper hub layer heights (fractions of the room) in tall levels.
+const LAYER_Y: [f32; 2] = [0.3, 0.74];
+/// Vertical jitter of the hub layers in tall levels (fraction of the room).
+const LAYER_JITTER_Y: f32 = 0.08;
 /// Free space between the knot and the start of the vein tunnels (u).
 const VEIN_ACCESS_GAP: f32 = 0.5;
 /// Hub column positions along x (fractions of the room).
@@ -191,12 +217,34 @@ pub struct Network {
     paths: Vec<Vec<Vec3>>,
     /// The Heist site (none for levels too small for a network).
     heist: Option<HeistSite>,
+    /// Gravity wells (centre, hollow radius, core radius), applied after the
+    /// knot ([`Network::add_wells`]).
+    wells: Vec<(Vec3, f32, f32)>,
+    room: Aabb,
     peak: f32,
     origin: Vec3,
     dims: [usize; 3],
     /// Per index cell: range into `items`.
     cells: Vec<(u32, u32)>,
     items: Vec<u16>,
+    /// Per index cell: range into `well_items` (wells whose hollow comes
+    /// within [`WELL_BLEND`] + [`INDEX_CAP`] of the cell).
+    well_cells: Vec<(u32, u32)>,
+    well_items: Vec<u16>,
+}
+
+/// Blend width of a well's hollow (u): it joins the open space around it
+/// with a smooth maximum, so no paper-thin sheet of rock is left between the
+/// hollow and a tunnel or cavern next to it.
+pub const WELL_BLEND: f32 = 3.0;
+
+/// Smooth maximum of `a` and `b` over `k` (polynomial): `max(a, b)` when
+/// they differ by `k` or more, at most `k / 4` above it otherwise. Its
+/// gradient is a convex combination of theirs, so it stays 1-Lipschitz.
+#[inline(always)]
+pub fn smooth_max(a: f32, b: f32, k: f32) -> f32 {
+    let h = (k - (a - b).abs()).max(0.0) / k;
+    a.max(b) + h * h * k * 0.25
 }
 
 impl Network {
@@ -208,22 +256,62 @@ impl Network {
             hubs: Vec::new(),
             paths: Vec::new(),
             heist: None,
+            wells: Vec::new(),
+            room: Aabb::new(Vec3::ZERO, Vec3::ZERO),
             peak: f32::NEG_INFINITY,
             origin: Vec3::ZERO,
             dims: [0; 3],
             cells: Vec::new(),
             items: Vec::new(),
+            well_cells: Vec::new(),
+            well_items: Vec::new(),
         }
     }
 
-    /// Builds the network for a level with the given open `room`.
+    /// Adds gravity wells to the network, applied after everything else
+    /// (after the Heist knot): each well's hollow is joined to the terrain
+    /// with a smooth maximum ([`WELL_BLEND`]), then its core is added as
+    /// rock. Wells must keep clear of the Heist vein (see
+    /// [`crate::wells`]).
+    pub fn add_wells(&mut self, wells: &[ls_math::level::WellSite]) {
+        if wells.is_empty() || self.hubs.is_empty() {
+            return;
+        }
+        let wells = wells
+            .iter()
+            .map(|w| (w.pos, w.hollow_radius, w.core_radius))
+            .collect();
+        *self = Network::index(
+            std::mem::take(&mut self.prims),
+            std::mem::take(&mut self.hubs),
+            std::mem::take(&mut self.paths),
+            self.heist,
+            self.room,
+            wells,
+        );
+    }
+
+    /// Builds the network for a level with the given open `room` at
+    /// Verticality 50 (one hub layer).
     pub fn build(seed: u64, enclosure: u8, room: Aabb) -> Self {
+        Self::build_with(seed, enclosure, 50, room)
+    }
+
+    /// Builds the network for a level with the given open `room`, Enclosure
+    /// and Verticality (see the module docs).
+    pub fn build_with(seed: u64, enclosure: u8, verticality: u8, room: Aabb) -> Self {
         let size = room.size();
         // Hubs need room for a tunnel plus the wall gap on every axis.
         if size.min_element() < 2.0 * (TUNNEL_RADIUS + WALL_GAP) + 2.0 {
             return Network::empty();
         }
         let boxy = enclosure >= BOXY_ENCLOSURE;
+        let layered = verticality >= UPPER_LAYER_VERTICALITY;
+        let (base_y, jitter_y) = if layered {
+            (LAYER_Y[0], LAYER_JITTER_Y)
+        } else {
+            (0.5, JITTER_Y)
+        };
         let mut rng = SplitMix64::new(seed);
         // Largest radius that fits an axis with the wall gap.
         let fit = |r: f32| {
@@ -243,7 +331,7 @@ impl Network {
             for fz in HUB_ROWS {
                 let x = room.min.x + size.x * (fx + jit(&mut rng, JITTER_X));
                 let z = room.min.z + size.z * (fz + jit(&mut rng, JITTER_Z));
-                let y = room.min.y + size.y * (0.5 + jit(&mut rng, JITTER_Y));
+                let y = room.min.y + size.y * (base_y + jit(&mut rng, jitter_y));
                 let [lo, hi] = if spawn { SPAWN_HUB_RADIUS } else { HUB_RADIUS };
                 let r = fit(lo + (hi - lo) * (jit(&mut rng, 0.5) + 0.5));
                 let c = keep_in(Vec3::new(x, y, z), r);
@@ -327,7 +415,13 @@ impl Network {
             room,
         };
         let heist = heist_site(seed, enclosure, &hubs, &radii, &mut carved);
-        Network::index(carved.prims, hubs, carved.paths, heist, room)
+        let caves = team_caverns(seed, base_y, jitter_y, &hubs, &mut carved);
+        hubs.extend(caves);
+        if layered {
+            let upper = upper_layer(seed, &hubs, &mut carved);
+            hubs.extend(upper);
+        }
+        Network::index(carved.prims, hubs, carved.paths, heist, room, Vec::new())
     }
 
     fn index(
@@ -336,6 +430,7 @@ impl Network {
         paths: Vec<Vec<Vec3>>,
         heist: Option<HeistSite>,
         room: Aabb,
+        wells: Vec<(Vec3, f32, f32)>,
     ) -> Self {
         let peak = prims
             .iter()
@@ -349,6 +444,12 @@ impl Network {
         let boxes: Vec<Aabb> = prims.iter().map(Primitive::bounds).collect();
         let mut cells = Vec::with_capacity(dims[0] * dims[1] * dims[2]);
         let mut items = Vec::new();
+        let mut well_cells = Vec::with_capacity(if wells.is_empty() {
+            0
+        } else {
+            cells.capacity()
+        });
+        let mut well_items = Vec::new();
         for z in 0..dims[2] {
             for y in 0..dims[1] {
                 for x in 0..dims[0] {
@@ -358,11 +459,22 @@ impl Network {
                     for (i, b) in boxes.iter().enumerate() {
                         let gap = (cell.min - b.max).max(b.min - cell.max).max(Vec3::ZERO);
                         // Distance to the shape >= distance to its box.
-                        if gap.length() < INDEX_CAP + 0.01 {
+                        let gap = gap.length();
+                        if gap < INDEX_CAP + 0.01 {
                             items.push(i as u16);
                         }
                     }
                     cells.push((start, items.len() as u32));
+                    if !wells.is_empty() {
+                        let start = well_items.len() as u32;
+                        for (i, (c, hollow, _)) in wells.iter().enumerate() {
+                            let reach = hollow + WELL_BLEND + INDEX_CAP + 0.01;
+                            if cell.closest_point(*c).distance(*c) < reach {
+                                well_items.push(i as u16);
+                            }
+                        }
+                        well_cells.push((start, well_items.len() as u32));
+                    }
                 }
             }
         }
@@ -372,11 +484,15 @@ impl Network {
             hubs,
             paths,
             heist,
+            wells,
+            room,
             peak,
             origin,
             dims,
             cells,
             items,
+            well_cells,
+            well_items,
         }
     }
 
@@ -388,12 +504,45 @@ impl Network {
 
     /// Hub centres in the lowest-x column (team 0's spawn region).
     pub fn low_x_hubs(&self) -> &[Vec3] {
-        &self.hubs[..self.hubs.len().min(HUB_ROWS.len())]
+        self.hub_range(0, HUB_ROWS.len())
     }
 
     /// Hub centres in the highest-x column (team 1's spawn region).
     pub fn high_x_hubs(&self) -> &[Vec3] {
-        &self.hubs[self.hubs.len().saturating_sub(HUB_ROWS.len())..]
+        self.hub_range(BASE_HUBS - HUB_ROWS.len(), BASE_HUBS)
+    }
+
+    /// The team 2 cavern (low z end; team 2's spawn region).
+    pub fn low_z_hubs(&self) -> &[Vec3] {
+        self.hub_range(BASE_HUBS, BASE_HUBS + 1)
+    }
+
+    /// The team 3 cavern (high z end; team 3's spawn region).
+    pub fn high_z_hubs(&self) -> &[Vec3] {
+        self.hub_range(BASE_HUBS + 1, BASE_HUBS + 2)
+    }
+
+    /// The spawn caverns of team `team` (0 low x, 1 high x, 2 low z, 3
+    /// high z); empty for other teams or levels without a network.
+    pub fn team_hubs(&self, team: u8) -> &[Vec3] {
+        match team {
+            0 => self.low_x_hubs(),
+            1 => self.high_x_hubs(),
+            2 => self.low_z_hubs(),
+            3 => self.high_z_hubs(),
+            _ => &[],
+        }
+    }
+
+    /// The upper hub layer (tall levels; empty otherwise), column-major.
+    pub fn upper_hubs(&self) -> &[Vec3] {
+        self.hub_range(BASE_HUBS + 2, self.hubs.len())
+    }
+
+    /// `hubs[a..b]`, clamped to the hubs that exist.
+    fn hub_range(&self, a: usize, b: usize) -> &[Vec3] {
+        let n = self.hubs.len();
+        &self.hubs[a.min(n)..b.min(n)]
     }
 
     /// Centre-line polylines of the tunnels: hub to hub, then the vein
@@ -460,10 +609,49 @@ impl Network {
     #[inline(always)]
     pub fn carve(&self, p: Vec3, open: f32) -> f32 {
         let carved = self.carve_open(p, open);
-        match &self.heist {
+        let knotted = match &self.heist {
             Some(h) => carved.min(p.distance(h.core) - h.knot_radius),
             None => carved,
+        };
+        if self.wells.is_empty() {
+            knotted
+        } else {
+            self.apply_wells(p, knotted)
         }
+    }
+
+    /// Every well applied to the terrain value `v`, in order: the hollow
+    /// joined with [`smooth_max`], then the core added (`min`). A well that
+    /// provably changes nothing is skipped (same bits): its hollow when even
+    /// at the largest per-axis distance it stays [`WELL_BLEND`] below `v`,
+    /// its core when that distance already exceeds `v`. Between
+    /// `-INDEX_CAP` and `INDEX_CAP` only the wells listed for the index cell
+    /// of `p` can matter (an unlisted well is at least `hollow + WELL_BLEND
+    /// + INDEX_CAP` away); outside that range every well is visited.
+    #[inline(always)]
+    fn apply_wells(&self, p: Vec3, mut v: f32) -> f32 {
+        let one = |v: f32, (c, hollow, core): (Vec3, f32, f32)| {
+            let d = (p - c).abs();
+            let gap = d.x.max(d.y).max(d.z);
+            let mut v = v;
+            if hollow - gap + SKIP_MARGIN > v - WELL_BLEND {
+                v = smooth_max(v, hollow - p.distance(c), WELL_BLEND);
+            }
+            if gap - core - SKIP_MARGIN < v {
+                v = v.min(p.distance(c) - core);
+            }
+            v
+        };
+        if v > -INDEX_CAP && v < INDEX_CAP {
+            for &i in self.cell_list(&self.well_cells, &self.well_items, p) {
+                v = one(v, self.wells[i as usize]);
+            }
+        } else {
+            for &w in &self.wells {
+                v = one(v, w);
+            }
+        }
+        v
     }
 
     /// `max(open, value of every primitive at p)` (without the knot).
@@ -504,6 +692,13 @@ impl Network {
     /// The primitives listed for the index cell of `p` (none outside).
     #[inline(always)]
     fn cell_items(&self, p: Vec3) -> &[u16] {
+        self.cell_list(&self.cells, &self.items, p)
+    }
+
+    /// The entries of `items` listed in `cells` for the index cell of `p`
+    /// (none outside the index).
+    #[inline(always)]
+    fn cell_list<'a>(&self, cells: &[(u32, u32)], items: &'a [u16], p: Vec3) -> &'a [u16] {
         let q = p - self.origin;
         let mut idx = 0usize;
         let mut stride = 1usize;
@@ -515,8 +710,8 @@ impl Network {
             idx += i as usize * stride;
             stride *= self.dims[a];
         }
-        let (s, e) = self.cells[idx];
-        &self.items[s as usize..e as usize]
+        let (s, e) = cells[idx];
+        &items[s as usize..e as usize]
     }
 }
 
@@ -563,6 +758,51 @@ impl Carved {
         } else {
             Primitive::Sphere { c, r }
         });
+    }
+
+    /// A tunnel path from `a` to `b` like the hub tunnels: boxy levels take
+    /// axis-aligned legs in a seeded axis order, cave levels a straight
+    /// line bent through a jittered midpoint.
+    fn bent(&self, rng: &mut SplitMix64, a: Vec3, b: Vec3) -> Vec<Vec3> {
+        if self.boxy {
+            let order = match rng.next_u32() % 6 {
+                0 => [0, 1, 2],
+                1 => [0, 2, 1],
+                2 => [1, 0, 2],
+                3 => [1, 2, 0],
+                4 => [2, 0, 1],
+                _ => [2, 1, 0],
+            };
+            let mut pts = vec![a];
+            let mut cur = a;
+            for axis in order {
+                let mut next = cur.to_array();
+                next[axis] = b[axis];
+                let next = Vec3::from_array(next);
+                if next != cur {
+                    pts.push(next);
+                    cur = next;
+                }
+            }
+            pts
+        } else {
+            let d = b - a;
+            let side = Vec3::new(-d.z, 0.0, d.x).normalize_or_zero();
+            let m = (a + b) * 0.5
+                + side * (d.length() * jit(rng, BEND))
+                + Vec3::new(0.0, self.room.size().y * jit(rng, BEND_Y), 0.0);
+            vec![a, self.keep_in(m, Vec3::splat(TUNNEL_RADIUS)), b]
+        }
+    }
+
+    /// Hub-like room half height for a room of radius `r` (boxy levels:
+    /// flatter than wide, never lower than a tunnel).
+    fn room_half_height(&self, r: f32) -> f32 {
+        if self.boxy {
+            (0.6 * r).max(TUNNEL_RADIUS).min(r)
+        } else {
+            r
+        }
     }
 
     /// Axis-aligned legs from `a` to `b`, up or down first, then x, then z
@@ -692,6 +932,84 @@ fn heist_site(
     })
 }
 
+/// Carves the team 2/3 caverns (see the module docs) and returns their
+/// centres (low z, then high z); none for rooms too small.
+fn team_caverns(
+    seed: u64,
+    base_y: f32,
+    jitter_y: f32,
+    hubs: &[Vec3],
+    carved: &mut Carved,
+) -> Vec<Vec3> {
+    let room = carved.room;
+    let size = room.size();
+    if hubs.len() < BASE_HUBS {
+        return Vec::new();
+    }
+    let mut rng = SplitMix64::new(seed ^ TEAM_CAVE_SALT);
+    let half = size * 0.5 - Vec3::splat(WALL_GAP);
+    let mut out = Vec::new();
+    for (row, fz) in TEAM_CAVE_Z.into_iter().enumerate() {
+        let x = room.min.x + size.x * (0.5 + jit(&mut rng, JITTER_X));
+        let z = room.min.z + size.z * (fz + jit(&mut rng, 0.02));
+        let y = room.min.y + size.y * (base_y + jit(&mut rng, jitter_y));
+        let [lo, hi] = SPAWN_HUB_RADIUS;
+        let r = (lo + (hi - lo) * (jit(&mut rng, 0.5) + 0.5)).min(half.min_element());
+        let hy = carved.room_half_height(r);
+        let c = carved.keep_in(Vec3::new(x, y, z), Vec3::new(r, hy, r));
+        carved.room_at(c, r, hy);
+        for col in [1, HUB_COLUMNS.len() - 2] {
+            let target = hubs[col * HUB_ROWS.len() + row];
+            let path = carved.bent(&mut rng, c, target);
+            carved.tunnel(path);
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// Carves the upper hub layer of tall levels (see the module docs) and
+/// returns its hub centres, column-major.
+fn upper_layer(seed: u64, hubs: &[Vec3], carved: &mut Carved) -> Vec<Vec3> {
+    let room = carved.room;
+    let size = room.size();
+    let rows = HUB_ROWS.len();
+    let mut rng = SplitMix64::new(seed ^ UPPER_HUB_SALT);
+    let half = size * 0.5 - Vec3::splat(WALL_GAP);
+    let mut upper = Vec::new();
+    for fx in HUB_COLUMNS {
+        for fz in HUB_ROWS {
+            let x = room.min.x + size.x * (fx + jit(&mut rng, JITTER_X));
+            let z = room.min.z + size.z * (fz + jit(&mut rng, JITTER_Z));
+            let y = room.min.y + size.y * (LAYER_Y[1] + jit(&mut rng, LAYER_JITTER_Y));
+            let [lo, hi] = HUB_RADIUS;
+            let r = (lo + (hi - lo) * (jit(&mut rng, 0.5) + 0.5)).min(half.min_element());
+            let hy = carved.room_half_height(r);
+            let c = carved.keep_in(Vec3::new(x, y, z), Vec3::new(r, hy, r));
+            carved.room_at(c, r, hy);
+            upper.push(c);
+        }
+    }
+    let at = |col: usize, row: usize| col * rows + row;
+    let last = HUB_COLUMNS.len() - 1;
+    let mut links: Vec<(Vec3, Vec3)> = Vec::new();
+    for row in 0..rows {
+        for col in 0..last {
+            links.push((upper[at(col, row)], upper[at(col + 1, row)]));
+        }
+        for col in [0, last] {
+            links.push((hubs[at(col, row)], upper[at(col, row)]));
+        }
+    }
+    let middle = 1 + (rng.next_u32() % 2) as usize;
+    links.push((upper[at(middle, 0)], upper[at(middle, 1)]));
+    for (a, b) in links {
+        let path = carved.bent(&mut rng, a, b);
+        carved.tunnel(path);
+    }
+    upper
+}
+
 /// Whether the straight segment from `a` to `b` keeps at least `margin` of
 /// free space under the SDF `sample`, checked by sphere tracing: after a
 /// sample `v`, the next `(v - margin) / 1.05` u (the chunk store's margin
@@ -762,10 +1080,27 @@ mod tests {
         let r = room();
         for e in [0u8, 50, 74, 75, 100] {
             let n = Network::build(9, e, r);
-            assert_eq!(n.hubs().len(), 8);
-            // 9 hub tunnels, 2 vein tunnels, 2 surface shafts below 100.
+            assert_eq!(n.hubs().len(), 10);
+            // 9 hub tunnels, 2 vein tunnels, 2 surface shafts below 100,
+            // 4 tunnels to the team 2/3 caverns.
             let shafts = if e < SURFACE_ENCLOSURE_LIMIT { 2 } else { 0 };
-            assert_eq!(n.tunnel_paths().len(), 11 + shafts);
+            assert_eq!(n.tunnel_paths().len(), 15 + shafts);
+            // Tall levels: 8 more hubs and 11 more tunnels.
+            let tall = Network::build_with(9, e, 90, r);
+            assert_eq!(tall.hubs().len(), 18);
+            assert_eq!(tall.upper_hubs().len(), 8);
+            assert_eq!(tall.tunnel_paths().len(), 26 + shafts);
+            assert!(tall.upper_hubs().iter().all(|h| h.y > r.center().y));
+            assert!(tall.low_x_hubs().iter().all(|h| h.y < r.center().y));
+            // Team 2/3 caverns: centre x, at the z ends.
+            for (team, hub) in [(2u8, n.low_z_hubs()), (3, n.high_z_hubs())] {
+                assert_eq!(hub.len(), 1, "{e}");
+                let h = hub[0];
+                assert!((h.x - r.center().x).abs() < 0.06 * r.size().x, "{e}: {h:?}");
+                let fz = (h.z - r.min.z) / r.size().z;
+                assert!(if team == 2 { fz < 0.15 } else { fz > 0.85 }, "{e}: {h:?}");
+                assert_eq!(n.team_hubs(team), hub);
+            }
             let boxy = n.prims.iter().all(|p| matches!(p, Primitive::Box(_)));
             let round = n.prims.iter().all(|p| !matches!(p, Primitive::Box(_)));
             assert_eq!((boxy, round), (e >= BOXY_ENCLOSURE, e < BOXY_ENCLOSURE));
@@ -799,7 +1134,7 @@ mod tests {
             -3.0
         );
         let small = Aabb::new(Vec3::splat(2.0), Vec3::splat(62.0));
-        assert_eq!(Network::build(1, 50, small).hubs().len(), 8);
+        assert_eq!(Network::build(1, 50, small).hubs().len(), 10);
     }
 
     /// The Heist site: the core sits in rock at the bottom of the level,

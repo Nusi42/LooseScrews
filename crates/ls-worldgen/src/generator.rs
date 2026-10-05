@@ -55,6 +55,61 @@ pub fn box_shape(verticality: u8) -> [i32; 3] {
     BOX_SHAPES[(verticality.min(100) / 20).min(4) as usize]
 }
 
+/// The inner structure of a classic level for one Verticality value (M4
+/// plan §3.3): chamber noise stretched vertically (flat: wide, low
+/// chambers; tall: chimneys), the mine lattice's vertical tunnel chance,
+/// and islands and rocks stacked in tiers in tall boxes.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Structure {
+    chamber_freq: [f32; 3],
+    chamber_scale: f32,
+    mine_edge_v: f32,
+    island_cell: Vec3,
+    island_jitter: Vec3,
+    rock_jitter: Vec3,
+}
+
+impl Structure {
+    fn for_verticality(verticality: u8) -> Self {
+        let v = verticality.min(100) as f32 / 100.0;
+        // Vertical stretch of the chambers: 0.5 at 0, 1 at 50, 2.2 at 100;
+        // the horizontal size changes inversely, by its square root.
+        let stretch = if v <= 0.5 {
+            0.5 + v
+        } else {
+            1.0 + (v - 0.5) * 2.4
+        };
+        let horizontal = stretch.sqrt();
+        let chamber_freq = [
+            CHAMBER_FREQ[0] * horizontal,
+            CHAMBER_FREQ[1] / stretch,
+            CHAMBER_FREQ[2] * horizontal,
+        ];
+        let max_freq = chamber_freq[0].max(chamber_freq[1]).max(chamber_freq[2]);
+        let (island_cell_y, island_jitter_y) = if verticality < 20 {
+            (ISLAND_CELL_Y_FLAT, ISLAND_JITTER_Y_FLAT)
+        } else if verticality < TIER_VERTICALITY {
+            (ISLAND_CELL, ISLAND_JITTER)
+        } else {
+            (ISLAND_CELL_Y_TIERS, ISLAND_JITTER_Y_TIERS)
+        };
+        let rock_jitter_y = if verticality < TIER_VERTICALITY {
+            ROCK_JITTER
+        } else {
+            ROCK_JITTER_Y_TIERS
+        };
+        Structure {
+            chamber_freq,
+            chamber_scale: 1.0 / (NOISE_LIPSCHITZ * max_freq),
+            mine_edge_v: MINE_EDGE_CHANCE_V[0]
+                + (MINE_EDGE_CHANCE_V[1] - MINE_EDGE_CHANCE_V[0]) * v,
+            island_cell: Vec3::new(ISLAND_CELL, island_cell_y, ISLAND_CELL),
+            island_jitter: Vec3::new(ISLAND_JITTER, island_jitter_y, ISLAND_JITTER),
+            rock_jitter: Vec3::new(ROCK_JITTER, rock_jitter_y, ROCK_JITTER),
+        }
+    }
+}
+
 /// The level box in chunks of a level with this archetype and sliders.
 pub fn level_size_chunks(archetype: Archetype, sliders: &Sliders) -> [i32; 3] {
     match archetype {
@@ -65,6 +120,14 @@ pub fn level_size_chunks(archetype: Archetype, sliders: &Sliders) -> [i32; 3] {
 
 // --- Open sky: floating islands -------------------------------------------
 const ISLAND_CELL: f32 = 48.0;
+/// Island cell heights by level shape: flat boxes (Verticality below 20)
+/// keep one tier, tall boxes (60 and above) stack islands in tiers.
+const ISLAND_CELL_Y_FLAT: f32 = 64.0;
+const ISLAND_CELL_Y_TIERS: f32 = 36.0;
+/// Vertical island jitter for those cell heights (jitter plus the island
+/// reach of at most 12 u stays inside the cell).
+const ISLAND_JITTER_Y_FLAT: f32 = 8.0;
+const ISLAND_JITTER_Y_TIERS: f32 = 3.0;
 const ISLAND_CHANCE: f32 = 0.35;
 /// Islands never reach further than this from their cell centre (< cell/2).
 const ISLAND_JITTER: f32 = 9.6;
@@ -73,7 +136,6 @@ const SKY_CAP: f32 = 20.0;
 // --- Caverns ----------------------------------------------------------------
 /// Chamber noise frequency (per axis) and scale; scale * max_freq * NOISE_LIPSCHITZ <= 1.
 const CHAMBER_FREQ: [f32; 3] = [1.0 / 40.0, 1.0 / 28.0, 1.0 / 40.0];
-const CHAMBER_SCALE: f32 = 28.0 / NOISE_LIPSCHITZ;
 const CHAMBER_THRESHOLD: f32 = 0.28;
 const TUNNEL_FREQ: f32 = 1.0 / 24.0;
 const TUNNEL_SCALE: f32 = 24.0 / NOISE_LIPSCHITZ;
@@ -83,7 +145,8 @@ const TUNNEL_WIDTH: f32 = 0.11;
 const MINE_SPACING: f32 = 16.0;
 const MINE_HALF_WIDTH: f32 = 2.5;
 const MINE_EDGE_CHANCE_H: f32 = 0.55;
-const MINE_EDGE_CHANCE_V: f32 = 0.22;
+/// Vertical tunnel chance of the mine lattice at Verticality 0 and 100.
+const MINE_EDGE_CHANCE_V: [f32; 2] = [0.05, 0.6];
 const MINE_ROOM_CHANCE: f32 = 0.12;
 const MINE_ROOM_MAX_HALF: f32 = 6.0;
 /// Any lattice feature not visited is at least this far away.
@@ -97,6 +160,11 @@ const PILLAR_CAP: f32 = 24.0;
 const ROCK_CELL: f32 = 20.0;
 const ROCK_CHANCE: f32 = 0.45;
 const ROCK_JITTER: f32 = 5.0;
+/// Vertical rock jitter in tall boxes (Verticality 60 and above): rocks
+/// line up in tiers one rock cell apart.
+const ROCK_JITTER_Y_TIERS: f32 = 1.5;
+/// From this Verticality on, islands and rocks stack in tiers.
+pub const TIER_VERTICALITY: u8 = 60;
 const ROCK_CAP: f32 = 16.0;
 
 /// Per-feature seeds, derived from the share-code seed with SplitMix64 so
@@ -147,13 +215,38 @@ pub struct Generator {
     w_mine: f32,
     density: f32,
     mine_offset: Vec3,
+    /// Chamber noise frequency per axis (stretched by Verticality) and the
+    /// scale that keeps the caverns field 1-Lipschitz.
+    chamber_freq: [f32; 3],
+    chamber_scale: f32,
+    /// Vertical tunnel chance of the mine lattice (Verticality).
+    mine_edge_v: f32,
+    /// Island cell size and jitter per axis (tiers in tall boxes).
+    island_cell: Vec3,
+    island_jitter: Vec3,
+    /// Rock jitter per axis (tiers in tall boxes).
+    rock_jitter: Vec3,
     network: Network,
+    /// The asteroid belt's field (belt levels only).
+    belt: Option<Box<crate::belt::Belt>>,
 }
 
 impl Generator {
-    /// A generator with the default level size.
+    /// A classic level generator; the level box follows Verticality
+    /// ([`box_shape`]).
     pub fn new(seed: u64, sliders: Sliders) -> Self {
-        Self::with_size(seed, sliders, DEFAULT_SIZE_CHUNKS)
+        Self::with_archetype(seed, sliders, Archetype::Classic)
+    }
+
+    /// A generator for the given archetype; the level box follows it
+    /// ([`level_size_chunks`]).
+    pub fn with_archetype(seed: u64, sliders: Sliders, archetype: Archetype) -> Self {
+        Self::build(
+            seed,
+            sliders,
+            archetype,
+            level_size_chunks(archetype, &sliders),
+        )
     }
 
     /// A generator for a decoded share code. Fails if the code was made by a
@@ -163,11 +256,20 @@ impl Generator {
             return Err(WorldgenError::UnsupportedVersion(code.version));
         }
         code.sliders.validate()?;
-        Ok(Self::new(code.seed, code.sliders))
+        Ok(Self::with_archetype(
+            code.seed,
+            code.sliders,
+            code.archetype,
+        ))
     }
 
-    /// A generator with a custom level size in chunks (each at least 1).
+    /// A classic generator with a custom level size in chunks (each at
+    /// least 1; tests and tools).
     pub fn with_size(seed: u64, sliders: Sliders, size_chunks: [i32; 3]) -> Self {
+        Self::build(seed, sliders, Archetype::Classic, size_chunks)
+    }
+
+    fn build(seed: u64, sliders: Sliders, archetype: Archetype, size_chunks: [i32; 3]) -> Self {
         let size_chunks = size_chunks.map(|c| c.max(1));
         let size = Vec3::new(
             (size_chunks[0] * CHUNK_CELLS) as f32,
@@ -180,19 +282,35 @@ impl Generator {
             size - Vec3::splat(WALL_THICKNESS),
         );
         let seeds = Seeds::derive(seed);
+        let classic = archetype == Archetype::Classic;
         let e = sliders.enclosure.min(100) as f32 / 100.0;
-        let w_sky = (1.0 - 2.0 * e).max(0.0);
-        let w_mine = (2.0 * e - 1.0).max(0.0);
-        let w_cave = 1.0 - w_sky - w_mine;
+        let (w_sky, w_cave, w_mine) = if classic {
+            let w_sky = (1.0 - 2.0 * e).max(0.0);
+            let w_mine = (2.0 * e - 1.0).max(0.0);
+            (w_sky, 1.0 - w_sky - w_mine, w_mine)
+        } else {
+            (0.0, 0.0, 0.0)
+        };
         let off = mix64(seeds.mine);
         let mine_offset = Vec3::new(
             (off & 15) as f32,
             ((off >> 8) & 15) as f32,
             ((off >> 16) & 15) as f32,
         );
-        Generator {
-            code: ShareCode::new(seed, sliders),
-            archetype: Archetype::Classic,
+        let structure = Structure::for_verticality(sliders.verticality);
+        let network = if classic {
+            Network::build_with(
+                seeds.connect,
+                sliders.enclosure.min(100),
+                sliders.verticality.min(100),
+                room,
+            )
+        } else {
+            Network::empty()
+        };
+        let mut gen = Generator {
+            code: ShareCode::with_archetype(seed, sliders, archetype),
+            archetype,
             wells: Vec::new(),
             belt_site: None,
             size_chunks,
@@ -202,10 +320,41 @@ impl Generator {
             w_sky,
             w_cave,
             w_mine,
-            density: sliders.density.min(100) as f32 / 100.0,
+            density: if classic {
+                sliders.density.min(100) as f32 / 100.0
+            } else {
+                0.0
+            },
             mine_offset,
-            network: Network::build(seeds.connect, sliders.enclosure.min(100), room),
+            chamber_freq: structure.chamber_freq,
+            chamber_scale: structure.chamber_scale,
+            mine_edge_v: structure.mine_edge_v,
+            island_cell: structure.island_cell,
+            island_jitter: structure.island_jitter,
+            rock_jitter: structure.rock_jitter,
+            network,
+            belt: None,
+        };
+        match archetype {
+            Archetype::Classic => {
+                gen.wells = crate::wells::place(
+                    &gen,
+                    seeds.connect,
+                    sliders.gravity_chaos,
+                    sliders.enclosure,
+                );
+                // The hollows and cores join the network's carving (its
+                // index keeps the per-sample cost low).
+                gen.network.add_wells(&gen.wells);
+            }
+            Archetype::Belt => {
+                let belt = crate::belt::Belt::build(seed, &sliders, bounds);
+                gen.wells = belt.moons().to_vec();
+                gen.belt_site = Some(belt.site().clone());
+                gen.belt = Some(Box::new(belt));
+            }
         }
+        gen
     }
 
     /// The share code (seed, sliders, current version) this generator uses.
@@ -228,6 +377,11 @@ impl Generator {
     /// orbits); `None` on classic levels.
     pub fn belt(&self) -> Option<&BeltSite> {
         self.belt_site.as_ref()
+    }
+
+    /// The asteroid belt's field (corridor, rock count; belt levels only).
+    pub fn belt_field(&self) -> Option<&crate::belt::Belt> {
+        self.belt.as_deref()
     }
 
     /// Level size in chunks.
@@ -324,6 +478,9 @@ impl Generator {
     /// `caverns` (only called when the field is active).
     #[inline(always)]
     fn terrain_parts<F: Features>(&self, f: &F, p: Vec3, caverns: impl FnOnce() -> f32) -> f32 {
+        if let Some(belt) = &self.belt {
+            return belt.terrain(p);
+        }
         let mut open = 0.0f32;
         if self.w_sky > 0.0 {
             open += self.w_sky * self.sky(f, p);
@@ -362,13 +519,11 @@ impl Generator {
     /// Caverns: chambers and noise tunnels, positive where open.
     #[inline(always)]
     fn caverns<F: Features>(&self, f: &F, p: Vec3) -> f32 {
-        let q = Vec3::new(
-            p.x * CHAMBER_FREQ[0],
-            p.y * CHAMBER_FREQ[1],
-            p.z * CHAMBER_FREQ[2],
-        );
+        let f3 = self.chamber_freq;
+        let q = Vec3::new(p.x * f3[0], p.y * f3[1], p.z * f3[2]);
         let t = p * TUNNEL_FREQ;
         caverns_from_noise(
+            self.chamber_scale,
             gradient_noise_with(q, |x, y, z| f.gradients(NOISE_CHAMBER, [x, y, z])),
             gradient_noise_with(t, |x, y, z| f.gradients(NOISE_TUNNEL_A, [x, y, z])),
             gradient_noise_with(t, |x, y, z| f.gradients(NOISE_TUNNEL_B, [x, y, z])),
@@ -434,7 +589,7 @@ impl Generator {
         if unit_f32(h) >= ISLAND_CHANCE {
             return None;
         }
-        let center = jittered_center(c, ISLAND_CELL, ISLAND_JITTER, h);
+        let center = jittered_center(c, self.island_cell, self.island_jitter, h);
         let r = 5.0 + 5.0 * unit_f32_b(h);
         Some(Island {
             center,
@@ -452,7 +607,7 @@ impl Generator {
         if unit_f32(h) >= ROCK_CHANCE * self.density {
             return None;
         }
-        let center = jittered_center(c, ROCK_CELL, ROCK_JITTER, h);
+        let center = jittered_center(c, Vec3::splat(ROCK_CELL), self.rock_jitter, h);
         let r = 2.0 + 2.5 * unit_f32_b(h);
         Some(Rock {
             center,
@@ -500,7 +655,7 @@ impl Generator {
     #[inline(always)]
     fn mine_edge_at(&self, axis: usize, l: [i32; 3]) -> Option<Aabb> {
         let chance = if axis == 1 {
-            MINE_EDGE_CHANCE_V
+            self.mine_edge_v
         } else {
             MINE_EDGE_CHANCE_H
         };
@@ -545,8 +700,8 @@ impl Generator {
 /// The caverns field from its three noise values (chamber, tunnel a, tunnel
 /// b). The result does not depend on the sign of a zero noise value.
 #[inline(always)]
-fn caverns_from_noise(chamber: f32, a: f32, b: f32) -> f32 {
-    let chamber = CHAMBER_SCALE * (chamber - CHAMBER_THRESHOLD);
+fn caverns_from_noise(scale: f32, chamber: f32, a: f32, b: f32) -> f32 {
+    let chamber = scale * (chamber - CHAMBER_THRESHOLD);
     let tunnel = TUNNEL_SCALE * (TUNNEL_WIDTH - a.abs().max(b.abs()));
     chamber.max(tunnel)
 }
@@ -627,11 +782,12 @@ type IslandShape = (Island, [Vec3; 2]);
 /// cannot change the field (see [`Block`]). Optional arguments carry
 /// precomputed shape data (computed on demand when `None`).
 trait Features {
-    /// Islands of the 27 cells around island cell `c`.
+    /// The generator the features belong to.
+    fn generator(&self) -> &Generator;
     /// Island cell of `p`.
     #[inline(always)]
     fn island_cell(&self, p: Vec3) -> [i32; 3] {
-        cell_of(p, ISLAND_CELL)
+        cell_of3(p, self.generator().island_cell)
     }
     /// Rock cell of `p`.
     #[inline(always)]
@@ -652,6 +808,7 @@ trait Features {
     fn mine_cell(&self, p: Vec3, offset: Vec3) -> [i32; 3] {
         cell_of(p - offset, MINE_SPACING)
     }
+    /// Islands of the 27 cells around island cell `c`.
     fn visit_islands(&self, c: [i32; 3], f: impl FnMut(&Island, Option<&[Vec3; 2]>));
     /// Rocks of the 27 cells around rock cell `c`.
     fn visit_rocks(&self, c: [i32; 3], f: impl FnMut(&Rock));
@@ -703,6 +860,10 @@ fn mine_features(g: [i32; 3], mut f: impl FnMut(Option<usize>, [i32; 3])) {
 }
 
 impl Features for Generator {
+    #[inline(always)]
+    fn generator(&self) -> &Generator {
+        self
+    }
     #[inline(always)]
     fn visit_islands(&self, c: [i32; 3], mut f: impl FnMut(&Island, Option<&[Vec3; 2]>)) {
         island_cells(c, |cell| {
@@ -810,7 +971,10 @@ impl<'a> Tables<'a> {
             (a.map(|v| v - 1), b.map(|v| v + 1))
         };
         let islands = (gen.w_sky > 0.0).then(|| {
-            let (a, b) = cells(ISLAND_CELL);
+            let (a, b) = (
+                cell_of3(lo, gen.island_cell).map(|v| v - 1),
+                cell_of3(hi, gen.island_cell).map(|v| v + 1),
+            );
             Table::build(a, b, |c| gen.island_at(c).map(|i| (i, i.satellites())))
         });
         let gradients = (gen.w_cave > 0.0).then(|| {
@@ -824,7 +988,7 @@ impl<'a> Tables<'a> {
                 };
                 (f(lo), f(hi))
             };
-            let (ca, cb) = lattice(CHAMBER_FREQ);
+            let (ca, cb) = lattice(gen.chamber_freq);
             let (ta, tb) = lattice([TUNNEL_FREQ; 3]);
             [
                 (gen.seeds.chamber, ca, cb),
@@ -864,6 +1028,10 @@ impl<'a> Tables<'a> {
 }
 
 impl Features for Tables<'_> {
+    #[inline(always)]
+    fn generator(&self) -> &Generator {
+        self.gen
+    }
     #[inline(always)]
     fn visit_islands(&self, c: [i32; 3], mut f: impl FnMut(&Island, Option<&[Vec3; 2]>)) {
         island_cells(c, |cell| {
@@ -985,8 +1153,13 @@ fn box_gap(a: &Aabb, b: &Aabb) -> f32 {
 
 /// All cells (of side `cell`, offset by `offset`) the box `b` touches.
 fn cells_touching(b: &Aabb, cell: f32, offset: Vec3) -> Vec<[i32; 3]> {
-    let lo = cell_of(b.min - offset, cell);
-    let hi = cell_of(b.max - offset, cell);
+    cells_touching3(b, Vec3::splat(cell), offset)
+}
+
+/// All cells (of size `cell` per axis, offset by `offset`) the box `b` touches.
+fn cells_touching3(b: &Aabb, cell: Vec3, offset: Vec3) -> Vec<[i32; 3]> {
+    let lo = cell_of3(b.min - offset, cell);
+    let hi = cell_of3(b.max - offset, cell);
     let mut out = Vec::new();
     for z in lo[2]..=hi[2] {
         for y in lo[1]..=hi[1] {
@@ -1047,7 +1220,7 @@ impl Block {
             block.room_floor = lo.min(hi).min_element() - PRUNE_MARGIN;
         }
         if gen.w_cave > 0.0 {
-            let freqs = [CHAMBER_FREQ, [TUNNEL_FREQ; 3], [TUNNEL_FREQ; 3]];
+            let freqs = [gen.chamber_freq, [TUNNEL_FREQ; 3], [TUNNEL_FREQ; 3]];
             for (field, freq) in freqs.into_iter().enumerate() {
                 // The noise functions scale p per axis, then floor.
                 let cell = |p: Vec3| {
@@ -1066,7 +1239,7 @@ impl Block {
         if gen.w_sky > 0.0 {
             // Islands: only the cap bound (the skip test is not a strict
             // lower bound of the island SDF, so visiting order matters).
-            for c in cells_touching(&b, ISLAND_CELL, Vec3::ZERO) {
+            for c in cells_touching3(&b, gen.island_cell, Vec3::ZERO) {
                 let mut v = Vec::new();
                 t.visit_islands(c, |isl, sats| {
                     if box_distance(&b, isl.center) - isl.reach < SKY_CAP + PRUNE_MARGIN {
@@ -1216,8 +1389,14 @@ fn single_cell<T>(lists: &CellLists<T>, compute: impl FnOnce() -> [i32; 3]) -> [
 
 impl Features for BlockView<'_, '_> {
     #[inline(always)]
+    fn generator(&self) -> &Generator {
+        self.tables.gen
+    }
+    #[inline(always)]
     fn island_cell(&self, p: Vec3) -> [i32; 3] {
-        single_cell(&self.block.islands, || cell_of(p, ISLAND_CELL))
+        single_cell(&self.block.islands, || {
+            cell_of3(p, self.tables.gen.island_cell)
+        })
     }
     #[inline(always)]
     fn rock_cell(&self, p: Vec3) -> [i32; 3] {
@@ -1373,10 +1552,10 @@ impl<'a> RegionSampler<'a> {
                 let mut cx = [0.0f32; CHUNK];
                 let mut tx = [0.0f32; CHUNK];
                 for (i, x) in xs.iter().enumerate() {
-                    cx[i] = x * CHAMBER_FREQ[0];
+                    cx[i] = x * gen.chamber_freq[0];
                     tx[i] = x * TUNNEL_FREQ;
                 }
-                let (cy, cz) = (y * CHAMBER_FREQ[1], z * CHAMBER_FREQ[2]);
+                let (cy, cz) = (y * gen.chamber_freq[1], z * gen.chamber_freq[2]);
                 let (ty, tz) = (y * TUNNEL_FREQ, z * TUNNEL_FREQ);
                 gradient_noise_row(&cx[..n], cy, cz, grad(NOISE_CHAMBER), &mut noise[0][..n]);
                 gradient_noise_row(&tx[..n], ty, tz, grad(NOISE_TUNNEL_A), &mut noise[1][..n]);
@@ -1384,7 +1563,8 @@ impl<'a> RegionSampler<'a> {
             }
             for (i, (x, o)) in xs.iter().zip(out.iter_mut()).enumerate() {
                 let p = Vec3::new(*x, y, z);
-                let cave = || caverns_from_noise(noise[0][i], noise[1][i], noise[2][i]);
+                let cave =
+                    || caverns_from_noise(gen.chamber_scale, noise[0][i], noise[1][i], noise[2][i]);
                 *o = match self.block(p) {
                     Some(block) => {
                         let view = BlockView {
@@ -1430,6 +1610,16 @@ impl<'a> RegionSampler<'a> {
     }
 }
 
+/// Integer grid cell containing `p` for a cell of size `cell` per axis.
+#[inline(always)]
+fn cell_of3(p: Vec3, cell: Vec3) -> [i32; 3] {
+    [
+        floor_i32(p.x / cell.x),
+        floor_i32(p.y / cell.y),
+        floor_i32(p.z / cell.z),
+    ]
+}
+
 /// Integer grid cell containing `p` for a cubic cell of side `cell`.
 #[inline(always)]
 fn cell_of(p: Vec3, cell: f32) -> [i32; 3] {
@@ -1454,14 +1644,14 @@ pub(crate) fn floor_i32(x: f32) -> i32 {
 
 /// Cell centre plus a hashed offset of at most `jitter` per axis.
 #[inline]
-fn jittered_center(c: [i32; 3], cell: f32, jitter: f32, h: u64) -> Vec3 {
+fn jittered_center(c: [i32; 3], cell: Vec3, jitter: Vec3, h: u64) -> Vec3 {
     let h2 = mix64(h ^ 0x6a09_e667_f3bc_c909);
     let j = Vec3::new(unit_f32(h2), unit_f32_b(h2), unit_f32(mix64(h2))) - Vec3::splat(0.5);
     Vec3::new(
-        (c[0] as f32 + 0.5) * cell,
-        (c[1] as f32 + 0.5) * cell,
-        (c[2] as f32 + 0.5) * cell,
-    ) + j * (2.0 * jitter)
+        (c[0] as f32 + 0.5) * cell.x + j.x * (2.0 * jitter.x),
+        (c[1] as f32 + 0.5) * cell.y + j.y * (2.0 * jitter.y),
+        (c[2] as f32 + 0.5) * cell.z + j.z * (2.0 * jitter.z),
+    )
 }
 
 #[cfg(test)]
@@ -1520,11 +1710,9 @@ mod tests {
     }
 
     #[test]
-    fn inert_sliders_do_not_change_terrain() {
+    fn render_and_sim_sliders_do_not_change_terrain() {
         let a = Generator::new(9, Sliders::new(40, 60));
         let mut s = Sliders::new(40, 60);
-        s.verticality = 3;
-        s.gravity_chaos = 99;
         s.palette = 100;
         s.absurdity = 0;
         s.instability = 77;
@@ -1537,6 +1725,130 @@ mod tests {
             );
             assert_eq!(a.sample(p).to_bits(), b.sample(p).to_bits());
         }
+    }
+
+    fn with(e: u8, d: u8, v: u8, g: u8) -> Sliders {
+        Sliders {
+            enclosure: e,
+            density: d,
+            verticality: v,
+            gravity_chaos: g,
+            ..Sliders::default()
+        }
+    }
+
+    /// Verticality picks one of five level boxes of about the same chunk
+    /// count, and stretches the inner structure with it.
+    #[test]
+    fn verticality_shapes_the_box_and_structure() {
+        let counts: Vec<i32> = BOX_SHAPES.iter().map(|s| s[0] * s[1] * s[2]).collect();
+        assert!(counts.iter().all(|c| (200..=256).contains(c)), "{counts:?}");
+        for (v, shape) in [
+            (0u8, [10, 2, 10]),
+            (19, [10, 2, 10]),
+            (20, [9, 3, 9]),
+            (50, [8, 4, 8]),
+            (60, [7, 5, 7]),
+            (79, [7, 5, 7]),
+            (80, [6, 7, 6]),
+            (100, [6, 7, 6]),
+        ] {
+            let g = Generator::new(3, with(50, 40, v, 0));
+            assert_eq!(g.size_chunks(), shape, "verticality {v}");
+            assert_eq!(box_shape(v), shape);
+            let size = g.bounds().size();
+            assert_eq!(size.x, shape[0] as f32 * 32.0);
+            assert_eq!(size.y, shape[1] as f32 * 32.0);
+        }
+        let flat = Structure::for_verticality(0);
+        let mid = Structure::for_verticality(50);
+        let tall = Structure::for_verticality(100);
+        // Flat: wide, low chambers; tall: chimneys.
+        assert!(flat.chamber_freq[1] > mid.chamber_freq[1]);
+        assert!(flat.chamber_freq[0] < mid.chamber_freq[0]);
+        assert!(tall.chamber_freq[1] < mid.chamber_freq[1]);
+        assert!(tall.chamber_freq[0] > mid.chamber_freq[0]);
+        assert_eq!(flat.mine_edge_v, 0.05);
+        assert_eq!(tall.mine_edge_v, 0.6);
+        // Tiers in tall boxes.
+        assert_eq!(tall.island_cell.y, ISLAND_CELL_Y_TIERS);
+        assert!(tall.rock_jitter.y < mid.rock_jitter.y);
+        // The caverns field stays 1-Lipschitz in every shape (checked in
+        // sdf_is_one_lipschitz_in_every_shape).
+    }
+
+    #[test]
+    fn sdf_is_one_lipschitz_in_every_shape() {
+        let mut rng = SplitMix64::new(78);
+        for (seed, e, d, v, gc) in [
+            (1u64, 0u8, 60u8, 0u8, 100u8),
+            (2, 50, 50, 10, 50),
+            (3, 50, 30, 90, 80),
+            (4, 75, 20, 100, 30),
+            (5, 100, 70, 65, 100),
+            (6, 25, 80, 30, 0),
+        ] {
+            let g = Generator::new(seed, with(e, d, v, gc));
+            let size = g.bounds().size();
+            let mut worst = 0.0f32;
+            for _ in 0..20_000 {
+                let p = Vec3::new(
+                    rng.next_f32() * size.x,
+                    rng.next_f32() * size.y,
+                    rng.next_f32() * size.z,
+                );
+                let dir = Vec3::new(
+                    rng.next_f32() - 0.5,
+                    rng.next_f32() - 0.5,
+                    rng.next_f32() - 0.5,
+                )
+                .normalize();
+                let q = p + dir * (0.05 + rng.next_f32() * 3.0);
+                worst = worst.max((g.sample(q) - g.sample(p)).abs() / p.distance(q));
+            }
+            assert!(worst <= 1.0 + 1e-3, "e {e} d {d} v {v}: {worst}");
+        }
+    }
+
+    /// Gravity Chaos places 1 + slider / 15 wells (none at 0), 30 u apart,
+    /// 40 u clear of the spawn caverns, each a rock core in an open hollow.
+    #[test]
+    fn gravity_chaos_places_wells() {
+        assert!(Generator::new(1, with(50, 40, 50, 0))
+            .gravity_wells()
+            .is_empty());
+        for (seed, e, v, gc) in [
+            (1u64, 50u8, 50u8, 100u8),
+            (2, 10, 50, 60),
+            (3, 100, 0, 100),
+            (4, 50, 100, 100),
+            (5, 30, 30, 15),
+        ] {
+            let g = Generator::new(seed, with(e, 40, v, gc));
+            let wells = g.gravity_wells();
+            let want = crate::wells::well_count(gc);
+            assert!(!wells.is_empty(), "seed {seed}");
+            assert!(wells.len() <= want);
+            let net = g.network();
+            for (i, w) in wells.iter().enumerate() {
+                assert!(g.sample(w.pos) < 0.0, "{seed}: core is rock");
+                // Open just outside the core, around it.
+                let ring = w.pos + Vec3::X * (w.core_radius + 2.0);
+                assert!(g.sample(ring) > 0.5, "{seed}: hollow at {ring:?}");
+                for h in (0..4u8).flat_map(|t| net.team_hubs(t)) {
+                    assert!(h.distance(w.pos) >= 40.0 + 9.0, "{seed}: near spawn {h:?}");
+                }
+                for o in &wells[i + 1..] {
+                    assert!(o.pos.distance(w.pos) >= 30.0);
+                }
+                assert_eq!(w.strength, gc as f32 / 100.0);
+                let floating = e < crate::wells::FLOATING_ENCLOSURE;
+                assert_eq!(w.kind == ls_math::level::WellKind::Floating, floating);
+            }
+        }
+        // Full count where there is room (default box, caverns).
+        let g = Generator::new(42, with(50, 40, 50, 100));
+        assert_eq!(g.gravity_wells().len(), 7);
     }
 
     #[test]
@@ -1697,6 +2009,49 @@ mod tests {
             }
         }
         assert_eq!(checked, 8 * 4 * 3000);
+    }
+
+    /// The region, row and sparse samplers return the generator's bits on
+    /// version 4 levels too: every level shape, gravity wells and belts.
+    #[test]
+    fn samplers_are_bit_identical_on_shapes_wells_and_belts() {
+        let mut rng = SplitMix64::new(81);
+        for (i, (archetype, s)) in [
+            (Archetype::Classic, with(50, 60, 5, 100)),
+            (Archetype::Classic, with(20, 40, 95, 100)),
+            (Archetype::Classic, with(80, 30, 70, 60)),
+            (Archetype::Belt, with(60, 70, 50, 50)),
+            (Archetype::Belt, with(100, 100, 100, 0)),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let g = Generator::with_archetype(500 + i as u64, s, archetype);
+            // Regions around every well, the belt's slot 0 and the centre.
+            let mut centres: Vec<Vec3> = g.gravity_wells().iter().map(|w| w.pos).collect();
+            centres.extend(g.belt().map(|b| b.slots[0].pos));
+            centres.push(g.room().center());
+            for c in centres {
+                let min = c - Vec3::splat(18.0);
+                let region = Aabb::new(min, min + Vec3::splat(36.0));
+                let dense = g.region_sampler(region);
+                let sparse = g.sparse_region_sampler(region);
+                for _ in 0..1500 {
+                    let p = min + Vec3::new(rng.next_f32(), rng.next_f32(), rng.next_f32()) * 40.0
+                        - Vec3::splat(2.0);
+                    let want = g.sample(p).to_bits();
+                    assert_eq!(dense.sample(p).to_bits(), want, "{i} at {p:?}");
+                    assert_eq!(sparse.sample(p).to_bits(), want, "{i} sparse at {p:?}");
+                }
+                let y = c.y + 0.5;
+                let xs: Vec<f32> = (0..40).map(|k| min.x + k as f32 * 0.9).collect();
+                let mut out = vec![0.0; xs.len()];
+                dense.sample_row(y, c.z, &xs, &mut out);
+                for (x, v) in xs.iter().zip(&out) {
+                    assert_eq!(v.to_bits(), g.sample(Vec3::new(*x, y, c.z)).to_bits());
+                }
+            }
+        }
     }
 
     /// Row sampling (per-cell noise constants) and the sparse sampler return

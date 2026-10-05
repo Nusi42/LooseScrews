@@ -109,6 +109,27 @@ pub const BELT_WEDGES: usize = 8;
 /// Angle of one belt wedge (45 degrees, radians).
 pub const BELT_WEDGE_ANGLE: f32 = core::f32::consts::FRAC_PI_4;
 
+/// `v` rotated about +Y by `wedges` x 45 degrees (prograde for positive
+/// `wedges`). The sines and cosines of multiples of 45 degrees are exact
+/// (0, 1) or `sqrt(1/2)`, and the products are summed in `f64`, so the
+/// result is the exact rotation rounded once to `f32` (deterministic: only
+/// IEEE-exact operations).
+pub fn rotate_wedges(v: Vec3, wedges: i32) -> Vec3 {
+    let h = 0.5f64.sqrt();
+    let (s, c) = match wedges.rem_euclid(BELT_WEDGES as i32) {
+        0 => (0.0, 1.0),
+        1 => (h, h),
+        2 => (1.0, 0.0),
+        3 => (h, -h),
+        4 => (0.0, -1.0),
+        5 => (-h, -h),
+        6 => (-1.0, 0.0),
+        _ => (-h, h),
+    };
+    let (x, z) = (v.x as f64, v.z as f64);
+    Vec3::new((c * x + s * z) as f32, v.y, (c * z - s * x) as f32)
+}
+
 /// A start slot of the belt.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct BeltSlot {
@@ -283,10 +304,7 @@ impl BeltSite {
     /// `p` rotated by `wedges` wedges (45 degrees each, prograde) about the
     /// belt axis.
     pub fn rotate(&self, p: Vec3, wedges: i32) -> Vec3 {
-        let a = wedges.rem_euclid(BELT_WEDGES as i32) as f32 * BELT_WEDGE_ANGLE;
-        let (s, c) = det::sin_cos(a);
-        let d = p - self.center;
-        self.center + Vec3::new(c * d.x + s * d.z, d.y, -s * d.x + c * d.z)
+        self.center + rotate_wedges(p - self.center, wedges)
     }
 
     /// `p` mirrored in the belt plane.

@@ -230,7 +230,7 @@ function fakeHud(over: Partial<HudStateHandle> = {}): HudStateHandle {
 
 class FakeGame implements GameHandle {
   isOnline = true;
-  shareCode = "LS0C-0000-0000-000A-K4M6-8001-8F1Y";
+  shareCode = "LS0G-0000-0000-0001-AC58-T2XM-57ND";
   player = 2;
   team = 1;
   editCount = 0;

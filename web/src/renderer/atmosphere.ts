@@ -37,12 +37,22 @@ export interface WorldCode {
   version: number;
   seed: bigint;
   sliders: WorldSliders;
+  /** Level archetype (ls-math `Archetype` index): 0 classic, 1 asteroid belt. */
+  archetype: number;
 }
+
+/** Level archetype index of an asteroid belt (ls-math `Archetype::Belt`). */
+export const ARCHETYPE_BELT = 1;
 
 const CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 const CODE_SYMBOLS = 26;
 const TOTAL_BITS = 130n;
-const DATA_BITS = 121n;
+/** Generator version 4 layout: version 8, archetype 3, seed 64, sliders base-101 in 47 bits. */
+const DATA_BITS = 122n;
+/** Versions 1-3: version 8, seed 64, 7 x 7 slider bits (then CRC and a padding bit). */
+const LEGACY_DATA_BITS = 121n;
+/** First generator version with the archetype field. */
+const ARCHETYPE_VERSION = 4;
 
 function crc8(bytes: readonly number[]): number {
   let crc = 0;
@@ -54,9 +64,12 @@ function crc8(bytes: readonly number[]): number {
 }
 
 /**
- * Decodes a share code (ls-worldgen sharecode.rs: 8 bit version, 64 bit
- * seed, 7 x 7 bit sliders, CRC-8, one padding bit, as 26 Crockford base32
- * symbols after `LS`). Null when it is not a valid code.
+ * Decodes a share code (ls-worldgen sharecode.rs, 26 Crockford base32
+ * symbols after `LS`). Generator version 4: 8 bit version, 3 bit archetype,
+ * 64 bit seed, the 7 sliders as one base-101 number in 47 bits, CRC-8.
+ * Versions 1-3: 8 bit version, 64 bit seed, 7 x 7 bit sliders, CRC-8, one
+ * padding bit (archetype classic). The version picks the layout. Null when
+ * it is not a valid code.
  */
 export function decodeShareCode(text: string): WorldCode | null {
   const cleaned = text.toUpperCase().replace(/[\s-]+/g, "");
@@ -70,24 +83,35 @@ export function decodeShareCode(text: string): WorldCode | null {
     bits = (bits << 5n) | BigInt(v);
   }
   const read = (offset: bigint, n: bigint): bigint => (bits >> (TOTAL_BITS - offset - n)) & ((1n << n) - 1n);
-  if (read(TOTAL_BITS - 1n, 1n) !== 0n) return null;
-  // The CRC covers the 121 data bits packed MSB first into 16 bytes.
-  const packed = read(0n, DATA_BITS) << (128n - DATA_BITS);
+  const version = Number(read(0n, 8n));
+  const legacy = version < ARCHETYPE_VERSION;
+  const dataBits = legacy ? LEGACY_DATA_BITS : DATA_BITS;
+  if (legacy && read(TOTAL_BITS - 1n, 1n) !== 0n) return null;
+  // The CRC covers the data bits packed MSB first into 16 bytes.
+  const packed = read(0n, dataBits) << (128n - dataBits);
   const bytes: number[] = [];
   for (let i = 15; i >= 0; i--) bytes.push(Number((packed >> BigInt(i * 8)) & 0xffn));
-  if (crc8(bytes) !== Number(read(DATA_BITS, 8n))) return null;
-  const s = (i: number): number => Number(read(72n + BigInt(i * 7), 7n));
-  const sliders: WorldSliders = {
-    enclosure: s(0),
-    density: s(1),
-    verticality: s(2),
-    gravityChaos: s(3),
-    palette: s(4),
-    absurdity: s(5),
-    instability: s(6),
-  };
-  if (Object.values(sliders).some((v) => v > 100)) return null;
-  return { version: Number(read(0n, 8n)), seed: read(8n, 64n), sliders };
+  if (crc8(bytes) !== Number(read(dataBits, 8n))) return null;
+  const values: number[] = [];
+  let archetype = 0;
+  let seed: bigint;
+  if (legacy) {
+    seed = read(8n, 64n);
+    for (let i = 0; i < 7; i++) values.push(Number(read(72n + BigInt(i * 7), 7n)));
+  } else {
+    archetype = Number(read(8n, 3n));
+    seed = read(11n, 64n);
+    let n = read(75n, 47n);
+    if (n >= 101n ** 7n || archetype > ARCHETYPE_BELT) return null;
+    for (let i = 0; i < 7; i++) {
+      values.unshift(Number(n % 101n));
+      n /= 101n;
+    }
+  }
+  const [enclosure, density, verticality, gravityChaos, palette, absurdity, instability] = values as [number, number, number, number, number, number, number];
+  const sliders: WorldSliders = { enclosure, density, verticality, gravityChaos, palette, absurdity, instability };
+  if (values.some((v) => v > 100)) return null;
+  return { version, seed, sliders, archetype };
 }
 
 /** World-type weights from Enclosure (0..100), as the generator blends its openness fields. */
@@ -232,7 +256,8 @@ export function atmosphereFor(code: string, bounds?: ArrayLike<number>): Atmosph
     for (let i = 0; i < code.length; i++) seed32 = (Math.imul(seed32, 31) + code.charCodeAt(i)) >>> 0;
   }
   const rnd = seededRandom(seed32 ^ 0x5b7c1a93);
-  const weights = worldWeights(world?.sliders.enclosure ?? 50);
+  // Asteroid belts are open space whatever their Enclosure (it sizes the asteroids).
+  const weights = world?.archetype === ARCHETYPE_BELT ? worldWeights(0) : worldWeights(world?.sliders.enclosure ?? 50);
   const palette = world?.sliders.palette ?? 0;
 
   let room: Atmosphere["room"] = null;
@@ -280,7 +305,9 @@ export function atmosphereFor(code: string, bounds?: ArrayLike<number>): Atmosph
   const nadir = blend3(weights, spaceNadir, [0.045, 0.036, 0.03], [0.09, 0.055, 0.025]);
   const fogColor = mixRgb(horizon, mixRgb(zenith, nadir, 0.5), 0.4);
 
-  const fogDensity = blend(weights, 0.0085, 0.012, 0.014);
+  // Asteroid belts are seen across 300 u (the ring, the exit at the centre):
+  // thinner haze than a 256 u level's open sky.
+  const fogDensity = blend(weights, 0.0085, 0.012, 0.014) * (world?.archetype === ARCHETYPE_BELT ? 0.4 : 1);
   const heightFog = {
     density: blend(weights, 0, 0.015, 0.012),
     falloff: blend(weights, 0.1, 1 / 14, 1 / 10),

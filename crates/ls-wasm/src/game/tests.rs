@@ -222,7 +222,7 @@ fn practice_shell_puts_the_squeeze_wall_on_the_terrain() {
 #[test]
 fn practice_rejects_bad_share_codes() {
     assert!(GameCore::practice("LS00-nope", 1).is_err());
-    let typo = "LS0C-0000-0000-000A-K4M7-8001-8F1Y";
+    let typo = "LS0G-0000-0000-0001-AC59-T2XM-57ND";
     assert!(GameCore::practice(typo, 1)
         .unwrap_err()
         .contains("checksum"));

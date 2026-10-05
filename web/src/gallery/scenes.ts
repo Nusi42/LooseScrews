@@ -3,13 +3,34 @@
 // (gallery.ts) and by tools/browser-smoke/gallery.mjs (Node strips the types).
 
 import type { SceneDecor } from "./decor.ts";
+import { LEVEL_SCENES } from "./levelScenes.ts";
 import type { ModeSceneKind } from "./modeScenes.ts";
 
-/** World of a scene: the share code is `randomShareCode(seed, 0, enclosure, density)`. */
+/**
+ * World of a scene: the share code is `randomShareCode(seed, 0, enclosure,
+ * density)`, or with any of the optional sliders or an archetype
+ * `worldShareCode(seed, 0, sliders, archetype)` (the same seed; the other
+ * sliders at their defaults).
+ */
 export interface GalleryWorld {
   seed: number;
   enclosure: number;
   density: number;
+  verticality?: number;
+  gravityChaos?: number;
+  palette?: number;
+  /** Level archetype (ls-math `Archetype` index): 0 classic (default), 1 asteroid belt. */
+  archetype?: number;
+}
+
+/** The seven sliders of a scene world in share-code order (ls-worldgen defaults for the rest). */
+export function worldSliders(w: GalleryWorld): number[] {
+  return [w.enclosure, w.density, w.verticality ?? 50, w.gravityChaos ?? 0, w.palette ?? 0, 20, 30];
+}
+
+/** Whether the world needs `worldShareCode` (sliders beyond Enclosure and Density, or a belt). */
+export function needsWorldCode(w: GalleryWorld): boolean {
+  return w.verticality !== undefined || w.gravityChaos !== undefined || w.palette !== undefined || (w.archetype ?? 0) !== 0;
 }
 
 /**
@@ -21,9 +42,14 @@ export interface GalleryWorld {
  * from the spawn point toward the world's sun or planet
  * (renderer/atmosphere.ts, VQ7), the target a little off the screen centre;
  * `shade` stands in rock's shadow and looks at rock the sun reaches through
- * an opening (shadePose.ts, VQ9; falls back to `tunnel`).
+ * an opening (shadePose.ts, VQ9; falls back to `tunnel`). Level scenes
+ * (levelScenes.ts, M4 A1): `well` inside a gravity well's hollow facing its
+ * core, `belt` over the asteroid belt's outer edge, `slot` behind a belt
+ * start slot looking prograde, `centre` across the level box at mid
+ * height, `rise` up the box from near its floor (the first three fall back
+ * to `vista` without the level's sites).
  */
-export type PoseKind = "closeup" | "tunnel" | "vista" | "border" | "sun" | "planet" | "shade" | "sunwall";
+export type PoseKind = "closeup" | "tunnel" | "vista" | "border" | "sun" | "planet" | "shade" | "sunwall" | "well" | "belt" | "slot" | "centre" | "rise";
 
 /**
  * What is placed in front of the camera besides terrain. `fit` carves a
@@ -273,6 +299,8 @@ export const SCENES: readonly GalleryScene[] = [
   { id: "start-flythrough", title: "Start flythrough, later in the flight", covers: "first impression", world: BACKDROP, pose: "tunnel", content: "none", time: 24.0, page: "start" },
   { id: "lobby-flythrough", title: "Lobby card over the cinematic flight", covers: "first impression", world: BACKDROP, pose: "tunnel", content: "none", time: 16.0, page: "lobby" },
   { id: "ship-bay", title: "Ship bay: the four hulls turning", covers: "first impression, ships", world: BACKDROP, pose: "tunnel", content: "none", time: 6.0, page: "bay" },
+  // M4 A1: level shapes, gravity wells and the asteroid belt (generator version 4).
+  ...LEVEL_SCENES,
 ];
 
 export function sceneById(id: string): GalleryScene | undefined {

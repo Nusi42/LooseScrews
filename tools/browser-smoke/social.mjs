@@ -21,8 +21,8 @@
 import { join } from "node:path";
 
 /** A world for the duel (the challenger's seed) and one for the custom match. */
-const DUEL_SEED = "LS0C-0000-00VT-PVXV-WPA6-8001-8F6G";
-const CUSTOM_WORLD = "LS0C-0000-288N-4N6N-3RS6-8001-8F20";
+const DUEL_SEED = "LS0G-0000-003F-AVFQ-FJ4T-QG0B-G6X3";
+const CUSTOM_WORLD = "LS0G-0000-0912-MJMT-MEK8-TJ6Z-CJPF";
 
 /**
  * Runs the phase. `h` carries smoke.mjs's helpers and state (see the call in

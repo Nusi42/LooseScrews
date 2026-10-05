@@ -51,7 +51,9 @@ pub fn hex(bytes: &[u8]) -> String {
 /// SHA-256 of `Generator::sample` bits over a lattice with spacing `step`
 /// (offset 0.37 u so samples avoid exact grid planes), covering the level
 /// box plus one step outside it, followed by the Heist site's bits (core,
-/// radii, access point, extraction zones; generator version 3).
+/// radii, access point, extraction zones; generator version 3), the
+/// archetype, the gravity well sites and the belt site (slots, pickup
+/// points, boulder orbits; generator version 4).
 pub fn sdf_hash(gen: &Generator, step: f32) -> [u8; 32] {
     let b = gen.bounds();
     let mut h = Sha256::new();
@@ -82,13 +84,52 @@ pub fn sdf_hash(gen: &Generator, step: f32) -> [u8; 32] {
         }
         h.update([s.surface as u8, s.extraction[0].team, s.extraction[1].team]);
     }
+    // Generator version 4: the level archetype, the gravity well sites and
+    // the belt site.
+    h.update([gen.archetype().index()]);
+    for w in gen.gravity_wells() {
+        let mut floats = w.pos.to_array().to_vec();
+        floats.extend([w.core_radius, w.hollow_radius, w.strength, w.range]);
+        for f in floats {
+            h.update(f.to_bits().to_le_bytes());
+        }
+        h.update([w.kind as u8]);
+    }
+    if let Some(b) = gen.belt() {
+        let mut floats = b.center.to_array().to_vec();
+        floats.extend([
+            b.inner_radius,
+            b.outer_radius,
+            b.half_thickness,
+            b.cocoon_radius,
+            b.exit_radius,
+            b.gate_inner_radius,
+            b.gate_outer_radius,
+        ]);
+        for slot in &b.slots {
+            floats.extend(slot.pos.to_array());
+            floats.extend(slot.orientation.to_array());
+        }
+        for p in &b.pickup_points {
+            floats.extend(p.to_array());
+        }
+        for o in &b.boulders {
+            floats.extend([o.radius, o.height, o.phase, o.angular_speed, o.size]);
+            floats.extend(o.tumble_axis.to_array());
+            floats.push(o.tumble_speed);
+        }
+        for f in floats {
+            h.update(f.to_bits().to_le_bytes());
+        }
+    }
     h.finalize().into()
 }
 
 /// Runs the full golden procedure for a share code:
 ///
 /// 1. SDF lattice hash ([`sdf_hash`] with [`SDF_STEP`]).
-/// 2. Probe point: from the first open point near the room centre
+/// 2. Probe point: from the first open point near the room centre (belt
+///    levels: near start slot 0)
 ///    ([`ChunkStore::find_open_point`], clearance 1.5 u), raycast along `(0.3, -1, 0.2)`, then
 ///    `+X`, `-Z`, `(-1, 0.4, 0.1)` until one hits; the probe chunk contains
 ///    the hit. Hash its surface-nets and dual-contouring meshes.
@@ -99,10 +140,13 @@ pub fn golden_hashes(code: &ShareCode) -> Result<GoldenHashes, WorldgenError> {
     let gen = Generator::from_code(code)?;
     let sdf = sdf_hash(&gen, SDF_STEP);
     let mut store = ChunkStore::new(gen);
-    let room = store.generator().room();
-    let origin = store
-        .find_open_point(room.center(), 1.5, 48)
-        .unwrap_or(room.center());
+    // Belt levels probe from start slot 0 (the room centre is the empty
+    // cocoon).
+    let start = match store.generator().belt() {
+        Some(b) => b.slots[0].pos,
+        None => store.generator().room().center(),
+    };
+    let origin = store.find_open_point(start, 1.5, 48).unwrap_or(start);
     let (hit, normal) = [
         Vec3::new(0.3, -1.0, 0.2),
         Vec3::X,

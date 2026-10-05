@@ -66,15 +66,19 @@ Reviewers check these rules; the tests below catch what slips through.
 
 | Hash | What it covers |
 | --- | --- |
-| `sdf` | `Generator::sample` bits on an 8 u lattice (offset 0.37 u) over the level box plus one step, then the Heist site's bits (core, radii, access point, extraction zones; generator version 3) |
-| `surface_nets` | the surface-nets mesh of a probe chunk (found by raycasting from an open point near the room centre) |
+| `sdf` | `Generator::sample` bits on an 8 u lattice (offset 0.37 u) over the level box plus one step, then the Heist site's bits (core, radii, access point, extraction zones; generator version 3), then the archetype, the gravity well sites and the belt site (slots, pickup points, boulder orbits; generator version 4) |
+| `surface_nets` | the surface-nets mesh of a probe chunk (found by raycasting from an open point near the room centre; on belt levels near start slot 0) |
 | `dual_contouring` | the dual-contouring mesh of the same chunk |
 | `edited` | surface-nets meshes of every dirty chunk after a 3 u crater, a 1.5 u added rock and a 4 u team-1 paint splat |
 
 The fixture `crates/ls-worldgen/tests/fixtures/golden_hashes.txt` holds the expected hex
-digests for seven share codes (open sky, sky/cavern mix, caverns, cavern/mine mix, dense mines,
-every slider at 100, and the Heist world added with generator version 3). `tests/golden.rs`
-checks them:
+digests for thirteen share codes (open sky, sky/cavern mix, caverns, cavern/mine mix, dense
+mines, every slider at 100 (the tall box with gravity wells), the Heist world added with
+generator version 3, and with version 4 one world for each other level shape, a default box
+with seven gravity wells and two asteroid belts, one with shepherd moons). `tests/golden.rs`
+checks them (`golden_list_covers_shapes_wells_and_belts` keeps the list covering every shape,
+seven wells and both belts), and `tools/determinism-check.mjs` checks the same codes in the
+WASM build:
 
 ```sh
 cargo test -p ls-worldgen --release --test golden
@@ -88,6 +92,15 @@ commit. VQ3a (snapped vertices, continuous normals, baked ambient occlusion) did
 `surface_nets` and `edited`; `Mesh::hash` covers the per-vertex occlusion when a mesh carries
 it. The mesher's square roots use `f32::sqrt` (correctly rounded, the same bits as
 `ls_math::det::sqrt`).
+
+Generator version 4 (M4 A1) changed every level: the five level boxes and inner structure of
+Verticality, gravity well sites (Gravity Chaos), the team 2/3 caverns, the upper hub layer of
+tall levels, the level archetype field in the share code (sliders packed base-101, still 26
+symbols) and the asteroid belt archetype. The belt's 8-fold rotation and plane mirror are
+exact in the generator field to rounding: rotations by multiples of 45 degrees use exact
+sines and cosines (0, 1, `sqrt(1/2)`) with the products summed in `f64`
+(`ls_math::level::rotate_wedges`), and `belt::tests::field_has_eightfold_rotation_and_plane_mirror_symmetry`
+holds the field at 10 000 points to 1e-4 u of its rotated and mirrored copies.
 
 The rock material field (`ls_worldgen::material`) is not part of the SDF, so it is not in the
 golden fixture: `material::tests::material_field_hash_is_pinned` pins it with a constant and

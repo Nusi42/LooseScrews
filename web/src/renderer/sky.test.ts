@@ -44,7 +44,7 @@ test("the environment cube has a full mip chain", () => {
   assert.equal(ENV_SIZE >> (ENV_MIPS - 1), 1);
 });
 
-const SKY = atmosphereFor("LS0C-0000-0000-0000-8006-8001-8F9M", [0, 0, 0, 256, 128, 256]);
+const SKY = atmosphereFor("LS0G-0000-0000-0000-1001-6RFX-250V", [0, 0, 0, 256, 128, 256]);
 
 test("packSkyUniforms: camera basis scaled by the field of view, pixel size, sun, planet, room, band", () => {
   const cam = { position: { x: 100, y: 60, z: 120 }, orientation: q.identity(), fovY: Math.PI / 2 };

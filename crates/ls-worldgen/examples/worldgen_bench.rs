@@ -5,6 +5,10 @@
 //! ```
 //!
 //! - generation: `generate_all` per slider mix, and ms per chunk;
+//! - level shapes and belts (generator version 4): generation, and
+//!   generation plus surface nets of every chunk, for the five Verticality
+//!   boxes, gravity wells and two asteroid belts, against the default
+//!   classic level (M4 A1: a belt at most 25 % slower);
 //! - remesh after 1 and after 200 craters, with every chunk generated (the
 //!   game's case) and lazily (a fresh store that replays 200 craters first);
 //! - `ChunkStore::eval` cost next to 0 and 200 craters;
@@ -14,7 +18,7 @@ use std::time::Instant;
 
 use ls_worldgen::ls_math::terrain::{TerrainEdit, TerrainQuery};
 use ls_worldgen::ls_math::{det, SplitMix64, Vec3};
-use ls_worldgen::{ChunkCoord, ChunkStore, Generator, Sliders};
+use ls_worldgen::{Archetype, ChunkCoord, ChunkStore, Generator, Sliders};
 
 fn ms(t: Instant) -> f64 {
     t.elapsed().as_secs_f64() * 1e3
@@ -104,7 +108,79 @@ fn per_sample_costs() {
     }
 }
 
+/// Generation (and generation plus meshing) of the version 4 level shapes
+/// and belts, relative to the default classic level.
+fn level_shapes() {
+    println!("== level shapes and belts (generate_all; + surface nets of every chunk) ==");
+    let with = |e: u8, d: u8, v: u8, g: u8| Sliders {
+        verticality: v,
+        gravity_chaos: g,
+        ..Sliders::new(e, d)
+    };
+    let worlds = [
+        ("default classic", Archetype::Classic, with(50, 40, 50, 0)),
+        ("flat [10,2,10]", Archetype::Classic, with(50, 40, 5, 0)),
+        ("low [9,3,9]", Archetype::Classic, with(50, 40, 30, 0)),
+        ("high [7,5,7]", Archetype::Classic, with(50, 40, 70, 0)),
+        ("tall [6,7,6]", Archetype::Classic, with(50, 40, 95, 0)),
+        ("7 wells", Archetype::Classic, with(50, 40, 50, 100)),
+        ("belt default", Archetype::Belt, with(50, 40, 50, 0)),
+        ("belt dense", Archetype::Belt, with(100, 100, 100, 100)),
+    ];
+    let mut base = (0.0, 0.0);
+    for (name, archetype, sliders) in worlds {
+        let gen = Generator::with_archetype(2024, sliders, archetype);
+        let chunks = gen.size_chunks().iter().product::<i32>() as f64;
+        let gen_ms = best_of(3, || {
+            let mut s = ChunkStore::new(gen.clone());
+            s.generate_all();
+            std::hint::black_box(&s);
+        });
+        let mesh_ms = best_of(2, || {
+            let mut s = ChunkStore::new(gen.clone());
+            s.generate_all();
+            for c in s.chunk_coords() {
+                std::hint::black_box(s.mesh_surface_nets(c));
+            }
+        });
+        if base.0 == 0.0 {
+            base = (gen_ms, mesh_ms);
+        }
+        // Raw generator cost per sample over the whole box.
+        let size = gen.bounds().size();
+        let mut rng = SplitMix64::new(3);
+        let pts: Vec<Vec3> = (0..200_000)
+            .map(|_| {
+                Vec3::new(
+                    rng.next_f32() * size.x,
+                    rng.next_f32() * size.y,
+                    rng.next_f32() * size.z,
+                )
+            })
+            .collect();
+        let per = best_of(3, || {
+            let mut acc = 0.0f32;
+            for p in &pts {
+                acc += gen.sample(*p);
+            }
+            std::hint::black_box(acc);
+        }) * 1e6
+            / pts.len() as f64;
+        println!(
+            "{name:16} {:3} chunks: generate {gen_ms:7.1} ms ({:+5.1} %), + mesh {mesh_ms:7.1} ms ({:+5.1} %), sample {per:.0} ns",
+            chunks,
+            (gen_ms / base.0 - 1.0) * 100.0,
+            (mesh_ms / base.1 - 1.0) * 100.0
+        );
+    }
+}
+
 fn main() {
+    if std::env::args().any(|a| a == "--shapes") {
+        level_shapes();
+        return;
+    }
+    level_shapes();
     println!("== generation (generate_all, whole 8x4x8 level) ==");
     for (seed, e, d) in [
         (2024u64, 50u8, 60u8),

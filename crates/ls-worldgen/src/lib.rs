@@ -25,6 +25,7 @@
 //! Changing generator output requires bumping [`GENERATOR_VERSION`] and
 //! re-blessing the golden hashes (`tests/fixtures/golden_hashes.txt`).
 
+pub mod belt;
 pub mod chunk;
 pub mod connectivity;
 pub mod generator;
@@ -36,6 +37,7 @@ pub mod network;
 pub mod noise;
 pub mod sharecode;
 pub mod sliders;
+pub mod wells;
 
 pub use chunk::{ChunkCoord, ChunkStore, PaintCoverage};
 pub use connectivity::ClearanceGrid;
@@ -62,7 +64,7 @@ pub use ls_math::terrain::SurfaceStates;
 /// Version of the generator algorithm. Stored in every share code; bump it
 /// whenever [`Generator::sample`] output changes. Version 3 (M3) added the
 /// Heist site (core vein chamber and extraction caverns, [`HeistSite`]).
-pub const GENERATOR_VERSION: u8 = 3;
+pub const GENERATOR_VERSION: u8 = 4;
 
 /// Cells per chunk along each axis (1 cell = 1 u).
 pub const CHUNK_CELLS: i32 = 32;

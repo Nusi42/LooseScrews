@@ -19,9 +19,10 @@ use ls_worldgen::ChunkCoord;
 
 /// Extra distance (u) beyond the view radius before a mesh is dropped.
 pub const UNLOAD_MARGIN: f32 = 32.0;
-/// Default view radius (u); the whole default 256 x 128 x 256 level fits in
-/// about 190 u from its centre.
-pub const DEFAULT_VIEW_RADIUS: f32 = 224.0;
+/// Default view radius (u): every level box fits in it from its centre
+/// (the default 256 x 128 x 256 level within about 190 u, the flat
+/// 320 x 64 x 320 one within 229 u, the belt's 320 x 96 x 320 within 231 u).
+pub const DEFAULT_VIEW_RADIUS: f32 = 240.0;
 
 /// See the module docs.
 #[derive(Debug, Clone)]

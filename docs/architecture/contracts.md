@@ -18,8 +18,8 @@ depth: [determinism.md](determinism.md).
 | Length | 1 u = one ship length (`f32`) |
 | Time | `Tick(u64)` at `TICK_HZ = 60`; `DT = 1.0 / 60.0` (`f32`, bits `0x3c888889`) |
 | Durations from data | seconds in RON, converted with `Tick::ticks_for_secs` |
-| Level box | `ls_worldgen::Generator::bounds()`: `[0,256] x [0,128] x [0,256]` u at the default size, min corner at the origin (not centred); sealed by 2 u walls, outside counts as solid |
-| Connection network | Since generator version 2 (unchanged in 3): every level carves 8 caverns (4 x 2 grid; the outer columns in the team spawn zones) and 9 + 3 tunnels of radius 4 u linking them, applied last as `max(terrain, carve)` (`ls_worldgen::network`); tunnel centre lines keep at least 3 u of clearance. `ls_game::setup` only places spawns and pickups with a straight 1.5 u (`CONNECT_MARGIN`) link to it |
+| Level box | `ls_worldgen::Generator::bounds()`, min corner at the origin (not centred); sealed by 2 u walls, outside counts as solid. Generator version 4: one of five boxes by Verticality (`[0,256] x [0,128] x [0,256]` u at 40-59) or the belt box `[0,320] x [0,96] x [0,320]` u (see "Levels" below); readers take the real bounds |
+| Connection network | Since generator version 2: every classic level carves 8 caverns (4 x 2 grid; the outer columns in the team spawn zones) and 9 + 3 tunnels of radius 4 u linking them, applied last as `max(terrain, carve)` (`ls_worldgen::network`); version 4 adds a team 2/3 cavern at each z end (2 tunnels each) and, from Verticality 60, an upper layer of 8 hubs with 11 more tunnels. Tunnel centre lines keep at least 3 u of clearance. `ls_game::setup` only places spawns and pickups with a straight 1.5 u (`CONNECT_MARGIN`) link to it. Belt levels have no network |
 
 ## Determinism
 
@@ -50,8 +50,12 @@ tests are in [determinism.md](determinism.md). The contract part is the RNG stre
   earlier derived seeds are unchanged. The Heist site (generator version 3: core vein
   chamber, vein tunnels, extraction caverns; `Network::heist`) draws from a second
   `SplitMix64` seeded with `Seeds::connect ^ 0x4845_4953_545f_5349` ("HEIST_SI"), so the
-  version 2 hubs and tunnels stay where they were. The Heist mode's collapsing mine draws
-  from `Ctx::rng` (key `0x4845_4953_5443_4f4c`, "HEISTCOL").
+  version 2 hubs and tunnels stay where they were. Generator version 4 adds three more
+  `SplitMix64` streams off `Seeds::connect`: the team 2/3 caverns (`^ 0x5445_414d_4341_5645`,
+  "TEAMCAVE"), the upper hub layer of tall levels (`^ 0x5550_5045_5248_5542`, "UPPERHUB") and
+  the gravity well sites (`^ 0x4752_4156_5745_4c4c`, "GRAVWELL"), and the asteroid belt draws
+  from `SplitMix64(seed ^ 0x4245_4c54_5f47_454e)` ("BELT_GEN"). The Heist mode's collapsing mine
+  draws from `Ctx::rng` (key `0x4845_4953_5443_4f4c`, "HEISTCOL").
   (`ls-bots` uses its own stream for bot behaviour; it is not part of the deterministic core.)
 - `det::tests::golden_bits` and the RNG reference-vector tests run on native and on wasm32
   (commands in [determinism.md](determinism.md#the-wasm-cross-check)); they must stay

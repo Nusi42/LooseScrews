@@ -1,8 +1,12 @@
 //! Playable connectivity on every slider combination: over a sweep of seeds
 //! and an Enclosure x Density grid, a flood fill over a coarse clearance
 //! lattice ([`ClearanceGrid::level`]) must join both team spawn regions, the
-//! level centre, every network hub and the Heist site (core vein access and
-//! extraction zones), and every tunnel keeps its clearance.
+//! level centre, every network hub (the team 2/3 caverns and the upper layer
+//! of tall levels included), the Heist site (core vein access and extraction
+//! zones) and the hollow of every gravity well, and every tunnel keeps its
+//! clearance. Each Enclosure x Density cell also takes one of the five
+//! level shapes (Verticality) and a Gravity Chaos value, in turn, so the
+//! sweep covers every shape with wells.
 //!
 //! Debug and wasm32 builds sweep one seed and a 4 x 4 grid; native release
 //! builds sweep 7 seeds and the 5 x 5 grid (0, 25, 50, 75, 100):
@@ -41,11 +45,22 @@ fn steps() -> &'static [u8] {
     }
 }
 
-fn check_world(seed: u64, e: u8, d: u8) {
-    let gen = Generator::new(seed, Sliders::new(e, d));
-    let tag = format!("seed {seed} enclosure {e} density {d}");
+/// Verticality values (one per level shape) and Gravity Chaos values the
+/// sweep cycles through.
+const VERTICALITY: [u8; 5] = [5, 30, 50, 70, 95];
+const GRAVITY: [u8; 3] = [0, 45, 100];
+
+fn check_world(seed: u64, e: u8, d: u8, v: u8, gc: u8) {
+    let sliders = Sliders {
+        verticality: v,
+        gravity_chaos: gc,
+        ..Sliders::new(e, d)
+    };
+    let gen = Generator::new(seed, sliders);
+    let tag = format!("seed {seed} enclosure {e} density {d} verticality {v} gravity {gc}");
     let net = gen.network();
-    assert_eq!(net.hubs().len(), 8, "{tag}");
+    let layers = if v >= 60 { 18 } else { 10 };
+    assert_eq!(net.hubs().len(), layers, "{tag}");
 
     // Tunnels: at least TUNNEL_CLEARANCE of free space along every centre
     // line (sampled every 0.5 u), hubs even more.
@@ -72,6 +87,24 @@ fn check_world(seed: u64, e: u8, d: u8) {
             grid.nearest_component(*h, CONNECT_STEP),
             Some(main),
             "{tag}: hub {h:?} is cut off"
+        );
+    }
+    // Every well's hollow joins the main volume: a ring of points between
+    // the core and the hollow's edge, at least one of them in it.
+    for w in gen.gravity_wells() {
+        let r = 0.5 * (w.core_radius + w.hollow_radius);
+        let ring = [
+            Vec3::X,
+            Vec3::NEG_X,
+            Vec3::Y,
+            Vec3::NEG_Y,
+            Vec3::Z,
+            Vec3::NEG_Z,
+        ];
+        assert!(
+            ring.iter()
+                .any(|d| grid.nearest_component(w.pos + *d * r, CONNECT_STEP) == Some(main)),
+            "{tag}: well {w:?} is cut off"
         );
     }
     // The Heist core vein (its access point) and both extraction zones are
@@ -125,10 +158,14 @@ fn check_world(seed: u64, e: u8, d: u8) {
 
 #[test]
 fn every_slider_combination_connects_both_team_regions() {
+    let mut i = 0usize;
     for &seed in seeds() {
         for &e in steps() {
             for &d in steps() {
-                check_world(seed ^ ((e as u64) << 8 | d as u64), e, d);
+                let v = VERTICALITY[i % VERTICALITY.len()];
+                let gc = GRAVITY[i % GRAVITY.len()];
+                i += 1;
+                check_world(seed ^ ((e as u64) << 8 | d as u64), e, d, v, gc);
             }
         }
     }

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# End-to-end run: builds release ls-server + ls-bots and the web client, then
+# End-to-end run: builds release ls-server, ls-bots, ls-directory (--directory local) and the web client, then
 # runs tools/e2e.mjs (server on a free port with a fixed share code and
 # data/rulesets/paint_the_void.ron, 7 bots for 90 s, log checks, clean shutdown).
 # Usage: tools/e2e.sh [--skip-build] [e2e.mjs options, e.g. --duration 120 --count 7]
@@ -27,8 +27,8 @@ exe=""
 case "$(uname -s)" in MINGW* | MSYS* | CYGWIN*) exe=".exe" ;; esac
 
 if [ "$build" = 1 ]; then
-  step "cargo build --release -p ls-server -p ls-bots"
-  cargo build --release -p ls-server -p ls-bots
+  step "cargo build --release -p ls-server -p ls-bots -p ls-directory"
+  cargo build --release -p ls-server -p ls-bots -p ls-directory
 
   step "web: build (ls-wasm package + vite)"
   cd "$ROOT/web"

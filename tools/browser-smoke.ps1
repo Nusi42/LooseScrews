@@ -1,4 +1,4 @@
-# Browser smoke test: builds the web client and the release ls-server, then runs
+# Browser smoke test: builds the web client and the release ls-server and ls-directory, then runs
 # tools/browser-smoke/smoke.mjs (headless Chrome/Edge with WebGPU via puppeteer-core:
 # practice render, online flight with weapons fired, rule set editor; screenshots and
 # logs in target/browser-smoke). Skips with a message when no Chrome/Edge is installed.
@@ -41,8 +41,8 @@ try {
     $Exe = if ($IsWindows -or $env:OS -eq 'Windows_NT') { '.exe' } else { '' }
 
     if (-not $SkipBuild) {
-        Step 'cargo build --release -p ls-server'
-        Invoke-Checked cargo @('build', '--release', '-p', 'ls-server')
+        Step 'cargo build --release -p ls-server -p ls-directory'
+        Invoke-Checked cargo @('build', '--release', '-p', 'ls-server', '-p', 'ls-directory')
 
         Step 'web: build (ls-wasm package + vite)'
         Push-Location (Join-Path $Root 'web')

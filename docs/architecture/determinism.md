@@ -117,6 +117,25 @@ after a deliberate change.
 When a behaviour change re-blesses `REPLAY_GOLDEN_HASH` without a `data/` change, also bump
 `ls_sim::SIM_BEHAVIOR_VERSION` (see [below](#data-hash-and-behaviour-version)).
 
+### Per-mode replay hashes
+
+`ls_sim::golden` (M3, C3) plays one 40 s scripted match per built-in rule set (every mode,
+Instagib Brawl, the duel, the sandbox): 8 ships with pseudo-random inputs aiming at the nearest
+enemy, in a box arena with a rock knot and Heist extraction zones, under a `ShelledTerrain`
+(The Squeeze's walls); The Squeeze's phases, the Last Color Standing stalemate and the reactor
+fuse are shortened so their rules run inside the 40 s. The hashes (the per-second state hashes
+folded with the final one) live in `crates/ls-sim/tests/fixtures/mode_replays.txt`:
+`golden::tests::mode_replays_match_the_fixture` checks them on native and on wasm32, and
+`ls-wasm` exports them (`modeReplayHashes`) so `tools/determinism-check.mjs` compares the
+browser build under Node. They are separate from the tailored per-mode goldens in `modes/*`.
+After a deliberate change of simulation behaviour, tuning or `data/` (any of them can change
+these hashes), re-bless on native and say so in the commit:
+
+```sh
+LS_BLESS_MODE_REPLAYS=1 cargo test -p ls-sim --lib golden
+# PowerShell: $env:LS_BLESS_MODE_REPLAYS=1; cargo test -p ls-sim --lib golden; Remove-Item Env:LS_BLESS_MODE_REPLAYS
+```
+
 The scripted match must keep exercising the systems: `replay_same_inputs_same_state_hash`
 asserts that it fires, damages, craters, kills, respawns, uses gadgets, takes pickups and
 switches paint colours. Its weapon selections are drawn from the weapon table's length, so
@@ -192,8 +211,8 @@ wasm32 too.
 | --- | --- |
 | Generator, SDF, mesher, edit application | `GENERATOR_VERSION`, worldgen golden fixture, hard-coded share codes |
 | Rock material field | `material_field_hash_is_pinned` |
-| Sim behaviour without data change | `REPLAY_GOLDEN_HASH` and `SIM_BEHAVIOR_VERSION` |
-| Data file (numbers, new weapon or gadget) | `REPLAY_GOLDEN_HASH`; the web catalog if names, slots, costs, levels, registries or the default rule set changed |
+| Sim behaviour without data change | `REPLAY_GOLDEN_HASH`, the per-mode replay fixture (`LS_BLESS_MODE_REPLAYS=1`) and `SIM_BEHAVIOR_VERSION` |
+| Data file (numbers, new weapon or gadget) | `REPLAY_GOLDEN_HASH`, the per-mode replay fixture; the web catalog if names, slots, costs, levels, registries or the default rule set changed |
 | Wire format | `ls_net::PROTOCOL_VERSION` (not a hash, but the same idea: old clients are refused) |
 
 Never re-bless to make an unexplained mismatch go away: first find out why the output changed.
@@ -224,7 +243,8 @@ Two independent checks run the same code on wasm32 under Node:
    Do not add `-q`: cargo forwards `--quiet` to `wasm-bindgen-test-runner`, which then fails.
 2. **The shipped package against the native fixture.** `tools/determinism-check.mjs` loads
    the real browser build of `ls-wasm` in Node, calls `goldenHashes(code)` for every code in the
-   native fixture and compares all four digests:
+   native fixture and compares all four digests, then `modeReplayHashes()` against
+   `crates/ls-sim/tests/fixtures/mode_replays.txt` (the [per-mode replays](#per-mode-replay-hashes)):
 
    ```sh
    cd web && npm run build:wasm && cd ..
@@ -232,10 +252,12 @@ Two independent checks run the same code on wasm32 under Node:
    ```
 
    `--pkg <dir>` points it at another wasm-bindgen output directory (for example one you built
-   with your own `CARGO_TARGET_DIR`), `--fixture <file>` at another fixture.
+   with your own `CARGO_TARGET_DIR`), `--fixture <file>` at another worldgen fixture,
+   `--mode-fixture <file>` at another mode replay fixture.
 
-Both run in `tools/ci.ps1` / `tools/ci.sh`. The sim replay hash is only covered by the first
-(`ls-wasm` does not export it).
+Both run in `tools/ci.ps1` / `tools/ci.sh`. `REPLAY_GOLDEN_HASH` and the tailored per-mode
+goldens in `modes/*` are only covered by the first (`ls-wasm` does not export them); the
+per-mode replay fixture by both.
 
 ## When a cross-check fails
 

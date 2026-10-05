@@ -30,6 +30,7 @@ pub mod data;
 pub mod entity;
 pub mod error;
 pub mod gadgets;
+pub mod golden;
 pub mod hash;
 pub mod input;
 pub mod mode;

@@ -32,6 +32,9 @@ cargo test -p ls-server --lib timing::tests::wait_until_is_accurate -- --ignored
 step "cargo test -p ls-bots --release (bot end-to-end tests are ignored in debug builds)"
 cargo test -p ls-bots --release
 
+step "cargo test -p ls-game --release (The Squeeze remesh benchmark, Hot Reactor 8-bot match, match-setup sweep)"
+cargo test -p ls-game --release
+
 step "unit tests on wasm32: ls-math, ls-net, ls-sim, ls-worldgen, ls-game (Node via wasm-bindgen-test-runner)"
 if command -v wasm-bindgen-test-runner >/dev/null 2>&1 && command -v node >/dev/null 2>&1; then
   CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=wasm-bindgen-test-runner \
@@ -63,7 +66,7 @@ elif ! node "$ROOT/tools/browser-smoke/smoke.mjs" --find-browser >/dev/null; the
   echo "skipped: no Chrome or Edge found (set LS_BROWSER to use another Chromium browser)"
 else
   cd "$ROOT"
-  cargo build --release -p ls-server
+  cargo build --release -p ls-server -p ls-directory
   # The web client was built above.
   "$ROOT/tools/browser-smoke.sh" --skip-build
 fi

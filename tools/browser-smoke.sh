@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Browser smoke test: builds the web client and the release ls-server, then runs
+# Browser smoke test: builds the web client and the release ls-server and ls-directory, then runs
 # tools/browser-smoke/smoke.mjs (headless Chrome/Edge with WebGPU via puppeteer-core:
 # practice render, online flight with weapons fired, rule set editor; screenshots and
 # logs in target/browser-smoke). Skips with a message when no Chrome/Edge is installed.
@@ -43,8 +43,8 @@ exe=""
 case "$(uname -s)" in MINGW* | MSYS* | CYGWIN*) exe=".exe" ;; esac
 
 if [ "$build" = 1 ]; then
-  step "cargo build --release -p ls-server"
-  cargo build --release -p ls-server
+  step "cargo build --release -p ls-server -p ls-directory"
+  cargo build --release -p ls-server -p ls-directory
 
   step "web: build (ls-wasm package + vite)"
   cd "$ROOT/web"

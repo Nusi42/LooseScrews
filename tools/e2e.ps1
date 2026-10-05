@@ -1,4 +1,4 @@
-# End-to-end run: builds release ls-server + ls-bots and the web client, then
+# End-to-end run: builds release ls-server, ls-bots, ls-directory (--directory local) and the web client, then
 # runs tools/e2e.mjs (server on a free port with a fixed share code and
 # data/rulesets/paint_the_void.ron, 7 bots for 90 s, log checks, clean shutdown).
 # Usage: pwsh tools/e2e.ps1 [-SkipBuild] [e2e.mjs options, e.g. --duration 120 --count 7]
@@ -28,8 +28,8 @@ try {
     $Exe = if ($IsWindows -or $env:OS -eq 'Windows_NT') { '.exe' } else { '' }
 
     if (-not $SkipBuild) {
-        Step 'cargo build --release -p ls-server -p ls-bots'
-        Invoke-Checked cargo @('build', '--release', '-p', 'ls-server', '-p', 'ls-bots')
+        Step 'cargo build --release -p ls-server -p ls-bots -p ls-directory'
+        Invoke-Checked cargo @('build', '--release', '-p', 'ls-server', '-p', 'ls-bots', '-p', 'ls-directory')
 
         Step 'web: build (ls-wasm package + vite)'
         Push-Location (Join-Path $Root 'web')

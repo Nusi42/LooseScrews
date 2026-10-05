@@ -8,6 +8,12 @@
 //!   playing;
 //! - a duel challenge (local, and relayed through the directory) creates a
 //!   private two-player room with the challenger's seed.
+//!
+//! Load robustness (flaky under a parallel `cargo test` load before): the
+//! connections are read in the background ([`Client`]), pinging, so the
+//! server's 10 s idle timeout never drops a player the test holds while a
+//! loaded machine stretches the test, and room status (published by the sim
+//! thread at the end of the tick that sent a `Welcome`) is waited for.
 
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
@@ -99,17 +105,17 @@ async fn connect(
     ))
     .await
     .unwrap();
-    let w = next_welcome(&mut ws, name).await?;
+    let w = tokio::time::timeout(Duration::from_secs(60), next_welcome(&mut ws, name))
+        .await
+        .map_err(|_| format!("{name}: no Welcome in time"))??;
     Ok((ws, w))
 }
 
 /// Reads until the next `Welcome` (pinging so the connection stays up);
 /// `Err` on a `Reject` or `Disconnect`.
 async fn next_welcome(ws: &mut Ws, name: &str) -> Result<Welcome, String> {
-    let deadline = Instant::now() + Duration::from_secs(60);
     let mut last_ping = Instant::now();
     loop {
-        assert!(Instant::now() < deadline, "{name}: no Welcome in time");
         if last_ping.elapsed() > Duration::from_millis(500) {
             last_ping = Instant::now();
             let ping = Message::Ping {
@@ -133,6 +139,44 @@ async fn next_welcome(ws: &mut Ws, name: &str) -> Result<Welcome, String> {
             Ok(Some(Ok(_))) => {}
             other => return Err(format!("{name}: connection ended: {other:?}")),
         }
+    }
+}
+
+/// A connection read in the background: pings every 500 ms (the server
+/// drops a client silent for 10 s) and hands its `Welcome`s (or the end) to
+/// [`Client::next_welcome`]. Dropping it closes the connection.
+struct Client {
+    welcomes: tokio::sync::mpsc::UnboundedReceiver<Result<Welcome, String>>,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl Client {
+    fn new(mut ws: Ws, name: &str) -> Client {
+        let (tx, welcomes) = tokio::sync::mpsc::unbounded_channel();
+        let name = name.to_string();
+        let task = tokio::spawn(async move {
+            loop {
+                let w = next_welcome(&mut ws, &name).await;
+                let end = w.is_err();
+                if tx.send(w).is_err() || end {
+                    return;
+                }
+            }
+        });
+        Client { welcomes, task }
+    }
+
+    async fn next_welcome(&mut self) -> Result<Welcome, String> {
+        tokio::time::timeout(Duration::from_secs(60), self.welcomes.recv())
+            .await
+            .map_err(|_| "no Welcome in time".to_string())?
+            .unwrap_or_else(|| Err("connection task ended".into()))
+    }
+}
+
+impl Drop for Client {
+    fn drop(&mut self) {
+        self.task.abort();
     }
 }
 
@@ -178,7 +222,8 @@ async fn the_server_list_shows_two_local_servers() {
     }
     // One player on Alpha, present in its roster too.
     let alpha = servers[0].local_addr();
-    let (_ws, _) = connect(alpha, "pilot", None, None).await.unwrap();
+    let (ws, _) = connect(alpha, "pilot", None, None).await.unwrap();
+    let _ws = Client::new(ws, "pilot");
     post(
         alpha,
         "/api/presence",
@@ -260,11 +305,13 @@ async fn team_of(server: &ServerHandle, w: &Welcome) -> u8 {
 async fn an_invite_with_a_party_code_puts_friends_in_one_room_and_team() {
     let server = Server::start(config()).await.unwrap();
     let addr = server.local_addr();
-    let (_x, wx) = connect(addr, "stranger", None, None).await.unwrap();
+    let (x, wx) = connect(addr, "stranger", None, None).await.unwrap();
+    let _x = Client::new(x, "stranger");
 
     // The leader creates a party while playing in the public room: its
     // connection is tagged (player id), the invite link carries the code.
-    let (mut lead, wl) = connect(addr, "leader", None, None).await.unwrap();
+    let (lead, wl) = connect(addr, "leader", None, None).await.unwrap();
+    let mut lead = Client::new(lead, "leader");
     let party = post(addr, "/api/party", json!({"player": wl.player_id})).await;
     let code = party["party"].as_str().unwrap().to_string();
     assert!(code.starts_with("P-"), "{party}");
@@ -275,7 +322,8 @@ async fn an_invite_with_a_party_code_puts_friends_in_one_room_and_team() {
     // The friend opens the link: the Hello carries the party code (any
     // spelling) and lands on the leader's team.
     let lenient = code[2..].to_lowercase();
-    let (mut friend, wf) = connect(addr, "friend", None, Some(&lenient)).await.unwrap();
+    let (friend, wf) = connect(addr, "friend", None, Some(&lenient)).await.unwrap();
+    let mut friend = Client::new(friend, "friend");
     assert_eq!(wf.room_code, wl.room_code, "same room");
     assert_eq!(team_of(&server, &wf).await, team_of(&server, &wl).await);
     assert_eq!(wf.team, wl.team);
@@ -285,8 +333,8 @@ async fn an_invite_with_a_party_code_puts_friends_in_one_room_and_team() {
         .with_room(|room| room.world_mut().mode_mut().phase = MatchPhase::Ended { winner: None })
         .await
         .unwrap();
-    let l2 = next_welcome(&mut lead, "leader").await.unwrap();
-    let f2 = next_welcome(&mut friend, "friend").await.unwrap();
+    let l2 = lead.next_welcome().await.unwrap();
+    let f2 = friend.next_welcome().await.unwrap();
     assert_ne!(l2.epoch, wl.epoch);
     assert_eq!(l2.team, f2.team, "the party plays on one team");
 
@@ -304,17 +352,23 @@ async fn an_invite_with_a_party_code_puts_friends_in_one_room_and_team() {
     .await;
     let room = custom["room"].as_str().unwrap().to_string();
     let pcode = custom["party"].as_str().unwrap();
-    let (_a, wa) = connect(addr, "a", None, Some(pcode)).await.unwrap();
-    let (_b, wb) = connect(addr, "b", Some("R-000000"), Some(pcode))
+    let (a, wa) = connect(addr, "a", None, Some(pcode)).await.unwrap();
+    let _a = Client::new(a, "a");
+    let (b, wb) = connect(addr, "b", Some("R-000000"), Some(pcode))
         .await
         .unwrap();
+    let _b = Client::new(b, "b");
     assert_eq!(wa.room_code, room);
     assert_eq!(wb.room_code, room, "the party code wins over a room code");
     assert_eq!(wa.share_code, world);
     assert_eq!(wa.ruleset_name, RuleSet::sandbox_all_weapons().name);
-    let statuses = server.rooms();
-    let private = statuses.iter().find(|(s, _)| s.label == room).unwrap();
-    assert_eq!(private.0.players, 2);
+    // Room status is published at the end of the tick that welcomed b.
+    wait_for("the party room's status to count 2 players", async || {
+        let statuses = server.rooms();
+        let private = statuses.iter().find(|(s, _)| s.label == room)?;
+        (private.0.players == 2).then_some(())
+    })
+    .await;
     assert!(server.social().parties().len(Instant::now()) >= 2);
 
     // Unknown party codes are refused.
@@ -388,14 +442,22 @@ async fn a_duel_challenge_opens_a_private_two_player_room_with_the_challengers_s
 
     // Both join the room: two players on the challenger's world; a third
     // is turned away.
-    let (_a, wa) = connect(addr, "Ace", Some(&room), None).await.unwrap();
-    let (_b, wb) = connect(addr, "Bea", Some(&room), None).await.unwrap();
+    let (a, wa) = connect(addr, "Ace", Some(&room), None).await.unwrap();
+    let _a = Client::new(a, "Ace");
+    let (b, wb) = connect(addr, "Bea", Some(&room), None).await.unwrap();
+    let _b = Client::new(b, "Bea");
     assert_eq!(wa.share_code, world);
     assert_eq!(wb.share_code, world);
     assert_eq!(wa.room_code, room);
     let rules =
         RuleSet::from_ron(&wa.ruleset_name, std::str::from_utf8(&wa.ruleset).unwrap()).unwrap();
     assert_eq!(rules.mode.teams(), 0, "the duel rules: free-for-all");
+    wait_for("the duel room's status to count 2 players", async || {
+        let statuses = server.rooms();
+        let duel = statuses.iter().find(|(s, _)| s.label == room)?;
+        (duel.0.players == 2).then_some(())
+    })
+    .await;
     let statuses = server.rooms();
     let duel = statuses.iter().find(|(s, _)| s.label == room).unwrap();
     assert_eq!((duel.0.players, duel.0.max_players), (2, 2));

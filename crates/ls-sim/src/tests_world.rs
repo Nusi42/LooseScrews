@@ -404,6 +404,8 @@ fn cave_ins_follow_the_tuning_targets_and_never_happen_at_instability_0() {
     assert!((3..=5).contains(&at100), "Instability 100: {at100} craters");
     // Faster fire (every 0.75 s, the Bolt Rocket's interval) needs no more.
     let fast30 = craters_until_cave_in(30, 45, 30).unwrap();
+    let fast100 = craters_until_cave_in(100, 45, 30).unwrap();
+    println!("craters to a cave-in: Instability 30: {at30} (every 2 s), {fast30} (every 0.75 s); 100: {at100}, {fast100}");
     assert!(fast30 <= at30, "{fast30}");
     assert!(craters_until_cave_in(0, 30, 200).is_none());
     // Spread out (one per 16 u cell) they never add up.

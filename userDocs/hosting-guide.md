@@ -176,7 +176,8 @@ and carves a network of caverns and tunnels that links both teams' ends into eve
 plus the Heist core vein at the bottom and the extraction caverns at the top (every level has
 them; only Heist uses them). Of
 the sliders, **Enclosure** and **Density** shape the world and **Instability** sets how far a
-Tectonic Charge's cracks spread; the others have no effect yet.
+Tectonic Charge's cracks spread; **Palette** only changes the look in the browser (desaturated
+colours); the others have no effect yet.
 
 - **Keep a level:** start with `--code <code>`. Without `--code`, every server start builds a
   new random world. The server logs the code at startup ("match ready share_code=…").
@@ -825,7 +826,7 @@ player on another listed server is passed on by the directory.
 - **No admin commands** while running (kick, change world or rule set, end match). Restart the
   server with new flags; bans and tuning can change between matches through the balance list.
 - **No slider tool:** you can't create a share code with chosen slider values yet, and only
-  Enclosure, Density and Instability have an effect. The rule set's `absurdity` value has no
+  Enclosure, Density, Instability and (visually) Palette have an effect. The rule set's `absurdity` value has no
   effect yet.
 - **No custom TLS certificate** for WebTransport and no built-in HTTPS for the web page.
 - **No WebRTC fallback, desktop app, regional hosting or orchestration** (the design mentions

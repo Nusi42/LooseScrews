@@ -6,7 +6,7 @@ import { appendBox } from "../renderer/primitives.ts";
 import { durationsFromTicks, TimingWindow } from "../renderer/gpuTimer.ts";
 import { powerPreferenceFrom } from "../renderer/gpu.ts";
 import { formatDebugLines, formatGpuLine, type DebugInfo } from "../ui/debugOverlay.ts";
-import { pickPose, sceneContent, wantsGallery, LINEUP_RADII } from "./gallery.ts";
+import { pickPose, pickSunPose, sceneContent, wantsGallery, LINEUP_RADII } from "./gallery.ts";
 import {
   pickCloseup,
   pickLongest,
@@ -169,6 +169,33 @@ test("pickPose stands off the wall for a close-up and looks down the longest lin
   assert.deepEqual(tunnel.position, origin);
   const f = q.forward(tunnel.orientation);
   assert.ok(Math.abs(f.y) <= 0.5 + 1e-9, "near-horizontal");
+});
+
+test("sun pose: behind a rock, with the sun just clear of its edge", () => {
+  const h = 40;
+  const b = new MeshBuilder();
+  const t = () => NO_TEAM;
+  appendBox(b, 0, 0, -h - 0.5, h + 1, h + 1, 0.5, t); // far wall behind the rock
+  appendBox(b, 0, 0, -12, 2, 2, 2, t); // the rock
+  const meshes = [rayMesh(b.build())];
+  const origin = { x: 0, y: 0, z: 0 };
+  const sun = { x: 0, y: 0, z: -1 };
+  const probes = probeAround(meshes, origin, sphereDirections(400), 160);
+  const room = { min: { x: -h, y: -h, z: -h }, max: { x: h, y: h, z: h } };
+  const pose = pickSunPose(meshes, probes, origin, sun, room);
+  assert.ok(pose);
+  // The sun ray from the camera passes the rock (not blocked within the rock's reach) ...
+  const clear = raycast(meshes, pose.position, sun, 30);
+  assert.equal(clear, null);
+  // ... but only just: the rock's edge is within 1.5 u of the line of sight.
+  const off = Math.hypot(pose.position.x, pose.position.y);
+  assert.ok(off > 2 && off < 3.5, `offset ${off}`);
+  // Looking toward the sun, which sits off the screen centre.
+  const f = q.forward(pose.orientation);
+  const dot = -f.z;
+  assert.ok(dot > 0.9 && dot < 0.999, `forward . sun ${dot}`);
+  // No rock: no pose.
+  assert.equal(pickSunPose([], [], origin, sun, room), null);
 });
 
 test("scene content: four hulls in the lineup, ships, shots and an explosion in the fight", () => {

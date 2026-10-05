@@ -13,9 +13,11 @@ export interface GalleryWorld {
  * How the camera pose is picked from the spawn point by CPU ray casts
  * against the chunk meshes (raycast.ts): `closeup` a rock wall about 4 u
  * ahead, `tunnel` the longest near-horizontal view, `vista` a far wall or
- * island 40-150 u away.
+ * island 40-150 u away; `sun` and `planet` look from the spawn point toward
+ * the world's sun or planet (renderer/atmosphere.ts, VQ7), the target a
+ * little off the screen centre.
  */
-export type PoseKind = "closeup" | "tunnel" | "vista";
+export type PoseKind = "closeup" | "tunnel" | "vista" | "sun" | "planet";
 
 /** What is placed in front of the camera besides terrain. */
 export type SceneContent = "none" | "lineup" | "fight";
@@ -42,6 +44,33 @@ export const SCENES: readonly GalleryScene[] = [
     title: "Open sky with islands",
     covers: "backdrop, fog",
     world: { seed: 7, enclosure: 20, density: 70 },
+    pose: "vista",
+    content: "none",
+    time: 1.0,
+  },
+  {
+    id: "open-sun",
+    title: "Open sky toward the sun (light shafts)",
+    covers: "backdrop, sky, light shafts",
+    world: { seed: 7, enclosure: 20, density: 70 },
+    pose: "sun",
+    content: "none",
+    time: 1.0,
+  },
+  {
+    id: "open-planet",
+    title: "Open space with the planet",
+    covers: "backdrop, sky",
+    world: { seed: 11, enclosure: 0, density: 40 },
+    pose: "planet",
+    content: "none",
+    time: 1.0,
+  },
+  {
+    id: "cave-opening",
+    title: "Caverns opening to the sky",
+    covers: "backdrop, fog, light shafts",
+    world: { seed: 7, enclosure: 36, density: 50 },
     pose: "vista",
     content: "none",
     time: 1.0,

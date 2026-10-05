@@ -30,6 +30,7 @@
 
 import { InputController } from "./input/input.ts";
 import { GpuUnavailableError } from "./renderer/gpu.ts";
+import { atmosphereFor } from "./renderer/atmosphere.ts";
 import { DEFAULT_SETTINGS, Renderer, type FrameStats } from "./renderer/renderer.ts";
 import { boundsCenter, ShipCamera } from "./game/camera.ts";
 import { ChunkLoader, LOADING_BUDGET, PLAY_BUDGET, type ChunkStats } from "./game/chunks.ts";
@@ -234,6 +235,8 @@ function runGame(
   return new Promise((resolve) => {
     const game = session.game;
     let camera = new ShipCamera(boundsCenter(game.bounds()));
+    // The world's sky, fog and grade (VQ7) before its chunks arrive.
+    renderer.setAtmosphere(atmosphereFor(game.shareCode, game.bounds()));
     const chunks = new ChunkLoader((key, mesh) => renderer.setChunk(key, mesh));
 
     const hud = new Hud(ui);
@@ -302,8 +305,7 @@ function runGame(
         // The next match builds its own meshes and instances.
         chunks.clear();
         renderer.clearInstances();
-        renderer.settings.fogDensity = DEFAULT_SETTINGS.fogDensity;
-        renderer.settings.fogColor = DEFAULT_SETTINGS.fogColor;
+        renderer.setAtmosphere(null);
       }
       hud.root.remove();
       effectsOverlay.dispose();
@@ -380,6 +382,7 @@ function runGame(
         // The next match on the same connection: new level, rules, team and
         // visuals. Old chunks come back from takeUnloads; reset the rest.
         camera = new ShipCamera(boundsCenter(game.bounds()));
+        renderer.setAtmosphere(atmosphereFor(game.shareCode, game.bounds()));
         initialLoad = true;
         effects = new EffectsState();
         wrecks = new WreckTypes();
@@ -449,9 +452,13 @@ function runGame(
         }),
       );
       // Inside a dust cloud the fog closes in (visibility is cut).
-      const fog = dustFog(DEFAULT_SETTINGS, dustDensityAt(view.position, r.entities, session.visuals));
+      const atmo = renderer.atmosphere ?? DEFAULT_SETTINGS;
+      const dust = dustDensityAt(view.position, r.entities, session.visuals);
+      const fog = dustFog(atmo, dust);
       renderer.settings.fogDensity = fog.fogDensity;
       renderer.settings.fogColor = fog.fogColor;
+      // Inside dust the flat dust colour replaces the sky's haze.
+      renderer.settings.skyHaze = renderer.atmosphere ? 1 - Math.min(1, dust) : 0;
       // Per-pass GPU timing (separate terrain/objects passes) while the overlay shows.
       renderer.detailedTiming = overlay.visible;
       frameStats = renderer.render(view);

@@ -866,8 +866,9 @@ All servers it starts are stopped at the end; it never uses port 7777.
 ### Visual gallery and GPU budget
 
 `tools/browser-smoke/gallery.mjs` (visual-quality-plan.md VQ8) renders the fixed scenes of
-`web/src/gallery/scenes.ts` (cave close-up, cave tunnel, open sky, mine shaft, the four hulls, a
-fight frame with an explosion) at 1920x1080 and saves one PNG per scene, plus a
+`web/src/gallery/scenes.ts` (cave close-up, cave tunnel, open sky, open sky toward the sun with
+light shafts, open space with the planet, caverns opening to the sky, mine shaft, the four hulls,
+a fight frame with an explosion) at 1920x1080 and saves one PNG per scene, plus a
 `manifest.json` with the share code, the camera pose and the per-pass GPU times, under
 `target/visual-gallery/<label>/`. `target/visual-gallery/index.html` shows every label side by
 side per scene, so a package takes a `before` run on its base and an `after` run on its branch:
@@ -899,7 +900,9 @@ target (14 ms), `--power low` asks for the integrated GPU (`?gpu=low-power`; Chr
 `--use-webgpu-power-preference=force-low-power`, which the script passes, and fails when that
 GPU is not available to WebGPU), `--no-budget` records without failing, `--quality high|medium|low` renders another preset
 (default high, `?quality=`; no automatic pick in the gallery), `--grade <preset>` previews a
-colour grade (`GRADE_PRESETS` in `web/src/renderer/post.ts`, `?grade=`). Without
+colour grade (`GRADE_PRESETS` in `web/src/renderer/post.ts`, `?grade=`; it replaces the world's
+grade), `--no-atmosphere` renders without the per-world sky, fog and grade (`?atmosphere=off`,
+the pre-VQ7 look, for before shots of scenes added later). Without
 `timestamp-query` or on a software adapter the budget is not checked. Measured on a much faster
 GPU than the reference, the check only catches gross regressions; read the absolute numbers on
 the reference class.

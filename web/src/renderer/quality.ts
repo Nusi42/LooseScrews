@@ -14,6 +14,8 @@ export interface RenderQuality {
   msaa: 1 | 4;
   /** Bloom mip levels (0 = no bloom). */
   bloomMips: number;
+  /** Screen-space light shafts from the sun in open levels (VQ7). */
+  shafts: boolean;
 }
 
 /**
@@ -23,9 +25,9 @@ export interface RenderQuality {
  * is core WebGPU, so every adapter runs the same shaders).
  */
 export const QUALITY_PRESETS: Readonly<Record<QualityLevel, RenderQuality>> = {
-  high: { level: "high", msaa: 4, bloomMips: 6 },
-  medium: { level: "medium", msaa: 4, bloomMips: 4 },
-  low: { level: "low", msaa: 1, bloomMips: 0 },
+  high: { level: "high", msaa: 4, bloomMips: 6, shafts: true },
+  medium: { level: "medium", msaa: 4, bloomMips: 4, shafts: false },
+  low: { level: "low", msaa: 1, bloomMips: 0, shafts: false },
 };
 
 /** GPU frame budgets (ms) of "high" and "medium" (plan §3). */

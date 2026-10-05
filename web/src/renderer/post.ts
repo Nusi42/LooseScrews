@@ -48,13 +48,14 @@ export const NEUTRAL_GRADE: ColorGrade = {
 };
 
 /**
- * Per world-type starting points (mild; VQ7 tunes them and picks one per
- * world). `lastColor` is the monochrome look with one colour kept.
+ * Per world-type looks: atmosphere.ts (`worldGrade`, VQ7) blends caves,
+ * mines and sky by the world's Enclosure and desaturates by its Palette
+ * slider. `lastColor` is the monochrome look with one colour kept.
  */
 export const GRADE_PRESETS = {
   neutral: NEUTRAL_GRADE,
   caves: { ...NEUTRAL_GRADE, slope: [1.04, 1.0, 0.94], saturation: 1.05 },
-  mines: { ...NEUTRAL_GRADE, slope: [1.08, 0.98, 0.86], power: [0.98, 1.0, 1.04] },
+  mines: { ...NEUTRAL_GRADE, slope: [1.1, 0.99, 0.84], power: [0.98, 1.0, 1.04], saturation: 1.05 },
   sky: { ...NEUTRAL_GRADE, slope: [0.94, 0.99, 1.08], saturation: 0.95 },
   // Set monoTint (e.g. the leading team's paint colour) and monoKeep 1 to keep one colour.
   lastColor: { ...NEUTRAL_GRADE, monochrome: 1 },
@@ -212,6 +213,12 @@ export class PostChain {
   get sceneView(): GPUTextureView {
     if (!this.sceneTexture) throw new Error("PostChain.resize was not called");
     return this.sceneTexture.createView();
+  }
+
+  /** The single-sample HDR scene texture (VQ7's light shafts add onto it). */
+  get sceneHdr(): GPUTexture {
+    if (!this.sceneTexture) throw new Error("PostChain.resize was not called");
+    return this.sceneTexture;
   }
 
   get bloomLevels(): number {

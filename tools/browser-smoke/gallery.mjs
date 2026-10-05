@@ -27,6 +27,8 @@
 //                         "high"; 1.75 = integrated GPU at "medium") [1]
 //   --frames <n>          timed frames averaged per scene [120]
 //   --no-budget           record the GPU times but do not fail on them
+//   --no-atmosphere       no per-world sky, fog and grade (?atmosphere=off;
+//                         the pre-VQ7 look, for before shots of new scenes)
 //   --index-only          only rewrite index.html from the existing labels
 //
 // Fails (exit 1) on a scene that does not render (error, console error,
@@ -79,7 +81,7 @@ function helpText() {
 }
 
 function parseArgs(argv) {
-  const o = { ...defaults, "no-budget": false, "index-only": false };
+  const o = { ...defaults, "no-budget": false, "index-only": false, "no-atmosphere": false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--help" || a === "-h") {
@@ -87,7 +89,7 @@ function parseArgs(argv) {
       process.exit(0);
     }
     const key = a.replace(/^--/, "");
-    if (key === "no-budget" || key === "index-only") {
+    if (key === "no-budget" || key === "index-only" || key === "no-atmosphere") {
       o[key] = true;
       continue;
     }
@@ -124,6 +126,7 @@ function parseArgs(argv) {
     budgetScale: scale,
     frames,
     noBudget: o["no-budget"],
+    noAtmosphere: o["no-atmosphere"],
     indexOnly: o["index-only"],
   };
 }
@@ -300,7 +303,7 @@ async function main() {
   const { server, base } = await serve(opts.webRoot);
   const labelDir = join(opts.outDir, opts.label);
   mkdirSync(labelDir, { recursive: true });
-  const power = `&quality=${opts.quality}${opts.grade ? `&grade=${encodeURIComponent(opts.grade)}` : ""}${opts.power === "low" ? "&gpu=low-power" : ""}`;
+  const power = `&quality=${opts.quality}${opts.grade ? `&grade=${encodeURIComponent(opts.grade)}` : ""}${opts.power === "low" ? "&gpu=low-power" : ""}${opts.noAtmosphere ? "&atmosphere=off" : ""}`;
   const launch = (headless) =>
     puppeteer.launch({
       executablePath: browserPath,

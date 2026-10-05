@@ -274,10 +274,14 @@ four closed, one partly closed and its rest moved to M4)
   bake cheaper in `ls-worldgen` (skip `room_open` for corners the edit leaves unchanged, or bake
   big craters lazily per chunk); `crates/ls-game/tests/tectonic_tick.rs` holds the collapse tick
   to 8 ms until then. A worldgen job, so it goes with the M4 worldgen work. *From M2, via M3.*
+  **M4 A2:** the bake evaluates only corners within the reach (vectorized, bit-exact); the
+  collapse tick is held to 2 ms (see milestone-4-plan.md "A2 as built").
 - **Dual contouring in play.** The sharp-edged mesher is golden-hashed and seam-free but costs
   4–13 ms per busy chunk against 0.5–0.8 ms for surface nets, so gameplay still meshes with
   surface nets. Make it fit the per-frame remesh budget (or remesh with it in the background)
-  to get the crisp mine look from the design doc. *From M1.*
+  to get the crisp mine look from the design doc. *From M1.* **M4 A2:** surface nets place
+  sharp-feature vertices by dual contouring's QEF (mine corner error p95 0.025 u); the mesh
+  time is over the planned +20 % (milestone-4-plan.md "A2 as built"), decision open.
 
 **M5 Platforms and ops**
 - **Bandwidth worst case (accepted for now).** Busy 32-ship fights average within

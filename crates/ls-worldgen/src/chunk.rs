@@ -224,28 +224,41 @@ impl Chunk {
     }
 
     /// Counts surface cells in the (inclusive) cell range.
+    ///
+    /// Each corner row (fixed `j`, `k`) becomes a bit mask of its rock
+    /// corners; a cell row is the OR and AND of its four corner rows, and a
+    /// cell is a surface cell unless both of its columns are all open or all
+    /// rock.
     fn count_surface(&self, lo: [usize; 3], hi: [usize; 3]) -> u32 {
         let Samples::Dense(d) = &self.samples else {
             return 0;
         };
-        let mut n = 0;
-        // Per corner column x: how many of the four corners (x, j|j+1,
-        // k|k+1) are rock. A cell is a surface cell unless its two columns
-        // hold 0 or 8 rock corners together.
-        let mut rock = [0u8; CHUNK_CORNERS];
-        for k in lo[2]..=hi[2] {
-            for j in lo[1]..=hi[1] {
-                for (x, r) in rock.iter_mut().enumerate().take(hi[0] + 2).skip(lo[0]) {
-                    *r = (d[corner_index(x, j, k)] < 0.0) as u8
-                        + (d[corner_index(x, j + 1, k)] < 0.0) as u8
-                        + (d[corner_index(x, j, k + 1)] < 0.0) as u8
-                        + (d[corner_index(x, j + 1, k + 1)] < 0.0) as u8;
-                }
-                for i in lo[0]..=hi[0] {
-                    let s = rock[i] + rock[i + 1];
-                    n += (s != 0 && s != 8) as u32;
-                }
+        let rock_mask = |j: usize, k: usize| {
+            let row = &d[corner_index(0, j, k)..corner_index(0, j, k) + CHUNK_CORNERS];
+            let mut m = 0u64;
+            for (x, v) in row.iter().enumerate().take(hi[0] + 2).skip(lo[0]) {
+                m |= ((*v < 0.0) as u64) << x;
             }
+            m
+        };
+        // Cells lo[0]..=hi[0] of a row.
+        let cells = (u64::MAX >> (63 - hi[0])) & (u64::MAX << lo[0]);
+        // Masks of the corner rows j and j + 1 of the current plane pair.
+        let rows = hi[1] - lo[1] + 2;
+        let mut below: Vec<u64> = (0..rows).map(|r| rock_mask(lo[1] + r, lo[2])).collect();
+        let mut above = vec![0u64; rows];
+        let mut n = 0;
+        for k in lo[2]..=hi[2] {
+            for (r, m) in above.iter_mut().enumerate() {
+                *m = rock_mask(lo[1] + r, k + 1);
+            }
+            for r in 0..rows - 1 {
+                let any = below[r] | below[r + 1] | above[r] | above[r + 1];
+                let all = below[r] & below[r + 1] & above[r] & above[r + 1];
+                let uniform = (!any & !(any >> 1)) | (all & (all >> 1));
+                n += (!uniform & cells).count_ones();
+            }
+            std::mem::swap(&mut below, &mut above);
         }
         n
     }
@@ -747,12 +760,11 @@ impl ChunkStore {
             return Mesh::default();
         }
         let grid = self.sample_grid(c);
-        // Sparse sampler: the snap evaluates only the vertices at creases.
-        let b = c.aabb();
-        let sampler = self.gen.sparse_region_sampler(Aabb::new(
-            b.min - Vec3::splat(2.0),
-            b.max + Vec3::splat(2.0),
-        ));
+        // The exact field at creases, feature cells and thin features: a
+        // few thousand evaluations in a busy mine chunk, so the sampler
+        // with per-block candidate lists (about 0.03 ms to build, evaluations
+        // up to twice as fast as the sparse one).
+        let sampler = self.chunk_sampler(c);
         let mut mesh = surface_nets_with_sdf(&grid, &|p| self.eval_with(p, |q| sampler.terrain(q)));
         self.mesh_materials(c, &mut mesh);
         mesh
@@ -777,11 +789,7 @@ impl ChunkStore {
         if !self.contains_chunk(c) || grid.is_uniform_sign() {
             return Mesh::default();
         }
-        let b = c.aabb();
-        let sampler = self.gen.sparse_region_sampler(Aabb::new(
-            b.min - Vec3::splat(2.0),
-            b.max + Vec3::splat(2.0),
-        ));
+        let sampler = self.chunk_sampler(c);
         // No thin features where `extra` comes near (the moving shell's
         // slivers against the rock); elsewhere the same mesh as
         // `mesh_surface_nets`.
@@ -1429,7 +1437,210 @@ fn edit_corner_range(o: [i32; 3], reach: Aabb) -> ([i32; 3], [i32; 3]) {
 /// Applies a geometry edit to the stored corners `lo..=hi` of the chunk at
 /// `o` (skipping corners outside the level, where edits never apply), exactly
 /// as [`ChunkStore::eval`] composes it. Returns true if any value changed.
+///
+/// Only the corners the edit can change are evaluated (M4 A2; the Tectonic
+/// Charge's 35 u collapse crater cost 3.5-5.3 ms when every corner of its
+/// reach box was): per corner row, the corners further than
+/// `radius + SDF_CLAMP + 1` from the centre are skipped. That is exact, bit
+/// for bit: there the edit's term is below `-SDF_CLAMP` (a crater's
+/// `r - |p - c|`) or above `SDF_CLAMP` (a fill's `|p - c| - r`), so
+/// `max`/`min` select the stored value, which is already clamped and at
+/// most the clamped room term (every stored value went through
+/// `clamp(..).min(room)` or came from `clamp(min(terrain, room))`). The
+/// one-unit margin is far above the rounding of the distance at level
+/// coordinates. Row segments inside the room run a branch-free kernel
+/// ([`Row::bake_inside`]) that the compiler vectorizes; the others the
+/// reference formula. `bake_matches_the_reference_bake` checks every corner
+/// against the plain per-corner bake. 35 u crater, 48 chunks: 0.6 ms
+/// against 2.5 ms (native release, `bake_timing`).
 fn bake_edit(
+    gen: &Generator,
+    level: [i32; 3],
+    o: [i32; 3],
+    samples: &mut Samples,
+    edit: &TerrainEdit,
+    lo: [i32; 3],
+    hi: [i32; 3],
+) -> bool {
+    let (center, radius, fill) = match *edit {
+        TerrainEdit::SubtractSphere { center, radius } => (center, radius, false),
+        TerrainEdit::AddSphere { center, radius } => (center, radius, true),
+        TerrainEdit::Paint { .. } | TerrainEdit::Surface { .. } => return false,
+    };
+    // Corners inside the level only (edits never apply outside it).
+    let lo = [0, 1, 2].map(|a| lo[a].max(-o[a]));
+    let hi = [0, 1, 2].map(|a| hi[a].min(level[a] - 1 - o[a]));
+    if (0..3).any(|a| lo[a] > hi[a]) {
+        return false;
+    }
+    let outer = radius + SDF_CLAMP + 1.0;
+    // A uniform chunk is baked into a dense copy, kept only if it changed.
+    // Open chunks have the room term at the clamp everywhere (that made them
+    // uniform), so a crater cannot change one, nor a fill a rock chunk.
+    let uniform = match *samples {
+        Samples::Uniform(u) if (u > 0.0) != fill => return false,
+        Samples::Uniform(u) => Some(u),
+        Samples::Dense(_) => None,
+    };
+    let mut scratch = Vec::new();
+    let d: &mut [f32] = match samples {
+        Samples::Dense(d) => d,
+        Samples::Uniform(u) => {
+            scratch = vec![*u; CHUNK_CORNERS.pow(3)];
+            &mut scratch
+        }
+    };
+    let cx = center.x - o[0] as f32;
+    let room = gen.room();
+    let (rc, rh) = (room.center(), room.half_extents());
+    let mut changed = false;
+    for k in lo[2]..=hi[2] {
+        let pz = (o[2] + k) as f32;
+        let dz = pz - center.z;
+        let qz = (pz - rc.z).abs() - rh.z;
+        for j in lo[1]..=hi[1] {
+            let py = (o[1] + j) as f32;
+            let dy = py - center.y;
+            let across = dy * dy + dz * dz;
+            let Some((x0, x1)) = row_span(cx, outer * outer - across, true) else {
+                continue; // the whole row is further than `outer`
+            };
+            let (x0, x1) = (x0.max(lo[0]), x1.min(hi[0]));
+            if x0 > x1 {
+                continue;
+            }
+            let qy = (py - rc.y).abs() - rh.y;
+            let row = Row {
+                o: o[0] + x0,
+                yy: dy * dy,
+                zz: dz * dz,
+                center,
+                radius,
+                rcx: rc.x,
+                rhx: rh.x,
+                qy,
+                qz,
+            };
+            let base = corner_index(0, j as usize, k as usize);
+            let seg = &mut d[base + x0 as usize..=base + x1 as usize];
+            // The room's inside branch holds along the whole segment when it
+            // holds at both ends (the box is convex).
+            let inside = |x: i32| {
+                let qx = ((o[0] + x) as f32 - rc.x).abs() - rh.x;
+                qx < 0.0 && qy < 0.0 && qz < 0.0
+            };
+            changed |= if inside(x0) && inside(x1) {
+                if fill {
+                    row.bake_inside::<true>(seg)
+                } else {
+                    row.bake_inside::<false>(seg)
+                }
+            } else {
+                row.bake_general(gen, edit, py, pz, seg)
+            };
+        }
+    }
+    if changed && uniform.is_some() {
+        *samples = Samples::Dense(scratch);
+    }
+    changed
+}
+
+/// One row segment of corners for [`bake_edit`] (corner `t` of the
+/// segment is at world x `o + t`).
+struct Row {
+    o: i32,
+    /// Squared distances to the edit's centre across the row (y, z).
+    yy: f32,
+    zz: f32,
+    center: Vec3,
+    radius: f32,
+    /// Room box centre and half extent along x, and the room terms of the
+    /// row's y and z (`|p - c| - h`).
+    rcx: f32,
+    rhx: f32,
+    qy: f32,
+    qz: f32,
+}
+
+impl Row {
+    /// Bakes a segment that lies inside the room (the inside branch of
+    /// `Generator::room_open`). Written without branches so it vectorizes;
+    /// the same bits as `apply_to_sdf`: the distance is the square root of
+    /// the dot product in `Vec3`'s order, and `f32::sqrt` is correctly
+    /// rounded like `det::sqrt`. Returns true if a value changed.
+    #[inline]
+    fn bake_inside<const FILL: bool>(&self, seg: &mut [f32]) -> bool {
+        let mut changed = false;
+        for (t, slot) in seg.iter_mut().enumerate() {
+            let px = (self.o + t as i32) as f32;
+            let dx = px - self.center.x;
+            let dist = (dx * dx + self.yy + self.zz).sqrt();
+            let old = *slot;
+            let v = if FILL {
+                old.min(dist - self.radius)
+            } else {
+                old.max(self.radius - dist)
+            };
+            let qx = (px - self.rcx).abs() - self.rhx;
+            let room = (-qx.max(self.qy).max(self.qz)).clamp(-SDF_CLAMP, SDF_CLAMP);
+            let v = v.clamp(-SDF_CLAMP, SDF_CLAMP).min(room) + 0.0;
+            changed |= v.to_bits() != old.to_bits();
+            *slot = v;
+        }
+        changed
+    }
+
+    /// Bakes a segment through the reference formula (rows that leave the
+    /// room). Returns true if a value changed.
+    fn bake_general(
+        &self,
+        gen: &Generator,
+        edit: &TerrainEdit,
+        py: f32,
+        pz: f32,
+        seg: &mut [f32],
+    ) -> bool {
+        let mut changed = false;
+        for (t, slot) in seg.iter_mut().enumerate() {
+            let p = Vec3::new((self.o + t as i32) as f32, py, pz);
+            let old = *slot;
+            let room = gen.room_open(p).clamp(-SDF_CLAMP, SDF_CLAMP);
+            let v = edit
+                .apply_to_sdf(old, p)
+                .clamp(-SDF_CLAMP, SDF_CLAMP)
+                .min(room)
+                + 0.0;
+            changed |= v.to_bits() != old.to_bits();
+            *slot = v;
+        }
+        changed
+    }
+}
+
+/// Corner index range `x0..=x1` (relative to the chunk origin) of a row of
+/// corners whose squared distance across the row is `reach2` short of the
+/// squared radius, around `cx`: rounded outwards (`outwards`, every corner
+/// within the radius is in it) or inwards (every corner in it is within
+/// the radius). `None` if the row misses the sphere.
+#[inline]
+fn row_span(cx: f32, reach2: f32, outwards: bool) -> Option<(i32, i32)> {
+    if reach2.is_nan() || reach2 <= 0.0 {
+        return None;
+    }
+    let half = reach2.sqrt();
+    let (a, b) = if outwards {
+        (det::floor(cx - half) as i32, det::ceil(cx + half) as i32)
+    } else {
+        (det::ceil(cx - half) as i32, det::floor(cx + half) as i32)
+    };
+    (a <= b).then_some((a, b))
+}
+
+/// The per-corner bake [`bake_edit`] replaces (every corner of the range),
+/// as the reference its tests compare with.
+#[cfg(test)]
+fn bake_edit_reference(
     gen: &Generator,
     level: [i32; 3],
     o: [i32; 3],
@@ -1444,7 +1655,7 @@ fn bake_edit(
             for i in lo[0]..=hi[0] {
                 let g = [o[0] + i, o[1] + j, o[2] + k];
                 if (0..3).any(|a| g[a] < 0 || g[a] >= level[a]) {
-                    continue; // outside the level: edits never apply
+                    continue;
                 }
                 let p = SampleGrid::corner_pos(o, i, j, k);
                 let idx = corner_index(i as usize, j as usize, k as usize);
@@ -1543,6 +1754,163 @@ mod tests {
             }
         }
         panic!("no surface found");
+    }
+
+    /// `bake_edit` (rows cut to the edit's reach, deep corners saturated)
+    /// equals the plain per-corner bake bit for bit: craters and fills of
+    /// every size, at the walls, in the sky (uniform open chunks), in deep
+    /// rock (uniform rock chunks) and partly outside the level, applied one
+    /// after another to the same chunks.
+    #[test]
+    fn bake_matches_the_reference_bake() {
+        let (mut uniform, mut dense) = (0, 0);
+        for (e, d) in [(70, 40), (0, 0), (100, 10)] {
+            let (u, dn) = bake_against_reference(e, d);
+            uniform += u;
+            dense += dn;
+        }
+        assert!(
+            uniform > 1000 && dense > 1000,
+            "uniform {uniform}, dense {dense}"
+        );
+    }
+
+    fn bake_against_reference(enclosure: u8, density: u8) -> (usize, usize) {
+        let mut s = store(enclosure, density);
+        s.generate_all();
+        let (hit, n) = surface_point(&s);
+        let level = s.level_corners();
+        let mut rng = ls_math::SplitMix64::new(77);
+        let size = s.generator().bounds().max;
+        let mut edits = Vec::new();
+        for i in 0..60 {
+            let r = [0.4, 1.5, 3.0, 7.3, 12.0, 35.0, 41.5][i % 7];
+            let center = match i % 4 {
+                0 => hit + n * (rng.next_f32() * 8.0 - 4.0),
+                1 => Vec3::new(
+                    rng.next_f32() * size.x,
+                    rng.next_f32() * size.y,
+                    rng.next_f32() * size.z,
+                ),
+                // Near or beyond the level box.
+                2 => Vec3::new(rng.next_f32() * 20.0 - 10.0, size.y * 0.5, size.z * 0.5),
+                _ => hit + Vec3::new(rng.next_f32() - 0.5, 0.25, -0.125) * 30.0,
+            };
+            edits.push(if i % 3 == 2 {
+                TerrainEdit::AddSphere { center, radius: r }
+            } else {
+                TerrainEdit::SubtractSphere { center, radius: r }
+            });
+        }
+        let (mut uniform, mut dense) = (0, 0);
+        for edit in edits {
+            let reach = edit.bounds().expand(SDF_CLAMP);
+            for c in s.chunks_overlapping(reach.expand(1.0)) {
+                let slot = s.chunk_slot(c).unwrap();
+                let o = c.origin();
+                let (lo, hi) = edit_corner_range(o, reach);
+                let stored = s.chunks[slot].as_ref().unwrap().samples.clone();
+                // Also as solid rock (no generated chunk is, but the bake
+                // must handle it).
+                for mut a in [stored, Samples::Uniform(-SDF_CLAMP)] {
+                    match a {
+                        Samples::Uniform(_) => uniform += 1,
+                        Samples::Dense(_) => dense += 1,
+                    }
+                    let mut b = a.clone();
+                    let ca = bake_edit(&s.gen, level, o, &mut a, &edit, lo, hi);
+                    let cb = bake_edit_reference(&s.gen, level, o, &mut b, &edit, lo, hi);
+                    assert_eq!(ca, cb, "{edit:?} chunk {c:?}: changed flag");
+                    let bits = |x: &Samples| match x {
+                        Samples::Uniform(u) => vec![u.to_bits(); CHUNK_CORNERS.pow(3)],
+                        Samples::Dense(d) => d.iter().map(|v| v.to_bits()).collect(),
+                    };
+                    assert!(bits(&a) == bits(&b), "{edit:?} chunk {c:?}: samples differ");
+                    assert_eq!(
+                        matches!(a, Samples::Uniform(_)),
+                        matches!(b, Samples::Uniform(_))
+                    );
+                }
+            }
+            s.apply(edit);
+        }
+        (uniform, dense)
+    }
+
+    /// The incremental surface-cell count after big and small edits equals
+    /// a full recount.
+    #[test]
+    fn surface_counts_stay_exact_after_big_edits() {
+        let mut s = store(60, 50);
+        s.generate_all();
+        let (hit, n) = surface_point(&s);
+        for (k, r) in [35.0f32, 3.0, 12.0, 0.7].into_iter().enumerate() {
+            let center = hit + n * (k as f32 - 1.5);
+            s.apply(TerrainEdit::SubtractSphere { center, radius: r });
+            s.apply(TerrainEdit::AddSphere {
+                center: center + n * 2.0,
+                radius: r * 0.5,
+            });
+        }
+        let m = CHUNK_CELLS as usize - 1;
+        for ch in s.chunks.iter().flatten() {
+            assert_eq!(ch.surface_cells, ch.count_surface([0; 3], [m; 3]));
+        }
+    }
+
+    /// Timing of the Tectonic Charge's 35 u collapse crater bake against
+    /// the plain per-corner bake (release: `cargo test -p ls-worldgen
+    /// --release --lib bake_timing -- --ignored --nocapture`).
+    #[test]
+    #[ignore = "timing: run with --release --ignored"]
+    fn bake_timing() {
+        let mut s = ChunkStore::new(Generator::new(0x7ec7_0a1c, Sliders::new(70, 40)));
+        s.generate_all();
+        let (hit, _) = surface_point(&s);
+        let edit = TerrainEdit::SubtractSphere {
+            center: hit,
+            radius: 35.0,
+        };
+        let level = s.level_corners();
+        let reach = edit.bounds().expand(SDF_CLAMP);
+        let chunks = s.chunks_overlapping(reach.expand(1.0));
+        let samples: Vec<Samples> = chunks
+            .iter()
+            .map(|&c| {
+                s.chunks[s.chunk_slot(c).unwrap()]
+                    .as_ref()
+                    .unwrap()
+                    .samples
+                    .clone()
+            })
+            .collect();
+        let run = |reference: bool| {
+            let mut work = samples.clone();
+            let t = std::time::Instant::now();
+            for (c, smp) in chunks.iter().zip(work.iter_mut()) {
+                let (lo, hi) = edit_corner_range(c.origin(), reach);
+                if reference {
+                    bake_edit_reference(&s.gen, level, c.origin(), smp, &edit, lo, hi);
+                } else {
+                    bake_edit(&s.gen, level, c.origin(), smp, &edit, lo, hi);
+                }
+            }
+            t.elapsed().as_secs_f64() * 1e3
+        };
+        let fast = (0..30).map(|_| run(false)).fold(f64::INFINITY, f64::min);
+        let slow = (0..30).map(|_| run(true)).fold(f64::INFINITY, f64::min);
+        let apply = (0..30)
+            .map(|_| {
+                let mut t = s.clone();
+                let t0 = std::time::Instant::now();
+                t.apply(edit);
+                t0.elapsed().as_secs_f64() * 1e3
+            })
+            .fold(f64::INFINITY, f64::min);
+        println!(
+            "35 u crater over {} chunks: bake {fast:.2} ms (per-corner bake {slow:.2} ms);              whole apply {apply:.2} ms",
+            chunks.len()
+        );
     }
 
     #[test]

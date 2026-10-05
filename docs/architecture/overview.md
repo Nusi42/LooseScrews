@@ -127,7 +127,9 @@ flowchart LR
    and HUD lines.
 7. **Meshing.** Terrain edits mark chunks dirty. `Game.meshNext(camera)` picks the next chunk
    (dirty ones first, then missing ones nearest the camera) and runs surface nets (vertices
-   snapped onto the surface, continuous normals, baked ambient occlusion);
+   snapped onto the surface, continuous normals, baked ambient occlusion; since M4 A2 the
+   vertices of cells with a sharp edge or corner placed on it by dual contouring's QEF, and
+   rock thinner than a cell drawn whole; `crates/ls-worldgen/src/mesh.rs`);
    `web/src/game/chunks.ts` spends a per-frame budget (4 ms / 8 chunks in play; a further chunk
    starts only if the running average chunk time still fits) and hands the
    `positions`/`normals`/`indices`/`team` arrays (plus per-vertex surface states, rock

@@ -142,6 +142,43 @@ export function pickCloseup(probes: readonly Probe[], want: number, minT: number
 }
 
 /**
+ * Corner (M4 A2): two neighbouring probes (directions at most `maxAngle`
+ * radians apart) whose hits lie in [lo, hi] u and whose rock faces turn by
+ * at least 60° against each other: an edge or corner of the rock between
+ * them. Prefers the sharpest turn, then hits nearest `(lo + hi) / 2`; ties
+ * keep the earlier pair. Returns the offset from the probes' origin to the
+ * point midway between the two hits (the camera looks at it), or null when
+ * no pair qualifies.
+ */
+export function pickCorner(probes: readonly Probe[], lo: number, hi: number, maxAngle = 0.35): Vec3 | null {
+  const cosMax = Math.cos(maxAngle);
+  const mid = (lo + hi) / 2;
+  let best: Vec3 | null = null;
+  let bestScore = Infinity;
+  for (let i = 0; i < probes.length; i++) {
+    const a = probes[i]!;
+    if (!a.hit || a.hit.t < lo || a.hit.t > hi) continue;
+    for (let j = i + 1; j < probes.length; j++) {
+      const b = probes[j]!;
+      if (!b.hit || b.hit.t < lo || b.hit.t > hi) continue;
+      if (a.dir.x * b.dir.x + a.dir.y * b.dir.y + a.dir.z * b.dir.z < cosMax) continue;
+      const turn = a.hit.normal.x * b.hit.normal.x + a.hit.normal.y * b.hit.normal.y + a.hit.normal.z * b.hit.normal.z;
+      if (turn > 0.5) continue;
+      const score = turn + 0.05 * (Math.abs(a.hit.t - mid) + Math.abs(b.hit.t - mid));
+      if (score < bestScore) {
+        bestScore = score;
+        best = {
+          x: (a.dir.x * a.hit.t + b.dir.x * b.hit.t) / 2,
+          y: (a.dir.y * a.hit.t + b.dir.y * b.hit.t) / 2,
+          z: (a.dir.z * a.hit.t + b.dir.z * b.hit.t) / 2,
+        };
+      }
+    }
+  }
+  return best;
+}
+
+/**
  * Longest view: the probe that travels furthest before hitting rock (a miss
  * counts as `maxT`), preferring near-horizontal directions (|y| ≤ `maxSlope`)
  * so the frame keeps a readable horizon. Null for no probes.

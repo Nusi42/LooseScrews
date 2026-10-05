@@ -9,6 +9,7 @@ import { formatDebugLines, formatGpuLine, type DebugInfo } from "../ui/debugOver
 import { FIT_BALL_RADIUS, FIT_TUNNEL_DEPTH, FIT_WALL_DISTANCE, fitTunnelEdits, LEGACY_CAMERA, pickPose, pickSunPose, sceneContent, wantsGallery, LINEUP_RADII } from "./gallery.ts";
 import {
   pickCloseup,
+  pickCorner,
   pickLongest,
   pickVista,
   probeAround,
@@ -154,6 +155,31 @@ test("pose picks: close-up near the wanted distance, the longest horizontal view
   assert.equal(pickVista(probes, 40, 150)?.hit?.t, 70);
   assert.equal(pickVista(probes, 20, 40)?.hit?.t, 30);
   assert.equal(pickCloseup([p(1, 0, 0, null)], 9, 5), null);
+});
+
+test("corner pick: two neighbouring hits on faces that turn by 60 degrees or more", () => {
+  const n = (x: number, y: number, z: number) => ({ x, y, z });
+  const d = (x: number, y: number, z: number) => {
+    const l = Math.hypot(x, y, z);
+    return n(x / l, y / l, z / l);
+  };
+  // A rock edge ahead: one probe hits the wall facing the camera (normal -x),
+  // its neighbour 10 degrees away the floor (normal +y).
+  const a: Probe = { dir: d(1, -0.05, 0), hit: { t: 8, normal: n(-1, 0, 0) } };
+  const b: Probe = { dir: d(1, -0.23, 0), hit: { t: 9, normal: n(0, 1, 0) } };
+  const far: Probe = { dir: d(-1, 0, 0), hit: { t: 9, normal: n(0, 1, 0) } };
+  const flat: Probe = { dir: d(1, 0.1, 0), hit: { t: 8, normal: n(-1, 0, 0) } };
+  const at = pickCorner([a, flat, b, far], 4, 16);
+  assert.ok(at, "the edge between a and b");
+  const mid = { x: (a.dir.x * 8 + b.dir.x * 9) / 2, y: (a.dir.y * 8 + b.dir.y * 9) / 2, z: 0 };
+  assert.ok(Math.hypot(at.x - mid.x, at.y - mid.y, at.z - mid.z) < 1e-9);
+  // Faces that barely turn, or hits out of range: no corner.
+  assert.equal(pickCorner([a, flat], 4, 16), null);
+  assert.equal(pickCorner([a, b], 10, 16), null);
+  // The pinned mine-corner scene keeps its camera whatever the meshes pick.
+  const pinned = pickPose(sceneById("mine-corner")!, n(0, 0, 0), q.identity(), [a, b]);
+  assert.ok(sceneById("mine-corner")?.camera, "mine-corner has a pinned camera");
+  assert.ok(pinned.position, "a corner pose is picked when no camera is pinned");
 });
 
 test("pickPose stands off the wall for a close-up and looks down the longest line otherwise", () => {

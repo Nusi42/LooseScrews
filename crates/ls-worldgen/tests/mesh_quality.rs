@@ -167,3 +167,195 @@ fn drawn_surface_matches_the_collision_surface() {
         assert!(s.ao_dark > 0.01, "almost no occlusion: {}", s.ao_dark);
     }
 }
+
+/// Exact Hermite data of the grid edge from corner `a` along `axis` (unit
+/// step), if the field changes sign on it: the crossing (bisection on the
+/// exact field) and the unit normal there.
+fn hermite(store: &ChunkStore, a: Vec3, axis: Vec3) -> Option<(Vec3, Vec3, f32)> {
+    let (va, vb) = (store.eval(a), store.eval(a + axis));
+    if (va < 0.0) == (vb < 0.0) {
+        return None;
+    }
+    let (mut t0, mut t1) = (0.0f32, 1.0f32);
+    for _ in 0..24 {
+        let t = (t0 + t1) * 0.5;
+        if (store.eval(a + axis * t) < 0.0) == (va < 0.0) {
+            t0 = t;
+        } else {
+            t1 = t;
+        }
+    }
+    let p = a + axis * ((t0 + t1) * 0.5);
+    let e = 0.01;
+    let g = Vec3::new(
+        store.eval(p + Vec3::X * e) - store.eval(p - Vec3::X * e),
+        store.eval(p + Vec3::Y * e) - store.eval(p - Vec3::Y * e),
+        store.eval(p + Vec3::Z * e) - store.eval(p - Vec3::Z * e),
+    ) * (0.5 / e);
+    let len = g.length();
+    (len > 0.0).then(|| (p, g * (1.0 / len), len))
+}
+
+/// The sharp feature point of a cell (low corner `c`) from exact Hermite
+/// data: the least-squares intersection of the tangent planes at the edge
+/// crossings, if the cell holds a sharp feature of a true distance field
+/// (normals at least 30 degrees apart, every gradient of length about 1,
+/// the planes meeting in one point to 0.01 u, and that point inside the
+/// cell).
+fn feature_point(store: &ChunkStore, c: Vec3) -> Option<(Vec3, Option<Vec3>)> {
+    let corner = |i: usize| c + Vec3::new((i & 1) as f32, (i >> 1 & 1) as f32, (i >> 2) as f32);
+    let mut planes = Vec::new();
+    for i in 0..8 {
+        for (bit, axis) in [(1, Vec3::X), (2, Vec3::Y), (4, Vec3::Z)] {
+            if i & bit == 0 {
+                if let Some(h) = hermite(store, corner(i), axis) {
+                    planes.push(h);
+                }
+            }
+        }
+    }
+    if planes.len() < 3
+        || planes
+            .iter()
+            .any(|&(_, _, len)| !(0.97..=1.03).contains(&len))
+    {
+        return None;
+    }
+    let min_cos = planes
+        .iter()
+        .flat_map(|a| planes.iter().map(move |b| a.1.dot(b.1)))
+        .fold(1.0f32, f32::min);
+    if min_cos > 0.866 {
+        return None;
+    }
+    // Normal equations around the mass point, with a small pull towards it
+    // along directions no plane constrains (an edge's direction).
+    let m = planes.iter().fold(Vec3::ZERO, |s, p| s + p.0) * (1.0 / planes.len() as f32);
+    let mut ata = [[0.0f64; 3]; 3];
+    let mut atb = [0.0f64; 3];
+    for &(p, n, _) in &planes {
+        let n = [n.x as f64, n.y as f64, n.z as f64];
+        let d =
+            (n[0] * (p.x - m.x) as f64) + (n[1] * (p.y - m.y) as f64) + (n[2] * (p.z - m.z) as f64);
+        for r in 0..3 {
+            for k in 0..3 {
+                ata[r][k] += n[r] * n[k];
+            }
+            atb[r] += n[r] * d;
+        }
+    }
+    for (r, row) in ata.iter_mut().enumerate() {
+        row[r] += 1e-3;
+    }
+    let det = |a: &[[f64; 3]; 3]| {
+        a[0][0] * (a[1][1] * a[2][2] - a[1][2] * a[2][1])
+            - a[0][1] * (a[1][0] * a[2][2] - a[1][2] * a[2][0])
+            + a[0][2] * (a[1][0] * a[2][1] - a[1][1] * a[2][0])
+    };
+    let d = det(&ata);
+    let mut y = [0.0f64; 3];
+    for (col, out) in y.iter_mut().enumerate() {
+        let mut a = ata;
+        for r in 0..3 {
+            a[r][col] = atb[r];
+        }
+        *out = det(&a) / d;
+    }
+    let x = m + Vec3::new(y[0] as f32, y[1] as f32, y[2] as f32);
+    let residual = planes
+        .iter()
+        .map(|&(p, n, _)| n.dot(x - p).abs())
+        .fold(0.0f32, f32::max);
+    let local = x - c;
+    let inside = [local.x, local.y, local.z]
+        .iter()
+        .all(|&v| (-1e-3..=1.0 + 1e-3).contains(&v));
+    // An edge (all normals perpendicular to one direction) or a corner.
+    let (a, b) = planes
+        .iter()
+        .flat_map(|a| planes.iter().map(move |b| (a.1, b.1)))
+        .min_by(|p, q| p.0.dot(p.1).total_cmp(&q.0.dot(q.1)))
+        .unwrap();
+    let dir = a.cross(b).normalize();
+    let edge = planes.iter().all(|p| p.1.dot(dir).abs() < 0.05);
+    (residual < 0.01 && inside).then_some((x, edge.then_some(dir)))
+}
+
+/// Corner error at sharp-feature cells (M4 A2, dual-contouring placement):
+/// for every cell of mine-shaft chunks whose exact field has a sharp edge or
+/// corner in it ([`feature_point`]), the distance from the feature (the
+/// edge line or the corner point) to the nearest mesh vertex within half a
+/// cell of the cell. Plain surface nets round every edge off by
+/// a few tenths of a unit; placing feature vertices by the QEF puts them
+/// on the edge.
+fn corner_errors(seed: u64, enclosure: u8, density: u8, limit: usize) -> Vec<f32> {
+    let mut store = ChunkStore::new(Generator::new(seed, Sliders::new(enclosure, density)));
+    let chunks = chunks_near_room(&mut store, limit);
+    let mut errs = Vec::new();
+    for c in chunks {
+        let m = store.mesh_surface_nets(c);
+        let verts: Vec<Vec3> = m.positions.iter().map(|p| Vec3::from_array(*p)).collect();
+        let o = c.origin();
+        for k in 0..32 {
+            for j in 0..32 {
+                for i in 0..32 {
+                    let low = Vec3::new((o[0] + i) as f32, (o[1] + j) as f32, (o[2] + k) as f32);
+                    let Some((x, edge)) = feature_point(&store, low) else {
+                        continue;
+                    };
+                    // Distance to the feature: to the edge line, or to the
+                    // corner point.
+                    let off = |v: Vec3| {
+                        let d = v - x;
+                        match edge {
+                            Some(e) => (d - e * d.dot(e)).length(),
+                            None => d.length(),
+                        }
+                    };
+                    // The vertices of this cell (within half a cell of it).
+                    let near = |v: &&Vec3| {
+                        let l = **v - low;
+                        [l.x, l.y, l.z].iter().all(|&t| (-0.5..=1.5).contains(&t))
+                    };
+                    let nearest = verts
+                        .iter()
+                        .filter(near)
+                        .map(|&v| off(v))
+                        .fold(f32::INFINITY, f32::min);
+                    if nearest > 0.03 {
+                        let vals: Vec<f32> = (0..8)
+                            .map(|q| {
+                                store.eval(
+                                    low + Vec3::new(
+                                        (q & 1) as f32,
+                                        (q >> 1 & 1) as f32,
+                                        (q >> 2) as f32,
+                                    ),
+                                )
+                            })
+                            .collect();
+                        let nv: Vec<Vec3> = verts.iter().filter(near).map(|&v| v - low).collect();
+                        eprintln!("BAD low {low:?} x-low {:?} edge {edge:?} err {nearest} verts {nv:?} vals {vals:?}", x - low);
+                    }
+                    errs.push(nearest);
+                }
+            }
+        }
+    }
+    errs
+}
+
+#[test]
+fn mine_shaft_corners_are_sharp() {
+    let limit = if cfg!(debug_assertions) { 1 } else { 8 };
+    let mut errs = corner_errors(7, 100, 30, limit);
+    let n = errs.len();
+    let p50 = percentile(&mut errs, 0.5);
+    let p95 = percentile(&mut errs, 0.95);
+    let max = percentile(&mut errs, 1.0);
+    println!(
+        "mine shafts (7, 100, 30): {n} sharp-feature cells; feature point to nearest vertex          p50 {p50:.3} u p95 {p95:.3} u max {max:.3} u"
+    );
+    assert!(n > 100, "too few feature cells measured: {n}");
+    assert!(p95 <= 0.03, "corner error p95 {p95} u");
+}

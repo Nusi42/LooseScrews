@@ -380,7 +380,10 @@ tell a stalled bot from a slow server when the server reports input starvation; 
   cargo run -p ls-worldgen --release --example worldgen_bench      # generation, remesh after craters, eval cost, dual contouring
   cargo run -p ls-worldgen --release --example mesh_bench [CODE]   # meshing timings for one share code
   cargo test -p ls-worldgen --release --test timing -- --nocapture # asserts < 2 ms per 32³ chunk (surface nets)
-  cargo test -p ls-worldgen --release --test mesh_quality -- --nocapture # drawn rock vs collision surface, normals, occlusion
+  cargo test -p ls-worldgen --release --test mesh_quality -- --nocapture # drawn rock vs collision surface, normals, occlusion, mine-corner error
+  cargo test -p ls-worldgen --release --test thin_tunnels -- --nocapture # thin bores, thin rock blades, bore-mouth folds
+  cargo run -p ls-worldgen --release --example mesh_timing [PASSES]   # per-chunk meshing time over five whole levels (p50/p95/max)
+  cargo test -p ls-worldgen --release --lib bake_timing -- --ignored --nocapture # 35 u crater bake vs the per-corner bake
   ```
 
 - **Browser:** F3 shows FPS, ping, transport, prediction corrections and snaps, shot prediction

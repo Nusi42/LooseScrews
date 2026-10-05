@@ -34,6 +34,7 @@ fn setup() -> MatchSetup {
         ],
         pickup_points: vec![],
         instability: 0,
+        heist: None,
     }
 }
 

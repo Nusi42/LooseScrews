@@ -83,6 +83,10 @@ pub struct MatchSetup {
     /// collapses). Hooks read it as `ctx.view.instability`.
     #[serde(default)]
     pub instability: u8,
+    /// The level's Heist site (core vein, extraction zones); Heist only.
+    /// `None` (test rooms): Heist falls back to the spawn points.
+    #[serde(default)]
+    pub heist: Option<crate::modes::heist::HeistLevel>,
 }
 
 /// Everything needed to start a match.
@@ -364,15 +368,27 @@ impl Trail {
     }
 }
 
-/// Terrain reference usable as `&dyn TerrainQuery` for any (unsized) terrain.
-struct TerrainRef<'a, T: ?Sized>(&'a T);
+/// Terrain reference usable as `&dyn TerrainQuery` for any (unsized)
+/// terrain, with the mode's material override (`ModeModule::material_at`).
+struct TerrainRef<'a, T: ?Sized>(&'a T, Option<ModeMaterial<'a>>);
+
+/// What `TerrainRef` needs for the mode's material override.
+struct ModeMaterial<'a> {
+    module: &'a dyn ModeModule,
+    state: &'a ModeState,
+    rules: &'a crate::ruleset::ModeRules,
+    now: u64,
+}
 
 impl<T: SimTerrain + ?Sized> TerrainLayers for TerrainRef<'_, T> {
     fn surface_states_near(&self, center: Vec3, radius: f32, now: u64) -> SurfaceStates {
         self.0.surface_states_near(center, radius, now)
     }
     fn material_at(&self, p: Vec3) -> u8 {
-        self.0.material_at(p)
+        self.1
+            .as_ref()
+            .and_then(|m| m.module.material_at(m.state, m.rules, m.now, p))
+            .unwrap_or_else(|| self.0.material_at(p))
     }
 }
 
@@ -1074,6 +1090,14 @@ impl World {
             }
             select_weapon(ship, cmd.weapon_select, &cfg.weapons);
             let tuning = cfg.tuning(ship.ship_type);
+            // Mode limits (Heist carrier: slower, no boost).
+            let flags = self.mode.player(id).map_or(0, |p| p.flags);
+            let limits = cfg.mode_module.move_limits(&cfg.rules.mode, flags);
+            let cmd = if limits.is_none() {
+                cmd
+            } else {
+                limits.apply(tuning, &cmd).1
+            };
             let move_cmd = if controlled.contains(&id) {
                 InputCmd {
                     thrust: Vec3::ZERO,
@@ -1085,7 +1109,12 @@ impl World {
             } else {
                 cmd
             };
-            simulate_movement(ship, &move_cmd, tuning, &*terrain);
+            if limits.is_none() {
+                simulate_movement(ship, &move_cmd, tuning, &*terrain);
+            } else {
+                let (limited, _) = limits.apply(tuning, &move_cmd);
+                simulate_movement(ship, &move_cmd, &limited, &*terrain);
+            }
             // Charged surfaces (Leech Arc) drain ships scraping them.
             if ship.in_contact
                 && cfg.charged_drain_per_sec > 0.0
@@ -1267,7 +1296,15 @@ impl World {
     where
         T: SimTerrain + ?Sized,
     {
-        let tref = TerrainRef(terrain);
+        let tref = TerrainRef(
+            terrain,
+            Some(ModeMaterial {
+                module: cfg.mode_module,
+                state: &self.mode,
+                rules: &cfg.rules.mode,
+                now: self.tick,
+            }),
+        );
         let view = View {
             now: self.tick,
             seed: cfg.seed,

@@ -50,7 +50,8 @@ pub fn hex(bytes: &[u8]) -> String {
 
 /// SHA-256 of `Generator::sample` bits over a lattice with spacing `step`
 /// (offset 0.37 u so samples avoid exact grid planes), covering the level
-/// box plus one step outside it.
+/// box plus one step outside it, followed by the Heist site's bits (core,
+/// radii, access point, extraction zones; generator version 3).
 pub fn sdf_hash(gen: &Generator, step: f32) -> [u8; 32] {
     let b = gen.bounds();
     let mut h = Sha256::new();
@@ -66,6 +67,20 @@ pub fn sdf_hash(gen: &Generator, step: f32) -> [u8; 32] {
             y += step;
         }
         z += step;
+    }
+    if let Some(s) = gen.heist() {
+        let mut floats = vec![s.knot_radius, s.chamber_radius];
+        for v in [s.core, s.access] {
+            floats.extend(v.to_array());
+        }
+        for z in &s.extraction {
+            floats.extend(z.pos.to_array());
+            floats.push(z.radius);
+        }
+        for f in floats {
+            h.update(f.to_bits().to_le_bytes());
+        }
+        h.update([s.surface as u8, s.extraction[0].team, s.extraction[1].team]);
     }
     h.finalize().into()
 }

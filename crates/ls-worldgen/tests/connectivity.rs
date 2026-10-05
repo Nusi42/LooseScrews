@@ -1,7 +1,8 @@
 //! Playable connectivity on every slider combination: over a sweep of seeds
 //! and an Enclosure x Density grid, a flood fill over a coarse clearance
 //! lattice ([`ClearanceGrid::level`]) must join both team spawn regions, the
-//! level centre and every network hub, and every tunnel keeps its clearance.
+//! level centre, every network hub and the Heist site (core vein access and
+//! extraction zones), and every tunnel keeps its clearance.
 //!
 //! Debug and wasm32 builds sweep one seed and a 4 x 4 grid; native release
 //! builds sweep 7 seeds and the 5 x 5 grid (0, 25, 50, 75, 100):
@@ -71,6 +72,19 @@ fn check_world(seed: u64, e: u8, d: u8) {
             grid.nearest_component(*h, CONNECT_STEP),
             Some(main),
             "{tag}: hub {h:?} is cut off"
+        );
+    }
+    // The Heist core vein (its access point) and both extraction zones are
+    // in the main volume.
+    let site = gen
+        .heist()
+        .expect("every default-size level has a Heist site");
+    let zones = site.extraction.map(|z| z.pos);
+    for p in std::iter::once(site.access).chain(zones) {
+        assert_eq!(
+            grid.nearest_component(p, CONNECT_STEP),
+            Some(main),
+            "{tag}: Heist point {p:?} is cut off"
         );
     }
     // Both team spawn regions hold a good share of the main volume.

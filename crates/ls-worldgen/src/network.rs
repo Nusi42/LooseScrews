@@ -9,6 +9,16 @@
 //!   sit in the team spawn regions and are bigger ([`SPAWN_HUB_RADIUS`]).
 //! - **Tunnels** ([`TUNNEL_RADIUS`]): each row is a chain of hubs along x;
 //!   both end columns and one middle column link the two rows.
+//! - **Heist site** (generator version 3, [`HeistSite`]): the *core vein*, a
+//!   chamber ([`VEIN_CHAMBER_RADIUS`]) at the bottom of the level, centred
+//!   along x (the same distance from both team ends), holding a knot of rock
+//!   ([`VEIN_KNOT_RADIUS`]) around the core; two tunnels link it to the two
+//!   middle hubs of the nearer row. Extraction zones: below Enclosure 100 a
+//!   *surface cavern* ([`EXTRACTION_RADIUS`]) at the top of the level above
+//!   each team's spawn cavern, linked to it by a vertical tunnel; at
+//!   Enclosure 100 (fully enclosed) the team spawn caverns themselves. The
+//!   site draws from its own random stream, so the hubs and tunnels above
+//!   are those of generator version 2.
 //!
 //! Shapes follow the Enclosure character: below [`BOXY_ENCLOSURE`] hubs are
 //! spheres and tunnels are capsules bent through a jittered midpoint (cave
@@ -16,7 +26,8 @@
 //! square corridors turning at right angles (mine shafts).
 //!
 //! The generator applies the network last, as `max(terrain, carve)`, so it
-//! also cuts through Density pillars and rocks. Every primitive is an exact
+//! also cuts through Density pillars and rocks; the vein knot is added after
+//! that (`min`), so it is rock on every level. Every primitive is an exact
 //! (1-Lipschitz) distance, so the level stays a valid distance bound, and
 //! every primitive keeps [`WALL_GAP`] from the sealing walls, so a tunnel's
 //! centre line has at least [`TUNNEL_RADIUS`] of clearance.
@@ -43,6 +54,23 @@ pub const HUB_RADIUS: [f32; 2] = [5.0, 6.5];
 pub const BOXY_ENCLOSURE: u8 = 75;
 /// Free space kept between any primitive and the sealing walls (u).
 pub const WALL_GAP: f32 = 1.0;
+/// Radius of the Heist vein chamber (u; half width of the box room in
+/// boxy levels).
+pub const VEIN_CHAMBER_RADIUS: f32 = 9.0;
+/// Half height of the vein chamber's box room in boxy levels (u).
+pub const VEIN_CHAMBER_HALF_HEIGHT: f32 = 6.0;
+/// Radius of the rock knot that holds the Heist core (u).
+pub const VEIN_KNOT_RADIUS: f32 = 2.0;
+/// Radius of the surface caverns that hold the extraction zones (u; half
+/// width of the box room in boxy levels).
+pub const EXTRACTION_RADIUS: f32 = 7.0;
+/// Below this Enclosure the extraction zones sit at the level's surface
+/// (top); at it, in the team spawn caverns.
+pub const SURFACE_ENCLOSURE_LIMIT: u8 = 100;
+/// Salt of the Heist site's random stream ("HEIST_SI").
+const HEIST_SALT: u64 = 0x4845_4953_545f_5349;
+/// Free space between the knot and the start of the vein tunnels (u).
+const VEIN_ACCESS_GAP: f32 = 0.5;
 /// Hub column positions along x (fractions of the room).
 pub const HUB_COLUMNS: [f32; 4] = [0.14, 0.38, 0.62, 0.86];
 /// Hub row positions along z (fractions of the room).
@@ -119,6 +147,38 @@ fn jit(rng: &mut SplitMix64, amount: f32) -> f32 {
     (rng.next_f32() - 0.5) * 2.0 * amount
 }
 
+/// An extraction zone of the Heist site.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ExtractionZone {
+    /// Centre (open space).
+    pub pos: Vec3,
+    /// A carrier within this distance of `pos` delivers (u).
+    pub radius: f32,
+    /// Owning team: 0 at low x, 1 at high x.
+    pub team: u8,
+}
+
+/// Where Heist happens in a level (see the module docs): the core vein and
+/// one extraction zone per team. Every level has one (the generator does
+/// not know the mode); only Heist uses it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HeistSite {
+    /// The core's position: the centre of the vein knot.
+    pub core: Vec3,
+    /// Radius of the rock knot around the core (u).
+    pub knot_radius: f32,
+    /// Radius of the open chamber around the knot (u).
+    pub chamber_radius: f32,
+    /// A point in the chamber's open space, on the centre line of the vein
+    /// tunnels (so it reaches the rest of the network).
+    pub access: Vec3,
+    /// Extraction zones, team 0 (low x) then team 1 (high x).
+    pub extraction: [ExtractionZone; 2],
+    /// Whether the zones are surface caverns (Enclosure below
+    /// [`SURFACE_ENCLOSURE_LIMIT`]) rather than the team spawn caverns.
+    pub surface: bool,
+}
+
 /// The carved connection network of one level (see the module docs).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Network {
@@ -129,6 +189,8 @@ pub struct Network {
     hubs: Vec<Vec3>,
     /// Centre-line polylines of the tunnels.
     paths: Vec<Vec<Vec3>>,
+    /// The Heist site (none for levels too small for a network).
+    heist: Option<HeistSite>,
     peak: f32,
     origin: Vec3,
     dims: [usize; 3],
@@ -145,6 +207,7 @@ impl Network {
             boxes: Vec::new(),
             hubs: Vec::new(),
             paths: Vec::new(),
+            heist: None,
             peak: f32::NEG_INFINITY,
             origin: Vec3::ZERO,
             dims: [0; 3],
@@ -174,6 +237,7 @@ impl Network {
 
         let mut prims = Vec::new();
         let mut hubs = Vec::new();
+        let mut radii = Vec::new();
         for (col, fx) in HUB_COLUMNS.iter().enumerate() {
             let spawn = col == 0 || col == HUB_COLUMNS.len() - 1;
             for fz in HUB_ROWS {
@@ -184,6 +248,7 @@ impl Network {
                 let r = fit(lo + (hi - lo) * (jit(&mut rng, 0.5) + 0.5));
                 let c = keep_in(Vec3::new(x, y, z), r);
                 hubs.push(c);
+                radii.push(r);
                 prims.push(if boxy {
                     // A mine room: flatter than wide, never lower than a tunnel.
                     let hy = (0.6 * r).max(TUNNEL_RADIUS).min(r);
@@ -255,10 +320,23 @@ impl Network {
             }
             paths.push(path);
         }
-        Network::index(prims, hubs, paths, room)
+        let mut carved = Carved {
+            prims,
+            paths,
+            boxy,
+            room,
+        };
+        let heist = heist_site(seed, enclosure, &hubs, &radii, &mut carved);
+        Network::index(carved.prims, hubs, carved.paths, heist, room)
     }
 
-    fn index(prims: Vec<Primitive>, hubs: Vec<Vec3>, paths: Vec<Vec<Vec3>>, room: Aabb) -> Self {
+    fn index(
+        prims: Vec<Primitive>,
+        hubs: Vec<Vec3>,
+        paths: Vec<Vec<Vec3>>,
+        heist: Option<HeistSite>,
+        room: Aabb,
+    ) -> Self {
         let peak = prims
             .iter()
             .map(Primitive::peak)
@@ -293,6 +371,7 @@ impl Network {
             boxes,
             hubs,
             paths,
+            heist,
             peak,
             origin,
             dims,
@@ -317,9 +396,16 @@ impl Network {
         &self.hubs[self.hubs.len().saturating_sub(HUB_ROWS.len())..]
     }
 
-    /// Centre-line polylines of the tunnels, hub to hub.
+    /// Centre-line polylines of the tunnels: hub to hub, then the vein
+    /// tunnels (from [`HeistSite::access`]) and the surface shafts.
     pub fn tunnel_paths(&self) -> &[Vec<Vec3>] {
         &self.paths
+    }
+
+    /// The Heist site (core vein and extraction zones); `None` for levels
+    /// too small for a network.
+    pub fn heist(&self) -> Option<&HeistSite> {
+        self.heist.as_ref()
     }
 
     /// Points of the network's centre lines to try linking `p` to, nearest
@@ -368,10 +454,21 @@ impl Network {
             .any(|q| segment_clear(&sample, p, q, margin))
     }
 
-    /// `max(open, value of every primitive at p)`: the terrain value `open`
-    /// with the network carved in. Exact for every `open`.
+    /// `min(max(open, value of every primitive at p), knot)`: the terrain
+    /// value `open` with the network carved in, then the Heist vein knot
+    /// (a rock sphere) added. Exact for every `open`.
     #[inline(always)]
     pub fn carve(&self, p: Vec3, open: f32) -> f32 {
+        let carved = self.carve_open(p, open);
+        match &self.heist {
+            Some(h) => carved.min(p.distance(h.core) - h.knot_radius),
+            None => carved,
+        }
+    }
+
+    /// `max(open, value of every primitive at p)` (without the knot).
+    #[inline(always)]
+    fn carve_open(&self, p: Vec3, open: f32) -> f32 {
         // No primitive exceeds its peak (also covers the empty network).
         if open >= self.peak {
             return open;
@@ -421,6 +518,178 @@ impl Network {
         let (s, e) = self.cells[idx];
         &self.items[s as usize..e as usize]
     }
+}
+
+/// The primitives and tunnel paths of a network under construction.
+struct Carved {
+    prims: Vec<Primitive>,
+    paths: Vec<Vec<Vec3>>,
+    boxy: bool,
+    room: Aabb,
+}
+
+impl Carved {
+    /// `p` moved inside the room so a shape of half size `half` keeps
+    /// [`WALL_GAP`] from the walls.
+    fn keep_in(&self, p: Vec3, half: Vec3) -> Vec3 {
+        let m = half + Vec3::splat(WALL_GAP);
+        p.clamp(self.room.min + m, self.room.max - m)
+    }
+
+    /// A tunnel along `path` (capsules, or boxes in boxy levels).
+    fn tunnel(&mut self, path: Vec<Vec3>) {
+        let r = TUNNEL_RADIUS;
+        for w in path.windows(2) {
+            self.prims.push(if self.boxy {
+                Primitive::Box(Aabb::new(w[0].min(w[1]), w[0].max(w[1])).expand(r))
+            } else {
+                let ab = w[1] - w[0];
+                Primitive::Capsule {
+                    a: w[0],
+                    ab,
+                    len2: ab.dot(ab),
+                    r,
+                }
+            });
+        }
+        self.paths.push(path);
+    }
+
+    /// A room at `c`: a sphere of radius `r`, or a box with half extents
+    /// `(r, hy, r)` in boxy levels.
+    fn room_at(&mut self, c: Vec3, r: f32, hy: f32) {
+        self.prims.push(if self.boxy {
+            Primitive::Box(Aabb::from_center_half_extents(c, Vec3::new(r, hy, r)))
+        } else {
+            Primitive::Sphere { c, r }
+        });
+    }
+
+    /// Axis-aligned legs from `a` to `b`, up or down first, then x, then z
+    /// (boxy levels), or one straight segment.
+    fn legs(&self, a: Vec3, b: Vec3) -> Vec<Vec3> {
+        if !self.boxy {
+            return vec![a, b];
+        }
+        let mut pts = vec![a];
+        let mut cur = a;
+        for axis in [1usize, 0, 2] {
+            let mut next = cur.to_array();
+            next[axis] = b[axis];
+            let next = Vec3::from_array(next);
+            if next != cur {
+                pts.push(next);
+                cur = next;
+            }
+        }
+        pts
+    }
+}
+
+/// Carves the Heist site into `carved` and describes it (see the module
+/// docs). Uses its own random stream, so the hubs and tunnels drawn before
+/// stay as they were.
+fn heist_site(
+    seed: u64,
+    enclosure: u8,
+    hubs: &[Vec3],
+    radii: &[f32],
+    carved: &mut Carved,
+) -> Option<HeistSite> {
+    let room = carved.room;
+    let size = room.size();
+    let rows = HUB_ROWS.len();
+    let hub = |col: usize, row: usize| col * rows + row;
+    let last_col = HUB_COLUMNS.len() - 1;
+    // The vein: bottom of the level, centred along x, z near the middle.
+    let chamber_r = VEIN_CHAMBER_RADIUS
+        .min(size.x * 0.5 - WALL_GAP)
+        .min(size.z * 0.5 - WALL_GAP);
+    let half_y = if carved.boxy {
+        VEIN_CHAMBER_HALF_HEIGHT
+    } else {
+        chamber_r
+    };
+    let access_up = VEIN_KNOT_RADIUS + TUNNEL_RADIUS + VEIN_ACCESS_GAP;
+    // Room for the chamber, the knot and the access point above it.
+    if size.y < 2.0 * (half_y + WALL_GAP) + access_up || chamber_r <= VEIN_KNOT_RADIUS + 2.0 {
+        return None;
+    }
+    let mut rng = SplitMix64::new(seed ^ HEIST_SALT);
+    let half = Vec3::new(chamber_r, half_y, chamber_r);
+    let core = carved.keep_in(
+        Vec3::new(
+            room.center().x,
+            room.min.y,
+            room.min.z + size.z * (0.5 + jit(&mut rng, 0.1)),
+        ),
+        half,
+    );
+    carved.room_at(core, chamber_r, half_y);
+    let access = core + Vec3::new(0.0, access_up, 0.0);
+    // Two tunnels up to the middle hubs of the row nearer the vein.
+    let row = if core.z < room.center().z { 0 } else { 1 };
+    for col in [1, last_col - 1] {
+        let target = hubs[hub(col, row)];
+        let path = if carved.boxy {
+            carved.legs(access, target)
+        } else {
+            // Bent like the other cave tunnels, never below the access
+            // point (keeps the centre line clear of the knot).
+            let d = target - access;
+            let side = Vec3::new(-d.z, 0.0, d.x).normalize_or_zero();
+            let mut m = (access + target) * 0.5
+                + side * (d.length() * jit(&mut rng, BEND))
+                + Vec3::new(0.0, size.y * jit(&mut rng, BEND_Y), 0.0);
+            m = carved.keep_in(m, Vec3::splat(TUNNEL_RADIUS));
+            m.y = m.y.max(access.y);
+            vec![access, m, target]
+        };
+        carved.tunnel(path);
+    }
+    // Extraction zones above (or in) the spawn caverns of one row.
+    let ex_row = (rng.next_u32() % rows as u32) as usize;
+    let surface = enclosure < SURFACE_ENCLOSURE_LIMIT;
+    let mut extraction = [ExtractionZone {
+        pos: Vec3::ZERO,
+        radius: 0.0,
+        team: 0,
+    }; 2];
+    for (team, col) in [0, last_col].into_iter().enumerate() {
+        let i = hub(col, ex_row);
+        let spawn = hubs[i];
+        extraction[team] = if surface {
+            let r = EXTRACTION_RADIUS;
+            let hy = if carved.boxy {
+                (0.6 * r).max(TUNNEL_RADIUS).min(r)
+            } else {
+                r
+            };
+            let c = carved.keep_in(Vec3::new(spawn.x, room.max.y, spawn.z), Vec3::new(r, hy, r));
+            carved.room_at(c, r, hy);
+            let path = carved.legs(spawn, c);
+            carved.tunnel(path);
+            ExtractionZone {
+                pos: c,
+                radius: r,
+                team: team as u8,
+            }
+        } else {
+            ExtractionZone {
+                pos: spawn,
+                radius: radii[i],
+                team: team as u8,
+            }
+        };
+    }
+    Some(HeistSite {
+        core,
+        knot_radius: VEIN_KNOT_RADIUS,
+        chamber_radius: chamber_r,
+        access,
+        extraction,
+        surface,
+    })
 }
 
 /// Whether the straight segment from `a` to `b` keeps at least `margin` of
@@ -477,7 +746,12 @@ mod tests {
                     rng.next_f32() * 280.0 - 12.0,
                 );
                 let open = rng.next_f32() * 40.0 - 25.0;
-                let all = n.prims.iter().fold(open, |b, pr| b.max(pr.value(p)));
+                let h = n.heist().unwrap();
+                let all = n
+                    .prims
+                    .iter()
+                    .fold(open, |b, pr| b.max(pr.value(p)))
+                    .min(p.distance(h.core) - h.knot_radius);
                 assert_eq!(n.carve(p, open).to_bits(), all.to_bits(), "{p:?} {open}");
             }
         }
@@ -489,7 +763,9 @@ mod tests {
         for e in [0u8, 50, 74, 75, 100] {
             let n = Network::build(9, e, r);
             assert_eq!(n.hubs().len(), 8);
-            assert_eq!(n.tunnel_paths().len(), 9);
+            // 9 hub tunnels, 2 vein tunnels, 2 surface shafts below 100.
+            let shafts = if e < SURFACE_ENCLOSURE_LIMIT { 2 } else { 0 };
+            assert_eq!(n.tunnel_paths().len(), 11 + shafts);
             let boxy = n.prims.iter().all(|p| matches!(p, Primitive::Box(_)));
             let round = n.prims.iter().all(|p| !matches!(p, Primitive::Box(_)));
             assert_eq!((boxy, round), (e >= BOXY_ENCLOSURE, e < BOXY_ENCLOSURE));
@@ -517,12 +793,64 @@ mod tests {
         // Tiny rooms get no network; small ones still fit.
         let tiny = Aabb::new(Vec3::splat(2.0), Vec3::splat(10.0));
         assert!(Network::build(1, 50, tiny).hubs().is_empty());
+        assert!(Network::build(1, 50, tiny).heist().is_none());
         assert_eq!(
             Network::build(1, 50, tiny).carve(Vec3::splat(5.0), -3.0),
             -3.0
         );
         let small = Aabb::new(Vec3::splat(2.0), Vec3::splat(62.0));
         assert_eq!(Network::build(1, 50, small).hubs().len(), 8);
+    }
+
+    /// The Heist site: the core sits in rock at the bottom of the level,
+    /// centred along x, inside an open chamber that the vein tunnels reach;
+    /// the extraction zones are open, one per team end, at the top of the
+    /// level below Enclosure 100 and in the spawn caverns at 100.
+    #[test]
+    fn heist_site_layout() {
+        let r = room();
+        for (seed, e) in [(1u64, 0u8), (2, 50), (3, 74), (4, 75), (5, 99), (6, 100)] {
+            let n = Network::build(seed, e, r);
+            let h = *n.heist().expect("site");
+            let open = |p: Vec3| n.carve(p, -5.0);
+            assert_eq!(h.core.x, r.center().x, "{e}: same distance from both ends");
+            assert!(
+                h.core.y < r.min.y + 0.15 * r.size().y,
+                "{e}: deep {:?}",
+                h.core
+            );
+            assert_eq!(open(h.core), -h.knot_radius, "{e}: the core is in rock");
+            assert!(
+                open(h.access) >= TUNNEL_RADIUS,
+                "{e}: access {}",
+                open(h.access)
+            );
+            // The knot's surface is open space all around (a ship gets to it).
+            for d in [Vec3::X, Vec3::NEG_X, Vec3::Z, Vec3::NEG_Z, Vec3::Y] {
+                let p = h.core + d * (h.knot_radius + 1.5);
+                assert!(open(p) >= 1.0, "{e}: {p:?} {}", open(p));
+            }
+            assert!(n.reaches(open, h.access, 1.5, 1));
+            assert_eq!(h.surface, e < SURFACE_ENCLOSURE_LIMIT);
+            let [z0, z1] = h.extraction;
+            assert_eq!((z0.team, z1.team), (0, 1));
+            assert!(z0.pos.x < r.min.x + 0.3 * r.size().x, "{e}: {z0:?}");
+            assert!(z1.pos.x > r.max.x - 0.3 * r.size().x, "{e}: {z1:?}");
+            for z in [z0, z1] {
+                assert!(open(z.pos) >= TUNNEL_RADIUS - 1e-3, "{e}: {z:?}");
+                assert!(z.radius >= HUB_RADIUS[0], "{e}: {z:?}");
+                assert!(n.reaches(open, z.pos, 1.5, 1), "{e}: {z:?}");
+                if h.surface {
+                    assert!(z.pos.y > r.max.y - 0.15 * r.size().y, "{e}: {z:?}");
+                } else {
+                    assert!(n.hubs().contains(&z.pos), "{e}: {z:?}");
+                }
+            }
+            // The site's own stream leaves the version 2 hubs alone, and the
+            // site depends on the seed.
+            let other = Network::build(seed + 100, e, r);
+            assert_ne!(other.heist().unwrap().core, h.core);
+        }
     }
 
     #[test]

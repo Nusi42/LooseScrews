@@ -6,7 +6,8 @@
 //!   generated level (Enclosure and Density active in M1), and
 //!   [`RegionSampler`], which samples it much faster over a region with the
 //!   same bits. Every level carries a [`Network`] of caverns and tunnels
-//!   that keeps both team ends connected; [`ClearanceGrid`] checks that
+//!   that keeps both team ends connected, and a [`HeistSite`] (core vein and
+//!   extraction zones for the Heist mode); [`ClearanceGrid`] checks that
 //!   connectivity (flood fill over a coarse clearance lattice).
 //! - [`ChunkStore`]: 32³-cell chunks, generated lazily, with the terrain edit
 //!   log applied on top and per-cell surface layers (paint and timed surface
@@ -44,7 +45,7 @@ pub use material::{strengthen_edit, Material, MaterialField, MaterialRegion};
 pub use mesh::{
     dual_contouring, dual_contouring_with_sdf, surface_nets, surface_nets_with_sdf, Mesh,
 };
-pub use network::Network;
+pub use network::{ExtractionZone, HeistSite, Network};
 pub use sharecode::ShareCode;
 pub use sliders::Sliders;
 
@@ -52,8 +53,9 @@ pub use ls_math;
 pub use ls_math::terrain::SurfaceStates;
 
 /// Version of the generator algorithm. Stored in every share code; bump it
-/// whenever [`Generator::sample`] output changes.
-pub const GENERATOR_VERSION: u8 = 2;
+/// whenever [`Generator::sample`] output changes. Version 3 (M3) added the
+/// Heist site (core vein chamber and extraction caverns, [`HeistSite`]).
+pub const GENERATOR_VERSION: u8 = 3;
 
 /// Cells per chunk along each axis (1 cell = 1 u).
 pub const CHUNK_CELLS: i32 = 32;

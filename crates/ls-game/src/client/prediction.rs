@@ -18,7 +18,7 @@ use std::collections::VecDeque;
 use ls_math::terrain::TerrainQuery;
 use ls_math::{Quat, Vec3};
 use ls_net::NetShip;
-use ls_sim::{simulate_movement, InputCmd, ShipState, ShipTuning, ShipType};
+use ls_sim::{simulate_movement, InputCmd, MoveLimits, ShipState, ShipTuning, ShipType};
 
 use crate::convert::{rotation_error, NetConv};
 
@@ -111,6 +111,9 @@ pub struct Predictor {
     /// Ticks after this one do not move the ship (the match is over and the
     /// server no longer steps the world).
     freeze_after: Option<u64>,
+    /// The mode's movement limits on the local ship (Heist carrier), from
+    /// the replicated mode flags.
+    limits: MoveLimits,
 }
 
 impl Predictor {
@@ -126,7 +129,19 @@ impl Predictor {
             stats: PredictionStats::default(),
             spawn_poses: Vec::new(),
             freeze_after: None,
+            limits: MoveLimits::NONE,
         }
+    }
+
+    /// The mode's movement limits for the local ship (`ModeModule::move_limits`
+    /// of its replicated flags). Applies to the ticks predicted or replayed
+    /// from now on.
+    pub fn set_limits(&mut self, limits: MoveLimits) {
+        self.limits = limits;
+    }
+
+    pub fn limits(&self) -> MoveLimits {
+        self.limits
     }
 
     /// Switches the ship type the prediction simulates (ship choice at a
@@ -249,7 +264,14 @@ impl Predictor {
     }
 
     fn step<T: TerrainQuery + ?Sized>(&self, s: &mut ShipState, cmd: &InputCmd, terrain: &T) {
-        step_ship(s, cmd, &self.tuning, self.freeze_after, terrain);
+        step_ship(
+            s,
+            cmd,
+            &self.tuning,
+            self.limits,
+            self.freeze_after,
+            terrain,
+        );
     }
 
     fn decay(&mut self) {
@@ -425,24 +447,32 @@ impl Predictor {
         self.base = Some((tick, state));
         let tuning = self.tuning.clone();
         let freeze = self.freeze_after;
+        let limits = self.limits;
         for e in self.entries.iter_mut() {
-            step_ship(&mut s, &e.cmd, &tuning, freeze, terrain);
+            step_ship(&mut s, &e.cmd, &tuning, limits, freeze, terrain);
             e.state = Some(s.clone());
         }
     }
 }
 
 /// One predicted tick: dead ships do not move (as in `World::step`; the
-/// server respawns them), and nothing moves after the match ended.
+/// server respawns them), nothing moves after the match ended, and the
+/// mode's limits apply as on the server.
 fn step_ship<T: TerrainQuery + ?Sized>(
     s: &mut ShipState,
     cmd: &InputCmd,
     tuning: &ShipTuning,
+    limits: MoveLimits,
     freeze_after: Option<u64>,
     terrain: &T,
 ) {
     if s.alive && freeze_after.is_none_or(|f| cmd.tick <= f) {
-        simulate_movement(s, cmd, tuning, terrain);
+        if limits.is_none() {
+            simulate_movement(s, cmd, tuning, terrain);
+        } else {
+            let (t, c) = limits.apply(tuning, cmd);
+            simulate_movement(s, &c, &t, terrain);
+        }
     }
 }
 
@@ -515,6 +545,56 @@ mod tests {
         let s = pred.stats();
         assert!(s.corrected + s.snapped <= 2, "{s:?}");
         assert!(pred.ship().unwrap().pos.distance(server.pos) < 0.02);
+    }
+
+    /// A Heist carrier (slower, no boost) predicts without corrections when
+    /// the predictor has the mode's limits for its replicated flags; without
+    /// them, boosting mispredicts.
+    #[test]
+    fn carrier_limits_are_predicted() {
+        use ls_sim::mode::{player_flags, ModeKind};
+        let rules = ls_sim::RuleSet::default_for(ModeKind::Heist).mode;
+        let limits =
+            ls_sim::modes::module(ModeKind::Heist).move_limits(&rules, player_flags::CARRIER);
+        assert!(!limits.is_none());
+        let boost = |tick| {
+            crate::convert::quantize_input(&InputCmd {
+                buttons: ls_sim::Buttons::BOOST,
+                ..cmd(tick)
+            })
+        };
+        for (with_limits, max_fixes) in [(true, 2u64), (false, u64::MAX)] {
+            let (conv, room, start) = setup();
+            let mut server = start.clone();
+            server.boost = 100.0;
+            let mut truth = vec![server.clone()];
+            let mut pred = Predictor::new(conv.tuning().clone(), PredictionConfig::for_conv(&conv));
+            if with_limits {
+                pred.set_limits(limits);
+            }
+            pred.reconcile(0, &conv.ship_to_net(0, &server, true), &conv, &room);
+            for tick in 1..300u64 {
+                let c = boost(tick);
+                // What `World::step` does for a carrier.
+                let (t, lc) = limits.apply(conv.tuning(), &c);
+                simulate_movement(&mut server, &lc, &t, &room);
+                truth.push(server.clone());
+                pred.predict(c, &room);
+                if tick >= 6 && tick % 2 == 0 {
+                    let t = tick - 6;
+                    let net = conv.quantize_ship(&conv.ship_to_net(0, &truth[t as usize], true));
+                    pred.reconcile(t, &net, &conv, &room);
+                }
+            }
+            let s = pred.stats();
+            let fixes = s.corrected + s.snapped;
+            if with_limits {
+                assert!(fixes <= max_fixes, "{s:?}");
+                assert!(pred.ship().unwrap().pos.distance(server.pos) < 0.02);
+            } else {
+                assert!(fixes > 10, "boost without limits mispredicts: {s:?}");
+            }
+        }
     }
 
     /// A server-side knockback the client could not predict is corrected

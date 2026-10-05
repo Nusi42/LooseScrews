@@ -96,7 +96,7 @@ Void rules and prints:
 
 ```
 INFO ls_server::sim: rules: Paint the Void LR8V-6097-G000-TMBG (banned weapons: none)
-INFO ls_server: share code LS0B-143C-ZQW8-CCHA-V4M6-8001-8FAA - open http://localhost:7777 to play
+INFO ls_server: share code LS0F-143C-ZQW8-CCHA-V4M6-8001-8FAE - open http://localhost:7777 to play
 ```
 
 Open `http://localhost:7777`, enter a pilot name, pick a ship and click **Play online**. To add
@@ -145,7 +145,7 @@ Examples:
 
 ```sh
 # A fixed world, 8 players, on the default port
-ls-server --code LS0B-143C-ZQW8-CCHA-V4M6-8001-8FAA
+ls-server --code LS0F-143C-ZQW8-CCHA-V4M6-8001-8FAE
 
 # Every weapon and gadget as a pickup (the built-in sandbox rules)
 ls-server --ruleset data/rulesets/sandbox_all_weapons.ron
@@ -165,10 +165,12 @@ ls-server --bind 0.0.0.0:7777 --wt-bind 0.0.0.0:7778
 
 ## Choosing the world: share codes
 
-A share code such as `LS0B-143C-ZQW8-CCHA-V4M6-8001-8FAA` rebuilds exactly the same world on the
+A share code such as `LS0F-143C-ZQW8-CCHA-V4M6-8001-8FAE` rebuilds exactly the same world on the
 server and in every browser. It stores a random seed, the seven world sliders and the world
-generator version. This build's generator (version 2) makes codes starting `LS08` to `LS0B`
-and carves a network of caverns and tunnels that links both teams' ends into every level. Of
+generator version. This build's generator (version 3) makes codes starting `LS0C` to `LS0F`
+and carves a network of caverns and tunnels that links both teams' ends into every level,
+plus the Heist core vein at the bottom and the extraction caverns at the top (every level has
+them; only Heist uses them). Of
 the sliders, **Enclosure** and **Density** shape the world and **Instability** sets how far a
 Tectonic Charge's cracks spread; the others have no effect yet.
 
@@ -359,7 +361,7 @@ server would refuse in red, and, once the rules are valid, shows:
 - the **rule set code**,
 - a **World** field (an optional share code),
 - an **invite link** (`http://<server>/?world=LS…&rules=LR…`),
-- the **host command**, for example `ls-server --code LS0B-143C-ZQW8-CCHA-V4M6-8001-8FAA --ruleset LR8V-…`.
+- the **host command**, for example `ls-server --code LS0F-143C-ZQW8-CCHA-V4M6-8001-8FAE --ruleset LR8V-…`.
 
 Copy the host command, add your other flags, and start the server. The editor needs no GPU
 and no game connection, and it remembers the last code it made. `?editor=rules&rules=LR…`
@@ -689,7 +691,7 @@ Playlist(
         // A built-in rule set by id, a random world, 4 to 32 players.
         (rules: "team_brawl", min_players: 4),
         // Your own rule set file (relative to the playlist file) on a fixed world.
-        (rules: "my_rules.ron", world: Code("LS08-0000-0000-0000-8006-8001-8F9G")),
+        (rules: "my_rules.ron", world: Code("LS0C-0000-0000-0000-8006-8001-8F9M")),
         // A rule set code from the editor, a random world with slider ranges, at most 8 players.
         (rules: "LR6V-69CM-G006-58R", world: RandomSliders(enclosure: (20, 60), density: (30, 70)), max_players: 8),
     ],

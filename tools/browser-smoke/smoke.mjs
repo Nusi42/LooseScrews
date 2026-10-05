@@ -11,7 +11,7 @@
 //   --web-root <dir>        served web client [web/dist]
 //   --browser <path>        Chrome/Edge executable [$LS_BROWSER, else searched]
 //   --out-dir <dir>         screenshots, logs, summary.json [target/browser-smoke]
-//   --code <share code>     server world [LS08-0000-0000-0000-8006-8001-8F9G]
+//   --code <share code>     server world [LS0C-0000-0000-0000-8006-8001-8F9M]
 //   --transport ws|wt|auto  browser transport (?transport=) [ws]
 //   --mode auto|headless|headful
 //                           auto = headless (no automatic headful fallback:
@@ -70,7 +70,7 @@ const defaults = {
   "web-root": join(repoRoot, "web", "dist"),
   browser: process.env.LS_BROWSER ?? "",
   "out-dir": join(repoRoot, "target", "browser-smoke"),
-  code: "LS08-0000-0000-0000-8006-8001-8F9G",
+  code: "LS0C-0000-0000-0000-8006-8001-8F9M",
   transport: "ws",
   mode: "auto",
   "practice-secs": "5",

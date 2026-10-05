@@ -34,6 +34,7 @@ fn setup() -> MatchSetup {
             .map(|i| Vec3::new(-6.0 + 4.0 * i as f32, 0.0, 0.0))
             .collect(),
         instability: 0,
+        heist: None,
     }
 }
 

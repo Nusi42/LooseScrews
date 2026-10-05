@@ -957,6 +957,7 @@ mod tests {
             spawns: vec![spawn(-5.0, 0), spawn(5.0, 1)],
             pickup_points: vec![],
             instability: 0,
+            heist: None,
         };
         let mut w = World::new(WorldConfig::paint_the_void(3, setup)).unwrap();
         let mut room = BoxRoomTerrain::centered(Vec3::splat(60.0));
@@ -1055,6 +1056,7 @@ mod tests {
             spawns: vec![spawn(-5.0, 0), spawn(5.0, 1)],
             pickup_points: vec![],
             instability: 0,
+            heist: None,
         };
         let mut w = World::new(WorldConfig::paint_the_void(3, setup)).unwrap();
         let mut t = ChargedRoom {

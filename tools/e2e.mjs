@@ -7,7 +7,7 @@
 //   node tools/e2e.mjs --server-bin <ls-server> --bots-bin <ls-bots> [options]
 //
 // Options (defaults in brackets):
-//   --code <share code>     world [LS08-0000-0000-0000-8006-8001-8F9G]
+//   --code <share code>     world [LS0C-0000-0000-0000-8006-8001-8F9M]
 //   --ruleset <file>        rule set [data/rulesets/paint_the_void.ron]
 //   --count <n>             bots [7]
 //   --duration <s>          bot run time [90]
@@ -51,7 +51,7 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const defaults = {
   "server-bin": "",
   "bots-bin": "",
-  code: "LS08-0000-0000-0000-8006-8001-8F9G",
+  code: "LS0C-0000-0000-0000-8006-8001-8F9M",
   ruleset: join(repoRoot, "data", "rulesets", "paint_the_void.ron"),
   count: "7",
   duration: "90",

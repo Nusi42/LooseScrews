@@ -17,7 +17,9 @@ use wasm_bindgen_test::wasm_bindgen_test as test;
 const FIXTURE: &str = include_str!("fixtures/golden_hashes.txt");
 
 /// The fixed world list: open sky, sky/cavern mix, caverns, cavern/mine mix,
-/// dense mines, and a code with every slider at 100.
+/// dense mines, a code with every slider at 100, and the Heist world of the
+/// M3 WASM cross-check (since generator version 3 the SDF hash also covers
+/// every level's Heist site: core vein and extraction zones).
 fn golden_codes() -> Vec<ShareCode> {
     vec![
         ShareCode::new(1, Sliders::new(0, 0)),
@@ -26,6 +28,7 @@ fn golden_codes() -> Vec<ShareCode> {
         ShareCode::new(0xDEAD_BEEF, Sliders::new(75, 20)),
         ShareCode::new(7777, Sliders::new(100, 100)),
         ShareCode::new(u64::MAX, Sliders::from_array([100; 7]).unwrap()),
+        ShareCode::new(0x0048_4549_5354, Sliders::new(60, 50)),
     ]
 }
 

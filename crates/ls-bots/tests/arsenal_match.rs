@@ -72,8 +72,11 @@ fn bots_fire_the_whole_arsenal() {
     // and drop a mine depends on every trajectory. VQ0 (ships touch the
     // visible rock, not a shell 1-2 u out) changed them, and on the old seed
     // (`..._0001`, one mine in the M2 runs) no bot dropped one any more; the
-    // next seed drops mines with and without VQ0 (6 and 2).
-    let code = ShareCode::new(0x5a4d_b0c5_a115_0002, Sliders::default());
+    // next seed dropped mines with and without VQ0 (6 and 2). Generator
+    // version 3 (the Heist vein and extraction caverns) changed the level
+    // again: seeds `..._0002` to `..._0006` each missed the Tectonic Charge
+    // or a mine; `..._0007` fires both (2 Tectonic Charges, 4 mines).
+    let code = ShareCode::new(0x5a4d_b0c5_a115_0007, Sliders::default());
     let mut mc = MatchConfig::paint_the_void(code);
     mc.rules = RuleSet::sandbox_all_weapons();
     let ModeRules::PaintTheVoid(rules) = &mut mc.rules.mode else {

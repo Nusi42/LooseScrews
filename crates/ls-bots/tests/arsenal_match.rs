@@ -77,8 +77,11 @@ fn bots_fire_the_whole_arsenal() {
     // again: seeds `..._0002` to `..._0006` each missed the Tectonic Charge
     // or a mine; `..._0007` fired both. Generator version 4 (the team 2/3
     // caverns) changed it once more: `..._0007` to `..._000b` each missed
-    // one of them; `..._000c` fires both.
-    let code = ShareCode::new(0x5a4d_b0c5_a115_000c, Sliders::default());
+    // one of them; `..._000c` fired both. M4 wave A (the default
+    // Instability 30 now grows craters and caves tunnels in, Absurdity 20
+    // runs the director) changed the match again: `..._000c` and `..._000d`
+    // missed the Tectonic Charge; `..._000e` fires both.
+    let code = ShareCode::new(0x5a4d_b0c5_a115_000e, Sliders::default());
     let mut mc = MatchConfig::paint_the_void(code);
     mc.rules = RuleSet::sandbox_all_weapons();
     let ModeRules::PaintTheVoid(rules) = &mut mc.rules.mode else {

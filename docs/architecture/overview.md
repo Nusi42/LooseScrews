@@ -124,10 +124,12 @@ flowchart LR
    messages to send. `web/src/game/mechanics.ts` turns the frame's cues into banners, flashes
    and HUD lines.
 7. **Meshing.** Terrain edits mark chunks dirty. `Game.meshNext(camera)` picks the next chunk
-   (dirty ones first, then missing ones nearest the camera) and runs surface nets;
-   `web/src/game/chunks.ts` spends a per-frame budget (4 ms / 8 chunks in play) and hands the
+   (dirty ones first, then missing ones nearest the camera) and runs surface nets (vertices
+   snapped onto the surface, continuous normals, baked ambient occlusion);
+   `web/src/game/chunks.ts` spends a per-frame budget (4 ms / 8 chunks in play; a further chunk
+   starts only if the running average chunk time still fits) and hands the
    `positions`/`normals`/`indices`/`team` arrays (plus per-vertex surface states, rock
-   materials and paint colours) to the renderer.
+   materials, paint colours and occlusion) to the renderer.
 8. **Drawing.** The renderer uploads chunk meshes (frustum culled, lit, team paint colours per
    vertex), and instanced ships and projectiles: the local ship from the prediction (plus the
    decaying correction offset), remote ships interpolated 100 ms in the past, projectiles

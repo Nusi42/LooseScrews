@@ -58,9 +58,9 @@ use ls_math::{det, Aabb, Vec3};
 use serde::{Deserialize, Serialize};
 
 use crate::generator::floor_i32;
-use crate::grid::SampleGrid;
-use crate::material::{strengthen_edit, Material, MaterialField};
-use crate::mesh::{dual_contouring_with_sdf, surface_nets, Mesh};
+use crate::grid::{SampleGrid, GRID_HALO, HALO_CORNERS};
+use crate::material::{strengthen_edit, Material, MaterialField, MaterialRegion};
+use crate::mesh::{dual_contouring_with_sdf, surface_nets_with_sdf, Mesh};
 use crate::{Generator, RegionSampler, CHUNK_CELLS, NO_TEAM};
 
 /// Magnitude at which stored SDF values are clamped (u).
@@ -68,7 +68,10 @@ pub const SDF_CLAMP: f32 = 6.0;
 /// Corners stored per axis in a chunk (`0..=32`).
 pub const CHUNK_CORNERS: usize = CHUNK_CELLS as usize + 1;
 /// A geometry edit can change the mesh only within this distance of its
-/// bounds (two cell diagonals; see `apply`).
+/// bounds (two cell diagonals; see `apply`). The surface-nets halo (smooth
+/// normals, occlusion probes) reads further, but only values the edit
+/// cannot reach near a surface: `craters_near_chunk_borders_keep_undirtied_neighbours`
+/// checks that chunks outside the margin keep their meshes bit for bit.
 pub const DIRTY_MARGIN: f32 = 3.5;
 /// Uniform-chunk test: the padded corner range `-1..=32` is split into 3³
 /// blocks of 11 u; a block whose centre is further than its half-diagonal
@@ -152,14 +155,6 @@ struct Chunk {
 }
 
 impl Chunk {
-    #[inline]
-    fn value(&self, i: usize, j: usize, k: usize) -> f32 {
-        match &self.samples {
-            Samples::Uniform(v) => *v,
-            Samples::Dense(d) => d[corner_index(i, j, k)],
-        }
-    }
-
     fn is_surface_cell(&self, i: usize, j: usize, k: usize) -> bool {
         let Samples::Dense(d) = &self.samples else {
             return false;
@@ -484,6 +479,14 @@ impl ChunkStore {
         ))
     }
 
+    /// A generator sampler covering chunk `c`'s whole sample-grid halo.
+    fn halo_sampler(&self, c: ChunkCoord) -> RegionSampler<'_> {
+        let b = c.aabb();
+        let m = GRID_HALO as f32 + 1.0;
+        self.gen
+            .region_sampler(Aabb::new(b.min - Vec3::splat(m), b.max + Vec3::splat(m)))
+    }
+
     /// Generates a chunk if needed: pristine samples from the generator,
     /// then every registered edit applied once to the corners it can reach.
     pub fn ensure_generated(&mut self, c: ChunkCoord) {
@@ -525,45 +528,107 @@ impl ChunkStore {
         }
     }
 
-    /// The padded sample grid (paint, and the surface states active at the
-    /// display tick plus scorch) of a chunk, ready for a mesher.
+    /// The padded sample grid (corner values with the [`GRID_HALO`] ring,
+    /// paint, and the surface states active at the display tick plus scorch)
+    /// of a chunk, ready for a mesher. Generates the chunk and its in-level
+    /// neighbours (the halo reads their samples; the stream meshes them next
+    /// anyway); corners outside the level are evaluated.
     pub fn sample_grid(&mut self, c: ChunkCoord) -> SampleGrid {
-        self.ensure_generated(c);
+        for dz in -1..=1 {
+            for dy in -1..=1 {
+                for dx in -1..=1 {
+                    self.ensure_generated(ChunkCoord::new(c.x + dx, c.y + dy, c.z + dz));
+                }
+            }
+        }
         let o = c.origin();
-        let chunk = self.chunk_slot(c).and_then(|s| self.chunks[s].as_ref());
-        let sampler = self.chunk_sampler(c);
         let n = CHUNK_CELLS;
-        let mut values = Vec::with_capacity((n as usize + 2).pow(3));
-        for k in -1..=n {
-            for j in -1..=n {
-                for i in -1..=n {
-                    let v = match chunk {
-                        Some(ch) if i >= 0 && j >= 0 && k >= 0 => {
-                            ch.value(i as usize, j as usize, k as usize)
+        let (lo, hi) = (-GRID_HALO, n + GRID_HALO);
+        let level = self.level_corners();
+        let mut sampler = None;
+        let mut values = Vec::with_capacity(HALO_CORNERS.pow(3));
+        for k in lo..=hi {
+            let gz = o[2] + k;
+            for j in lo..=hi {
+                let gy = o[1] + j;
+                let (ly, lz) = (gy.rem_euclid(n) as usize, gz.rem_euclid(n) as usize);
+                let mut i = lo;
+                while i <= hi {
+                    // One run per chunk along x; corner 32 of a chunk is
+                    // corner 0 of the next (same bits).
+                    let gx = o[0] + i;
+                    let lx = gx.rem_euclid(n);
+                    let run = (n - lx).min(hi - i + 1) as usize;
+                    let cc = ChunkCoord::new(gx.div_euclid(n), gy.div_euclid(n), gz.div_euclid(n));
+                    match self.chunk_slot(cc).and_then(|s| self.chunks[s].as_ref()) {
+                        Some(ch) => match &ch.samples {
+                            Samples::Uniform(v) => values.extend(std::iter::repeat_n(*v, run)),
+                            Samples::Dense(d) => {
+                                let b = corner_index(lx as usize, ly, lz);
+                                values.extend_from_slice(&d[b..b + run]);
+                            }
+                        },
+                        None => {
+                            // Outside the level: the corners next to it are
+                            // evaluated (vertex placement reads them); further
+                            // out (halo only: normals and occlusion near the
+                            // sealing walls) the walls alone, which are rock
+                            // there either way.
+                            let s = sampler.get_or_insert_with(|| self.halo_sampler(c));
+                            for t in 0..run as i32 {
+                                let g = [gx + t, gy, gz];
+                                let p = Vec3::new(g[0] as f32, g[1] as f32, g[2] as f32);
+                                let out = (0..3)
+                                    .map(|a| (-g[a]).max(g[a] - level[a]))
+                                    .max()
+                                    .unwrap_or(0);
+                                values.push(if out <= 1 {
+                                    self.eval_with(p, |q| s.terrain(q))
+                                } else {
+                                    self.gen.room_open(p).clamp(-SDF_CLAMP, SDF_CLAMP) + 0.0
+                                });
+                            }
                         }
-                        // Padding ring: read a generated neighbour (its corner
-                        // 31 is our corner -1, same bits), else evaluate.
-                        _ => self.corner_value([o[0] + i, o[1] + j, o[2] + k], &sampler),
-                    };
-                    values.push(v);
+                    }
+                    i += run as i32;
                 }
             }
         }
         let mut grid = SampleGrid::from_values(o, values);
-        // Paint and states of own cells and of the neighbouring cells at local -1.
-        for k in -1..n {
-            for j in -1..n {
-                for i in -1..n {
-                    let Some((ch, idx)) = self.cell_ref([o[0] + i, o[1] + j, o[2] + k]) else {
+        // Paint and states of own cells and of the neighbouring cells at
+        // local -1 (owned by the chunks below): walk the stored layers.
+        let un = n as usize;
+        for dz in -1..=0 {
+            for dy in -1..=0 {
+                for dx in -1..=0 {
+                    let cc = ChunkCoord::new(c.x + dx, c.y + dy, c.z + dz);
+                    let Some(ch) = self.chunk_slot(cc).and_then(|s| self.chunks[s].as_ref()) else {
                         continue;
                     };
-                    if let Some(&(t, color)) = ch.paint.get(&idx) {
-                        grid.set_team(i, j, k, t);
-                        grid.set_color(i, j, k, color);
+                    // Local cell in `c`'s frame, if inside -1..32.
+                    let local = |idx: u16| {
+                        let idx = idx as usize;
+                        let l = [idx % un, (idx / un) % un, idx / (un * un)];
+                        let g = [
+                            dx * n + l[0] as i32,
+                            dy * n + l[1] as i32,
+                            dz * n + l[2] as i32,
+                        ];
+                        g.iter().all(|&v| (-1..n).contains(&v)).then_some(g)
+                    };
+                    for (&idx, &(t, color)) in &ch.paint {
+                        if let Some([i, j, k]) = local(idx) {
+                            grid.set_team(i, j, k, t);
+                            grid.set_color(i, j, k, color);
+                        }
                     }
-                    let states = ch.states_at(idx, self.now);
-                    if !states.is_empty() {
-                        grid.set_states(i, j, k, states.bits());
+                    for &idx in ch.states.keys().chain(ch.scorch.iter()) {
+                        if let Some([i, j, k]) = local(idx) {
+                            let states = ch.states_at(idx, self.now);
+                            if !states.is_empty() {
+                                grid.set_states(i, j, k, states.bits());
+                            }
+                        }
                     }
                 }
             }
@@ -586,23 +651,26 @@ impl ChunkStore {
             return;
         }
         let region = self.materials.region(mesh_region(c).expand(1.0));
+        // Neighbouring vertices mostly share a material site: reuse the last
+        // lookup while a vertex stays in its material cube and within its
+        // radius (same result as `region.at`, see `at_with_radius`).
+        let mut last: Option<([i32; 3], Vec3, f32, Material)> = None;
         mesh.materials = mesh
             .positions
             .iter()
-            .map(|p| region.at(Vec3::from_array(*p)).id())
+            .map(|p| {
+                let p = Vec3::from_array(*p);
+                let cube = MaterialRegion::cube(p);
+                if let Some((lc, lp, r, m)) = last {
+                    if lc == cube && p.distance_squared(lp) < r * r {
+                        return m.id();
+                    }
+                }
+                let (m, r) = region.at_with_radius(p);
+                last = Some((cube, p, r, m));
+                m.id()
+            })
             .collect();
-    }
-
-    /// World SDF at an integer corner, from stored samples when available.
-    fn corner_value(&self, g: [i32; 3], sampler: &RegionSampler) -> f32 {
-        let n = CHUNK_CELLS;
-        let c = ChunkCoord::new(g[0].div_euclid(n), g[1].div_euclid(n), g[2].div_euclid(n));
-        if let Some(ch) = self.chunk_slot(c).and_then(|s| self.chunks[s].as_ref()) {
-            let l = [g[0].rem_euclid(n), g[1].rem_euclid(n), g[2].rem_euclid(n)];
-            return ch.value(l[0] as usize, l[1] as usize, l[2] as usize);
-        }
-        let p = Vec3::new(g[0] as f32, g[1] as f32, g[2] as f32);
-        self.eval_with(p, |q| sampler.terrain(q))
     }
 
     /// Finds an open point near `near` with at least `clearance` of free space
@@ -631,12 +699,23 @@ impl ChunkStore {
         None
     }
 
-    /// Surface-nets mesh of a chunk (empty for chunks outside the level).
+    /// Surface-nets mesh of a chunk (empty for chunks outside the level),
+    /// with every vertex snapped towards the zero set of
+    /// [`ChunkStore::eval`] (one evaluation per vertex, terrain read through
+    /// a [`RegionSampler`]), continuous normals and baked ambient occlusion
+    /// ([`surface_nets_with_sdf`]).
     pub fn mesh_surface_nets(&mut self, c: ChunkCoord) -> Mesh {
         if !self.contains_chunk(c) || self.is_uniform(c) {
             return Mesh::default();
         }
-        let mut mesh = surface_nets(&self.sample_grid(c));
+        let grid = self.sample_grid(c);
+        // Sparse sampler: the snap evaluates only the vertices at creases.
+        let b = c.aabb();
+        let sampler = self.gen.sparse_region_sampler(Aabb::new(
+            b.min - Vec3::splat(2.0),
+            b.max + Vec3::splat(2.0),
+        ));
+        let mut mesh = surface_nets_with_sdf(&grid, &|p| self.eval_with(p, |q| sampler.terrain(q)));
         self.mesh_materials(c, &mut mesh);
         mesh
     }
@@ -1571,6 +1650,44 @@ mod tests {
         assert!(changed >= 1);
     }
 
+    /// Craters just inside a chunk, up to a few units from its border: the
+    /// chunk across the border reads them through its halo (normals and
+    /// occlusion), so its mesh may change, but only if it was reported dirty.
+    #[test]
+    fn craters_near_chunk_borders_keep_undirtied_neighbours() {
+        let mut s = store(50, 50);
+        let mut rng = ls_math::SplitMix64::new(5);
+        let craters = if cfg!(debug_assertions) { 3 } else { 24 };
+        let (mut done, mut tries, mut changed) = (0, 0, 0);
+        while done < craters && tries < 200_000 {
+            tries += 1;
+            let r = 1.5 + rng.next_f32() * 3.0;
+            let k = 1 + (rng.next_u32() % 6) as i32;
+            // 0-9 u between the crater and the border plane x = 32 k.
+            let x = (32 * k) as f32 + r + rng.next_f32() * 9.0;
+            let center = Vec3::new(
+                x,
+                8.0 + rng.next_f32() * 112.0,
+                8.0 + rng.next_f32() * 240.0,
+            );
+            if s.eval(center).abs() > 0.3 {
+                continue;
+            }
+            done += 1;
+            let c = s.chunk_at(center).unwrap();
+            let across = ChunkCoord::new(c.x - 1, c.y, c.z);
+            let before = s.mesh_surface_nets(across).hash();
+            let dirty = s.apply(TerrainEdit::SubtractSphere { center, radius: r });
+            if s.mesh_surface_nets(across).hash() != before {
+                changed += 1;
+                assert!(dirty.contains(&across), "{across:?} changed, not dirty");
+            }
+        }
+        assert_eq!(done, craters);
+        // Some neighbours really did change (the test exercises the halo).
+        assert!(changed > 0 || cfg!(debug_assertions));
+    }
+
     #[test]
     fn craters_cannot_break_the_walls() {
         let mut s = store(100, 0);
@@ -1734,11 +1851,60 @@ mod tests {
             }
         }
         let c = found.expect("open sky should have uniform chunks");
-        // A uniform chunk's full padded grid really has no surface.
+        // A uniform chunk's padded grid (the corners vertices are placed
+        // from) really has no surface.
         let g = SampleGrid::from_fn(c.origin(), |p| s.eval(p));
-        assert!(g.values().iter().all(|v| *v == SDF_CLAMP));
+        for k in -1..=CHUNK_CELLS {
+            for j in -1..=CHUNK_CELLS {
+                for i in -1..=CHUNK_CELLS {
+                    assert_eq!(g.value(i, j, k), SDF_CLAMP);
+                }
+            }
+        }
         assert_eq!(s.sample_grid(c), g);
         assert!(s.mesh_surface_nets(c).is_empty());
+    }
+
+    /// The halo of a sample grid holds the world SDF: stored samples of the
+    /// neighbours (generated on demand) and `eval` next to the level; beyond
+    /// one corner outside the level, the sealing walls alone (rock either
+    /// way).
+    #[test]
+    fn sample_grid_halo_matches_eval() {
+        let mut s = store(50, 50);
+        let (hit, _) = surface_point(&s);
+        s.apply(TerrainEdit::SubtractSphere {
+            center: hit,
+            radius: 3.0,
+        });
+        let level = s.level_corners();
+        for c in [
+            s.chunk_at(hit).unwrap(),
+            ChunkCoord::new(0, 0, 0),
+            ChunkCoord::new(7, 3, 4),
+        ] {
+            let g = s.sample_grid(c);
+            let o = c.origin();
+            let h = GRID_HALO;
+            for k in -h..=CHUNK_CELLS + h {
+                for j in -h..=CHUNK_CELLS + h {
+                    for i in -h..=CHUNK_CELLS + h {
+                        let w = [o[0] + i, o[1] + j, o[2] + k];
+                        let p = Vec3::new(w[0] as f32, w[1] as f32, w[2] as f32);
+                        let out = (0..3).map(|a| (-w[a]).max(w[a] - level[a])).max().unwrap();
+                        let want = if out <= 1 {
+                            s.eval(p)
+                        } else {
+                            s.generator().room_open(p).clamp(-SDF_CLAMP, SDF_CLAMP)
+                        };
+                        assert_eq!(g.value(i, j, k).to_bits(), want.to_bits(), "{c:?} {w:?}");
+                        if out > 1 {
+                            assert!(s.eval(p) < 0.0, "rock outside the level");
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /// Many random edits, clustered and spread, including ones overlapping
@@ -2194,8 +2360,13 @@ mod tests {
         let c = s.chunk_at(hit).unwrap();
         let m = s.mesh_surface_nets(c);
         assert_eq!(m.materials.len(), m.vertex_count());
-        for (p, id) in m.positions.iter().zip(&m.materials).step_by(7) {
-            assert_eq!(*id, s.material_at(Vec3::from_array(*p)).id());
+        // Every vertex (the mesher reuses lookups between neighbours), over
+        // several chunks so material borders are crossed.
+        for c in s.chunk_coords().into_iter().step_by(23) {
+            let m = s.mesh_surface_nets(c);
+            for (p, id) in m.positions.iter().zip(&m.materials) {
+                assert_eq!(*id, s.material_at(Vec3::from_array(*p)).id(), "{p:?}");
+            }
         }
         let dc = s.mesh_dual_contouring(c);
         assert_eq!(dc.materials.len(), dc.vertex_count());

@@ -108,6 +108,45 @@ Rules for every package:
 | 7 | **VQ6 Dynamic lights** | Up to 128 point lights per frame (projectiles, explosions, muzzle flashes, engines, glowing pickups, hot rock hot-spots), **clustered forward** (16×9×24 froxel grid built in a compute pass), applied to terrain and objects with range falloff; light lifetimes from VQ5 effect presets; the headlight becomes a soft spot light. The biggest single step toward "nice to watch" in dark caves | `web/src/renderer/shaders/lighting.ts`, new `web/src/renderer/lights.ts` | lights ≤ 1.0 ms (64 lights) | VQ2; integrates with VQ5 (light emitters in effect presets) |
 | 8 | **VQ7 Atmosphere and backdrop** | Starfield plus procedural nebula skybox for open-sky worlds (seeded by share code); fog colour tinted toward the sun and a subtle height gradient; per-world-type grade (caves warm, mines sodium-orange, sky cold blue) through VQ2's grade hook; light shafts through cave openings (screen-space radial blur from the sun, high only) | new `web/src/renderer/sky.ts`, `web/src/renderer/shaders/sky.ts`, grade presets in `post.ts` | ≤ 0.6 ms | VQ2 |
 
+### VQ3a as built (WIN11)
+
+**Status: done; the AO byte reaches the client, its shading is VQ3b's.** `ls_worldgen::surface_nets` / `surface_nets_with_sdf` (`crates/ls-worldgen/src/mesh.rs`; the game meshes with the latter through `ChunkStore::mesh_surface_nets`):
+- **Snap**: one Newton step from the mass point (at most 0.5 u) along the smooth gradient. The distance comes from a tricubic (Catmull-Rom) interpolation of the grid; where it and the trilinear one differ by 0.1 u or more (`SNAP_KINK`: a crease or a feature finer than a cell, about a quarter of the vertices in caverns) the exact field `ChunkStore::eval` is read instead (sparse `RegionSampler`). Deviation from the plan's "one exact evaluation per vertex": that alone cost +1 ms per busy chunk native and doubled meshing in wasm; the hybrid keeps almost all of the accuracy.
+- **Normals**: trilinear interpolation of central-difference corner gradients (continuous across cells and chunks).
+- **AO**: 3 probes along the normal (0.6, 1.4, 2.5 u; classic SDF occlusion scaled to a distance by the local gradient), `Mesh::ao` one byte per vertex, `ChunkMesh.ao()` in ls-wasm, `MeshData.ao` in the web client. Not drawn yet: VQ3b multiplies the ambient term by it (a local, uncommitted shader hookup was used for the preview screenshots). Plain cave tunnels come out around 160/255, flat or convex rock 255, creases and slots darker; the shader can shape the curve.
+- `SampleGrid` corner values gained a 4-corner halo (`GRID_HALO`, 41³ per chunk) read from the neighbouring chunks' stored samples; `ChunkStore::sample_grid` generates the in-level neighbours (the first mesh of a fresh store generates 27 chunks at once: on a loading screen that is one long call, ~60-70 ms native for one chunk of a lazily replayed store, was 4 ms). Corners more than one cell outside the level are the sealing walls alone (rock either way). Vertices shared by two chunks keep bit-identical positions, normals and AO (`seam_free_across_chunks`), `DIRTY_MARGIN` stays 3.5 (`craters_near_chunk_borders_keep_undirtied_neighbours`).
+- Same change, to pay for it: `sample_grid` copies corner rows per chunk and walks only the stored paint and state layers; `mesh_materials` reuses a material lookup while a vertex stays within a certified radius (`MaterialRegion::at_with_radius`, same result as `at`); `web/src/game/chunks.ts` starts another chunk in a frame only if the running average chunk time still fits the budget.
+
+Measurements (release, this shared machine; `cargo test -p ls-worldgen --release --test mesh_quality -- --nocapture`, plain surface nets in brackets):
+
+| World (seed, enclosure, density) | Vertex error p50 / p95 | Centroid error p95 | Normal vs field p50 |
+| --- | --- | --- | --- |
+| 7, 50, 50 caverns | 0.004 / 0.091 u (0.012 / 0.198) | 0.143 u (0.237) | 1.7° |
+| 42, 50, 50 caverns | 0.005 / 0.091 u (0.014 / 0.209) | 0.154 u (0.246) | 2.2° |
+| 99, 70, 60 caverns/mines | 0.009 / 0.093 u (0.015 / 0.270) | 0.128 u (0.240) | 5.0° |
+| 7, 20, 70 sky | 0.001 / 0.051 u (0.031 / 0.124) | 0.093 u (0.183) | 0.5° |
+| 7, 100, 30 mine shafts | 0.015 / 0.080 u (0.000 / 0.354) | 0.061 u (0.174) | 4.5° |
+
+Facets (`normals_are_smooth_and_follow_the_field`, bumpy test blob): the normals at the two ends of a mesh edge turn by at most 0.46° (p99) more than the field does between them, 4.42° with the per-cell normals; normal error 0.74° (1.12°).
+
+Cost (meshing one chunk, all chunks generated; before → after):
+
+| Measure | Before | After |
+| --- | --- | --- |
+| `worldgen_bench` busiest cavern chunk (14 586 tris), native | 0.98 ms | 1.65-2.17 ms (1.7-2.2x) |
+| `worldgen_bench` mine chunk (9 506 tris), native | 0.71-0.80 ms | 1.38-1.54 ms (1.9x) |
+| `worldgen_bench` remesh after 1 crater (2 chunks), native | 1.77-1.87 ms | 2.53-3.7 ms |
+| `timing` test, bare grid (no exact field), native | 0.5 ms | 1.0 ms (asserts < 2 ms) |
+| wasm (Node), cavern level 256 chunks, all chunks | 247 ms | 528-548 ms (2.2x) |
+| wasm, per chunk p50 / p95 / max | 0.95 / 1.25 / 1.65 ms | 2.1 / 2.8 / 3.7 ms |
+| wasm, smoke-test world 213 chunks | 100 ms | 154 ms (1.5x) |
+
+The plan's "+40 % per chunk" is **not met** (about 2x). Every chunk still fits the 4 ms play budget on its own (wasm max 3.7 ms), and the loader no longer starts a second chunk that would overrun it. Largest remaining wasm costs: the per-vertex refine (~45 %), the exact field at creases (~30 %), and `libm::sqrtf`, which is a software routine on wasm32 and is 10 % of all meshing and generation time: `ls_math::det::sqrt` could call `f32::sqrt` (correctly rounded, identical bits; the mesher already does) for a free speed-up of the whole sim and generator in the browser.
+
+Golden hashes: `surface_nets` and `edited` re-blessed for all six codes (native and wasm32 match, `node tools/determinism-check.mjs` passes); `sdf` and `dual_contouring` unchanged, no `GENERATOR_VERSION` bump. No replay hash changes.
+
+Before/after screenshots (practice, fixed codes, same poses): `target/vq3a-shots/{before,after,after-ao}/{caves,default,mines}-{spawn,view1..4}.png`, side by side in `target/vq3a-shots/compare/`.
+
 Total at "high" on the mid GPU: about 6.5–7.5 ms GPU, under the 8 ms target. "Medium" drops MSAA to 2×, bloom to 4 mips, particles to 10 k, lights to 32, and turns off light shafts.
 
 ### Acceptance (whole track)

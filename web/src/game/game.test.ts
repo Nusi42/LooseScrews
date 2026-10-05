@@ -141,14 +141,16 @@ test("chunk loader: time budget, empty meshes, unloads and reset", () => {
     ["2,0,0", 1],
     ["3,0,0", 1],
   ];
-  // Each meshNext "takes" 3 ms: a 4 ms budget meshes two chunks this frame.
+  // Each meshNext "takes" 3 ms: a 7 ms budget meshes two chunks this frame
+  // (a third would end at 9 ms).
   const origNext = game.meshNext.bind(game);
   game.meshNext = () => {
     clock += 3;
     return origNext();
   };
-  let s = loader.update(game, { x: 0, y: 0, z: 0 }, { millis: 4, maxChunks: 10 });
+  let s = loader.update(game, { x: 0, y: 0, z: 0 }, { millis: 7, maxChunks: 10 });
   assert.equal(s.meshed, 2);
+  assert.equal(loader.chunkMillis, 3);
   assert.equal(s.pending, 2);
   assert.equal(s.shown, 1, "the empty mesh is not shown");
   assert.deepEqual(
@@ -172,6 +174,40 @@ test("chunk loader: time budget, empty meshes, unloads and reset", () => {
   ]);
   loader.reset(game);
   assert.equal(game.resets, 1);
+});
+
+test("chunk loader: a frame starts no chunk that would overrun the budget", () => {
+  let clock = 0;
+  const loader = new ChunkLoader(() => {}, () => clock);
+  const game = new FakeChunks();
+  game.queue = Array.from({ length: 8 }, (_, i): [string, number] => [`${i},0,0`, 1]);
+  const origNext = game.meshNext.bind(game);
+  game.meshNext = () => {
+    clock += 2.5;
+    return origNext();
+  };
+  // 4 ms budget, 2.5 ms per chunk: one chunk per frame (the old rule started
+  // a second one at 2.5 ms and spent 5 ms).
+  for (let frame = 0; frame < 3; frame++) {
+    const start = clock;
+    const s = loader.update(game, { x: 0, y: 0, z: 0 }, { millis: 4, maxChunks: 8 });
+    assert.equal(s.meshed, 1);
+    assert.ok(clock - start <= 4);
+  }
+  // Cheaper chunks: the running average follows and more fit again.
+  game.meshNext = () => {
+    clock += 0.5;
+    return origNext();
+  };
+  for (let frame = 0; frame < 4; frame++) loader.update(game, { x: 0, y: 0, z: 0 }, { millis: 4, maxChunks: 8 });
+  assert.ok(loader.chunkMillis < 1.5, `${loader.chunkMillis}`);
+});
+
+test("takeMesh passes ambient occlusion through (empty when the mesh has none)", () => {
+  const log: string[] = [];
+  const withAo = { ...fakeMesh("a", 1, log), ao: () => new Uint8Array([255, 128, 0]) };
+  assert.deepEqual([...(takeMesh(withAo).mesh.ao ?? [])], [255, 128, 0]);
+  assert.equal(takeMesh(fakeMesh("b", 1, log)).mesh.ao?.length, 0);
 });
 
 test("takeMesh maps teams to MeshData.team and frees on error", () => {

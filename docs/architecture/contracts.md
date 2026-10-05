@@ -223,14 +223,24 @@ number on the wire.
 `colors: Vec<u8>` (paint colour id per vertex, `PAINT_*`, 0 where unpainted),
 `states: Vec<u8>` (surface state bits per vertex: timed states active at the chunk store's
 display tick, `GameTerrain::advance_to`, plus scorch 8) and `materials: Vec<u8>` (material
-id per vertex; filled by the `ChunkStore` meshers). `Mesh::hash` covers colours and states
-only when a vertex has one, so the worldgen golden hashes did not change.
+id per vertex; filled by the `ChunkStore` meshers) and `ao: Vec<u8>` (baked ambient occlusion
+per vertex, 255 = open, 0 = fully occluded; surface nets only, empty for dual contouring).
+`Mesh::hash` covers colours and states only when a vertex has one, and occlusion when the mesh
+carries it.
+Surface-nets vertices lie on the collision surface (`ChunkStore::eval`): each mass point is
+snapped by one Newton step (tricubic grid interpolation, the exact field at creases); the
+normals are the smooth grid gradient (continuous across cells and chunks). Shared border
+vertices carry bit-identical positions, normals and occlusion in both chunks. A chunk's
+`SampleGrid` holds corner values with a 4-corner halo (`GRID_HALO`) read from the neighbouring
+chunks; meshing a chunk generates its in-level neighbours.
 Vertices are in world space and faces are counter-clockwise seen from open space. `ls-wasm`
 hands the client a `MeshData` (`web/src/renderer/mesh.ts`) by flattening only:
 `positions` and `normals` as `Float32Array` (xyz triples), `indices` as `Uint32Array`, and
 `teams` as the `Uint8Array` field `team` with values unchanged; `states` travel as the
 optional `surface` field, `materials` and `colors` through `ChunkMesh.materials()` and
-`ChunkMesh.paintColors()` (unknown colour ids become plain). The web client packs them into
+`ChunkMesh.paintColors()` (unknown colour ids become plain), occlusion through `ChunkMesh.ao()`
+as the optional `MeshData.ao` (`Uint8Array`, one byte per vertex; the terrain shader multiplies
+its ambient light by it, VQ3b). The web client packs the first ones into
 one `u32` terrain vertex attribute (`web/src/renderer/shaders.ts`): bits 0-7 paint team (255
 unpainted), bits 8-15 surface states, bits 16-23 material + 1 (0 unknown), bits 24-31 paint
 colour; without the optional layers the packing is the M1 one. Coloured paint draws a

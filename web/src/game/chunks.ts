@@ -11,7 +11,11 @@ import type { ChunkMeshHandle, GameHandle } from "../wasm/api.ts";
 export type ChunkSink = (key: string, mesh: MeshData | null) => void;
 
 export interface ChunkBudget {
-  /** Milliseconds of meshing per frame (at least one chunk is always meshed). */
+  /**
+   * Milliseconds of meshing per frame. At least one chunk is always meshed;
+   * a further chunk starts only if the time spent plus the expected time of
+   * one chunk (a running average) stays within the budget.
+   */
   millis: number;
   /** Hard cap on chunks per frame. */
   maxChunks: number;
@@ -44,6 +48,8 @@ export function takeMesh(m: ChunkMeshHandle): { key: string; mesh: MeshData } {
         // Rock materials and paint effect colours (tolerated when absent).
         materials: m.materials?.() ?? new Uint8Array(0),
         paintColors: m.paintColors?.() ?? new Uint8Array(0),
+        // Baked ambient occlusion (255 = open), for the terrain shading.
+        ao: m.ao?.() ?? new Uint8Array(0),
       },
     };
   } finally {
@@ -59,6 +65,8 @@ export class ChunkLoader {
   private readonly shown = new Set<string>();
   /** Chunk meshes built since this loader was created. */
   meshedTotal = 0;
+  /** Running average of the time one chunk takes to mesh (ms). */
+  chunkMillis = 0;
 
   constructor(sink: ChunkSink, now: () => number = () => performance.now()) {
     this.sink = sink;
@@ -78,10 +86,13 @@ export class ChunkLoader {
     }
     const start = this.now();
     let meshed = 0;
-    while (meshed < budget.maxChunks && (meshed === 0 || this.now() - start < budget.millis)) {
+    while (meshed < budget.maxChunks && (meshed === 0 || this.now() - start + this.chunkMillis <= budget.millis)) {
+      const t0 = this.now();
       const handle = game.meshNext(cam.x, cam.y, cam.z);
       if (!handle) break;
       const { key, mesh } = takeMesh(handle);
+      const took = this.now() - t0;
+      this.chunkMillis = this.meshedTotal === 0 ? took : this.chunkMillis + (took - this.chunkMillis) * 0.25;
       meshed++;
       this.meshedTotal++;
       if (mesh.indices.length > 0) {

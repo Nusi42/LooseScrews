@@ -41,7 +41,9 @@ pub use connectivity::ClearanceGrid;
 pub use generator::{Generator, RegionSampler, DEFAULT_SIZE_CHUNKS, WALL_THICKNESS};
 pub use grid::SampleGrid;
 pub use material::{strengthen_edit, Material, MaterialField, MaterialRegion};
-pub use mesh::{dual_contouring, dual_contouring_with_sdf, surface_nets, Mesh};
+pub use mesh::{
+    dual_contouring, dual_contouring_with_sdf, surface_nets, surface_nets_with_sdf, Mesh,
+};
 pub use network::Network;
 pub use sharecode::ShareCode;
 pub use sliders::Sliders;

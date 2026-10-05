@@ -323,11 +323,13 @@ node tools/e2e.mjs --server-bin target/<area>/release/ls-server --bots-bin targe
   cargo run -p ls-worldgen --release --example worldgen_bench      # generation, remesh after craters, eval cost, dual contouring
   cargo run -p ls-worldgen --release --example mesh_bench [CODE]   # meshing timings for one share code
   cargo test -p ls-worldgen --release --test timing -- --nocapture # asserts < 2 ms per 32³ chunk (surface nets)
+  cargo test -p ls-worldgen --release --test mesh_quality -- --nocapture # drawn rock vs collision surface, normals, occlusion
   ```
 
 - **Browser:** F3 shows FPS, ping, transport, prediction corrections and snaps, shot prediction
   counters, chunk counts and skipped sends. Chunk meshing is budgeted per frame (4 ms / 8 chunks
-  in play, `web/src/game/chunks.ts`). Use the browser's Performance panel for frame breakdowns;
+  in play, `web/src/game/chunks.ts`; a chunk starts only if the running average chunk time
+  still fits, so only a single chunk can overrun it). Use the browser's Performance panel for frame breakdowns;
   a release WASM build is required for meaningful numbers.
 - **Network:** `ls_net::MemoryTransport::pair_with(LinkConditions { .. })` reproduces latency,
   jitter, loss, reordering and duplication in tests (see `crates/ls-game/tests/netplay.rs`).

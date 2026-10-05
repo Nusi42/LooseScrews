@@ -919,7 +919,7 @@ node tools/browser-smoke/smoke.mjs --help
 ```
 
 The wrappers take the server from `$CARGO_TARGET_DIR/release` and install puppeteer-core in
-`tools/browser-smoke` on first use; extra arguments go to `smoke.mjs`. Phases (about 115 checks):
+`tools/browser-smoke` on first use; extra arguments go to `smoke.mjs`. Phases (about 160 checks):
 
 1. **Practice:** every WGSL module and render pipeline is created under an error scope; the
    level renders for `--practice-secs`.
@@ -945,6 +945,10 @@ The wrappers take the server from `$CARGO_TARGET_DIR/release` and install puppet
    to the server binary (`--directory-bin`).
 6. **Editor:** `?editor=rules`, a change, the new code, and another `ls-server --ruleset <code>`
    that must start with the same `rules_code`.
+7. **Audio** (M4 A6): the practice page and `?audio=demo` create no AudioContext before a user
+   gesture (`audio-probe.mjs` records each one with `navigator.userActivation`); the sound check
+   page lists every registered sound, starts on a click, keeps at most 32 voices under a
+   64-sound burst and speaks an announcer line.
 
 Every phase fails on console or page errors, WebGPU validation or uncaptured errors, a lost
 device, error screens, and server errors or panics. Screenshots, the browser console and the
@@ -1046,6 +1050,22 @@ blocking time, the longest task, the backdrop's first frame and frame rate, and 
 `ls:*` performance measures (renderer creation, backdrop world); `startup.json` and a
 screenshot go to `target/startup/<label>/`. Run it against a before build (`--web-root` of a
 copy of its `web/dist`) for comparisons; `--query backdrop=off` measures without the flythrough.
+
+### Sound check and sound previews
+
+`?audio=demo` (for example `http://localhost:7777/?audio=demo`) is the sound check page: every
+registered sound with a play button (loops toggle), played centred or from a direction and
+distance, the volume sliders, a 64-sound burst against the voice cap, and the three announcer
+voice packs saying any of their lines with the in-game caption. Offline, without a browser:
+
+```sh
+node web/scripts/audio-preview.ts [--only <id-prefix>] [--out <dir>]   # WAV + spectrogram PNG per sound, levels and render times
+```
+
+writes `target/audio-preview/<id>.wav`, `<id>.png` and `index.md`. Adding a sound and the mix
+conventions: [architecture/audio.md](architecture/audio.md#adding-sounds). The gallery scenes
+`announcer-tired`, `announcer-overexcited` and `announcer-passive` show the caption over the
+fight frame.
 
 ## 13. Where things are documented
 

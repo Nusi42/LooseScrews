@@ -61,7 +61,8 @@ Every world comes from a **share code**, a short text such as
 - The address of a running game server for online play (the host gives it to you, for
   example `http://localhost:7777`). Practice mode needs no server once the page has loaded.
 
-There is no sound in this build.
+Sound is synthesized in the browser and starts with your first click or key press (see
+[Settings](#settings)); headphones let you hear where things happen.
 
 ## Starting a game
 
@@ -78,10 +79,11 @@ in the bottom right corner. The start screen has these fields:
 | **View: Field of view** | How wide you see, 80 to 120 degrees across a 16:9 screen (default 100). Narrower screens keep that width; wider screens (21:9) see a little more at the sides, up to 115 degrees. Boosting widens the view by 4 degrees for a sense of speed. |
 | **View: Cockpit frame** | On by default. Shows the nose, the canopy frame (pillars and the bow across the top) and side parts (pods, armour plates, grapple arms) of the ship you fly, so you can judge its size. |
 | **View: Fit ring** | On by default. A thin ring around the crosshair that shows how big your ship is at the rock ahead (see [Will I fit?](#will-i-fit)). |
+| **Sound** | Volume sliders for everything (master), effects, music and the announcer, and **Mute all sound**. Letting go of a slider plays a short sample. See [Settings](#settings). |
 
-**Options** (horizon assist and the view settings) and **Controls** (every key) fold open
-below the buttons. The page remembers your name, code, ship, horizon assist and view settings
-for next time. The **Rule set editor** link in the bottom right corner opens the
+**Options** (horizon assist, the view and the sound settings) and **Controls** (every key) fold
+open below the buttons. The page remembers your name, code, ship, horizon assist, view and sound
+settings for next time. The **Rule set editor** link in the bottom right corner opens the
 [rule set editor](#the-rule-set-editor). Without WebGPU the start screen still works, with a
 plain background; the game then explains what is missing when you press a button.
 
@@ -1000,11 +1002,21 @@ Everything is on the start screen under **Options**, and the page remembers it p
 | **Field of view** | How wide you see, 80 to 120 degrees across a 16:9 screen (default 100). Narrower screens keep that width; wider screens (21:9) see a little more at the sides, up to 115 degrees. Boosting widens the view by 4 degrees. |
 | **Cockpit frame** | On by default. Shows the nose, the canopy frame and side parts of the ship you fly, so you can judge its size. |
 | **Fit ring** | On by default. A ring around the crosshair that shows how big your ship is at the rock ahead (see [Will I fit?](#will-i-fit)). |
+| **Sound** | Master volume (80), effects (80), music (60) and announcer (85), 0 to 100 each, and **Mute all sound**. Changes apply at once, also in a running game. |
+
+**Sound** starts with your first click or key press on the page (browsers don't allow sound
+before that). Every sound is made in your browser while you play: weapons by family, impacts,
+explosions, the Tectonic Charge's rumble and blast, the Polite Laser's chime, boost, pickups.
+Sounds come from where they happen (headphones help). The **announcer**, a little broadcast
+robot at the top left, calls first blood, multi-kills and the match start in made-up robot
+speech with captions; each match gets one of three announcers: Doug (tired), Sparky
+(overexcited) or Brenda (passive-aggressive). `?audio=demo` after the page address opens the
+sound check page, where you can play every sound and hear every announcer.
 
 The pilot name, share code and ship are remembered too. **Graphics quality** is picked
 automatically after the first seconds of play (low, medium or high, by your GPU's speed); add
 `?quality=low`, `?quality=medium` or `?quality=high` to the page address to force one. There is
-no setting yet for mouse sensitivity, inverted look, key rebinding or sound.
+no setting yet for mouse sensitivity, inverted look or key rebinding.
 
 ## Troubleshooting
 
@@ -1104,8 +1116,8 @@ These are part of the game design but aren't in the Milestone 3 build:
   there's no screen to set sliders or save a level.
 - **Comedy events** ("the level has moods"): not yet.
 - **Voting for the next mode:** servers play their rotation in order.
-- **Sound:** none at all yet, so the Polite Laser's "excuse me" and the Tectonic Charge's
-  rumble are banners only.
+- **Sound:** no music yet, and no recorded voices: the announcer speaks in made-up robot
+  speech with captions.
 - **Scorch fading and cosmetic chips:** scorch marks stay for the whole match; there are no
   client-only decals or small cosmetic debris chips.
 - **Accounts, friends lists, ranked play and matchmaking by skill:** parties live on one

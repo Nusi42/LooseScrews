@@ -90,6 +90,8 @@ import { addModeProps, easeMonochrome, isMonochrome, modeLights, ModeVfx, modeVo
 import { NEUTRAL_GRADE } from "./renderer/post.ts";
 import { parseInvite } from "./rules/model.ts";
 import type { WasmApi } from "./wasm/api.ts";
+import { MatchAudio } from "./audio/index.ts";
+import { showAudioDemo, wantsAudioDemo } from "./audio/demo.ts";
 
 /** Largest frame time passed to the simulation; longer stalls (tab switch) are clamped. */
 const MAX_FRAME_DT = 0.1;
@@ -129,6 +131,11 @@ async function start(): Promise<void> {
   // `?editor=rules`: the rule set editor (no game core or GPU needed).
   if (wantsRuleEditor(location)) {
     showRuleEditor(ui, { baseUrl: location.href, ...parseInvite(location.href) });
+    return;
+  }
+  // `?audio=demo`: the sound check page (every sound, the announcer packs; M4 A6).
+  if (wantsAudioDemo(location)) {
+    showAudioDemo(ui);
     return;
   }
   // `?view=ships`: the VQ4 model showcase (ship bay, wrecks, props, in flight).
@@ -310,6 +317,8 @@ function runGame(
     // Mode visuals (M3 C1): particles and events of walls, cores, reactors; the monochrome blend.
     const modeVfx = particles ? new ModeVfx(particles) : null;
     if (modeVfx) modeVfx.lightSink = lightFx;
+    // Sound and the announcer (M4 A6; silent until the first user gesture).
+    const audio = new MatchAudio(ui, game.shareCode);
     let mono = 0;
     let shipBayOpen = false;
     let shipError = "";
@@ -368,6 +377,7 @@ function runGame(
       scoreboard.dispose();
       results.dispose();
       lobby.dispose();
+      audio.dispose();
       delete ui.dataset["stage"];
       delete ui.dataset["matches"];
       overlay.dispose();
@@ -444,6 +454,7 @@ function runGame(
         vfx?.reset();
         charging.forget();
         modeVfx?.reset();
+        audio.newMatch(game.shareCode);
         mono = 0;
         particles?.clear();
         spectator = null;
@@ -561,6 +572,7 @@ function runGame(
         warmup: flow.stage === "warmup" || flow.stage === "countdown",
       };
       modeVfx?.update({ ...modeInput, dt });
+      audio.update({ time, dt, player: game.player, online: session.isOnline, stage: flow.stage, camera: view, pose: r.pose, ships: r.ships, projectiles: r.projectiles, entities: r.entities, cues: r.cues, visuals: session.visuals, boosting: cueFrame.boosting, gadgetOf, gadgetIds: session.gadgetIds, names });
       // The cinematic camera sees the own ship too.
       const shownShips = cine && r.pose && own ? [...r.ships, cinematic.ownShip(game.player, game.team, r.pose, own.shipType, game.shipRadius ?? TINKER_RADIUS)] : r.ships;
       const scene = buildScene(shownShips, r.projectiles, r.entities, session.visuals, session.teamOf(r.ships), time, {

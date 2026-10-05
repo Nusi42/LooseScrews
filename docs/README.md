@@ -28,6 +28,7 @@ working on the repo are in [`CLAUDE.md`](../CLAUDE.md).
 | [architecture/game-glue.md](architecture/game-glue.md) | `ls-game` in detail: `GameTerrain`, match setup, wire conventions, `ClientSession`, `Room`, lag compensation, tests |
 | [architecture/arsenal-framework.md](architecture/arsenal-framework.md) | M2 arsenal framework: weapon and gadget modules, their hooks and `Ctx` commands, terrain layers for weapons, hook order per tick, gadgets, ship types and paint effects, entities and debris, replication (protocol 4 wire items), data hash, rule set v2, codes (format 4 with every mode) and balance lists, and the arsenal as built (every weapon's bonus, malus and lasting effect) |
 | [architecture/directory.md](architecture/directory.md) | `ls-directory`: the optional server list service (flags, JSON API, heartbeat and secret rules, invite relay, the client library `ls-server` uses) |
+| [architecture/audio.md](architecture/audio.md) | M4: the browser's sound: synthesized sounds, the WebAudio engine (gesture unlock, mixer, voice cap, positional voices, loops), game sounds per cue and shape, the announcer (voice packs, triggers, gibberish voice), `?audio=demo`, adding sounds |
 | [architecture/renderer.md](architecture/renderer.md) | Browser renderer: HDR frame (scene, bloom, composite), colour units and emissive scale, post settings and the colour-grade hook, quality presets, GPU pass timing, shader files |
 | [architecture/server.md](architecture/server.md) | `ls-server` internals (endpoints, links, WebTransport mapping, rooms, lobby and rotation, the JSON API, parties, duels and the directory client, sim thread policies, CLI incl. rule sets, playlists, bans and balance lists), browser client lifecycle (match transitions, invites, server list, mode HUD) and data-driven drawing, `ls-bots` (navigation and its cache, arsenal use, mode objectives, duels), the e2e run |
 
@@ -42,7 +43,7 @@ working on the repo are in [`CLAUDE.md`](../CLAUDE.md).
 | `crates/ls-game` | [game-glue.md](architecture/game-glue.md), [netcode.md](architecture/netcode.md) |
 | `crates/ls-server`, `crates/ls-bots`, `tools/` | [server.md](architecture/server.md), [modes-and-lobby.md](architecture/modes-and-lobby.md), [dev-guide.md](dev-guide.md) (CI, e2e, [browser smoke test](dev-guide.md#12-browser-smoke-test)) |
 | `crates/ls-directory` | [directory.md](architecture/directory.md) |
-| `crates/ls-wasm`, `web/` | [overview.md](architecture/overview.md), [renderer.md](architecture/renderer.md), [game-glue.md](architecture/game-glue.md#browser-core-extras-ls-wasm), [server.md](architecture/server.md#browser-client-lifecycle-websrcmaints), rule set editor in [dev-guide.md](dev-guide.md#rule-set-codes-and-the-editor) |
+| `crates/ls-wasm`, `web/` | [overview.md](architecture/overview.md), [renderer.md](architecture/renderer.md), [audio.md](architecture/audio.md), [game-glue.md](architecture/game-glue.md#browser-core-extras-ls-wasm), [server.md](architecture/server.md#browser-client-lifecycle-websrcmaints), rule set editor in [dev-guide.md](dev-guide.md#rule-set-codes-and-the-editor) |
 
 Crate-level rustdoc (`//!` at the top of each `lib.rs`) summarises every crate's modules;
 `cargo doc --workspace --no-deps --open` renders it.

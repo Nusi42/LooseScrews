@@ -43,7 +43,7 @@ top of Milestone 2's arsenal and physics:
   play every mode for its objective
 
 A lot of the design (co-op modes, The Architect, most world sliders, the comedy "moods"
-system, accounts, sound and more) is **not in this build yet**. Both manuals list those features
+system, accounts, music and more) is **not in this build yet**. Both manuals list those features
 in a section of their own so you know what to expect.
 
 ## Quick start

@@ -107,6 +107,8 @@ export interface GalleryScene {
   camera?: { position: Vec3; orientation: Quat };
   /** Ship types (lineup) drawn with their colour kept through the monochrome ink (pigmented, M4 A7 keep mask). */
   keepShips?: readonly number[];
+  /** An announcer caption over the frame (M4 A6, ui/announcer.ts): voice pack and line trigger. */
+  caption?: { pack: "tired" | "overexcited" | "passiveAggressive"; trigger: string };
 }
 
 const CAVES: GalleryWorld = { seed: 7, enclosure: 50, density: 50 };
@@ -247,6 +249,10 @@ export const SCENES: readonly GalleryScene[] = [
   },
   { id: "ship-lineup", title: "The four hulls", covers: "ships", world: CAVES, pose: "tunnel", content: "lineup", time: 1.0 },
   { id: "fight", title: "Fight frame with an explosion", covers: "effects", world: CAVES, pose: "tunnel", content: "fight", time: 2.15 },
+  // M4 A6: the announcer caption, one voice pack each, over the fight frame from the cockpit.
+  { id: "announcer-tired", title: "Announcer: Doug (tired) announces an event", covers: "announcer, M4 A6", world: CAVES, pose: "tunnel", content: "fight", time: 2.15, ship: 1, caption: { pack: "tired", trigger: "event.tax_drone" } },
+  { id: "announcer-overexcited", title: "Announcer: Sparky (overexcited) calls first blood", covers: "announcer, M4 A6", world: CAVES, pose: "tunnel", content: "fight", time: 2.15, ship: 1, caption: { pack: "overexcited", trigger: "firstBlood" } },
+  { id: "announcer-passive", title: "Announcer: Brenda (passive-aggressive) on a triple kill", covers: "announcer, M4 A6", world: CAVES, pose: "tunnel", content: "fight", time: 2.15, ship: 1, caption: { pack: "passiveAggressive", trigger: "multiKill3" } },
   {
     id: "light-volley",
     title: "Dynamic lights: a volley down a mine shaft",

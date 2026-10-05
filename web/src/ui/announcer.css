@@ -1,0 +1,191 @@
+/* The announcer caption (ui/announcer.ts, M4 A6): a broadcast robot's
+   portrait, its name and the line, sliding in at the top left. Words appear
+   as the voice speaks them (per-word animation delays); the mouth moves
+   while it talks. Imported by style.css. */
+
+.announcer {
+  --ann-accent: #ffb347;
+  position: absolute;
+  top: 18px;
+  left: 18px;
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  box-sizing: border-box;
+  max-width: min(clamp(460px, 32vw, 620px), calc(100vw - 36px));
+  padding: 9px 20px 9px 9px;
+  border: 1px solid var(--glass-edge);
+  border-left: 3px solid var(--ann-accent);
+  border-radius: 14px;
+  background:
+    linear-gradient(90deg, color-mix(in srgb, var(--ann-accent) 14%, transparent), transparent 55%),
+    var(--glass-strong);
+  box-shadow:
+    var(--glass-shadow),
+    0 0 28px -10px var(--ann-accent);
+  backdrop-filter: blur(8px);
+  pointer-events: none;
+  opacity: 0;
+  transform: translateX(calc(-100% - 40px));
+  transition:
+    transform 0.32s cubic-bezier(0.5, 0, 0.75, 0),
+    opacity 0.25s ease 0.05s;
+}
+
+.announcer.shown {
+  opacity: 1;
+  transform: none;
+  transition:
+    transform 0.5s cubic-bezier(0.18, 1.35, 0.4, 1),
+    opacity 0.2s ease;
+}
+
+.announcer-portrait {
+  flex: none;
+  width: clamp(56px, 3.6vw, 72px);
+  height: clamp(56px, 3.6vw, 72px);
+  border-radius: 12px;
+  background: radial-gradient(circle at 50% 42%, color-mix(in srgb, var(--ann-accent) 22%, transparent), transparent 70%);
+}
+
+.announcer-portrait svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.announcer .mouth {
+  transform-box: view-box;
+  transform-origin: 32px 39px;
+}
+
+.announcer.speaking .mouth {
+  animation: ann-talk 0.13s ease-in-out infinite alternate;
+}
+
+.announcer.speaking .announcer-portrait svg {
+  animation: ann-bob 0.42s ease-in-out infinite alternate;
+}
+
+@keyframes ann-talk {
+  from {
+    transform: scaleY(0.3);
+  }
+  to {
+    transform: scaleY(1.2);
+  }
+}
+
+@keyframes ann-bob {
+  from {
+    transform: translateY(0) rotate(-1.5deg);
+  }
+  to {
+    transform: translateY(-1.5px) rotate(1.5deg);
+  }
+}
+
+.announcer-body {
+  min-width: 0;
+}
+
+.announcer-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  white-space: nowrap;
+}
+
+/* "On air" light, lit while the voice speaks. */
+.announcer-head::before {
+  content: "";
+  align-self: center;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--ann-accent) 35%, #30343f);
+  transition: background 0.2s, box-shadow 0.2s;
+}
+
+.announcer.speaking .announcer-head::before {
+  background: var(--ann-accent);
+  box-shadow: 0 0 8px var(--ann-accent);
+}
+
+.announcer-name {
+  font: 700 clamp(13px, 0.75vw + 2px, 16px) var(--display, system-ui);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--ann-accent);
+}
+
+.announcer-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: clamp(11px, 0.6vw + 2px, 13px);
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
+.announcer-line {
+  margin-top: 3px;
+  font: 600 clamp(17px, 1vw + 4px, 23px) / 1.3 system-ui, -apple-system, "Segoe UI", sans-serif;
+  color: #f3f5f9;
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.65);
+}
+
+.announcer-line .w {
+  display: inline-block;
+  opacity: 0;
+  transform: translateY(5px);
+  animation: ann-word 0.2s ease-out forwards;
+}
+
+@keyframes ann-word {
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* Gallery stills: everything shown at once, the mouth open. */
+.announcer.still,
+.announcer.still .w {
+  transition: none;
+  animation: none;
+  opacity: 1;
+  transform: none;
+}
+
+.announcer.still .mouth,
+.announcer.still .announcer-portrait svg {
+  animation: none;
+}
+
+@media (max-width: 640px) {
+  .announcer {
+    top: 10px;
+    left: 10px;
+    max-width: calc(100vw - 20px);
+  }
+  .announcer-portrait {
+    width: 44px;
+    height: 44px;
+  }
+  .announcer-line {
+    font-size: 15px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .announcer,
+  .announcer.shown {
+    transition: opacity 0.2s ease;
+    transform: none;
+  }
+  .announcer.speaking .mouth,
+  .announcer.speaking .announcer-portrait svg {
+    animation: none;
+  }
+}

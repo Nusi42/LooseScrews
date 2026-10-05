@@ -15,7 +15,9 @@
 //!   number key, wheel and X;
 //! - [`mechanics`]: game cues for effects, the charge meter, the gadget
 //!   state and ship type choice with its loadout preview (M2 wave C);
-//! - [`modes`]: mode state, lobby state and match results as JSON (M3).
+//! - [`modes`]: mode state, lobby state and match results as JSON (M3);
+//! - [`probe`]: ray cast and ship-sized sphere sweep for the HUD's fit ring
+//!   (visual-quality-plan.md VQ1).
 //!
 //! This file only converts to JavaScript types. Flat arrays keep the
 //! boundary cheap; their layouts are documented on each method and mirrored
@@ -28,6 +30,7 @@ pub mod game;
 pub mod inventory;
 pub mod mechanics;
 pub mod modes;
+pub mod probe;
 pub mod scene;
 pub mod sharecode;
 pub mod shots;
@@ -1058,6 +1061,63 @@ impl Game {
     #[wasm_bindgen(js_name = terrainHash)]
     pub fn terrain_hash(&self) -> String {
         format!("{:016x}", self.core.terrain_hash())
+    }
+
+    // ----- VQ1 scale cues (probe.rs) ----------------------------------------------
+
+    /// Hitbox radius of the own ship type (u).
+    #[wasm_bindgen(getter, js_name = shipRadius)]
+    pub fn ship_radius(&self) -> f32 {
+        self.core.tuning().radius
+    }
+
+    /// Distance from `(ox, oy, oz)` along `(dx, dy, dz)` to the first rock
+    /// (or the level bounds), or -1 when nothing is hit within `max`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn raycast(&self, ox: f32, oy: f32, oz: f32, dx: f32, dy: f32, dz: f32, max: f32) -> f32 {
+        self.core
+            .raycast(Vec3::new(ox, oy, oz), Vec3::new(dx, dy, dz), max)
+            .unwrap_or(-1.0)
+    }
+
+    /// Sweeps a sphere of `radius` from `(ox, oy, oz)` along `(dx, dy, dz)`:
+    /// `[travel, contact x, y, z, normal x, y, z]` at the first contact with
+    /// rock (measured like the simulation's collision), or empty when the
+    /// path is clear within `max`.
+    #[allow(clippy::too_many_arguments)]
+    #[wasm_bindgen(js_name = sweepSphere)]
+    pub fn sweep_sphere(
+        &self,
+        ox: f32,
+        oy: f32,
+        oz: f32,
+        dx: f32,
+        dy: f32,
+        dz: f32,
+        radius: f32,
+        max: f32,
+    ) -> Vec<f32> {
+        self.core
+            .sweep_sphere(Vec3::new(ox, oy, oz), Vec3::new(dx, dy, dz), radius, max)
+            .map_or_else(Vec::new, |h| {
+                vec![
+                    h.travel, h.point.x, h.point.y, h.point.z, h.normal.x, h.normal.y, h.normal.z,
+                ]
+            })
+    }
+
+    /// Practice only (the visual gallery's fixed test shapes): carves
+    /// (`add` false) or adds a sphere of rock outside the simulation.
+    /// Returns false online.
+    #[wasm_bindgen(js_name = practiceEdit)]
+    pub fn practice_edit(&mut self, add: bool, x: f32, y: f32, z: f32, radius: f32) -> bool {
+        let center = Vec3::new(x, y, z);
+        let edit = if add {
+            ls_math::terrain::TerrainEdit::AddSphere { center, radius }
+        } else {
+            ls_math::terrain::TerrainEdit::SubtractSphere { center, radius }
+        };
+        self.core.practice_edit(edit)
     }
 }
 

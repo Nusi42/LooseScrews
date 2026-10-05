@@ -22,6 +22,7 @@ import { Frustum } from "./frustum.ts";
 import { initGpu, type GpuContext } from "./gpu.ts";
 import { GpuTimer, type GpuTimings } from "./gpuTimer.ts";
 import { LightSystem, lightBindLayoutEntries, type PointLight } from "./lights.ts";
+import { HullFrame } from "./hullFrame.ts";
 import { GpuMesh, type MeshData } from "./mesh.ts";
 import { LEGACY_MESH_BUILDERS, MESH_BUILDERS, MESH_KINDS, type MeshKind } from "./models/index.ts";
 import { ParticleSystem } from "./particles.ts";
@@ -292,6 +293,8 @@ export class Renderer {
   detailedTiming = false;
   /** Shader time (s) for this and later frames instead of the wall clock (fixed-pose screenshots). */
   timeOverride: number | null = null;
+  /** The own ship's cockpit frame (VQ1), drawn last in the scene pass; set its `state` per frame. */
+  readonly hullFrame: HullFrame;
 
   /**
    * Creates the renderer; throws GpuUnavailableError when WebGPU cannot be
@@ -364,6 +367,7 @@ export class Renderer {
     this.pipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [bindGroupLayout] });
     this.terrainMaterial = new TerrainMaterial(device);
     this.terrainLayout = device.createPipelineLayout({ bindGroupLayouts: [bindGroupLayout, this.terrainMaterial.layout] });
+    this.hullFrame = new HullFrame(device, bindGroupLayout);
     this.modules = {
       terrain: device.createShaderModule({ label: "terrain", code: TERRAIN_WGSL }),
       instanced: device.createShaderModule({ label: "instanced", code: INSTANCED_WGSL }),
@@ -661,6 +665,7 @@ export class Renderer {
         stats.triangles += (batch.mesh.indexCount / 3) * batch.count;
       }
     }
+    stats.triangles += this.hullFrame.draw(pass, samples, camera, this.sizer.aspect);
     pass.end();
 
     if (sky) this.sky.composite(encoder, this.post.sceneHdr, camera, time, timer);
@@ -676,6 +681,7 @@ export class Renderer {
 
   destroy(): void {
     this.clearChunks();
+    this.hullFrame.destroy();
     for (const batches of Object.values(this.batches)) for (const batch of batches.values()) batch.destroy();
     for (const mesh of Object.values(this.meshes)) mesh.destroy();
     this.depthTexture?.destroy();

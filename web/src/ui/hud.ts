@@ -9,6 +9,7 @@
 // (1-9, 0), the secondaries (X cycles) and the gadget (G), per the M2 key
 // scheme; the selected ones are highlighted.
 
+import { FitRing } from "./fitRing.ts";
 import { emptyLoadout, type LoadoutState } from "../game/views.ts";
 import { chargeLabel, gadgetDetail, paintColorLabel, PAINT_COLORS, type ChargeMeter, type GadgetState } from "../game/mechanics.ts";
 
@@ -165,6 +166,8 @@ function el<K extends keyof HTMLElementTagNameMap>(
 
 export class Hud {
   readonly root: HTMLElement;
+  /** The fit ring around the crosshair (VQ1, ui/fitRing.ts); main.ts feeds it. */
+  readonly fitRing: FitRing;
   private values: HudValues = { ...DEFAULT_HUD, paint: [...DEFAULT_HUD.paint] };
   /** Last rendered representation per DOM slot, to skip redundant writes. */
   private readonly rendered = new Map<string, string>();
@@ -191,6 +194,7 @@ export class Hud {
     this.values.loadout = emptyLoadout();
     this.root = el("div", "hud hidden", parent);
     el("div", "hud-crosshair", this.root);
+    this.fitRing = new FitRing(this.root);
 
     const left = el("div", "hud-panel hud-left", this.root);
     const meter = (name: string, cls: MeterName): Meter => {

@@ -6,7 +6,7 @@ import { appendBox } from "../renderer/primitives.ts";
 import { durationsFromTicks, TimingWindow } from "../renderer/gpuTimer.ts";
 import { powerPreferenceFrom } from "../renderer/gpu.ts";
 import { formatDebugLines, formatGpuLine, type DebugInfo } from "../ui/debugOverlay.ts";
-import { pickPose, pickSunPose, sceneContent, wantsGallery, LINEUP_RADII } from "./gallery.ts";
+import { FIT_BALL_RADIUS, FIT_TUNNEL_DEPTH, FIT_WALL_DISTANCE, fitTunnelEdits, LEGACY_CAMERA, pickPose, pickSunPose, sceneContent, wantsGallery, LINEUP_RADII } from "./gallery.ts";
 import {
   pickCloseup,
   pickLongest,
@@ -17,7 +17,7 @@ import {
   sphereDirections,
   type Probe,
 } from "./raycast.ts";
-import { BUDGET_TOLERANCE, checkBudget, FRAME_BUDGET_MS, PASS_BUDGETS_MS, sceneById, SCENES } from "./scenes.ts";
+import { BUDGET_TOLERANCE, checkBudget, FIT_TUNNEL_RADIUS, FRAME_BUDGET_MS, PASS_BUDGETS_MS, sceneById, SCENES } from "./scenes.ts";
 
 // ----- GPU timer --------------------------------------------------------------------------
 
@@ -220,4 +220,30 @@ test("scene content: four hulls in the lineup, ships, shots and an explosion in 
   assert.ok((fight.translucent.sphere?.length ?? 0) >= 3, `spheres ${fight.translucent.sphere?.length}`);
   const none = sceneContent(sceneById("cave-tunnel")!, cam, visuals);
   assert.equal(Object.keys(none.opaque).length + Object.keys(none.translucent).length, 0);
+});
+
+// ----- VQ1: fit tunnel and cockpit scenes ---------------------------------------------------
+
+test("the fit scene carves a ball with a dead-end 1.2 u tunnel along the view", () => {
+  const eye = { x: 1, y: 2, z: 3 };
+  const dir = { x: 0, y: 0, z: -1 };
+  const edits = fitTunnelEdits(eye, dir);
+  const [ball, ...bore] = edits;
+  assert.ok(ball?.add);
+  assert.equal(ball.radius, FIT_BALL_RADIUS);
+  assert.deepEqual(ball.center, { x: 1, y: 2, z: 3 - FIT_WALL_DISTANCE - FIT_BALL_RADIUS });
+  assert.ok(bore.length > 100 && bore.every((e) => !e.add && e.radius === FIT_TUNNEL_RADIUS));
+  // The bore starts in front of the wall and ends FIT_TUNNEL_DEPTH inside it, on the axis.
+  const depths = bore.map((e) => eye.z - e.center.z);
+  assert.ok(Math.min(...depths) < FIT_WALL_DISTANCE && Math.abs(Math.max(...depths) - FIT_WALL_DISTANCE - FIT_TUNNEL_DEPTH) < 1e-9);
+  assert.ok(bore.every((e) => e.center.x === 1 && e.center.y === 2));
+  assert.equal(FIT_TUNNEL_RADIUS * 2, 1.2);
+});
+
+test("fit and cockpit scenes name their ship; the legacy camera is the pre-VQ1 75 degrees", () => {
+  assert.equal(sceneById("fit-tunnel")?.ship, 1);
+  assert.equal(sceneById("fit-tunnel-hauler")?.ship, 2);
+  for (const s of SCENES.filter((x) => x.content === "fit")) assert.ok(s.ship !== undefined, s.id);
+  assert.equal(SCENES.filter((x) => x.ship === undefined && x.content === "fit").length, 0);
+  assert.ok(Math.abs(LEGACY_CAMERA.fovY - (75 * Math.PI) / 180) < 1e-12);
 });

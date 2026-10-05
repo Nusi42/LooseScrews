@@ -10,7 +10,7 @@ Wave D of M3 extends it into the full renderer reference.
 | Step | Target | Code |
 | --- | --- | --- |
 | Lights (compute, skipped without lights): one invocation per froxel of a 16x9x24 grid, every light's view-space sphere tested against the froxel's box, one 128-bit mask per froxel | storage buffer (3456 x 16 bytes) | `lights.ts`, `shaders/lights.ts` |
-| Scene: terrain chunks (frustum culled per chunk AABB), then opaque instances, then translucent instances (no depth write) | `rgba16float` HDR colour, MSAA 4x at "high"/"medium", resolved into the post chain's HDR texture; `depth24plus` (stored for the particles) | `renderer.ts`, `shaders/terrain.ts`, `shaders/objects.ts` |
+| Scene: terrain chunks (frustum culled per chunk AABB), then opaque instances, then translucent instances (no depth write), then the cockpit hull frame (own depth range) | `rgba16float` HDR colour, MSAA 4x at "high"/"medium", resolved into the post chain's HDR texture; `depth24plus` (stored for the particles) | `renderer.ts`, `shaders/terrain.ts`, `shaders/objects.ts`, `hullFrame.ts` |
 | Sky (open levels only): drawn *under* the resolved scene, `out = scene + sky x (1 - alpha)` (geometry writes alpha 1, the clear is transparent black) | the HDR scene texture, single-sampled | `sky.ts`, `shaders/sky.ts` `SKY_WGSL` |
 | Light shafts ("high", open levels, sun on or near the screen): sky mask (scene alpha 0) at quarter resolution, radial blur toward the sun, added onto the scene | the HDR scene texture | `sky.ts` `encodeShafts`, `SHAFT_*_WGSL` |
 | Particles: sprites at least `halfResPx` wide into a half-resolution `rgba16float` target, composited onto the resolved scene; then dust motes and the smaller sprites at full resolution. No depth attachment: each fragment reads the scene depth (soft particles, occlusion) | the resolved HDR scene texture | `particles.ts`, `shaders/particles.ts`, `spriteAtlas.ts` |
@@ -143,6 +143,30 @@ Per world type: open sky (Enclosure 0) has no height fog, density 0.0085 and a n
 tinted by the nebula; caverns (50) a warm dark haze, density 0.012 and a low-lying height fog;
 mine shafts (100) a sodium-orange haze, density 0.014. Worlds in between blend these; any
 Enclosure below 50 shows the sky.
+
+## Camera, cockpit frame and fit ring (VQ1)
+
+- **Field of view** (`game/camera.ts`): the player sets a horizontal FOV at the 16:9 reference
+  (80-120°, default 100°, i.e. 67.7° vertical). Narrower screens keep that horizontal FOV;
+  wider ones keep the 16:9 vertical FOV (Hor+) up to 115° horizontal (or the setting, if
+  wider). `fovYFor(setting, aspect, kick)` gives the vertical FOV `CameraView.fovY` the
+  renderer uses; `FovKick` eases a +4° boost kick in and out over 250 ms. The view settings
+  (FOV, cockpit frame, fit ring) live in `localStorage` key `ls.view` (`ui/viewSettings.ts`,
+  every access in try/catch) and are set on the start screen.
+- **Cockpit hull frame** (`renderer/hullFrame.ts`, models in `renderer/hullFrameModels.ts`):
+  the nose deck, side parts and canopy pillars of the own ship type, built with the VQ4 kit at
+  the VQ4 hull's dimensions and fit, seen from an eye above the hull's centre line. Drawn last
+  in the scene pass in view space (`Renderer.hullFrame.state`, `null` hides it) with its own
+  projection (near 0.01 u) and its depth squeezed into the front 1/1000 of the shared depth
+  buffer, so rock and ships never cut it. It is lit by the scene at its world position through
+  the VQ4 materials (`shade_model`), with a cockpit shade (painted parts keep 0.3 of the light
+  next to the eye, 0.75 at the nose). Pipeline label `hull frame` (the browser smoke requires
+  it). Cost: one draw of 1.2-2.4 k triangles, timed in the `objects` pass (about 0.005-0.01 ms
+  on an RTX 5080).
+- **Fit ring** (`ui/fitRing.ts`, probes in `game/scaleCues.ts`): DOM/SVG, not GPU. ls-wasm
+  `Game.sweepSphere` sweeps the own hull's sphere along the view (contact measured like the
+  simulation's collision, `crates/ls-wasm/src/probe.rs`) and `Game.raycast` checks the aim
+  point; the ring is the hull radius projected at the contact's depth.
 
 ## Post settings and the grade hook
 

@@ -876,8 +876,9 @@ All servers it starts are stopped at the end; it never uses port 7777.
 light shafts, open space with the planet, caverns opening to the sky, mine shaft, a rock
 material border, paint edges, surface states, the four hulls, a fight frame with an explosion,
 `light-volley` and `light-storm`: a volley of glowing shots down a mine shaft and 64 dynamic
-lights in a cave tunnel, VQ6; a ship blowing up and the 20 k particle budget scene, VQ5) at
-1920x1080 and saves one PNG per scene, plus a
+lights in a cave tunnel, VQ6; a ship blowing up and the 20 k particle budget scene, VQ5; VQ1: a
+Tinker and a Hauler in front of a carved 1.2 u tunnel with the cockpit frame and fit ring, and
+the Skitter and Tug cockpits) at 1920x1080 and saves one PNG per scene, plus a
 `manifest.json` with the share code, the camera pose and the per-pass GPU times, under
 `target/visual-gallery/<label>/`. `target/visual-gallery/index.html` shows every label side by
 side per scene, so a package takes a `before` run on its base and an `after` run on its branch:
@@ -917,7 +918,10 @@ grade), `--no-atmosphere` renders without the per-world sky, fog and grade (`?at
 the pre-VQ7 look, for before shots of scenes added later), `--lights off` renders the same
 frames without dynamic lights (`?lights=0`; compare the pass times with a `--lights on` run for
 the lights' shading cost), `--vfx off` draws the pre-VQ5 mesh effects instead of particles
-(`?vfx=off`, also in the game). Without
+(`?vfx=off`, also in the game), `--query <k=v&...>` adds page parameters (`--query
+view=legacy`: the pre-VQ1 camera, 75° vertical FOV without cockpit frame or fit ring, for before
+shots of the FOV change; the fit scenes print the ring's state and the CPU time of its probes).
+Without
 `timestamp-query` or on a software adapter the budget is not checked. Measured on a much faster
 GPU than the reference, the check only catches gross regressions; read the absolute numbers on
 the reference class.

@@ -27,6 +27,9 @@
 // expose the lobby stage and the match count to the browser smoke test.
 // An older server that closes the connection after a match is still
 // rejoined with the same settings (game/rejoin.ts).
+// VQ1 (game/scaleCues.ts): the horizontal FOV setting with a boost kick, the
+// cockpit hull frame (renderer/hullFrame.ts) and the fit ring around the
+// crosshair (ui/fitRing.ts, probes in ls-wasm).
 
 import { InputController } from "./input/input.ts";
 import { GpuUnavailableError } from "./renderer/gpu.ts";
@@ -38,7 +41,9 @@ import { ChunkLoader, LOADING_BUDGET, PLAY_BUDGET, type ChunkStats } from "./gam
 import { DEFAULT_CONTROL_SETTINGS } from "./game/controls.ts";
 import { rejoin, RejoinCancelled, type PlayerPrefs } from "./game/rejoin.ts";
 import { GameSession, type FrameResult } from "./game/session.ts";
-import { buildScene, dustDensityAt, dustFog } from "./game/scene.ts";
+import { buildScene, dustDensityAt, dustFog, teamHull } from "./game/scene.ts";
+import { ScaleCues, type ScaleCueFrame } from "./game/scaleCues.ts";
+import { TINKER_RADIUS } from "./game/views.ts";
 import { connectTransport, transportPreference } from "./net/connect.ts";
 import {
   EffectsState,
@@ -240,6 +245,8 @@ function runGame(
     let camera = new ShipCamera(boundsCenter(game.bounds()));
     // The world's sky, fog and grade (VQ7) before its chunks arrive.
     renderer.setAtmosphere(atmosphereFor(game.shareCode, game.bounds()));
+    // FOV setting with the boost kick, fit ring and cockpit frame (VQ1).
+    const cues = new ScaleCues();
     const chunks = new ChunkLoader((key, mesh) => renderer.setChunk(key, mesh));
 
     const hud = new Hud(ui);
@@ -398,6 +405,7 @@ function runGame(
         // visuals. Old chunks come back from takeUnloads; reset the rest.
         camera = new ShipCamera(boundsCenter(game.bounds()));
         renderer.setAtmosphere(atmosphereFor(game.shareCode, game.bounds()));
+        cues.reset();
         initialLoad = true;
         effects = new EffectsState();
         wrecks = new WreckTypes();
@@ -445,6 +453,14 @@ function runGame(
       } else {
         spectator = null;
       }
+      const cueFrame: ScaleCueFrame = {
+        dt,
+        aspect: renderer.aspect,
+        viewportHeight: canvas.clientHeight,
+        flying: r.pose !== null && r.pose.alive && !flow.spectating && !guided && !flow.showResults,
+        boosting: state.boost && (r.hud.boost ?? 0) > 0,
+      };
+      camera.params.fovY = cues.fovY(cueFrame);
       const shake = Math.max(fx.shake, vfx?.shake(time) ?? 0);
       const view = camera.update(r.pose, spectator ? spectator.view : ride, shakeOffset(shake, time));
       chunkStats = chunks.update(game, view.position, initialLoad ? LOADING_BUDGET : PLAY_BUDGET);
@@ -518,6 +534,8 @@ function runGame(
       renderer.settings.terrainSeed = hashSeed(session.game.shareCode); // per-world rock look (VQ3b)
       // Inside dust the flat dust colour replaces the sky's haze.
       renderer.settings.skyHaze = renderer.atmosphere ? 1 - Math.min(1, dust) : 0;
+      renderer.hullFrame.state = cues.hullFrame(cueFrame, own?.shipType ?? 1, game.shipRadius ?? TINKER_RADIUS, teamHull(game.team, r.mode.teams));
+      hud.fitRing.update(cues.fitRing(cueFrame, game, r.pose?.position ?? view.position, view.orientation, view.fovY));
       // Per-pass GPU timing (separate terrain/objects passes) while the overlay shows.
       renderer.detailedTiming = overlay.visible;
       frameStats = renderer.render(view);

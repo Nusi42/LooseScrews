@@ -41,7 +41,7 @@ use crate::entity::{
     ReplicatedKind, Source, DEBRIS_PUSH, MAX_DEBRIS, NO_TEAM, WIRE_ID_MASK,
 };
 use crate::gadgets::{GadgetActivation, GadgetBehavior, GadgetUse, IncomingHit};
-use crate::gravity::{DynamicWell, GravitySettings, WellField, WellSite};
+use crate::gravity::{DynamicWell, GravitySettings, WellField};
 use crate::hash::StateHasher;
 use crate::instability::{InstabilitySettings, InstabilityState};
 use crate::mode::{
@@ -100,22 +100,24 @@ pub struct MatchSetup {
     /// `None` (test rooms): Heist falls back to the spawn points.
     #[serde(default)]
     pub heist: Option<crate::modes::heist::HeistLevel>,
-    /// The level's Gravity Chaos slider (0-100): strength and range of the
-    /// static `wells` (`data/world/gravity.ron`). M4.
+    /// The level's gravity well sites (Gravity Chaos; on belt levels the
+    /// shepherd moons), from `ls_worldgen::Generator::gravity_wells`. Each
+    /// carries its strength (0-1) and range; [`crate::gravity`] turns them
+    /// into a pull.
+    #[serde(default)]
+    pub wells: Vec<ls_math::level::WellSite>,
+    /// The asteroid belt (belt levels only; Belt Up, radiation), from
+    /// `ls_worldgen::Generator::belt`. `None` on classic levels.
+    #[serde(default)]
+    pub belt: Option<ls_math::level::BeltSite>,
+    /// The level's Gravity Chaos slider (0-100). M4: 0 turns the static
+    /// `wells` off (they come with their own strength and range).
     #[serde(default)]
     pub gravity_chaos: u8,
-    /// The level's static gravity wells (generator sites, a belt's shepherd
-    /// moons); filled by `ls_game::setup`. M4, see [`crate::gravity`].
-    #[serde(default)]
-    pub wells: Vec<WellSite>,
     /// A monochrome level (Palette 80 or more): pigment pickups
     /// ([`crate::pigment`]). Last Color Standing is monochrome anyway. M4.
     #[serde(default)]
     pub monochrome: bool,
-    /// The asteroid belt of a Belt archetype level (radiation, Belt Up);
-    /// `None` on classic levels. M4, see [`crate::belt`].
-    #[serde(default)]
-    pub belt: Option<crate::belt::BeltLevel>,
 }
 
 /// Everything needed to start a match.

@@ -44,6 +44,8 @@ fn setup(level: bool) -> MatchSetup {
         }
     }
     MatchSetup {
+        wells: Vec::new(),
+        belt: None,
         spawns,
         pickup_points: vec![],
         instability: 0,

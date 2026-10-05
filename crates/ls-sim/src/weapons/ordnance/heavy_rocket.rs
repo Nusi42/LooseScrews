@@ -40,6 +40,8 @@ pub(crate) mod testkit {
     /// Two-team Paint the Void world with the given Instability and rules.
     pub fn world_with(instability: u8, rules: RuleSet) -> World {
         let setup = MatchSetup {
+            wells: Vec::new(),
+            belt: None,
             spawns: vec![
                 SpawnPoint {
                     pos: Vec3::new(-20.0, 0.0, 0.0),

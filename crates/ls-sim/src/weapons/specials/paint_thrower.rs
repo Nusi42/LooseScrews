@@ -118,6 +118,8 @@ pub(crate) mod testkit {
     /// Two spawns, team 0 at x = -20 and team 1 at x = 20.
     pub fn setup() -> MatchSetup {
         MatchSetup {
+            wells: Vec::new(),
+            belt: None,
             spawns: vec![
                 SpawnPoint {
                     pos: Vec3::new(-20.0, 0.0, 0.0),

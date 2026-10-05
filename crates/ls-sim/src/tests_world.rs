@@ -6,8 +6,9 @@
 use ls_math::terrain::{BoxRoomTerrain, TerrainEdit, TerrainQuery, MATERIAL_WEAK};
 use ls_math::{det, Pcg32, Quat, Vec3};
 
-use crate::gravity::{GravitySettings, WellSite};
+use crate::gravity::tests::site;
 use crate::instability::{escapes, InstabilitySettings};
+use crate::radiation::tests::{belt_point, plan_belt};
 use crate::*;
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen_test::wasm_bindgen_test as test;
@@ -90,10 +91,7 @@ fn seven_wells() -> MatchSetup {
         spawns: spawns(),
         gravity_chaos: 100,
         wells: (0..7)
-            .map(|i| WellSite {
-                pos: Vec3::new(-150.0 + 50.0 * i as f32, 0.0, 0.0),
-                core_radius: 2.0,
-            })
+            .map(|i| site(Vec3::new(-150.0 + 50.0 * i as f32, 0.0, 0.0), 1.0, 40.0))
             .collect(),
         ..Default::default()
     }
@@ -103,7 +101,7 @@ fn seven_wells() -> MatchSetup {
 fn a_ship_at_full_thrust_escapes_every_well_at_gravity_chaos_100() {
     let setup = seven_wells();
     let wells = setup.wells.clone();
-    let (_, range) = GravitySettings::builtin().for_slider(100);
+    let range = 40.0;
     for ty in ShipType::ALL {
         let mut w = world(setup.clone());
         let mut t = room(Vec3::new(400.0, 200.0, 400.0));
@@ -169,10 +167,7 @@ fn bend(weapon: &str, ticks: u32) -> f32 {
     let mut setup = MatchSetup {
         spawns: spawns(),
         gravity_chaos: 100,
-        wells: vec![WellSite {
-            pos: Vec3::new(0.0, 6.0, 0.0),
-            core_radius: 1.5,
-        }],
+        wells: vec![site(Vec3::new(0.0, 6.0, 0.0), 1.0, 40.0)],
         ..Default::default()
     };
     setup.spawns[0].pos = Vec3::new(-30.0, 0.0, 0.0);
@@ -248,10 +243,7 @@ fn debris_is_pulled_and_wakes_up() {
     let mut w = world(MatchSetup {
         spawns: spawns(),
         gravity_chaos: 60,
-        wells: vec![WellSite {
-            pos: Vec3::ZERO,
-            core_radius: 2.0,
-        }],
+        wells: vec![site(Vec3::ZERO, 0.6, 32.0)],
         ..Default::default()
     });
     let mut t = room(Vec3::new(400.0, 200.0, 400.0));
@@ -885,9 +877,18 @@ fn last_color_standing_pigment_restores_colour_without_a_bonus() {
 // ----- radiation -------------------------------------------------------------------
 
 fn belt_world() -> (World, Room) {
-    let belt = crate::belt::tests::plan_belt();
+    let belt = plan_belt();
     let setup = MatchSetup {
-        spawns: belt.slots.clone(),
+        spawns: belt
+            .slots
+            .iter()
+            .enumerate()
+            .map(|(k, sl)| SpawnPoint {
+                pos: sl.pos,
+                team: (k % 2) as u8,
+                orientation: sl.orientation,
+            })
+            .collect(),
         belt: Some(belt),
         ..Default::default()
     };
@@ -902,9 +903,9 @@ fn radiation_burns_hull_outside_the_belt_only_on_belt_levels() {
     let (mut w, mut t) = belt_world();
     let a = w.add_player(Some(0), ShipType::Tinker).unwrap();
     let b = w.add_player(Some(1), ShipType::Tinker).unwrap();
-    let belt = crate::belt::tests::plan_belt();
-    place(&mut w, a, belt.point(0.5, 120.0, 0.0), Vec3::NEG_Z);
-    place(&mut w, b, belt.point(2.0, 120.0, 22.0), Vec3::NEG_Z);
+    let belt = plan_belt();
+    place(&mut w, a, belt_point(&belt, 0.5, 120.0, 0.0), Vec3::NEG_Z);
+    place(&mut w, b, belt_point(&belt, 2.0, 120.0, 22.0), Vec3::NEG_Z);
     let (ha, hb) = (w.ship(a).unwrap().hull, w.ship(b).unwrap().hull);
     run(&mut w, &mut t, &[], 60);
     assert_eq!(w.ship(a).unwrap().hull, ha, "deep in the belt");
@@ -929,10 +930,10 @@ fn radiation_passes_a_raised_shield_and_credits_nobody() {
     let (mut w, mut t) = belt_world();
     let a = w.add_player(Some(0), ShipType::Tinker).unwrap();
     let b = w.add_player(Some(1), ShipType::Tinker).unwrap();
-    let belt = crate::belt::tests::plan_belt();
+    let belt = plan_belt();
     w.give_gadget(a, "shield").unwrap();
-    place(&mut w, a, belt.point(1.0, 120.0, 60.0), Vec3::NEG_Z);
-    place(&mut w, b, belt.point(4.0, 120.0, 0.0), Vec3::NEG_Z);
+    place(&mut w, a, belt_point(&belt, 1.0, 120.0, 60.0), Vec3::NEG_Z);
+    place(&mut w, b, belt_point(&belt, 4.0, 120.0, 0.0), Vec3::NEG_Z);
     let press = [(a, InputCmd::idle(0).with_buttons(Buttons::GADGET))];
     run(&mut w, &mut t, &press, 1);
     assert!(w.ship(a).unwrap().gadget_active, "shield up");

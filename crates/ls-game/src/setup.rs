@@ -282,14 +282,15 @@ pub fn match_setup(
     );
 
     Ok(MatchSetup {
+        wells: Vec::new(),
+        belt: None,
         spawns,
         pickup_points: pickups,
         instability: code.sliders.instability,
         heist: heist_level(&gen),
-        // M4 world physics (A4); A1 adds the generator's wells and belt.
+        // M4 world physics (A4); A1 fills the generator's wells and belt.
         gravity_chaos: code.sliders.gravity_chaos,
         monochrome: code.sliders.palette >= ls_sim::pigment::MONOCHROME_PALETTE,
-        ..Default::default()
     })
 }
 

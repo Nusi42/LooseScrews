@@ -27,7 +27,7 @@
 
 use std::sync::OnceLock;
 
-use ls_math::{det, Vec3};
+use ls_math::Vec3;
 use serde::{Deserialize, Serialize};
 
 use crate::ship::PlayerId;
@@ -39,11 +39,10 @@ const PEAK_FACTOR: f32 = 0.384_900_18;
 /// Tuning of the well field (`data/world/gravity.ron`).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct GravitySettings {
-    /// Peak pull (u/s^2) of a static well at Gravity Chaos 1 and 100
-    /// (linear in between; no pull at 0).
-    pub peak_accel: (f32, f32),
-    /// Range (u) of a static well at Gravity Chaos 1 and 100.
-    pub range: (f32, f32),
+    /// Peak pull (u/s^2) of a static well of strength 1 (a site's
+    /// `strength` scales it; the generator sets `strength` to Gravity Chaos
+    /// / 100 and the range to 20-40 u).
+    pub max_peak_accel: f32,
     /// Softening length `s` (u) of every well: the pull peaks at
     /// `s / sqrt 2` from the centre and falls to zero at the centre.
     pub softening: f32,
@@ -70,34 +69,26 @@ impl GravitySettings {
         })
     }
 
-    /// `(peak_accel, range)` of a static well at Gravity Chaos `slider`
-    /// (no pull at 0).
-    pub fn for_slider(&self, slider: u8) -> (f32, f32) {
-        if slider == 0 {
-            return (0.0, 0.0);
-        }
-        let t = (slider.min(100) as f32 - 1.0) / 99.0;
-        (
-            det::lerp(self.peak_accel.0, self.peak_accel.1, t),
-            det::lerp(self.range.0, self.range.1, t),
-        )
+    /// Peak pull (u/s^2) of a static well site (`max_peak_accel x strength`,
+    /// strength clamped to 0..=1).
+    pub fn site_peak(&self, site: &WellSite) -> f32 {
+        let k = if site.strength.is_nan() {
+            0.0
+        } else {
+            site.strength.clamp(0.0, 1.0)
+        };
+        self.max_peak_accel * k
     }
 }
 
 /// `data/world/gravity.ron` (embedded, part of the data hash).
 pub const GRAVITY_RON: &str = include_str!("../../../data/world/gravity.ron");
 
-/// A static well of the level (generator site, or a belt's shepherd moon):
-/// its strength and range come from the level's Gravity Chaos slider
-/// (`MatchSetup::gravity_chaos`). Filled by `ls_game::setup` from
-/// `ls_worldgen::Generator::gravity_wells()`.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-pub struct WellSite {
-    /// Centre of the core stone.
-    pub pos: Vec3,
-    /// Radius of the core stone (u).
-    pub core_radius: f32,
-}
+/// A static well of the level (generator site, or a belt's shepherd moon;
+/// A1's contract type): its `strength` (0-1) scales
+/// [`GravitySettings::max_peak_accel`], its `range` ends the pull. Filled
+/// by `ls_game::setup` from `ls_worldgen::Generator::gravity_wells()`.
+pub use ls_math::level::WellSite;
 
 /// A well added at run time by a module (Paperweight, Architect stroke).
 /// Active from `start_tick` (inclusive) to `end_tick` (exclusive); the
@@ -174,21 +165,23 @@ pub struct WellField {
 }
 
 impl WellField {
-    /// The static wells of a level (`sites` at Gravity Chaos `slider`).
+    /// The static wells of a level: every site with its own strength and
+    /// range; none at Gravity Chaos `slider` 0, and sites without strength
+    /// or range are left out.
     pub fn new(sites: &[WellSite], slider: u8, settings: &GravitySettings) -> WellField {
-        let (peak, range) = settings.for_slider(slider);
-        let statics = if peak > 0.0 {
+        let statics = if slider == 0 {
+            Vec::new()
+        } else {
             sites
                 .iter()
                 .map(|s| StaticWell {
                     pos: s.pos,
                     core_radius: s.core_radius,
-                    peak_accel: peak,
-                    range,
+                    peak_accel: settings.site_peak(s),
+                    range: s.range,
                 })
+                .filter(|w| w.peak_accel > 0.0 && w.range > 0.0)
                 .collect()
-        } else {
-            Vec::new()
         };
         WellField {
             statics,
@@ -263,26 +256,42 @@ impl WellField {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     #[cfg(target_arch = "wasm32")]
     use wasm_bindgen_test::wasm_bindgen_test as test;
 
+    pub(crate) fn site(pos: Vec3, strength: f32, range: f32) -> WellSite {
+        WellSite {
+            pos,
+            core_radius: 2.0,
+            hollow_radius: 8.0,
+            strength,
+            range,
+            kind: ls_math::level::WellKind::Core,
+        }
+    }
+
     #[test]
-    fn data_file_parses_and_slider_maps() {
+    fn data_file_parses_and_sites_scale_the_peak() {
         let s = GravitySettings::builtin();
-        assert_eq!(s.for_slider(0), (0.0, 0.0));
-        let (p1, r1) = s.for_slider(1);
-        let (p100, r100) = s.for_slider(100);
-        assert_eq!((p1, r1), (s.peak_accel.0, s.range.0));
-        assert_eq!((p100, r100), (s.peak_accel.1, s.range.1));
-        assert!(p1 < p100 && r1 < r100);
-        // §3.3: range 20-40 u; peak at most 40 % of the Tinker's per-axis
-        // thrust acceleration at slider 100.
-        assert_eq!((r1, r100), (20.0, 40.0));
+        // §3.3: the peak pull at most 40 % of the Tinker's per-axis thrust
+        // acceleration at slider 100 (strength 1).
         let tinker = crate::ShipTuning::tinker();
-        assert!(p100 <= 0.4 * tinker.thrust_accel + 1e-6, "{p100}");
+        assert_eq!(s.max_peak_accel, 0.4 * tinker.thrust_accel);
         assert_eq!(s.ship_clamp, 0.4);
+        assert_eq!(s.site_peak(&site(Vec3::ZERO, 1.0, 40.0)), 12.0);
+        assert_eq!(s.site_peak(&site(Vec3::ZERO, 0.5, 40.0)), 6.0);
+        assert_eq!(s.site_peak(&site(Vec3::ZERO, 7.0, 40.0)), 12.0);
+        assert_eq!(s.site_peak(&site(Vec3::ZERO, f32::NAN, 40.0)), 0.0);
+        let f = WellField::new(
+            &[site(Vec3::ZERO, 1.0, 30.0), site(Vec3::X, 0.0, 30.0)],
+            100,
+            s,
+        );
+        assert_eq!(f.statics.len(), 1, "a site without strength is left out");
+        assert_eq!(f.statics[0].range, 30.0);
+        assert!(WellField::new(&[site(Vec3::ZERO, 1.0, 30.0)], 0, s).is_empty());
     }
 
     #[test]

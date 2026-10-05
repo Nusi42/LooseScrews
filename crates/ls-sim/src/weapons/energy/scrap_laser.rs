@@ -89,6 +89,8 @@ pub(crate) mod testkit {
 
     pub fn setup() -> MatchSetup {
         MatchSetup {
+            wells: Vec::new(),
+            belt: None,
             spawns: vec![
                 SpawnPoint {
                     pos: Vec3::new(-20.0, 0.0, 0.0),
@@ -340,6 +342,8 @@ mod tests {
             .map(|i| Vec3::new(-10.0 + 4.0 * i as f32, 0.0, 0.0))
             .collect();
         let setup = MatchSetup {
+            wells: Vec::new(),
+            belt: None,
             pickup_points: points.clone(),
             ..setup()
         };

@@ -4,11 +4,10 @@
 // range R; G is chosen so the untapered law peaks at `peak_accel` (at r = s / sqrt 2).
 // Changing a number changes the data hash (handshake).
 GravitySettings(
-    // Peak pull of a static well (generator site, shepherd moon) at Gravity Chaos 1 and 100.
-    // 12 = 40 % of the Tinker's per-axis thrust acceleration (30).
-    peak_accel: (4.0, 12.0),
-    // Range of a static well at Gravity Chaos 1 and 100.
-    range: (20.0, 40.0),
+    // Peak pull of a static well (generator site, shepherd moon) of strength 1; a site's
+    // strength (Gravity Chaos / 100, from the generator) scales it, its range (20-40 u, from the
+    // generator) ends it. 12 = 40 % of the Tinker's per-axis thrust acceleration (30).
+    max_peak_accel: 12.0,
     // Softening length s: the pull peaks 2.1 u from the centre (at the core stone's surface).
     softening: 3.0,
     // The total pull on a ship is clamped to this share of its per-axis thrust acceleration,

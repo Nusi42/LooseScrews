@@ -19,7 +19,8 @@
 //! - World physics (M4): gravity wells ([`gravity`]), the level's up
 //!   ([`World::up`]), Instability's craters and cave-ins ([`instability`]),
 //!   pigment on monochrome levels ([`pigment`]) and radiation on belt
-//!   levels ([`radiation`], [`belt`]); numbers in `data/world/*.ron`.
+//!   levels ([`radiation`]; the belt is `ls_math::level::BeltSite`);
+//!   numbers in `data/world/*.ron`.
 //! - [`World::state_hash`] for replay and desync checks, [`data::data_hash`]
 //!   for the handshake.
 //!
@@ -30,7 +31,6 @@
 //! This crate is deterministic: follow the rules in `CLAUDE.md`.
 
 pub mod behavior;
-pub mod belt;
 pub mod data;
 pub mod entity;
 pub mod error;
@@ -57,7 +57,6 @@ pub mod world;
 pub mod world_replays;
 
 pub use behavior::{gadget_cue, Command, Ctx, Cue, CueKind, DamageSource};
-pub use belt::{BeltLevel, BoulderOrbit};
 pub use data::{data_hash, with_behavior_version, GameData, SIM_BEHAVIOR_VERSION};
 pub use entity::{Entity, EntityKind, EntitySpawn, EntityView, ReplicatedKind, Source};
 pub use error::SimError;

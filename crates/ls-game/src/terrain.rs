@@ -1030,6 +1030,8 @@ mod tests {
             orientation: Quat::IDENTITY,
         };
         let setup = MatchSetup {
+            wells: Vec::new(),
+            belt: None,
             spawns: vec![spawn(open, 0), spawn(open, 1)],
             pickup_points: vec![],
             instability: 0,

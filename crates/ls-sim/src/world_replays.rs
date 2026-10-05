@@ -22,7 +22,6 @@
 use ls_math::terrain::{BoxRoomTerrain, TerrainEdit};
 use ls_math::{Pcg32, Quat, Vec3};
 
-use crate::belt::BeltLevel;
 use crate::golden::{arena, inputs, setup, Arena};
 use crate::gravity::{DynamicWell, WellSite};
 use crate::ruleset::BUILTIN_RULESETS;
@@ -30,6 +29,7 @@ use crate::{
     CueKind, Event, MatchSetup, PaintedTerrain, PlayerId, RuleSet, ShelledTerrain, ShipType,
     SimTerrain, SpawnPoint, World, WorldConfig,
 };
+use ls_math::level::{BeltSite, BeltSlot, WellKind, BELT_WEDGES};
 
 /// Ticks per replay (40 s).
 pub const WORLD_REPLAY_TICKS: u64 = 40 * 60;
@@ -85,32 +85,45 @@ fn low_arena() -> Arena {
 }
 
 /// A small belt around the origin: 20-40 u, 6 u half-thickness, a 8 u
-/// cocoon; slots on the ring at 30 u, half of them 14 u above the belt.
-fn small_belt() -> BeltLevel {
-    let mut b = BeltLevel {
+/// cocoon; slots on the ring at 30 u, every other one 14 u above the belt.
+fn small_belt() -> BeltSite {
+    let mut b = BeltSite {
         center: Vec3::ZERO,
         inner_radius: 20.0,
         outer_radius: 40.0,
         half_thickness: 6.0,
         cocoon_radius: 8.0,
         exit_radius: 3.0,
-        wedges: 8,
-        gate_inner: 16.0,
-        gate_outer: 44.0,
-        slots: Vec::new(),
+        gate_inner_radius: 16.0,
+        gate_outer_radius: 44.0,
+        slots: [BeltSlot {
+            pos: Vec3::ZERO,
+            orientation: Quat::IDENTITY,
+        }; BELT_WEDGES],
+        pickup_points: Vec::new(),
         boulders: Vec::new(),
     };
-    b.slots = (0..8u8)
-        .map(|k| {
-            let a = b.gate_angle(k) + 0.05;
-            SpawnPoint {
-                pos: b.point(a, 30.0, if k % 2 == 0 { 0.0 } else { 20.0 }),
-                team: k % 2,
-                orientation: Quat::from_axis_angle(Vec3::Y, a),
-            }
-        })
-        .collect();
+    for k in 0..BELT_WEDGES {
+        let a = BeltSite::gate_azimuth(k) + 0.05;
+        let (s, c) = ls_math::det::sin_cos(a);
+        let h = if k % 2 == 0 { 0.0 } else { 20.0 };
+        b.slots[k] = BeltSlot {
+            pos: b.center + Vec3::new(c * 30.0, h, -s * 30.0),
+            orientation: Quat::from_axis_angle(Vec3::Y, a),
+        };
+    }
     b
+}
+
+fn well(pos: Vec3, core_radius: f32) -> WellSite {
+    WellSite {
+        pos,
+        core_radius,
+        hollow_radius: 8.0,
+        strength: 1.0,
+        range: 40.0,
+        kind: WellKind::Core,
+    }
 }
 
 fn level(name: &str) -> (RuleSet, MatchSetup, Arena) {
@@ -119,18 +132,9 @@ fn level(name: &str) -> (RuleSet, MatchSetup, Arena) {
         "world/gravity" => {
             s.gravity_chaos = 100;
             s.wells = vec![
-                WellSite {
-                    pos: Vec3::new(16.0, 6.0, 10.0),
-                    core_radius: 2.0,
-                },
-                WellSite {
-                    pos: Vec3::new(-16.0, -6.0, -10.0),
-                    core_radius: 2.0,
-                },
-                WellSite {
-                    pos: Vec3::new(0.0, 10.0, -20.0),
-                    core_radius: 1.5,
-                },
+                well(Vec3::new(16.0, 6.0, 10.0), 2.0),
+                well(Vec3::new(-16.0, -6.0, -10.0), 2.0),
+                well(Vec3::new(0.0, 10.0, -20.0), 1.5),
             ];
             (rules("sandbox_all_weapons.ron"), s, arena())
         }
@@ -154,7 +158,16 @@ fn level(name: &str) -> (RuleSet, MatchSetup, Arena) {
         }
         _ => {
             let belt = small_belt();
-            s.spawns = belt.slots.clone();
+            s.spawns = belt
+                .slots
+                .iter()
+                .enumerate()
+                .map(|(k, sl)| SpawnPoint {
+                    pos: sl.pos,
+                    team: (k % 2) as u8,
+                    orientation: sl.orientation,
+                })
+                .collect();
             s.belt = Some(belt);
             s.heist = None;
             let t = ShelledTerrain::new(PaintedTerrain::new(

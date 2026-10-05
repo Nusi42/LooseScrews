@@ -10,11 +10,14 @@
 //! - [`Tick`], [`DT`], [`TICK_HZ`]: fixed-step simulation time.
 //! - [`det`]: deterministic transcendental functions.
 //! - [`rng`]: [`SplitMix64`] and [`Pcg32`] random number generators.
+//! - [`level`]: level contracts (archetypes, gravity well sites, the
+//!   asteroid belt).
 //! - [`terrain`]: the shared terrain contracts (`TerrainEdit`, `RayHit`,
 //!   `TerrainQuery`) plus simple test terrains.
 
 pub mod aabb;
 pub mod det;
+pub mod level;
 pub mod mat3;
 pub mod quat;
 pub mod rng;

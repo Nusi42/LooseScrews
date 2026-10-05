@@ -1,0 +1,34 @@
+// Instagib Brawl: Team Brawl (two teams) with the Instagib mutator
+// (`crates/ls-sim/src/mutators/instagib.rs`): Railspike only, unlimited ammo, any enemy
+// Railspike hit kills, no pickups, no gadgets, instant respawn; the HUD hides hull and energy.
+// The mutator rewrites any rule set this way; this file already lists the rewritten arsenal.
+// Schema: `ls_sim::RuleSet`; weapons and gadgets not listed are Banned.
+RuleSet(
+    name: "Instagib Brawl",
+    mode: TeamBrawl((
+        teams: 2,
+        match_secs: 600.0,
+        respawn_secs: 3.0,
+        kill_target: 0,
+        team_kill_penalty: 1,
+    )),
+    weapons: {
+        "railspike": LoadoutOnly,
+    },
+    gadgets: {},
+    starting_loadout: (
+        primaries: ["railspike"],
+        secondaries: [],
+        gadget: None,
+    ),
+    pickups: {},
+    upgrade_pickups: {},
+    gadget_pickups: {},
+    scrap_pickup: None,
+    shield_overrides: {},
+    tuning: {},
+    friendly_fire_percent: 50,
+    allowed_ship_types: [Skitter, Tinker, Hauler, Tug],
+    absurdity: 20,
+    mutators: [Instagib],
+)

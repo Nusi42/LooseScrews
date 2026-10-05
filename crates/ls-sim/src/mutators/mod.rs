@@ -7,6 +7,7 @@
 //! | --- | --- |
 //! | `rewrite_rules` | `RuleSet::resolve`: change the effective rule set (weapons, pickups, gadgets) before it is validated |
 //! | `respawn_ticks` | a ship died: the respawn delay (instant respawn) |
+//! | `unlimited_ammo` | `RuleSet::resolve`: weapons that fire without paying their cost |
 //! | `on_damage` | a ship takes damage, after the mode's `on_damage` |
 //! | `view_flags` | `World::mode_view`: HUD flags (`mode::view_flags`) |
 
@@ -33,6 +34,12 @@ pub trait MutatorModule: Send + Sync + Debug {
     /// Respawn delay in ticks, given the mode's.
     fn respawn_ticks(&self, ticks: u64) -> u64 {
         ticks
+    }
+
+    /// Whether the weapon `weapon_id` fires without paying its cost
+    /// (energy, scrap or ammo) while this mutator is on.
+    fn unlimited_ammo(&self, _weapon_id: &str) -> bool {
+        false
     }
 
     /// A ship takes damage (after the mode's hook).

@@ -97,6 +97,8 @@ pub fn warmup_rules(rules: &RuleSet) -> RuleSet {
     r.starting_loadout.primaries.clear();
     r.starting_loadout.secondaries.clear();
     r.starting_loadout.gadget = None;
+    // Mutators would rewrite the arsenal back in (Instagib: the Railspike).
+    r.mutators.clear();
     r.mode.set_field("match_secs", WARMUP_MATCH_SECS);
     r
 }
@@ -421,6 +423,16 @@ mod tests {
         };
         assert_eq!(l.update(next), Action::NextRoom);
         assert_eq!(l.phase(), Phase::Match);
+    }
+
+    #[test]
+    fn instagib_warmup_has_no_railspike() {
+        let mut rules = RuleSet::paint_the_void();
+        rules.mutators.push(ls_sim::ruleset::Mutator::Instagib);
+        let warm = warmup_rules(&rules).effective();
+        assert!(warm.mutators.is_empty());
+        assert!(warm.availability("railspike").is_banned());
+        assert!(warm.starting_loadout.primaries.is_empty());
     }
 
     #[test]

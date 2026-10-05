@@ -55,6 +55,7 @@ pub(crate) mod testkit {
             pickup_points: vec![],
             instability,
             heist: None,
+            ..Default::default()
         };
         World::new(WorldConfig {
             rules,

@@ -1034,6 +1034,7 @@ mod tests {
             pickup_points: vec![],
             instability: 0,
             heist: None,
+            ..Default::default()
         };
         let mut w = World::new(WorldConfig::paint_the_void(5, setup)).unwrap();
         let a = w.add_player(Some(0), ShipType::Tinker).unwrap();

@@ -73,6 +73,8 @@ pub enum ReplicatedKind {
     Ghost = 7,
     DustCloud = 8,
     Marker = 9,
+    /// A pigment pickup on a monochrome level (M4; state `[splash, side, 0, 0]`).
+    PigmentPickup = 10,
 }
 
 impl ReplicatedKind {
@@ -89,6 +91,7 @@ impl ReplicatedKind {
             Ghost,
             DustCloud,
             Marker,
+            PigmentPickup,
         ]
         .get(v as usize)
         .copied()
@@ -315,6 +318,31 @@ pub fn step_debris<T: TerrainQuery + ?Sized>(e: &mut Entity, terrain: &T) -> boo
     contact
 }
 
+/// [`step_debris`] in a gravity well (M4): the pull `accel` is added
+/// first, and the debris only comes to rest while it touches rock (in open
+/// space a pulled piece keeps falling). Returns true if it touched terrain.
+pub fn step_debris_pulled<T: TerrainQuery + ?Sized>(
+    e: &mut Entity,
+    terrain: &T,
+    accel: Vec3,
+) -> bool {
+    e.resting = false;
+    e.vel += accel * DT;
+    e.vel *= (1.0 - DEBRIS_DRAG * DT).max(0.0);
+    let (contact, _) = move_sphere(
+        terrain,
+        &mut e.pos,
+        &mut e.vel,
+        e.radius,
+        DEBRIS_RESTITUTION,
+    );
+    if contact && e.vel.length() < DEBRIS_REST_SPEED {
+        e.vel = Vec3::ZERO;
+        e.resting = true;
+    }
+    contact
+}
+
 /// Byte helper for [`EntityView::state`]: whole units clamped to 0..=255.
 pub fn state_byte(v: f32) -> u8 {
     if v.is_nan() || v <= 0.0 {
@@ -384,10 +412,10 @@ mod tests {
             EntitySpawn::dust(Vec3::ZERO, 10.0, 60).lifetime_ticks,
             Some(60)
         );
-        for k in 0..10u8 {
+        for k in 0..11u8 {
             assert_eq!(ReplicatedKind::from_u8(k).unwrap() as u8, k);
         }
-        assert!(ReplicatedKind::from_u8(10).is_none());
+        assert!(ReplicatedKind::from_u8(11).is_none());
         assert_eq!(state_byte(3.2), 4);
         assert_eq!(state_byte(1e9), 255);
         assert_eq!(state_byte(f32::NAN), 0);

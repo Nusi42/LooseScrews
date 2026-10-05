@@ -27,7 +27,9 @@
 //!   match, like in the other elimination modes.
 //! - The view sets `view_flags::MONOCHROME` (the client renders the level
 //!   without colour) and `view_flags::METER` (ships tinted by their meter).
-//!   Pigment pickups that restore colour are M4.
+//! - Pigment pickups (M4, `crate::pigment`): touching one restores
+//!   `restore_colour` (17, half a death) colour, capped at `colour`; no
+//!   damage bonus in this mode.
 
 use crate::mode::{player_flags, view_flags, ModeKind, ModeState, ModeView, PlayerMode};
 use crate::modes::{
@@ -85,6 +87,18 @@ fn drain(state: &mut ModeState, player: PlayerId, amount: u8) {
 impl ModeModule for LastColorStanding {
     fn kind(&self) -> ModeKind {
         ModeKind::LastColorStanding
+    }
+
+    /// Pigment pickups (M4) restore `colour` (half a death), capped at the
+    /// starting colour; eliminated players get nothing.
+    fn on_pigment(&self, m: &mut ModeMut, player: PlayerId, colour: u8) -> bool {
+        let max = settings(m.rules).colour;
+        if let Some(p) = m.state.players.get_mut(&player) {
+            if !p.is_out() {
+                set_colour(p, p.meter.saturating_add(colour).min(max));
+            }
+        }
+        true
     }
 
     fn implemented(&self) -> bool {

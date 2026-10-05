@@ -21,6 +21,8 @@ WeaponDef(
     terrain: (crater_radius: 0.75),
     shield: Wears(1.0),
     max_ammo: 5,
+    // Gravity wells bend it in flight (M4).
+    gravity: true,
     visual: (shape: Rocket, color: (255, 170, 40), scale: 1.1),
     params: {
         "blobs": 6.0,

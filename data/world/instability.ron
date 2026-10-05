@@ -1,0 +1,33 @@
+// Instability: weaker rock and cave-ins (M4; docs/milestone-4-plan.md §3.3 "Instability").
+// Schema: `ls_sim::instability::InstabilitySettings`. Lengths in u, volumes in u^3, times in s.
+// Every crater's radius grows by 1 + crater_scale_at_100 * instability / 100 (exactly 1 at 0).
+// Craters add strain (sphere volume x material factor) to their 16 u cell; strain decays per
+// second; past the threshold the tunnel caves in after a warning. The threshold at Instability
+// i is threshold_at_100 * (100 / i)^threshold_exponent, infinite at 0. Tuning targets: about 10
+// Bolt Rocket craters in one spot within 20 s at Instability 30, about 4 at 100, never at 0.
+// Changing a number changes the data hash (handshake).
+InstabilitySettings(
+    crater_scale_at_100: 0.4,
+    cell_size: 16.0,
+    decay_per_sec: 0.03,
+    threshold_at_100: 35.0,
+    threshold_exponent: 0.18,
+    // Weak, ordinary and hard rock.
+    material_factor: (1.5, 1.0, 0.5),
+    warning_secs: 1.5,
+    min_interval_secs: 8.0,
+    ceiling_search: 14.0,
+    rubble_count: (5, 9),
+    rubble_radius: (1.5, 3.0),
+    rubble_spread: 3.5,
+    hollow_scale: 0.8,
+    debris_count: (4, 8),
+    debris_scrap: (2.0, 5.0),
+    damage: 20.0,
+    damage_radius: 3.0,
+    ship_clearance: 1.0,
+    spawn_clearance: 24.0,
+    extraction_clearance: 6.0,
+    escape_reach: 14.0,
+    max_rubble: 512,
+)

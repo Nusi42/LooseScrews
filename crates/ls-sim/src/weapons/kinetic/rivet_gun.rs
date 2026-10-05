@@ -96,6 +96,7 @@ pub(crate) mod testkit {
             pickup_points: vec![],
             instability: 0,
             heist: None,
+            ..Default::default()
         };
         World::new(WorldConfig::paint_the_void(7, setup)).unwrap()
     }

@@ -38,6 +38,7 @@ fn setup() -> MatchSetup {
             .collect(),
         instability: 0,
         heist: None,
+        ..Default::default()
     }
 }
 
@@ -520,7 +521,7 @@ fn replay(seed: u64) -> (Vec<u64>, Vec<Event>, World) {
 /// Golden hash of the Last Color Standing replay (native and wasm32 must
 /// agree). Changing the mode, the default rule set or sim behaviour changes
 /// it: update it in the same change.
-const LCS_REPLAY_GOLDEN_HASH: u64 = 0x7bcd_a0fc_22ef_666a;
+const LCS_REPLAY_GOLDEN_HASH: u64 = 0x168c_2c4c_9fc1_7821;
 
 #[test]
 fn replay_is_deterministic_and_matches_the_golden_hash() {

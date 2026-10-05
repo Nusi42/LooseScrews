@@ -35,7 +35,7 @@ import {
   type VisualDef,
 } from "./views.ts";
 
-const KINDS = ["debris", "weaponPickup", "upgradePickup", "gadgetPickup", "scrapPile", "wreck", "decoy", "ghost", "dustCloud", "marker"];
+const KINDS = ["debris", "weaponPickup", "upgradePickup", "gadgetPickup", "scrapPile", "wreck", "decoy", "ghost", "dustCloud", "marker", "pigmentPickup"];
 const SHAPES = ["bolt", "pellet", "spike", "rocket", "missile", "mine", "orb", "blob", "arc", "grenade", "harpoon", "paint", "charge",
   "debris", "scrap", "wreck", "crate", "upgrade", "gadget", "decoy", "ghost", "dust", "duck"];
 

@@ -24,6 +24,7 @@ fn world() -> (World, PlayerId) {
         pickup_points: vec![],
         instability: 0,
         heist: None,
+        ..Default::default()
     };
     let mut w = World::new(WorldConfig::paint_the_void(42, setup)).unwrap();
     let me = w.add_player(Some(0), ShipType::Tinker).unwrap();

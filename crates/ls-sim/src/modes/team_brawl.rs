@@ -149,6 +149,7 @@ pub(crate) mod tests {
                 .collect(),
             instability: 0,
             heist: None,
+            ..Default::default()
         }
     }
 

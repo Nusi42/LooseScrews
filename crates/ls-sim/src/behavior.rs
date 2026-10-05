@@ -101,6 +101,12 @@ pub enum CueKind {
     /// `source` switched its Paint Thrower colour (`value` =
     /// `ls_math::terrain::PAINT_*`: 1 red, 2 blue, 3 yellow).
     PaintColor = 13,
+    /// Instability: the rock at `pos` comes down in `value` ticks (rumble,
+    /// dust trickling, glowing cracks).
+    CaveInWarning = 14,
+    /// Pigment: `source` took a pigment pickup at `pos` (`value` 1 for a
+    /// dropped splash, 0 for a regular pickup).
+    Pigment = 15,
     /// Free for modules; `value` is module-defined.
     Custom = 255,
 }
@@ -123,6 +129,8 @@ impl CueKind {
             11 => DecoyReturn,
             12 => Overcharge,
             13 => PaintColor,
+            14 => CaveInWarning,
+            15 => Pigment,
             _ => Custom,
         }
     }
@@ -255,6 +263,11 @@ pub enum Command {
     /// A terrain edit applied at the start of tick `tick` instead of now
     /// (queued by [`Ctx::later`]; spreads big edit bursts over ticks).
     EditLater { tick: u64, edit: TerrainEdit },
+    /// Adds a dynamic gravity well (Paperweight, Architect stroke; see
+    /// [`crate::gravity`]).
+    AddWell(crate::gravity::DynamicWell),
+    /// Removes the dynamic wells with this key.
+    RemoveWell { key: u32 },
 }
 
 /// Read-only world view for hooks.
@@ -568,9 +581,25 @@ impl<'a> Ctx<'a> {
     }
 
     /// Subtracts a sphere (crater, pit, hole) scaled by the rock strength at
-    /// `center` (weak rock 1.4x, hard rock 0.6x; see `contracts.md`). The
-    /// scaled edit is what gets applied, logged and sent.
+    /// `center` (weak rock 1.4x, hard rock 0.6x; see `contracts.md`) and by
+    /// the level's Instability (`1 + 0.4 * instability / 100`, M4; exactly 1
+    /// at 0). The scaled edit is what gets applied, logged and sent.
     pub fn crater(&mut self, center: Vec3, radius: f32) {
+        let scale = material_crater_scale(self.material_at(center));
+        let radius = radius * scale;
+        let radius = if self.view.instability == 0 {
+            radius
+        } else {
+            radius
+                * crate::instability::InstabilitySettings::builtin()
+                    .crater_scale(self.view.instability)
+        };
+        self.crater_exact(center, radius);
+    }
+
+    /// [`Ctx::crater`] scaled by the rock strength only, not by Instability:
+    /// the Tectonic Charge's cracks, whose reach Instability already sets.
+    pub fn crater_material(&mut self, center: Vec3, radius: f32) {
         let scale = material_crater_scale(self.material_at(center));
         self.crater_exact(center, radius * scale);
     }
@@ -710,6 +739,16 @@ impl<'a> Ctx<'a> {
             delta,
             can_kill,
         });
+    }
+
+    /// Adds a dynamic gravity well (see [`Command::AddWell`]).
+    pub fn add_well(&mut self, well: crate::gravity::DynamicWell) {
+        self.push(Command::AddWell(well));
+    }
+
+    /// Removes the dynamic wells with `key` (see [`Command::RemoveWell`]).
+    pub fn remove_well(&mut self, key: u32) {
+        self.push(Command::RemoveWell { key });
     }
 
     pub fn cue(&mut self, cue: Cue) {

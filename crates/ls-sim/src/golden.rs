@@ -101,6 +101,7 @@ fn setup() -> MatchSetup {
                 (Vec3::new(24.0, 8.0, 0.0), 6.0),
             ],
         }),
+        ..Default::default()
     }
 }
 

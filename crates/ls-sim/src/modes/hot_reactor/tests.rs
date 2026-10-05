@@ -35,6 +35,7 @@ fn setup() -> MatchSetup {
             .collect(),
         instability: 0,
         heist: None,
+        ..Default::default()
     }
 }
 

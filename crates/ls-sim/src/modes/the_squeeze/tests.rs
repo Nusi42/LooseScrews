@@ -45,6 +45,7 @@ fn setup() -> MatchSetup {
         ],
         instability: 0,
         heist: None,
+        ..Default::default()
     }
 }
 

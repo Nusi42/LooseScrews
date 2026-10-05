@@ -149,6 +149,11 @@ pub struct WeaponDef {
     /// Hold-to-charge mechanics (Fusion Charger, Polite Laser).
     #[serde(default)]
     pub charge: Option<ChargeDef>,
+    /// Gravity wells bend its projectiles in flight (M4: ordnance, mines,
+    /// Seed Grenade, Swarm blobs); energy bolts and kinetic rounds fly
+    /// straight (design doc). See `crate::gravity`.
+    #[serde(default)]
+    pub gravity: bool,
     /// How projectiles (and, tinted, pickups) of this weapon are drawn.
     #[serde(default)]
     pub visual: Visual,

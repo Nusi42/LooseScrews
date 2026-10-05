@@ -220,7 +220,7 @@ PvP supports 2 to 32 players and coop 1 to 8. The Architect mode works in both.
 | Tethered | Coop | 1 to 8 | All players are chained together with elastic rope physics |
 | Escort the Intern | Coop | 1 to 8 | Protect an AI ship that makes bad decisions, like stopping to admire the view |
 | The Architect | Asymmetric coop or PvP | 1 to 8 (coop) | One player moves the sliders live within a budget; the others must survive to the exit |
-| Belt Up (proposal) | PvP, race | 2 to 8 | Race from symmetric start slots in an asteroid belt to the exit; the belt shields you from radiation but is full of rock, open space is fast but burns your hull; shoot, sneeze, bump and drop gravity wells to bend your rivals' paths |
+| Belt Up | PvP, race | 2 to 8 | Race from symmetric start slots in an asteroid belt to the exit; the belt shields you from radiation but is full of rock, open space is fast but burns your hull; shoot, sneeze, bump and drop gravity wells to bend your rivals' paths |
 
 ### The Squeeze
 
@@ -233,7 +233,7 @@ The squeeze is the terrain itself: walls grow inward from the level boundary, so
 
 ### Belt Up
 
-*Proposal.* A race to an exit through an asteroid belt. The level is a ring of asteroids around an open centre, copied 8 times around the vertical axis and mirrored above and below the belt plane, so every start slot flies exactly the same course. Values are tuning starting points; details in milestone-4-plan.md §3.8.
+A race to an exit through an asteroid belt. The level is a ring of asteroids around an open centre, copied 8 times around the vertical axis and mirrored above and below the belt plane, so every start slot flies exactly the same course. Values are tuning starting points; details in milestone-4-plan.md §3.8.
 
 - **Course:** one lap around the ring through 8 gates (600 to 900 u, depending on how far inside you fly), then a dive to a giant green EXIT sign at the centre. A match is 3 heats; points per place (10, 8, 6, 5, 4, 3, 2, 1), most points wins.
 - **Radiation:** the belt's dust shields you. Outside it, radiation burns your hull, faster the farther out you fly, and shields do not stop it. The belt is safe but crowded (its inner edge is the shortest line and the densest), open space is fast but hot. Hull never regenerates: shoot asteroids and scavenge their scrap if you need more.

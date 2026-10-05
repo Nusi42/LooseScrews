@@ -353,7 +353,8 @@ twentieths, shield overrides that replace the rule set's), re-read before every 
 
 Built-in rule sets: `paint_the_void.ron` (default) and `sandbox_all_weapons.ron` (every weapon
 and gadget as a pickup with even weights and short respawns, every ship type; the arsenal e2e
-run uses it).
+run uses it), plus one default rule set per implemented mode (`ModeKind::ruleset_file`):
+`last_color_standing.ron`.
 
 ## Mode framework (M3)
 
@@ -387,8 +388,8 @@ with the winning side, timer, stage, team scores, top 32 players with lives and 
 objective markers, HUD `view_flags`). `World::results` is the results table (winner or draw,
 kills, deaths, mode score per player). Modules that do not override a hook get the generic
 fallback (kills score, a suicide or team kill costs a point, lives where the mode has them,
-end on one side left, `score_target` or the timer); the M3 modes not implemented yet are such
-stubs until their wave B package lands.
+end on one side left, `score_target` or the timer); the M3 modes not yet implemented
+(`ModeModule::implemented` false) are such stubs until their wave B package lands.
 
 Hot Reactor (`modes/hot_reactor.rs`, wave B4): the module docs list its rules and gap decisions;
 the reactor is objective kind `REACTOR` with the holder, the predicted detonation tick in
@@ -419,6 +420,19 @@ whose `PlayerMode` is eliminated or spectating never respawns, leaves play at th
 tick (`Event::Eliminated` when eliminated) and appears in the view with its flags. Players
 joining after `modes::LATE_JOIN_GRACE_TICKS` (10 s) in modes with lives spectate until the
 next match; `World::set_spectator` switches by choice.
+
+Last Color Standing (`modes/last_color_standing.rs`, free-for-all only): every player's
+`PlayerMode::meter` starts at `colour` (100) and every death drains `drain_per_kill` (34),
+whoever killed the ship; damage alone does not. At 0 the player is eliminated (spectates). From
+`stalemate_secs` (480) on, every player still in play loses 1 colour per
+`stalemate_drain_secs` (2 s), alive or dead, so the match always ends (`ModeState::stage` 0
+before the stalemate with `stage_end_tick` at its start, 1 during it). The mode score mirrors
+the colour (results list the most colourful first). The match ends when at most one player has
+colour (that player wins, nobody is a draw) or on the timer (most colour wins, a tie is a
+draw); late joiners spectate. The view sets `MONOCHROME` and `METER`. Tests:
+`modes/last_color_standing/tests.rs` (one per rule, default rule set and code, 60 s replay
+golden hash `LCS_REPLAY_GOLDEN_HASH`) and `ls-bots` `tests/last_color_standing_match.rs`
+(8 bots to a result in a `Room`, release).
 
 A two-team Paint the Void match runs exactly as in M2 through the framework (its state hash
 and `REPLAY_GOLDEN_HASH` are unchanged): the mode state beyond the M2 fields is hashed only

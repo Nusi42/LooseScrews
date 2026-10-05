@@ -477,15 +477,18 @@ const TEAM_BRAWL_RON: &str = include_str!("../../../data/rulesets/team_brawl.ron
 const INSTAGIB_BRAWL_RON: &str = include_str!("../../../data/rulesets/instagib_brawl.ron");
 const DUEL_RON: &str = include_str!("../../../data/rulesets/duel.ron");
 const HOT_REACTOR_RON: &str = include_str!("../../../data/rulesets/hot_reactor.ron");
+const LAST_COLOR_STANDING_RON: &str =
+    include_str!("../../../data/rulesets/last_color_standing.ron");
 
 /// Embedded rule set files (data hash).
-pub const BUILTIN_RULESETS: [(&str, &str); 6] = [
+pub const BUILTIN_RULESETS: [(&str, &str); 7] = [
     ("rulesets/paint_the_void.ron", PAINT_THE_VOID_RON),
     ("rulesets/sandbox_all_weapons.ron", SANDBOX_ALL_WEAPONS_RON),
     ("rulesets/team_brawl.ron", TEAM_BRAWL_RON),
     ("rulesets/instagib_brawl.ron", INSTAGIB_BRAWL_RON),
     ("rulesets/duel.ron", DUEL_RON),
     ("rulesets/hot_reactor.ron", HOT_REACTOR_RON),
+    ("rulesets/last_color_standing.ron", LAST_COLOR_STANDING_RON),
 ];
 
 impl RuleSet {

@@ -13,6 +13,7 @@ working on the repo are in [`CLAUDE.md`](../CLAUDE.md).
 | [implementation-plan.md](implementation-plan.md) | Milestone 1 scope, module specs with acceptance criteria, work waves and current status, later milestones |
 | [milestone-2-plan.md](milestone-2-plan.md) | Milestone 2 (arsenal and physics): scope, design decisions (numbers the design doc leaves open), waves and their status, acceptance criteria with evidence |
 | [milestone-3-plan.md](milestone-3-plan.md) | Milestone 3 (modes and lobby): scope incl. carried-over items, design decisions, waves and packages with their "as built" notes, determinism and handshake impacts, acceptance criteria |
+| [milestone-4-plan.md](milestone-4-plan.md) | Milestone 4 (the level has moods; draft, pending review): comedy director and the 18 events, the remaining sliders, monochrome levels and pigment, The Architect, world workshop, audio; carried-over items, proposals for design gaps, determinism and handshake impacts, waves and packages, acceptance criteria, open questions |
 | [design/game-design-doc.md](design/game-design-doc.md) | The game: rules, ships, weapons, modes (exported from the living design doc; source of truth for game rules) |
 
 ## Architecture

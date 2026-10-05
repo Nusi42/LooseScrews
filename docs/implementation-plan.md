@@ -226,7 +226,7 @@ Commands and details: [dev-guide.md](dev-guide.md#4-tests) and [architecture/det
 | M1 Vertical slice | Done | See sections 1–5 |
 | M2 Arsenal and physics | Done | All weapons from the design doc, Tectonic Charge, debris physics, surface states, ship types, gadgets (Shield, Cloak, Decoy), rule set editor — see [milestone-2-plan.md](milestone-2-plan.md) |
 | M3 Modes and lobby | Done with exceptions (soak tick p99 on a quiet machine, private rooms' tick budget under load, the Tectonic collapse tick) — [milestone-3-plan.md](milestone-3-plan.md#milestone-summary) | Team Brawl, The Squeeze, Instagib, Heist, Hot Reactor, Last Color Standing, duels; lobby in `ls-server` with match rotation, optional directory service for the server list, invites, party codes ([modes-and-lobby.md](architecture/modes-and-lobby.md)) |
-| M4 The level has moods | Next | Comedy director and events, remaining sliders (verticality, gravity chaos, palette, instability), monochrome pigment, The Architect |
+| M4 The level has moods | Planning (draft, pending review) — [milestone-4-plan.md](milestone-4-plan.md) | Comedy director with moods and all 18 events, remaining sliders (verticality, gravity chaos, palette, instability), monochrome levels and pigment, The Architect, world workshop, audio foundation; carried over: Tectonic collapse tick, dual contouring in play; M3 leftovers: thin-rock jaggies, bore-rim folds, reference mid-GPU timings, teams 3/4 spawn zones, quiet-machine soak |
 | M5 Platforms and ops | Planned | Tauri app with UDP, WebRTC fallback, WebGL2 fallback, regional deployment with Agones or Nomad, bandwidth optimization |
 | M6 Coop and business | Planned | Deep Dig, Tethered, Escort the Intern; cosmetics store, creator economy |
 

@@ -182,6 +182,8 @@ export interface GameHandle {
   sweepSphere?(ox: number, oy: number, oz: number, dx: number, dy: number, dz: number, radius: number, max: number): Float32Array;
   /** Practice only (visual gallery test shapes): carve (`add` false) or add a sphere of rock; false online. */
   practiceEdit?(add: boolean, x: number, y: number, z: number, radius: number): boolean;
+  /** Practice only (gallery, M3 C1): The Squeeze's shell on the terrain; a radius below 0 removes it. */
+  practiceShell?(x: number, y: number, z: number, radius: number): boolean;
   free(): void;
 }
 

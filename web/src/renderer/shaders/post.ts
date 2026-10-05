@@ -100,6 +100,14 @@ fn fs_main(in: PostVsOut) -> @location(0) vec4f {
 }
 `;
 
+/**
+ * Scene alpha above 1 marks pixels whose colour the monochrome grade keeps
+ * (Last Color Standing ships, M3 C1): alpha = 1 + keep x KEEP_ALPHA. Small,
+ * so blends that read the scene alpha (the sky under the scene) stay close
+ * to an alpha of 1; rgba16float resolves it in 64 steps.
+ */
+export const KEEP_ALPHA = 0.0625;
+
 /** Floats in the composite uniform (struct Post below). */
 export const POST_UNIFORM_FLOATS = 24;
 
@@ -173,13 +181,13 @@ fn hash12(p: vec2f) -> f32 {
   return fract((p3.x + p3.y) * p3.z);
 }
 
-fn grade(c: vec3f) -> vec3f {
+fn grade(c: vec3f, keep_px: f32) -> vec3f {
   var g = pow(max(c * post.slope_exposure.rgb + post.offset_bloom.rgb, vec3f(0.0)), post.power_sat.rgb);
   let luma = dot(g, LUMA);
   g = max(vec3f(luma) + post.power_sat.w * (g - vec3f(luma)), vec3f(0.0));
   // Monochrome (Last Color Standing): grey, except saturated colours whose
   // hue matches mono_tint (compared on the chroma, the colour minus its grey).
-  let mono = post.look.z;
+  let mono = post.look.z * (1.0 - keep_px);
   if (mono > 0.0) {
     let l2 = dot(g, LUMA);
     let chroma = g - vec3f(l2);
@@ -196,7 +204,10 @@ fn grade(c: vec3f) -> vec3f {
 @fragment
 fn fs_main(in: PostVsOut) -> @location(0) vec4f {
   let size = vec2f(textureDimensions(scene));
-  var hdr = textureLoad(scene, vec2i(in.clip.xy), 0).rgb;
+  let px = textureLoad(scene, vec2i(in.clip.xy), 0);
+  var hdr = px.rgb;
+  // Colour kept through the monochrome grade (objects.ts marks it in the alpha).
+  let keep_px = clamp((px.a - 1.0) / ${KEEP_ALPHA}, 0.0, 1.0);
   hdr = select(hdr, vec3f(0.0), hdr != hdr);
   if (post.misc.w > 0.5) {
     // The upsampled chain holds the sum of every mip (light above the
@@ -205,7 +216,7 @@ fn fs_main(in: PostVsOut) -> @location(0) vec4f {
     hdr += b * post.offset_bloom.w;
   }
   hdr *= post.slope_exposure.w;
-  hdr = grade(hdr);
+  hdr = grade(hdr, keep_px);
   // Vignette: darken toward the corners (aspect-corrected radius).
   let q = (in.uv - 0.5) * vec2f(size.x / size.y, 1.0);
   hdr *= 1.0 - post.look.w * smoothstep(0.35, 1.1, dot(q, q) * 1.6);

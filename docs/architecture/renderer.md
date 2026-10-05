@@ -1,7 +1,7 @@
 # Browser renderer
 
 The WebGPU renderer in `web/src/renderer/` (visual-quality-plan.md VQ2, VQ5, VQ6, VQ7, VQ8
-and VQ9). Terrain and objects come from the game (`game/chunks.ts`, `game/scene.ts`), particles from
+and VQ9; M3 C1's mode effects). Terrain and objects come from the game (`game/chunks.ts`, `game/scene.ts`), particles from
 the effect library (`game/vfx.ts`); this page covers what happens from there to the screen.
 Wave D of M3 extends it into the full renderer reference.
 
@@ -15,6 +15,7 @@ Wave D of M3 extends it into the full renderer reference.
 | Volumetric sun shafts ("high"/"medium", caverns with openings to the sky): each pixel of a half (third) resolution target marches its view ray through the shadow map up to the scene depth; added onto the resolved scene with a 2x2 tent | `rgba16float` low-resolution target, then the HDR scene texture | `volumetric.ts`, `shaders/volumetric.ts` |
 | Sky (open levels only): drawn *under* the resolved scene, `out = scene + sky x (1 - alpha)` (geometry writes alpha 1, the clear is transparent black) | the HDR scene texture, single-sampled | `sky.ts`, `shaders/sky.ts` `SKY_WGSL` |
 | Light shafts ("high", open levels, sun on or near the screen): sky mask (scene alpha 0) at quarter resolution, radial blur toward the sun, added onto the scene | the HDR scene texture | `sky.ts` `encodeShafts`, `SHAFT_*_WGSL` |
+| Mode effects (M3 C1; skipped without volumes): one fullscreen triangle, additive, reading the scene depth: The Squeeze's glowing walls and next zone, zones, beams and halos | the resolved HDR scene texture | `modeFx.ts`, `shaders/modeFx.ts` |
 | Cloak refraction (only while a cloaked ship is in view): a copy of the scene, then the cloaked hulls drawn into the scene sampling the copy through their surface (no depth attachment; each fragment reads the scene depth) | the HDR scene texture (needs `COPY_SRC`) | `cloak.ts`, `shaders/cloak.ts` |
 | Particles: sprites at least `halfResPx` wide into a half-resolution `rgba16float` target, composited onto the resolved scene; then dust motes and the smaller sprites at full resolution. No depth attachment: each fragment reads the scene depth (soft particles, occlusion) | the resolved HDR scene texture | `particles.ts`, `shaders/particles.ts`, `spriteAtlas.ts` |
 | Bloom down: 13-tap filter, the first step with a Karis average and a soft-knee threshold | up to 6 half-size `rgba16float` mips | `post.ts`, `shaders/post.ts` `BLOOM_DOWN_WGSL` |
@@ -23,7 +24,7 @@ Wave D of M3 extends it into the full renderer reference.
 
 With `timestamp-query` every pass writes timestamps (`gpuTimer.ts`), labelled `terrain` and
 `objects` (or `scene` when `Renderer.detailedTiming` is off), `lights`, `shadow` (map updates),
-`volumetric`, `sky` (the sky and the screen-space shafts), `particles` and `post`. Budgets per label are in `web/src/gallery/scenes.ts`
+`volumetric`, `sky` (the sky and the screen-space shafts), `mode`, `particles` and `post`. Budgets per label are in `web/src/gallery/scenes.ts`
 (`PASS_BUDGETS_MS`); the F3 overlay and the visual gallery show the times
 ([dev-guide.md](../dev-guide.md#visual-gallery-and-gpu-budget)).
 
@@ -252,6 +253,47 @@ keep. Change a grade by assigning `renderer.settings.post.grade`; it applies on 
 it (or on top of `renderer.atmosphere.grade`). The gallery previews a preset with `--grade
 <preset>` (`?grade=`).
 
+## Mode effects (M3 C1)
+
+`modeFx.ts` `ModeFxPass` draws the mode visuals that are not meshes or particles, analytically
+per pixel: the game hands `Renderer.setModeVolumes(volumes)` a list every frame
+(`game/modeVisuals.ts` `modeVolumes`, at most `MODE_FX_MAX_VOLUMES` = 12); with an empty list
+the pass and its depth read are skipped. The pass runs after the sky and shafts and before the
+particles, as one fullscreen triangle with an additive blend that keeps the scene's alpha, and
+reads the scene depth like the particles (the first sample of the multisampled depth): the
+world position of every pixel is rebuilt from the camera basis (right, up and forward scaled by
+the half-FOV tangents) and the linear depth. Everything fades with the exp2 distance fog.
+
+| Volume | Look | Used for |
+| --- | --- | --- |
+| `wall` (centre, radius, `warn`, `grind`) | Rock within a band of the sphere (the shell's terrain wall) glows: a slowly rising energy curtain (stretched value noise), 3D cell borders (Voronoi, 2x2x2 lookups) that light up under a scan band, rare flickering cells; a bright seam 0.85 u inside the sphere where cave rock meets the wall and a soft spill onto rock in front of it. Cyan while the walls only warn, amber with molten cracks in patches while they grind inward. Where the sphere lies in open space ahead of the rock (chunk meshes that have not caught up with the moving shell yet) a faint film with the same pattern | The Squeeze's shell |
+| `zone` (centre, radius, film, grid, contour, ring, pulse) | Where the view ray crosses the sphere in open space: a fresnel film with a drifting latitude/longitude grid (no line on the equator) and a scan band; where the sphere cuts rock: a dashed, moving contour, its width measured along the surface (the depth-derived normal keeps walls nearly tangent to the sphere from smearing it); an optional equator ring lit up to a fill fraction | The Squeeze's next zone, extraction zones, the embedded Heist core's "dig here" outline, Hot Reactor's fuse radius (the ring shows the fuse left) |
+| `beam` (base, width, height) | A vertical light pillar (closest approach of the view ray to the vertical line, glow plus core, ripples), hidden behind rock, fading over its height, at least a pixel wide far away | Extraction zones, the Heist core and its carrier |
+| `halo` (centre, radius, power) | A rim-lit bubble (front and a fainter back half) | The core carrier, the reactor holder |
+
+Cost (gallery, RTX 5080, 1920x1080, "high", timed as `mode`): zones, beams and halos
+0.03-0.05 ms (`heist-*`, `reactor`); a Squeeze wall filling the whole screen 0.08-0.10 ms
+(`squeeze-warn`, `squeeze-close`). At the VQ plans' factor of about 10 for the reference mid
+GPU that is 0.3-0.5 ms and 0.8-1.0 ms for the worst case; the gallery budget is
+`PASS_BUDGETS_MS.mode` = 1.0 ms.
+
+**Last Color Standing keep mask.** The grade's monochrome (`ColorGrade.monochrome`) applies
+per pixel except where the scene's alpha says to keep the colour: opaque instances with
+`Instance.keepColor` (0..1, packed into the opacity slot as 1 + keep, which the opaque pass
+does not use otherwise) write alpha `1 + keep x KEEP_ALPHA` (`shaders/post.ts`, 1/16); the
+composite reads `keep = (alpha - 1) / KEEP_ALPHA` and scales the monochrome blend by
+`1 - keep`. KEEP_ALPHA is small so the blends that read the scene alpha (the sky drawn under
+the scene subtracts at most 1/16 of the sky behind a kept ship) stay close to an alpha of 1;
+translucent passes and smoke over a ship reduce the keep like coverage. `game/modeVisuals.ts`
+sets `monochromeGrade` (a little darker and more contrasty) on top of the world's grade, eased
+in over 1.2 s, and gives ships the share of their side colour their colour meter has left
+(`colourMeterStyle`) with keep 1.
+
+**Props.** `models/modeProps.ts`: the Heist core (a faceted crystal in three gyroscope hoops)
+and the Hot Reactor (a glowing sphere in two containment rings with six vents), mesh kinds
+`core` and `reactor` (the legacy builders use spheres). Their glowing parts take the instance
+colour, an HDR display value above 1.
+
 ## Particles (VQ5)
 
 `particles.ts` `ParticleSystem` (`Renderer.particles`, null with `?vfx=off` or
@@ -354,7 +396,7 @@ ALU; `fwidth` is taken before the branch). Specular from VQ6's dynamic lights is
 attribute bit layout, sRGB helpers), `shaders/lighting.ts`, `shaders/terrain.ts`,
 `shaders/objects.ts` (instanced and translucent), `shaders/lights.ts` (the light froxel
 builder), `shaders/shadow.ts` (VQ9: the SunShadow struct and `sun_visibility`, included by
-`lighting.ts`; the caster pass), `shaders/volumetric.ts` (VQ9: the shaft march and composite), `shaders/particles.ts` (particles, motes, half-resolution composite), `shaders/cloak.ts` (VQP: the cloak refraction), `shaders/post.ts`, `shaders/sky.ts` (VQ7: the
+`lighting.ts`; the caster pass), `shaders/volumetric.ts` (VQ9: the shaft march and composite), `shaders/modeFx.ts` (M3 C1's mode effects), `shaders/particles.ts` (particles, motes, half-resolution composite), `shaders/cloak.ts` (VQP: the cloak refraction), `shaders/post.ts`, `shaders/sky.ts` (VQ7: the
 environment and planet bakes, the sky pass, the shafts, gradient noise). Each package edits its
 own file (VQ3b terrain, VQ5 particles, VQ6 lighting, VQ7 sky); keep `FRAME_UNIFORM_FLOATS` and
 `Renderer.writeFrameUniforms` in sync with the `Frame` struct (`sky.test.ts` checks the sizes of

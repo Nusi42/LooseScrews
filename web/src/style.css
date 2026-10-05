@@ -332,6 +332,22 @@ button {
   display: none;
 }
 
+/* Instagib (M3 C1): the Railspike fires for free, so the shot count reads as unlimited. */
+.hud.instagib .hud-ammo,
+.hud.instagib .hud-slot-detail {
+  font-size: 0;
+}
+
+.hud.instagib .hud-ammo::after {
+  content: "∞ · one hit kills";
+  font-size: 20px;
+}
+
+.hud.instagib .hud-slot-detail::after {
+  content: "∞";
+  font-size: 12px;
+}
+
 .hud.spectating .hud-panel,
 .hud.spectating .hud-crosshair,
 .hud.spectating .hud-charge,
@@ -932,11 +948,25 @@ button {
 }
 
 .mode-alert {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   padding: 7px 18px;
   border-radius: 999px;
   font-size: 15px;
   font-weight: 700;
   text-align: center;
+}
+
+.mode-alert-icon {
+  display: grid;
+  place-items: center;
+  flex: none;
+}
+
+.mode-alert-icon svg {
+  width: 17px;
+  height: 17px;
 }
 
 .mode-alert.warning {
@@ -983,12 +1013,22 @@ button {
   position: absolute;
   left: 0;
   top: 0;
-  width: 12px;
-  height: 12px;
-  transform: translate(-50%, -50%) rotate(45deg);
-  border: 2px solid var(--side);
-  border-radius: 2px;
-  box-shadow: 0 0 10px var(--side);
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  transform: translate(-50%, -50%);
+  color: var(--side);
+  border: 1.5px solid var(--side);
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--side) 18%, rgba(0, 0, 0, 0.55));
+  box-shadow: 0 0 10px color-mix(in srgb, var(--side) 60%, transparent);
+  filter: drop-shadow(0 0 2px rgba(0, 0, 0, 0.8));
+}
+
+.mode-marker-dot svg {
+  width: 14px;
+  height: 14px;
 }
 
 .mode-marker-arrow {
@@ -1006,18 +1046,19 @@ button {
 
 .mode-marker.edge .mode-marker-arrow {
   display: block;
+  transform-origin: 0 0;
 }
 
 .mode-marker.edge .mode-marker-dot {
-  width: 8px;
-  height: 8px;
-  opacity: 0.8;
+  width: 20px;
+  height: 20px;
+  opacity: 0.85;
 }
 
 .mode-marker-text {
   position: absolute;
   left: 0;
-  top: 12px;
+  top: 15px;
   transform: translateX(-50%);
   display: flex;
   flex-direction: column;

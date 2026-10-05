@@ -229,6 +229,11 @@ export interface VfxFrame {
   hideShot?: ((p: ProjectileState) => boolean) | undefined;
   /** Charges in progress (chargeFx.ts ChargeTracker; VQP). */
   charges?: readonly ChargeGlow[];
+  /**
+   * Side colour (display) of a ship id (M3 C1: 4 teams): plain paint shots
+   * and respawn rings take it; undefined = the visual's own colour.
+   */
+  teamColorOf?: ((id: number) => Rgb3 | undefined) | undefined;
 }
 
 interface ShotTrack {
@@ -384,6 +389,7 @@ export class Vfx {
     this.now = f.time;
     sink.now = f.time;
     sink.beginFrame?.();
+    this.teamColorOf = f.teamColorOf;
     this.shakes = this.shakes.filter((s) => s.end > f.time);
     this.flashLights = this.flashLights.filter((l) => l.end > f.time);
     const shipPos = (id: number): Vec3 | undefined => {
@@ -455,8 +461,10 @@ export class Vfx {
         if (!t.alive && s.alive) {
           t.damage = 0;
           if (this.primed && !own) {
-            ring(sink, s.position, [0.6, 0.9, 1], 3, 0.4, 3.2, 0.5);
-            sparkleBurst(sink, rng, s.position, [0.6, 0.9, 1], 18, 4, true);
+            // Respawn: an implosion in the ship's side colour.
+            const c = f.teamColorOf?.(s.id) ?? [0.6, 0.9, 1];
+            ring(sink, s.position, c, 3, 0.4, 3.2, 0.5);
+            sparkleBurst(sink, rng, s.position, c, 18, 4, true);
           }
         }
       }
@@ -726,10 +734,15 @@ export class Vfx {
     this.shots = next;
   }
 
+  private teamColorOf: ((id: number) => Rgb3 | undefined) | undefined;
+
   private shotColor(p: { owner: number; state: number }, visual: VisualDef | undefined): Rgb3 {
     if (visual?.shape === "paint") {
       const id = projectilePaintColor(p.state);
       if (id !== 0) return PAINT_COLORS[id] ?? WHITE;
+      // Plain paint flies in the shooter's team colour (as the mesh path draws it).
+      const team = this.teamColorOf?.(p.owner);
+      if (team) return team;
     }
     return visual?.color ?? WHITE;
   }

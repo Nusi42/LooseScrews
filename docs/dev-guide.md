@@ -919,7 +919,9 @@ Tinker and a Hauler in front of a carved 1.2 u tunnel with the cockpit frame and
 the Skitter, Tug and Hauler cockpits and the Tinker's under the open sky; VQP: pillars fading
 before the hidden ceiling (`?roomfade=off` cuts them sharply), the Fusion Charger charge-up
 from outside and from the cockpit, cloaked ships (`?cloak=flat` for the old translucent
-hull); pass page options with `--query`) at 1920x1080 and saves one PNG per scene, plus a
+hull); M3 C1's mode scenes `squeeze-warn`, `squeeze-close` (the shell
+put on the practice terrain with `Game.practiceShell`), `heist-carrier`, `heist-dig`, `reactor`,
+`last-color` and `teams4`, built by `web/src/gallery/modeScenes.ts`; pass page options with `--query`) at 1920x1080 and saves one PNG per scene, plus a
 `manifest.json` with the share code, the camera pose and the per-pass GPU times, under
 `target/visual-gallery/<label>/`. `target/visual-gallery/index.html` shows every label side by
 side per scene, so a package takes a `before` run on its base and an `after` run on its branch:

@@ -79,6 +79,8 @@ import { WreckTypes } from "./game/wrecks.ts";
 import { LightFx, sceneLights } from "./game/lightFx.ts";
 import { Vfx } from "./game/vfx.ts";
 import { chargeLight, ChargeTracker } from "./game/chargeFx.ts";
+import { addModeProps, easeMonochrome, isMonochrome, modeLights, ModeVfx, modeVolumes, monochromeGrade, shipStyleFor, type ModeSceneInput } from "./game/modeVisuals.ts";
+import { NEUTRAL_GRADE } from "./renderer/post.ts";
 import { parseInvite } from "./rules/model.ts";
 import type { WasmApi } from "./wasm/api.ts";
 
@@ -283,6 +285,10 @@ function runGame(
       lightFx.watchProjectiles = false;
     }
     particles?.clear();
+    // Mode visuals (M3 C1): particles and events of walls, cores, reactors; the monochrome blend.
+    const modeVfx = particles ? new ModeVfx(particles) : null;
+    if (modeVfx) modeVfx.lightSink = lightFx;
+    let mono = 0;
     let shipBayOpen = false;
     let shipError = "";
     let dead = false;
@@ -414,6 +420,8 @@ function runGame(
         lightFx.clear();
         vfx?.reset();
         charging.forget();
+        modeVfx?.reset();
+        mono = 0;
         particles?.clear();
         spectator = null;
         lobbyClock.reset();
@@ -491,6 +499,7 @@ function runGame(
         shots: r.projectiles,
         visualOf: (w) => session.visuals[game.projectileVisual?.(w) ?? -1],
       });
+      const teamOfShip = session.teamOf(r.ships);
       vfx?.update({
         time,
         dt,
@@ -509,9 +518,23 @@ function runGame(
         hullOf: (t) => session.shipChoices().find((c) => c.shipType === t)?.hull ?? 100,
         hideShot,
         charges,
+        teamColorOf: (id) => {
+          const team = id === game.player ? game.team : teamOfShip(id);
+          return team === undefined ? undefined : teamHull(team, r.mode.teams);
+        },
       });
-      renderer.setScene(
-        buildScene(r.ships, r.projectiles, r.entities, session.visuals, session.teamOf(r.ships), time, {
+      const modeInput: ModeSceneInput = {
+        mode: r.mode,
+        nowTick: game.nowTick?.() ?? 0,
+        time,
+        own: game.player,
+        ownPos: r.pose && r.pose.alive && !flow.spectating ? r.pose.position : null,
+        ships: r.ships,
+        camera: view.position,
+        warmup: flow.stage === "warmup" || flow.stage === "countdown",
+      };
+      modeVfx?.update({ ...modeInput, dt });
+      const scene = buildScene(r.ships, r.projectiles, r.entities, session.visuals, session.teamOf(r.ships), time, {
           gadgetOf,
           beams: fx.beams,
           flashes: fx.flashes,
@@ -522,8 +545,11 @@ function runGame(
           teams: r.mode.teams,
           vfx: vfx !== null,
           refractCloak: true,
-        }),
-      );
+          shipStyle: shipStyleFor(r.mode, r.mode.teams),
+        });
+      addModeProps(scene, modeInput);
+      renderer.setScene(scene);
+      renderer.setModeVolumes(modeVolumes(modeInput));
       // Without VQ5 effects the light pulses come from watching projectiles and ships.
       if (!vfx) {
         lightFx.observe(r.projectiles, session.visuals, time);
@@ -542,7 +568,11 @@ function runGame(
         time,
       });
       for (const g of charges) lights.push(chargeLight(g));
+      modeLights(modeInput, lights);
       renderer.setLights(lightFx.frame(time, lights));
+      // Last Color Standing: the world fades to monochrome; ships keep their meter's colour.
+      mono = easeMonochrome(mono, isMonochrome(r.mode) && !modeInput.warmup && !flow.showResults ? 1 : 0, dt);
+      renderer.settings.post.grade = monochromeGrade(renderer.atmosphere?.grade ?? NEUTRAL_GRADE, mono);
       // Inside a dust cloud the fog closes in (visibility is cut).
       const atmo = renderer.atmosphere ?? DEFAULT_SETTINGS;
       const dust = dustDensityAt(view.position, r.entities, session.visuals);
@@ -598,6 +628,7 @@ function runGame(
               view.position,
               canvas.clientWidth,
               canvas.clientHeight,
+              ownSide,
             ),
       );
       hud.setInstagib(hudModel.instagib);

@@ -14,7 +14,7 @@
 // launches the browser with the flag.
 
 /** Pass labels the renderer uses (others are allowed; the overlay lists them in this order first). */
-export const PASS_ORDER: readonly string[] = ["shadow", "scene", "terrain", "objects", "particles", "lights", "volumetric", "sky", "post"];
+export const PASS_ORDER: readonly string[] = ["shadow", "scene", "terrain", "objects", "particles", "lights", "volumetric", "sky", "mode", "refract", "post"];
 
 /** Maximum timed passes per frame (two queries each). */
 export const MAX_TIMED_PASSES = 32;

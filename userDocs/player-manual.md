@@ -22,6 +22,7 @@ game's data files, so those pages always match the build.
 - [The level fights back](#the-level-fights-back)
 - [Pickups and wrecks](#pickups-and-wrecks)
 - [Paint the Void](#paint-the-void)
+- [What the modes look like](#what-the-modes-look-like)
 - [Share codes, rule set codes and invite links](#share-codes-rule-set-codes-and-invite-links)
   ([server list, parties and duels](#server-list-parties-and-duels))
 - [Troubleshooting](#troubleshooting)
@@ -137,12 +138,12 @@ rebinding yet.
 | Center | Crosshair. Your shots fly straight out along it. Around it, within 12 u of rock ahead, the **fit ring** (see [Will I fit?](#will-i-fit)). |
 | Top center | The **scoreline**: the mode, the match timer (minutes:seconds, red in the last 30 seconds), one score per team in the team colours (Orange, Blue, Lime, Magenta; in Paint the Void the team's share of the surface in percent) or, in free-for-all modes, the top three pilots and your own place, and the score that wins. Below it the mode's stage where it has one (The Squeeze's phase and its timer). |
 | Left, above the meters | In modes with lives your **lives**, in Last Color Standing your **colour** meter |
-| In the view | **Objective markers**: the safe zone and the next zone, the core and who carries it, extraction zones, the reactor with its fuse. Markers outside the view sit at the screen edge with an arrow pointing the way. |
+| In the view | **Objective markers** with an icon, a label and the distance: the safe zone and the next zone (with the time until the walls move), the core ("dig it out", "take it", "dropped" with its return time, "Escort <name>" when a teammate carries it), extraction zones ("Your extraction", "Deliver here" while you carry the core), the reactor with its fuse and holder. Markers outside the view sit at the screen edge with an arrow pointing the way. |
 | Left panel | **Hull**, **Energy** and **Boost** meters with their values. The hull bar changes colour below 25%. |
 | Right panel | The selected primary and how many shots you can afford, the selected secondary with its count, then the **weapon panel**: every carried primary with its number key, every secondary (key X) and your gadget (key G), the selected ones highlighted. Weapons with levels show them (for example "L2/6" for a Scrap Laser at level 2). The gadget line shows "on", "off", "ready" or the cooldown in seconds. Below it, while the Paint Thrower is selected, the **paint colour** ("V paint: Red · bouncy (stripes)"). At the bottom your **Scrap**. |
 | Bottom center | "Horizon assist: on (H)" or "off", and "Scavenging" while you hold R |
 | Below the crosshair | The **charge meter** while you charge the Fusion Charger or the Polite Laser ("Fusion Charger: 60%", "full, release to fire", "OVERCHARGE, release!"), and "Weapons offline 2.4 s" after a Borrowed Time rewind |
-| Upper middle, below the timer | **Warning banners** (see below) and mode alerts: "Outside the safe zone", "You carry the core", "You hold the reactor!" |
+| Upper middle, below the timer | **Warning banners** (see below) and mode alerts with an icon: "Walls close in 0:09: reach the next zone", "The wall is crushing you!", "You carry the core", "<name> has the core: stop them", "Core dropped", "You hold the reactor!", "Too close to the reactor", "Last of your colour" |
 | Above the crosshair | Status messages: "Waiting for the server", "Syncing with the server", "Destroyed, respawning", "Match over: Orange wins (your team)" |
 | Top right (kill feed) | The last few events, for example "bot3 destroyed You", "You self-destructed", or the match result. Lines fade after about 6 seconds. |
 | Over ships | Pilot names: teammates within 90 u, enemies within 45 u |
@@ -660,6 +661,30 @@ keeps your name, ship choice, horizon assist setting and debug overlay. If it ca
 after about 12 tries, it shows an error. Reload the page to join again.
 
 In practice mode, the result stays on screen. Reload the page for a new round.
+
+## What the modes look like
+
+Every mode marks its objectives in the world, not only on the HUD:
+
+- **The Squeeze:** the walls are rock, but they glow while they are about to move (a cyan
+  energy curtain) and turn amber with glowing cracks while they grind inward, shedding sparks
+  and dust. Where your ship scrapes a moving wall, sparks fly: get away, it crushes. The next
+  safe zone is a faint holographic sphere; where it cuts the rock, a dashed yellow line shows
+  its edge on the walls.
+- **Heist:** the core is a glowing crystal with a gold beam rising from it. While it is still
+  buried, a gold ring on the rock shows where to dig. The pilot carrying it has a gold halo, a
+  beam and a trail of sparkles (and flies without boost). Extraction zones are spheres in their
+  team's colour with a light pillar; your own is marked "Your extraction".
+- **Hot Reactor:** the reactor floats over its holder, who glows red, pulsing faster as the fuse
+  runs down. A red sphere shows the fuse radius (ships inside speed up the fuse); the ring
+  around its middle shows how much fuse is left. A hit that passes the reactor throws sparks to
+  the new holder; a detonation is a big red blast.
+- **Last Color Standing:** the whole level is black and white. Ships keep the colour their
+  meter has left, so a pale ship is one death from being out.
+- **Instagib:** the scoreline says "Instagib", the hull and energy bars are hidden and the shot
+  count reads "∞": the Railspike fires for free and any hit kills.
+- **Four teams:** Orange, Blue, Lime and Magenta show on the ships' liveries, the paint, the
+  paint shots and the respawn flash.
 
 ## Share codes, rule set codes and invite links
 

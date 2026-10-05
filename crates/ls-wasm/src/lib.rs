@@ -1154,6 +1154,20 @@ impl Game {
         };
         self.core.practice_edit(edit)
     }
+
+    /// Practice only (the visual gallery's Squeeze scenes, M3 C1): puts The
+    /// Squeeze's shell on the terrain (solid outside the sphere; a radius
+    /// below 0 removes it) outside the simulation, so the next meshes show
+    /// the wall. A practice frame's step sets the mode's own shell again.
+    /// Returns false online.
+    #[wasm_bindgen(js_name = practiceShell)]
+    pub fn practice_shell(&mut self, x: f32, y: f32, z: f32, radius: f32) -> bool {
+        let shell = (radius >= 0.0).then(|| ls_sim::ShellSphere {
+            center: Vec3::new(x, y, z),
+            radius,
+        });
+        self.core.practice_shell(shell)
+    }
 }
 
 #[cfg(test)]

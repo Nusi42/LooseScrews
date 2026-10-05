@@ -1,0 +1,106 @@
+// Browser smoke test rule set (tools/browser-smoke/smoke.mjs, "lobby" phase, M3 C1): Heist with a
+// 14 s match, so the lobby rotation reaches a Heist match and checks its HUD and mode visuals.
+// Not a gameplay rule set. Based on data/rulesets/heist.ron.
+RuleSet(
+    name: "Browser smoke - Heist",
+    mode: Heist((
+        teams: 2,
+        match_secs: 14.0,
+        respawn_secs: 3.0,
+        // First team (or player) to this many deliveries wins.
+        deliveries_to_win: 3,
+        // The carrier flies at this share of its top speed and cannot boost.
+        carrier_speed_percent: 75,
+        // A dropped core (carrier killed) returns to the vein after this long.
+        drop_return_secs: 20.0,
+        // A delivered core respawns in the vein (embedded again) after this long.
+        core_respawn_secs: 15.0,
+        // Once the core is mined free, the chamber turns weak and sheds its ceiling this long.
+        collapse_secs: 30.0,
+    )),
+    weapons: {
+        // Energy primaries.
+        "scrap_laser": LoadoutAndPickup,
+        "scatter_laser": PickupOnly,
+        "plasma_repeater": PickupOnly,
+        "fusion_charger": PickupOnly,
+        "corkscrew": PickupOnly,
+        "ricochet_arc": PickupOnly,
+        "leech_arc": PickupOnly,
+        // Kinetic primaries.
+        "rivet_gun": PickupOnly,
+        "railspike": PickupOnly,
+        "scrap_shotgun": PickupOnly,
+        // Ordnance.
+        "bolt_rocket": LoadoutAndPickup,
+        "seeker": PickupOnly,
+        "quicksilver": PickupOnly,
+        "eyeball": PickupOnly,
+        "swarm_pod": PickupOnly,
+        "heavy_rocket": PickupOnly,
+        "flash_pod": PickupOnly,
+        "prox_mine": PickupOnly,
+        "stalker_mine": PickupOnly,
+        "tectonic_charge": PickupOnly,
+        // Specials.
+        "echo_cannon": PickupOnly,
+        "swap_harpoon": PickupOnly,
+        "borrowed_time": PickupOnly,
+        "magnet_sneeze": PickupOnly,
+        "polite_laser": PickupOnly,
+        "seed_grenade": PickupOnly,
+    },
+    gadgets: {
+        "shield": LoadoutAndPickup,
+        "cloak": PickupOnly,
+        "decoy": PickupOnly,
+    },
+    starting_loadout: (
+        primaries: ["scrap_laser"],
+        secondaries: [("bolt_rocket", 3)],
+        gadget: Some("shield"),
+    ),
+    pickups: {
+        "scatter_laser": (weight: 1.0, respawn_secs: 30.0),
+        "plasma_repeater": (weight: 1.0, respawn_secs: 30.0),
+        "fusion_charger": (weight: 0.75, respawn_secs: 30.0),
+        "corkscrew": (weight: 1.0, respawn_secs: 30.0),
+        "ricochet_arc": (weight: 1.0, respawn_secs: 30.0),
+        "leech_arc": (weight: 0.75, respawn_secs: 30.0),
+        "rivet_gun": (weight: 2.0, respawn_secs: 20.0),
+        "railspike": (weight: 1.0, respawn_secs: 30.0),
+        "scrap_shotgun": (weight: 1.5, respawn_secs: 25.0),
+        "bolt_rocket": (weight: 2.0, respawn_secs: 20.0, ammo: 3),
+        "seeker": (weight: 1.0, respawn_secs: 30.0, ammo: 2),
+        "quicksilver": (weight: 1.0, respawn_secs: 30.0, ammo: 3),
+        "eyeball": (weight: 0.5, respawn_secs: 40.0, ammo: 1),
+        "swarm_pod": (weight: 0.75, respawn_secs: 30.0, ammo: 2),
+        "heavy_rocket": (weight: 0.5, respawn_secs: 45.0, ammo: 1),
+        "flash_pod": (weight: 0.75, respawn_secs: 30.0, ammo: 2),
+        "prox_mine": (weight: 1.0, respawn_secs: 30.0, ammo: 3),
+        "stalker_mine": (weight: 0.75, respawn_secs: 30.0, ammo: 2),
+        "tectonic_charge": (weight: 0.25, respawn_secs: 90.0, ammo: 1, max_on_map: 1),
+        "echo_cannon": (weight: 0.5, respawn_secs: 45.0),
+        "swap_harpoon": (weight: 0.5, respawn_secs: 45.0, ammo: 2),
+        "borrowed_time": (weight: 0.5, respawn_secs: 45.0, ammo: 1),
+        "magnet_sneeze": (weight: 0.5, respawn_secs: 45.0, ammo: 2),
+        "polite_laser": (weight: 0.5, respawn_secs: 45.0),
+        "seed_grenade": (weight: 0.5, respawn_secs: 45.0, ammo: 2),
+    },
+    upgrade_pickups: {
+        // Scrap Laser levels 1-6 are found as pickups.
+        "scrap_laser": (weight: 1.5, respawn_secs: 30.0),
+    },
+    gadget_pickups: {
+        "shield": (weight: 0.5, respawn_secs: 45.0),
+        "cloak": (weight: 0.5, respawn_secs: 45.0),
+        "decoy": (weight: 0.5, respawn_secs: 45.0),
+    },
+    // Scrap piles keep about a quarter of the spawns (hull only repairs by scavenging).
+    scrap_pickup: Some((weight: 12.0, respawn_secs: 15.0, amount: 30.0)),
+    shield_overrides: {},
+    tuning: {},
+    friendly_fire_percent: 50,
+    allowed_ship_types: [Skitter, Tinker, Hauler, Tug],
+    absurdity: 20,
+)

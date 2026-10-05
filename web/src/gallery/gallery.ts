@@ -44,6 +44,8 @@ import { explosionAt, simulateVfx } from "./vfxScenes.ts";
 import { pickShadePose } from "./shadePose.ts";
 import { chargeAt, cloakAt, CLOAKED } from "./vqpScenes.ts";
 import { chargeLight } from "../game/chargeFx.ts";
+import { modeMoment, modeScene } from "./modeScenes.ts";
+import { monochromeGrade } from "../game/modeVisuals.ts";
 
 /** Frames rendered before the page reports ready. */
 const WARMUP_FRAMES = 20;
@@ -450,6 +452,15 @@ export async function runGallery(canvas: HTMLCanvasElement, ui: HTMLElement, loc
         for (const [key, rm] of rayMeshes) renderer.setChunk(key, applyDecor(rm.mesh, spots));
       }
     }
+    // Mode scenes (M3 C1): the distance to the rock ahead places the content; The Squeeze puts its shell on the terrain.
+    const wallAhead = raycast(rayMeshes.values(), pose.position, q.forward(pose.orientation), 120)?.t ?? 120;
+    if (scene.content === "mode" && scene.mode) {
+      const shell = modeMoment(scene.mode, pose, scene.time, scene.time, wallAhead).shell;
+      if (shell && game.practiceShell?.(shell.center.x, shell.center.y, shell.center.z, shell.radius)) {
+        // A shell put on at once (in play it closes in steps): mesh every chunk again.
+        loader.reset(game);
+      }
+    }
     if (scene.content === "fit") {
       const f = q.forward(pose.orientation);
       for (const e of fitTunnelEdits(pose.position, f)) game.practiceEdit?.(e.add, e.center.x, e.center.y, e.center.z, e.radius);
@@ -487,8 +498,17 @@ export async function runGallery(canvas: HTMLCanvasElement, ui: HTMLElement, loc
     const particles = renderer.particles;
     // The light scenes (VQ6) have no VQ5 history (their tinted volley is not
     // simulated), so their shots keep the mesh cores.
-    renderer.setScene(sceneContent(scene, pose, visuals, impact, lights, particles !== null && scene.content !== "lights"));
-    if (particles) {
+    if (scene.content === "mode" && scene.mode) {
+      const m = modeScene(scene.mode, pose, scene.time, visuals, particles, wallAhead);
+      renderer.setScene(m.scene);
+      renderer.setModeVolumes(m.volumes);
+      lights.push(...m.lights);
+      if (m.monochrome) renderer.settings.post.grade = monochromeGrade(renderer.settings.post.grade, 1);
+      if (particles) status.particles = particles.liveCount();
+    } else {
+      renderer.setScene(sceneContent(scene, pose, visuals, impact, lights, particles !== null && scene.content !== "lights"));
+    }
+    if (particles && scene.content !== "mode") {
       // VQ5: the particles of the scene's synthetic history up to its time (vfxScenes.ts).
       // Scenes whose effects come only from VQ5 also take its effect lights (VQ6
       // pulses); the fight and lights scenes emit theirs in sceneContent.

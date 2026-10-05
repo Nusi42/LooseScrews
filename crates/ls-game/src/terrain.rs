@@ -484,7 +484,8 @@ mod tests {
         t.find_open_point(c, 3.0, 20).expect("open point")
     }
 
-    /// A surface point on generated rock (not on the sealing walls).
+    /// A surface point on generated rock (not on the sealing walls, nor on
+    /// the small Heist vein knot).
     fn rock_point(t: &GameTerrain) -> Vec3 {
         let o = open_point(t);
         let mut dirs = Vec::new();
@@ -500,7 +501,15 @@ mod tests {
         dirs.iter()
             .filter_map(|d| t.raycast(o, *d, 200.0))
             .map(|h| h.point)
-            .find(|p| t.with_store(|s| s.generator().room_open(*p)) > 2.0)
+            .find(|p| {
+                t.with_store(|s| {
+                    let gen = s.generator();
+                    gen.room_open(*p) > 2.0
+                        && gen
+                            .heist()
+                            .is_none_or(|h| p.distance(h.core) > h.knot_radius + 1.0)
+                })
+            })
             .expect("rock surface near the centre")
     }
 
@@ -754,7 +763,9 @@ mod tests {
         use ls_math::Quat;
         use ls_sim::{InputCmd, MatchSetup, ShipTuning, ShipType, SpawnPoint, World, WorldConfig};
 
-        let mut t = small_terrain(7);
+        // Seed 8: a flat enough wall (generator version 3 put a curved Heist
+        // vein tunnel at seed 7's probe point, where the ship slid off).
+        let mut t = small_terrain(8);
         let p = rock_point(&t);
         let n = ls_math::terrain::sdf_gradient(|q| t.sdf(q), p);
         let open = open_point(&t);
@@ -785,6 +796,7 @@ mod tests {
             spawns: vec![spawn(open, 0), spawn(open, 1)],
             pickup_points: vec![],
             instability: 0,
+            heist: None,
         };
         let mut w = World::new(WorldConfig::paint_the_void(5, setup)).unwrap();
         let a = w.add_player(Some(0), ShipType::Tinker).unwrap();

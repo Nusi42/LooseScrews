@@ -192,11 +192,11 @@ test("problems the code format cannot carry are reported, not encoded", () => {
 
 test("invite links carry the world and rule set codes", () => {
   const rules = encodeRules(defaultRules(CATALOG), CATALOG);
-  const world = "LS08-0000-0000-000A-K4M6-8001-8F1T";
+  const world = "LS0C-0000-0000-000A-K4M6-8001-8F1Y";
   const link = inviteLink("https://play.example/game/?x=1#frag", { world, rules });
-  assert.equal(link, `https://play.example/game/?world=LS0800000000000AK4M680018F1T&rules=${rules.replace(/-/g, "")}`);
+  assert.equal(link, `https://play.example/game/?world=LS0C00000000000AK4M680018F1Y&rules=${rules.replace(/-/g, "")}`);
   const back = parseInvite(link);
-  assert.equal(back.world, "LS0800000000000AK4M680018F1T");
+  assert.equal(back.world, "LS0C00000000000AK4M680018F1Y");
   assert.ok(back.rules);
   assert.ok(rulesEqual(decodeRules(back.rules, CATALOG), defaultRules(CATALOG)));
   assert.deepEqual(parseInvite("https://play.example/"), { world: null, rules: null });

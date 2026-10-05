@@ -66,14 +66,15 @@ Reviewers check these rules; the tests below catch what slips through.
 
 | Hash | What it covers |
 | --- | --- |
-| `sdf` | `Generator::sample` bits on an 8 u lattice (offset 0.37 u) over the level box plus one step |
+| `sdf` | `Generator::sample` bits on an 8 u lattice (offset 0.37 u) over the level box plus one step, then the Heist site's bits (core, radii, access point, extraction zones; generator version 3) |
 | `surface_nets` | the surface-nets mesh of a probe chunk (found by raycasting from an open point near the room centre) |
 | `dual_contouring` | the dual-contouring mesh of the same chunk |
 | `edited` | surface-nets meshes of every dirty chunk after a 3 u crater, a 1.5 u added rock and a 4 u team-1 paint splat |
 
 The fixture `crates/ls-worldgen/tests/fixtures/golden_hashes.txt` holds the expected hex
-digests for six share codes (open sky, sky/cavern mix, caverns, cavern/mine mix, dense mines,
-and every slider at 100). `tests/golden.rs` checks them:
+digests for seven share codes (open sky, sky/cavern mix, caverns, cavern/mine mix, dense mines,
+every slider at 100, and the Heist world added with generator version 3). `tests/golden.rs`
+checks them:
 
 ```sh
 cargo test -p ls-worldgen --release --test golden
@@ -101,6 +102,12 @@ with `REPLAY_GOLDEN_HASH`:
 ```sh
 cargo test -p ls-sim replay_golden_hash
 ```
+
+Modes add their own replay goldens next to their module (wave B): Heist's
+`modes::heist::tests::heist_replay_golden_hash` (`HEIST_REPLAY_GOLDEN_HASH`) runs 8 scripted
+bots for 60 s on a box room with a vein (mining with rockets, the collapse, carrying,
+deliveries) and checks the same hash on native and wasm32; the test prints the new value
+after a deliberate change.
 
 When a behaviour change re-blesses `REPLAY_GOLDEN_HASH` without a `data/` change, also bump
 `ls_sim::SIM_BEHAVIOR_VERSION` (see [below](#data-hash-and-behaviour-version)).

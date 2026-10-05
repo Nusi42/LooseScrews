@@ -375,6 +375,8 @@ damage, and set HUD flags; they run after the mode's hooks.
 | `on_pickup` | a ship touches a pickup | `ModeState` + the ship |
 | `on_tick`, `end_check` | stage 7 | `ModeCtx`, `ModeRef` |
 | `view` | `World::mode_view` | `ModeState` |
+| `move_limits` | a ship moves (stage 2) | the rules + the player's replicated mode flags; returns `MoveLimits` (speed cap scale, no boost). The client predictor applies the same limits from the flags in each snapshot (`Predictor::set_limits`) |
+| `material_at` | a hook asks for the rock material (`Ctx::material_at`, `Ctx::crater`) | `ModeState` + tick + point; `Some(id)` overrides the terrain's material |
 
 The world keeps the generic `mode::ModeState` (part of the state hash: kind, teams, phase,
 timer, stage and stage end tick, paint coverage, team scores, score target, per-player
@@ -384,8 +386,17 @@ with the winning side, timer, stage, team scores, top 32 players with lives and 
 objective markers, HUD `view_flags`). `World::results` is the results table (winner or draw,
 kills, deaths, mode score per player). Modules that do not override a hook get the generic
 fallback (kills score, a suicide or team kill costs a point, lives where the mode has them,
-end on one side left, `score_target` or the timer); the six M3 modes other than Paint the Void
-are such stubs until wave B.
+end on one side left, `score_target` or the timer); the M3 modes not implemented yet are such
+stubs until their wave B package lands.
+
+Heist (`modes/heist.rs`, wave B3) reads the level's Heist site from `MatchSetup::heist`
+(`ls_game::setup::heist_level`, from the generator's `ls_worldgen::HeistSite`): objective 0 is
+the core (`objective_kind::CORE`, its `state` byte one of `heist::core_state`: embedded, free,
+carried, dropped, respawning; `holder` the carrier, `timer_end` the return or respawn tick),
+objectives 1 and 2 the extraction zones (`team` the owner, `NO_SIDE` in free-for-all). The vein
+knot is hard rock and the collapsing chamber weak rock through `material_at`; the carrier has
+`player_flags::CARRIER` and moves under `move_limits`. Without a Heist site (test rooms) the
+core lies free between the spawn points and each team's zone is at its spawns.
 
 Teams are per match: `teams` 2-4 (the smallest team gets a joining player; a team without
 spawn points of its own uses any spawn point) or 0 = free-for-all, where every ship is its own

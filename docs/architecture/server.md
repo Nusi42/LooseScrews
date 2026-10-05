@@ -302,7 +302,7 @@ Global navigation (`src/nav.rs`, M1 issue A):
   restarts the stall clock instead, and blocked links are re-tested after 30 s.
 
 Tests: `tests/nav_sweep.rs` (release only, about 20 s): three bots on the soak world
-`LS08-PNEY-V86Z-VXZM-K4M6-8001-8F8P` and nine random worlds must hit each other within 60 s,
+`LS0C-PNEY-V86Z-VXZM-K4M6-8001-8F8J` and nine random worlds must hit each other within 60 s,
 and a 5-minute match on the soak world must still see hits in its last minute. `LS_NAV_TRACE=1`
 prints positions, modes and routes.
 

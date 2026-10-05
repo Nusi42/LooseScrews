@@ -15,7 +15,9 @@
 //! weights keep the Lipschitz bound). Density then adds rock: floor-to-ceiling
 //! pillars with knobs and faceted floating rocks (union via `min`). Then the
 //! connection network ([`crate::network`]) carves caverns and tunnels that
-//! link both team ends and the level centre (`max(terrain, carve)`), and the
+//! link both team ends and the level centre (`max(terrain, carve)`), plus
+//! the Heist site (the core vein chamber with its rock knot at the bottom
+//! and the extraction caverns at the top; generator version 3), and the
 //! level is sealed by walls [`WALL_THICKNESS`] thick inside the level box.
 //!
 //! Feature lookups use jittered grids; each feature stays inside its grid
@@ -221,6 +223,13 @@ impl Generator {
     /// ends of the level).
     pub fn network(&self) -> &Network {
         &self.network
+    }
+
+    /// The Heist site of this level (core vein and extraction zones; see
+    /// [`crate::network::HeistSite`]). `None` only for levels too small for
+    /// a connection network.
+    pub fn heist(&self) -> Option<&crate::network::HeistSite> {
+        self.network.heist()
     }
 
     /// Whether a ship keeping `margin` of free space can fly in a straight

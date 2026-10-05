@@ -9,7 +9,7 @@
 //!         // A built-in rule set by id, a random world, 4 to 32 players.
 //!         (rules: "team_brawl", min_players: 4),
 //!         // A rule set file (relative to the playlist file) on a fixed world.
-//!         (rules: "my_rules.ron", world: Code("LS08-0000-0000-0000-8006-8001-8F9G")),
+//!         (rules: "my_rules.ron", world: Code("LS0C-0000-0000-0000-8006-8001-8F9M")),
 //!         // An LR rule set code on a random world with slider ranges.
 //!         (rules: "LR8V-6097-G000-TMBG", world: RandomSliders(enclosure: (20, 60), density: (30, 70))),
 //!     ],

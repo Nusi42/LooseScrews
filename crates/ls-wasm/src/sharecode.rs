@@ -73,7 +73,7 @@ mod tests {
     use super::*;
 
     /// From `crates/ls-worldgen/tests/fixtures/golden_hashes.txt`.
-    const REAL: &str = "LS08-0000-0000-000A-K4M6-8001-8F1T";
+    const REAL: &str = "LS0C-0000-0000-000A-K4M6-8001-8F1Y";
 
     #[test]
     fn valid_codes_decode_in_any_spelling() {
@@ -82,7 +82,7 @@ mod tests {
             seed,
             sliders,
             version,
-        } = check_share_code(" ls08 oooo 0000-OOoa k4m6 8OO1 8f1t ")
+        } = check_share_code(" ls0c oooo 0000-OOoa k4m6 8OO1 8f1y ")
         else {
             panic!("expected a valid code");
         };
@@ -105,7 +105,7 @@ mod tests {
             "",
             "XX04-0000",
             "LS04-0000",
-            "LS08-0000-0000-000A-K4M6-8001-8F1U",
+            "LS0C-0000-0000-000A-K4M6-8001-8F1U",
         ] {
             match check_share_code(bad) {
                 CodeCheck::Invalid(msg) => {

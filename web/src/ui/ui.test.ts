@@ -5,13 +5,13 @@ import { checkShareCode, normalizeShareCode, SHARE_CODE_PRINTED_LEN } from "./sh
 import { cleanName, DEFAULT_NAME, readShareCode } from "./startScreen.ts";
 
 // Printed by ls-worldgen (crates/ls-worldgen/tests/fixtures/golden_hashes.txt).
-const REAL_CODE = "LS08-0000-0000-000A-K4M6-8001-8F1T";
+const REAL_CODE = "LS0C-0000-0000-000A-K4M6-8001-8F1Y";
 
 test("share codes are normalised (case, spaces, dashes, Crockford look-alikes)", () => {
   assert.equal(normalizeShareCode("  ls-abcd efgh-OIL "), "LSABCDEFGH011");
   assert.deepEqual(checkShareCode(REAL_CODE), { ok: true, code: REAL_CODE });
   // Undashed, lowercase, spaced and with look-alikes: same code back in printed form.
-  assert.deepEqual(checkShareCode(" ls08 oooo 0000-OOoa k4m6 8OO1 8f1t "), { ok: true, code: REAL_CODE });
+  assert.deepEqual(checkShareCode(" ls0c oooo 0000-OOoa k4m6 8OO1 8f1y "), { ok: true, code: REAL_CODE });
   assert.deepEqual(checkShareCode(REAL_CODE.replace(/-/g, "")), { ok: true, code: REAL_CODE });
   assert.equal(REAL_CODE.length, SHARE_CODE_PRINTED_LEN);
 });

@@ -46,7 +46,11 @@ tests are in [determinism.md](determinism.md). The contract part is the RNG stre
   `ls-worldgen` draws no PCG streams: its noise and features are integer hashes of the seed,
   and the connection network (generator version 2, `ls_worldgen::network`) draws from a
   `SplitMix64` seeded by its own `Seeds::connect` value, appended last to `Seeds` so the
-  earlier derived seeds are unchanged.
+  earlier derived seeds are unchanged. The Heist site (generator version 3: core vein
+  chamber, vein tunnels, extraction caverns; `Network::heist`) draws from a second
+  `SplitMix64` seeded with `Seeds::connect ^ 0x4845_4953_545f_5349` ("HEIST_SI"), so the
+  version 2 hubs and tunnels stay where they were. The Heist mode's collapsing mine draws
+  from `Ctx::rng` (key `0x4845_4953_5443_4f4c`, "HEISTCOL").
   (`ls-bots` uses its own stream for bot behaviour; it is not part of the deterministic core.)
 - `det::tests::golden_bits` and the RNG reference-vector tests run on native and on wasm32
   (commands in [determinism.md](determinism.md#the-wasm-cross-check)); they must stay
@@ -165,6 +169,11 @@ centre (read through `SimTerrain::material_at`; `GameTerrain` answers from the f
 Every terrain applies and logs edits verbatim, `Event::TerrainEdit` carries the edit as
 applied, and the log and the wire carry the scaled crater. Test terrains (`BoxRoomTerrain`,
 ...) are ordinary rock everywhere (the `SimTerrain::material_at` default).
+
+A game mode may override the material in a region (`ModeModule::material_at`, read by the
+world before the terrain's answer, from the replicated mode state, so every peer agrees):
+Heist makes the core vein's knot hard rock and, for `collapse_secs` after the core is mined
+free, the vein chamber region weak rock (`ls_sim::modes::heist`).
 
 ### `RayHit`
 

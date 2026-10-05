@@ -56,6 +56,8 @@ pub use mode::{
     MatchPhase, MatchResults, ModeKind, ModeState, ModeView, Objective, ObjectiveView, PlayerMode,
     PlayerModeView, ResultRow,
 };
+pub use modes::heist::HeistLevel;
+pub use modes::MoveLimits;
 pub use ruleset::{
     Availability, HeistRules, HotReactorRules, LastColorStandingRules, Loadout, ModeField,
     ModeRules, Mutator, PaintTheVoidRules, PickupKind, PickupRule, ResolvedRules, RuleSet,

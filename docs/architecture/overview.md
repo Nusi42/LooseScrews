@@ -94,9 +94,10 @@ flowchart LR
    against the built-in weapon table (`RuleSet::resolve`).
 2. **Server world.** `ls_game::setup::build_match` creates the `Generator` from the code (the
    last generator stage carves the connection network of caverns and tunnels that links both
-   team ends, `ls_worldgen::network`), wraps a `ChunkStore` in `GameTerrain`, computes spawn and
-   pickup points from the pristine level (`match_setup`, seeded RNG streams; every point must
-   reach the network in a straight line with 1.5 u of clearance) and builds the `ls_sim::World` at tick 0. `Room::new`
+   team ends plus the Heist site, `ls_worldgen::network`), wraps a `ChunkStore` in `GameTerrain`,
+   computes spawn and pickup points from the pristine level (`match_setup`, seeded RNG streams;
+   every point must reach the network in a straight line with 1.5 u of clearance) and the Heist
+   core vein and extraction zones (`MatchSetup::heist`), and builds the `ls_sim::World` at tick 0. `Room::new`
    pregenerates every chunk (paint coverage needs all surface cells).
 3. **Handshake.** The browser (or a bot) connects and sends `Hello` (name, protocol version,
    the hash of its built-in `data/` files, the ship type for the first life). A different data

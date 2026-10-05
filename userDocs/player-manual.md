@@ -39,7 +39,7 @@ stays for the rest of the match. In **Paint the Void**, the only mode in this bu
 race to cover as much of the level as they can in their own colour.
 
 Every world comes from a **share code**, a short text such as
-`LS0B-143C-ZQW8-CCHA-V4M6-8001-8FAA`. The same code always builds the same world.
+`LS0F-143C-ZQW8-CCHA-V4M6-8001-8FAE`. The same code always builds the same world.
 
 ## What you need
 
@@ -625,11 +625,11 @@ A share code describes a whole world: a random seed, the seven world sliders and
 generator version, plus a checksum that catches typos. It always looks like this:
 
 ```
-LS0B-143C-ZQW8-CCHA-V4M6-8001-8FAA
+LS0F-143C-ZQW8-CCHA-V4M6-8001-8FAE
 ```
 
 That's `LS` plus 26 letters and digits, 34 characters with the dashes. Codes of this build's
-world generator (version 2) start with `LS08` to `LS0B`.
+world generator (version 3) start with `LS0C` to `LS0F`.
 
 - **Typing codes:** upper or lower case both work, and dashes and spaces are optional. The letter
   O is read as zero, and I or L as one, so common typos still work.
@@ -670,7 +670,7 @@ server would refuse are listed in red. When the rules are valid, the **Share** s
 - the **rule set code**,
 - an optional **World** field for a share code,
 - an **invite link** with both codes (`…/?world=LS…&rules=LR…`),
-- the **host command** (for example `ls-server --code LS0B-… --ruleset LR8V-…`), which the host
+- the **host command** (for example `ls-server --code LS0F-… --ruleset LR8V-…`), which the host
   runs to play those rules.
 
 The editor remembers the last code you made. Opening it with `?editor=rules&rules=LR…` loads that

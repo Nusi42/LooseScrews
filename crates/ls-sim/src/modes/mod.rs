@@ -20,6 +20,8 @@
 //! | `on_tick` | every tick, last stage (scores, timers, objectives) | [`ModeCtx`] (commands) |
 //! | `end_check` | after `on_tick`: has the match ended (and who won)? | [`ModeRef`] |
 //! | `view` | `World::mode_view`: mode-specific view fields | [`ModeState`] |
+//! | `move_limits` | a ship moves: speed cap scale, boost off (Heist carrier) | the player's replicated mode flags |
+//! | `material_at` | a hook asks for the rock strength (craters): override it in a region | [`ModeState`] + the point |
 //!
 //! A module that does not override a hook gets the generic behaviour of
 //! this file ("generic fallback", like M2's weapon stubs): kills score for
@@ -42,7 +44,7 @@ pub mod the_squeeze;
 use std::collections::BTreeMap;
 use std::fmt::Debug;
 
-use ls_math::Tick;
+use ls_math::{Tick, Vec3};
 
 use crate::behavior::Ctx;
 use crate::mode::{
@@ -52,7 +54,7 @@ use crate::ruleset::{ModeRules, Mutator, PickupKind};
 use crate::ship::{PlayerId, ShipState};
 use crate::terrain::PaintCoverage;
 use crate::world::MatchSetup;
-use crate::WeaponId;
+use crate::{Buttons, InputCmd, ShipTuning, WeaponId};
 
 /// Players joining later than this after the match start spectate until the
 /// next match in modes with lives (unless the module says otherwise).
@@ -176,6 +178,42 @@ pub struct ModeHit {
 /// How a match ended: the winning side, or `None` for a draw.
 pub type Outcome = Option<u8>;
 
+/// Movement limits a mode puts on one ship ([`ModeModule::move_limits`];
+/// the Heist carrier). Clients predicting their own ship apply the same
+/// limits ([`MoveLimits::apply`]) from the replicated player flags.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MoveLimits {
+    /// Scale of the cruise and boost speed caps (1 = unchanged).
+    pub speed_scale: f32,
+    /// The ship cannot boost.
+    pub no_boost: bool,
+}
+
+impl MoveLimits {
+    /// No limits.
+    pub const NONE: MoveLimits = MoveLimits {
+        speed_scale: 1.0,
+        no_boost: false,
+    };
+
+    pub fn is_none(&self) -> bool {
+        *self == MoveLimits::NONE
+    }
+
+    /// The tuning and command a limited ship moves with: both speed caps
+    /// scaled, and without boost the boost button released.
+    pub fn apply(&self, tuning: &ShipTuning, cmd: &InputCmd) -> (ShipTuning, InputCmd) {
+        let mut t = tuning.clone();
+        t.cruise_speed *= self.speed_scale;
+        t.boost_speed *= self.speed_scale;
+        let mut c = *cmd;
+        if self.no_boost {
+            c.buttons.set(Buttons::BOOST, false);
+        }
+        (t, c)
+    }
+}
+
 /// The hooks of one game mode (see the module docs for when each runs).
 pub trait ModeModule: Send + Sync + Debug {
     fn kind(&self) -> ModeKind;
@@ -249,6 +287,28 @@ pub trait ModeModule: Send + Sync + Debug {
     /// Mode-specific fields of the replicated view (the framework filled
     /// the generic ones).
     fn view(&self, _state: &ModeState, _rules: &ModeRules, _view: &mut ModeView) {}
+
+    /// Movement limits of a ship whose player has the mode flags `flags`
+    /// ([`crate::mode::player_flags`]; none by default). Only the replicated
+    /// flags, so a client predicting its own ship gets the same answer.
+    fn move_limits(&self, _rules: &ModeRules, _flags: u8) -> MoveLimits {
+        MoveLimits::NONE
+    }
+
+    /// Rock material id (`ls_math::terrain::MATERIAL_*`) the mode imposes at
+    /// `p` at tick `now`, overriding the terrain's (`None`: the terrain's).
+    /// Read wherever hooks ask for the material (`Ctx::material_at`, and so
+    /// `Ctx::crater`); during the mode's own hooks the state is a
+    /// placeholder, so the override does not apply there.
+    fn material_at(
+        &self,
+        _state: &ModeState,
+        _rules: &ModeRules,
+        _now: u64,
+        _p: Vec3,
+    ) -> Option<u8> {
+        None
+    }
 }
 
 /// One registered mode.

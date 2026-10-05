@@ -736,6 +736,16 @@ impl ClientSession {
                     .set_ship_type(t, self.conv.tuning_for(t).clone());
             }
         }
+        // The mode's movement limits on the own ship (Heist carrier).
+        let own_flags = snap
+            .mode
+            .players
+            .iter()
+            .find(|p| p.id == self.player)
+            .map_or(0, |p| p.flags);
+        self.predictor.set_limits(
+            ls_sim::modes::module(self.rules.mode.kind()).move_limits(&self.rules.mode, own_flags),
+        );
         let reconcile = snap.ships.iter().find(|s| s.id == self.player).map(|own| {
             // The players list carries the full side id (free-for-all
             // sides exceed the two team bits of the flags).

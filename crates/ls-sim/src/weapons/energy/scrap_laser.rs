@@ -103,6 +103,7 @@ pub(crate) mod testkit {
             ],
             pickup_points: vec![],
             instability: 0,
+            heist: None,
         }
     }
 

@@ -25,13 +25,17 @@
 //!    between trace samples), so the last stretch out of a spawn can be as
 //!    narrow as about 2.7 u across: enough for a Hauler (radius 0.65).
 //!
+//! 4. The Heist site (core vein and extraction zones) comes from the
+//!    generator ([`heist_level`]); the sweep checks that the vein and both
+//!    zones reach the network like spawns do.
+//!
 //! Every slider combination gets a valid setup (see the sweep test).
 
 use ls_math::rng::mix64;
 use ls_math::{Aabb, Pcg32, Quat, Vec3};
 use ls_sim::{
-    GadgetTable, GameData, MatchSetup, RuleSet, ShipTable, SpawnPoint, WeaponTable, World,
-    WorldConfig,
+    GadgetTable, GameData, HeistLevel, MatchSetup, RuleSet, ShipTable, SpawnPoint, WeaponTable,
+    World, WorldConfig,
 };
 use ls_worldgen::{Generator, RegionSampler, ShareCode};
 
@@ -281,6 +285,19 @@ pub fn match_setup(
         spawns,
         pickup_points: pickups,
         instability: code.sliders.instability,
+        heist: heist_level(&gen),
+    })
+}
+
+/// The generator's Heist site (core vein, extraction zones) for the
+/// simulation (`MatchSetup::heist`; every rule set gets it, only Heist
+/// reads it).
+pub fn heist_level(gen: &Generator) -> Option<HeistLevel> {
+    gen.heist().map(|h| HeistLevel {
+        core: h.core,
+        knot_radius: h.knot_radius,
+        chamber_radius: h.chamber_radius,
+        extraction: h.extraction.map(|z| (z.pos, z.radius)),
     })
 }
 
@@ -474,6 +491,18 @@ mod tests {
                 "{c}: {p:?} does not reach the network"
             );
         }
+        // The Heist core vein (its access point in the chamber) and both
+        // extraction zones reach the network like spawns do, and the knot
+        // holding the core is rock.
+        let site = gen.heist().expect("every level has a Heist site");
+        assert_eq!(s.heist, heist_level(&gen), "{c}");
+        for p in std::iter::once(site.access).chain(site.extraction.map(|z| z.pos)) {
+            assert!(
+                gen.reaches_network(p, CONNECT_MARGIN, LINK_TRIES),
+                "{c}: Heist point {p:?} does not reach the network"
+            );
+        }
+        assert!(t.sdf(site.core) < 0.0, "{c}: the core is not in rock");
         assert!(!s.pickup_points.is_empty(), "{c}: no pickup points");
         assert!(s.pickup_points.len() <= PICKUP_POINTS);
         for (i, p) in s.pickup_points.iter().enumerate() {
@@ -573,6 +602,14 @@ mod tests {
         let net = gen.network();
         for hub in net.low_x_hubs().iter().chain(net.high_x_hubs()) {
             assert_eq!(grid.nearest_component(*hub, 2.0), Some(main), "{c}");
+        }
+        let site = gen.heist().expect("Heist site");
+        for p in std::iter::once(site.access).chain(site.extraction.map(|z| z.pos)) {
+            assert_eq!(
+                grid.nearest_component(p, 2.0),
+                Some(main),
+                "{c}: Heist {p:?}"
+            );
         }
         for p in s
             .spawns

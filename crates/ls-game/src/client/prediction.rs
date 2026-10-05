@@ -18,7 +18,7 @@ use std::collections::VecDeque;
 use ls_math::terrain::TerrainQuery;
 use ls_math::{Quat, Vec3};
 use ls_net::NetShip;
-use ls_sim::{simulate_movement, InputCmd, MoveLimits, ShipState, ShipTuning, ShipType};
+use ls_sim::{simulate_movement, InputCmd, MoodView, MoveLimits, ShipState, ShipTuning, ShipType};
 
 use crate::convert::{rotation_error, NetConv};
 
@@ -55,6 +55,32 @@ impl PredictionConfig {
             snap_distance: 4.0,
             smoothing_keep_per_tick: 0.8,
             history_ticks: 256,
+        }
+    }
+}
+
+/// The level around the own ship that the simulation's movement reads
+/// besides the terrain (M4): the comedy director's view (event movement
+/// effects: impulses, forces, plane locks) and the level's up (horizon
+/// assist). All of it is replicated (`NetMoodView`), so the predictor
+/// moves the ship exactly as `World::step` does.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PredictEnv {
+    /// Match seed (`ls_game::setup::match_seed`): event effects are pure
+    /// functions of the view, the seed and the tick.
+    pub seed: u64,
+    /// The director's view (`None`: no event running, nothing to apply).
+    pub mood: Option<MoodView>,
+    /// The level's up (`World::up`).
+    pub up: Vec3,
+}
+
+impl Default for PredictEnv {
+    fn default() -> Self {
+        PredictEnv {
+            seed: 0,
+            mood: None,
+            up: Vec3::Y,
         }
     }
 }
@@ -114,6 +140,8 @@ pub struct Predictor {
     /// The mode's movement limits on the local ship (Heist carrier), from
     /// the replicated mode flags.
     limits: MoveLimits,
+    /// Mood, up and wells (M4).
+    env: PredictEnv,
 }
 
 impl Predictor {
@@ -130,7 +158,32 @@ impl Predictor {
             spawn_poses: Vec::new(),
             freeze_after: None,
             limits: MoveLimits::NONE,
+            env: PredictEnv::default(),
         }
+    }
+
+    /// The match seed event effects are derived from (set once per match).
+    pub fn set_seed(&mut self, seed: u64) {
+        self.env.seed = seed;
+    }
+
+    /// The comedy director's replicated view and the level's up (M4,
+    /// protocol 6 `NetMoodView`). Applies to the ticks predicted or replayed
+    /// from now on; the next reconciliation replays the ticks after the
+    /// snapshot with it (the server's state at the snapshot already has
+    /// the effect of the earlier ticks).
+    pub fn set_mood(&mut self, mood: &MoodView, up: Vec3) {
+        self.env.mood = mood.event.is_some().then_some(*mood);
+        self.env.up = if up.is_finite() && up != Vec3::ZERO {
+            up
+        } else {
+            Vec3::Y
+        };
+    }
+
+    /// Mood, up and wells the prediction applies.
+    pub fn env(&self) -> &PredictEnv {
+        &self.env
     }
 
     /// The mode's movement limits for the local ship (`ModeModule::move_limits`
@@ -270,6 +323,7 @@ impl Predictor {
             &self.tuning,
             self.limits,
             self.freeze_after,
+            &self.env,
             terrain,
         );
     }
@@ -448,8 +502,9 @@ impl Predictor {
         let tuning = self.tuning.clone();
         let freeze = self.freeze_after;
         let limits = self.limits;
+        let env = &self.env;
         for e in self.entries.iter_mut() {
-            step_ship(&mut s, &e.cmd, &tuning, limits, freeze, terrain);
+            step_ship(&mut s, &e.cmd, &tuning, limits, freeze, env, terrain);
             e.state = Some(s.clone());
         }
     }
@@ -457,22 +512,37 @@ impl Predictor {
 
 /// One predicted tick: dead ships do not move (as in `World::step`; the
 /// server respawns them), nothing moves after the match ended, and the
-/// mode's limits apply as on the server.
+/// mode's limits, the running event's movement effects, the wells and the
+/// level's up apply as on the server (the input for tick `k` is the
+/// server step that produces tick `k`).
 fn step_ship<T: TerrainQuery + ?Sized>(
     s: &mut ShipState,
     cmd: &InputCmd,
     tuning: &ShipTuning,
     limits: MoveLimits,
     freeze_after: Option<u64>,
+    env: &PredictEnv,
     terrain: &T,
 ) {
-    if s.alive && freeze_after.is_none_or(|f| cmd.tick <= f) {
-        if limits.is_none() {
-            simulate_movement(s, cmd, tuning, terrain);
-        } else {
-            let (t, c) = limits.apply(tuning, cmd);
-            simulate_movement(s, &c, &t, terrain);
-        }
+    if !(s.alive && freeze_after.is_none_or(|f| cmd.tick <= f)) {
+        return;
+    }
+    let now = cmd.tick;
+    let fx = env.mood.as_ref().map_or(ls_sim::MoveEffects::NONE, |m| {
+        ls_sim::director::move_effects(m, env.seed, now, s)
+    });
+    let pos_before = s.pos;
+    if !fx.is_none() {
+        ls_sim::director::apply_move_effects_before(s, &fx);
+    }
+    if limits.is_none() {
+        simulate_movement(s, cmd, tuning, terrain);
+    } else {
+        let (t, c) = limits.apply(tuning, cmd);
+        simulate_movement(s, &c, &t, terrain);
+    }
+    if !fx.is_none() {
+        ls_sim::director::apply_move_effects_after(s, &fx, pos_before);
     }
 }
 

@@ -245,9 +245,17 @@ pub fn entity_kind_names() -> Vec<String> {
 /// Id of a comedy event (`ls_sim::EventKind` index, `data/events/<id>.ron`),
 /// "" for none or unknown.
 pub fn event_id(event: u8) -> String {
-    // Filled from A3's `EventKind` once merged.
-    let _ = event;
-    String::new()
+    ls_sim::EventKind::from_index(event).map_or_else(String::new, |k| k.id().to_string())
+}
+
+/// Event ids in `EventKind` order (`data/events/<id>.ron`; the `event`
+/// index of the mood view indexes this list).
+#[wasm_bindgen(js_name = eventIds)]
+pub fn event_ids() -> Vec<String> {
+    ls_sim::EventKind::ALL
+        .iter()
+        .map(|k| k.id().to_string())
+        .collect()
 }
 
 /// Lower camel case name of an entity kind (the web client's keys).

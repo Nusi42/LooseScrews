@@ -195,6 +195,7 @@ impl ClientSession {
         let setup = match_setup(&code, &rules, &GameTerrain::from_code(&code)?)?;
         let mut predictor = Predictor::new(ships.get(ship_type).clone(), config);
         predictor.set_ship_type(ship_type, ships.get(ship_type).clone());
+        predictor.set_seed(crate::setup::match_seed(&code));
         predictor.set_spawn_poses(
             setup
                 .spawns
@@ -782,6 +783,11 @@ impl ClientSession {
             .map_or(0, |p| p.flags);
         self.predictor.set_limits(
             ls_sim::modes::module(self.rules.mode.kind()).move_limits(&self.rules.mode, own_flags),
+        );
+        // Event movement effects and the level's up (protocol 6 mood view).
+        self.predictor.set_mood(
+            &crate::mode::mood_from_net(&snap.mode.mood),
+            snap.mode.mood.up,
         );
         let reconcile = snap.ships.iter().find(|s| s.id == self.player).map(|own| {
             // The players list carries the full side id (free-for-all

@@ -392,6 +392,19 @@ pub fn events_to_net(
                 pos: c.pos,
                 value: c.value,
             }),
+            // A comedy event's announcement (protocol 6): banner, sting and
+            // announcer line on every client at once (the mood view carries
+            // the same state for late joiners).
+            Event::Director(ls_sim::DirectorEvent::Announced { kind, target, .. }) => {
+                out.push(NetEvent::Cue {
+                    tick,
+                    kind: ls_sim::CueKind::EventAnnounce as u8,
+                    source: NO_SHIP,
+                    target: target.and_then(&wire_id).unwrap_or(NO_SHIP),
+                    pos: Vec3::ZERO,
+                    value: kind.index() as u16,
+                })
+            }
             _ => {}
         }
     }

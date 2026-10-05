@@ -16,6 +16,7 @@ import { createReadStream, existsSync, mkdirSync, statSync, writeFileSync } from
 import { createServer } from "node:http";
 import { dirname, extname, join, normalize, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { fakePointerLock } from "./fake-pointer-lock.mjs";
 import puppeteer from "puppeteer-core";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -121,6 +122,7 @@ async function main() {
       for (const [name, query] of SHOTS) {
         if (variant === "before" && AFTER_ONLY.has(name)) continue;
         const page = await browser.newPage();
+        await page.evaluateOnNewDocument(fakePointerLock); // never lock the OS cursor
         page.on("console", (m) => {
           if (m.type() === "error" || /WebGPU/.test(m.text())) errors.push(`${variant}/${name}: ${m.text()}`);
         });
@@ -154,6 +156,7 @@ async function main() {
     try {
       for (const variant of ["before", "after"]) {
         const page = await b2.newPage();
+        await page.evaluateOnNewDocument(fakePointerLock); // never lock the OS cursor
         page.on("pageerror", (e) => errors.push(`bench/${variant}: ${e.message}`));
         await page.goto(`${base2}/?view=ships&bench=1${variant === "before" ? "&models=legacy" : ""}`, { waitUntil: "load" });
         await page.waitForFunction(() => document.body.dataset.showcase === "ready", { timeout: 120_000 }).catch(() => errors.push(`bench/${variant}: never ready`));

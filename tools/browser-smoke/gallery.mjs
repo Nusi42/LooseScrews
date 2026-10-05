@@ -18,8 +18,8 @@
 //   --size <WxH>          viewport in CSS pixels at scale 1 [1920x1080]
 //   --browser <path>      Chrome/Edge executable [$LS_BROWSER, else searched]
 //   --mode auto|headless|headful
-//                         auto = headless, headful when headless has no
-//                         WebGPU adapter [auto]
+//                         auto = headless (no automatic headful fallback:
+//                         a visible window takes the desktop mouse) [auto]
 //   --power high|low      GPU on two-GPU machines (low = integrated, ?gpu=low-power) [high]
 //   --quality <level>     render preset high|medium|low (?quality=; no automatic pick) [high]
 //   --grade <preset>      colour grade from post.ts GRADE_PRESETS (?grade=) [none]
@@ -40,6 +40,7 @@ import { createReadStream, existsSync, mkdirSync, readdirSync, readFileSync, sta
 import { createServer } from "node:http";
 import { dirname, extname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { fakePointerLock } from "./fake-pointer-lock.mjs";
 import { execFileSync } from "node:child_process";
 
 import { assertWorkFolder } from "../lib/work-folder.mjs";
@@ -340,9 +341,10 @@ async function main() {
   };
   try {
     let adapter = null;
-    for (const headless of opts.mode === "auto" ? [true, false] : [opts.mode === "headless"]) {
+    for (const headless of [opts.mode !== "headful"] /* no automatic headful fallback: a visible window takes the desktop mouse */) {
       browser = await launch(headless);
       const page = await browser.newPage();
+      await page.evaluateOnNewDocument(fakePointerLock); // never lock the OS cursor
       await page.goto(`${base}/__probe`, { waitUntil: "load" });
       adapter = await page.evaluate(async (pref) => {
         if (!navigator.gpu) return null;
@@ -372,6 +374,7 @@ async function main() {
 
     for (const id of opts.scenes) {
       const page = await browser.newPage();
+      await page.evaluateOnNewDocument(fakePointerLock); // never lock the OS cursor
       await page.setViewport({ width: opts.width, height: opts.height, deviceScaleFactor: 1 });
       const problems = [];
       page.on("console", (m) => {

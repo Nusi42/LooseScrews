@@ -66,6 +66,10 @@ pub struct BotStats {
     pub hits_dealt: u32,
     pub hits_taken: u32,
     pub matches_over: u32,
+    /// `Ready` presses in the lobby (one per warm-up, plus retries).
+    pub ready_presses: u32,
+    /// Duel challenges accepted (each moves the bot into a duel room).
+    pub duels: u32,
 
     /// Undecodable or unexpected packets, rejected handshakes (other than a
     /// full server), invalid `Welcome` data.
@@ -208,6 +212,8 @@ pub fn summary(stats: &[BotStats], elapsed_secs: f64, policy: DisconnectPolicy) 
         total.hits_dealt += s.hits_dealt;
         total.protocol_errors += s.protocol_errors;
         total.desyncs += s.desyncs;
+        total.ready_presses += s.ready_presses;
+        total.duels += s.duels;
         total.behavior.add(&s.behavior);
         for (k, u) in &s.weapons {
             let t = total.weapon_mut(k);
@@ -265,6 +271,15 @@ pub fn summary(stats: &[BotStats], elapsed_secs: f64, policy: DisconnectPolicy) 
         b.secondary_triggers,
         b.gadget_presses,
         b.colour_presses
+    );
+    let _ = writeln!(
+        out,
+        "        modes: objective ticks {}, spectate ticks {}, dig shots {}; ready presses {}, duels {}",
+        b.objective_ticks,
+        b.spectate_ticks,
+        b.dig_shots,
+        total.ready_presses,
+        total.duels
     );
     let fired = total.weapons_fired().count();
     let _ = writeln!(

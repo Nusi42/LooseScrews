@@ -260,7 +260,7 @@ impl Brain {
         let target = p
             .contacts
             .iter()
-            .filter(|c| c.team != p.team)
+            .filter(|c| p.is_hostile(c))
             .min_by(|a, b| {
                 a.pos
                     .distance_squared(m.pos)
@@ -552,7 +552,7 @@ impl Brain {
         let enemies: Vec<Contact> = p
             .contacts
             .iter()
-            .filter(|c| c.team != p.team)
+            .filter(|c| p.is_hostile(c))
             .copied()
             .collect();
 
@@ -775,7 +775,7 @@ impl Brain {
         let dir = p.vel / speed;
         p.contacts
             .iter()
-            .filter(|c| c.team != p.team)
+            .filter(|c| p.is_hostile(c))
             .find(|c| {
                 let rel = p.pos - c.pos;
                 let d = rel.length();

@@ -307,6 +307,22 @@ fn fallback_teams(rules: &mut RuleSet, players: usize) {
     }
 }
 
+/// Below this many players a team Heist plays its free-for-all variant
+/// (plan §3.2: "Free-for-all variant for fewer than 4 players").
+pub const HEIST_TEAM_MIN_PLAYERS: usize = 4;
+
+/// Heist with teams and fewer than [`HEIST_TEAM_MIN_PLAYERS`] players plays
+/// free-for-all (every zone delivers for everyone); other rules, and an
+/// empty server (players unknown), stay as they are.
+fn heist_variant(rules: &mut RuleSet, players: usize) {
+    if rules.mode.kind() == ls_sim::ModeKind::Heist
+        && rules.mode.teams() >= 2
+        && (1..HEIST_TEAM_MIN_PLAYERS).contains(&players)
+    {
+        rules.mode.set_field("teams", 0.0);
+    }
+}
+
 /// Starts a room's sim thread. `ready` receives the first match's info once
 /// its room is built (or the error if it cannot be).
 pub fn spawn(
@@ -689,6 +705,7 @@ impl Sim {
         if fallback {
             fallback_teams(&mut cfg.rules, players);
         }
+        heist_variant(&mut cfg.rules, players);
         Planned::new(index, cfg, fallback)
     }
 
@@ -2015,6 +2032,21 @@ mod tests {
         assert_eq!(rules.mode.teams(), 2);
         let mut ptv = RuleSet::paint_the_void();
         fallback_teams(&mut ptv, 1);
+        assert_eq!(ptv, RuleSet::paint_the_void(), "other modes stay");
+    }
+
+    #[test]
+    fn heist_plays_free_for_all_below_four_players() {
+        let heist = RuleSet::default_for(ls_sim::ModeKind::Heist);
+        assert_eq!(heist.mode.teams(), 2);
+        for (players, teams) in [(0, 2), (1, 0), (2, 0), (3, 0), (4, 2), (8, 2)] {
+            let mut rules = heist.clone();
+            heist_variant(&mut rules, players);
+            assert_eq!(rules.mode.teams(), teams, "{players} players");
+            rules.resolve(&ls_sim::WeaponTable::builtin()).unwrap();
+        }
+        let mut ptv = RuleSet::paint_the_void();
+        heist_variant(&mut ptv, 2);
         assert_eq!(ptv, RuleSet::paint_the_void(), "other modes stay");
     }
 

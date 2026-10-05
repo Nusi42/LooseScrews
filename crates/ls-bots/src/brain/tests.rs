@@ -50,6 +50,7 @@ fn perception(pos: Vec3) -> Perception {
         projectiles: Vec::new(),
         pickups: Vec::new(),
         scrap_sources: Vec::new(),
+        mode: ModeSense::default(),
     }
 }
 
@@ -885,4 +886,198 @@ fn ship_type_switches_the_tuning() {
     let mut c = BrainCounters::default();
     b.think(&p, &t, &mut c);
     assert_eq!(b.mode(), Mode::Scavenge);
+}
+
+// ----- mode objectives (M3 C2) -------------------------------------------------
+
+fn enemy_at(id: u8, pos: Vec3) -> Contact {
+    Contact {
+        id,
+        team: id,
+        pos,
+        vel: Vec3::ZERO,
+    }
+}
+
+fn hot_reactor(holder: u8) -> ModeSense {
+    ModeSense {
+        kind: Some(ls_game::ls_sim::ModeKind::HotReactor),
+        running: true,
+        reactor: Some(ReactorSense {
+            holder: Some(holder),
+            radius: 15.0,
+        }),
+        ..ModeSense::default()
+    }
+}
+
+#[test]
+fn eliminated_bot_spectates() {
+    let t = room();
+    let mut b = brain(&t, vec![]);
+    let mut p = perception(Vec3::ZERO);
+    p.alive = false;
+    p.mode.out = true;
+    let mut c = BrainCounters::default();
+    let cmd = b.think(&p, &t, &mut c);
+    assert_eq!(b.mode(), Mode::Spectate);
+    assert_eq!(cmd.thrust, Vec3::ZERO);
+    assert_eq!((c.spectate_ticks, c.dead_ticks), (1, 0));
+}
+
+#[test]
+fn hot_reactor_holder_is_never_shot_and_is_avoided() {
+    let t = room();
+    let mut b = brain(&t, vec![]);
+    let mut p = perception(Vec3::ZERO);
+    p.team = 0;
+    p.mode = hot_reactor(3);
+    // The holder 10 u to the +X, another enemy further away to the -Z.
+    p.contacts = vec![
+        enemy_at(3, Vec3::new(10.0, 0.0, 0.0)),
+        enemy_at(4, Vec3::new(0.0, 0.0, -25.0)),
+    ];
+    let mut c = BrainCounters::default();
+    let cmd = b.think(&p, &t, &mut c);
+    assert_eq!(b.mode(), Mode::Objective);
+    assert_eq!(b.target(), Some(4), "the holder is no target");
+    assert!(cmd.thrust.x < 0.0, "away from the holder: {cmd:?}");
+    assert!(!p.is_hostile(&p.contacts[0]));
+    assert!(p.is_hostile(&p.contacts[1]));
+    // Far from the holder: business as usual.
+    p.contacts[0].pos = Vec3::new(60.0, 0.0, 0.0);
+    p.tick += 10;
+    b.think(&p, &t, &mut c);
+    assert_eq!(b.mode(), Mode::Combat);
+}
+
+#[test]
+fn hot_reactor_holder_rams_the_nearest_ship() {
+    let t = room();
+    let mut b = brain(&t, vec![]);
+    let mut p = perception(Vec3::ZERO);
+    p.id = 0;
+    p.mode = hot_reactor(0);
+    p.contacts = vec![
+        enemy_at(3, Vec3::new(8.0, 0.0, 0.0)),
+        enemy_at(4, Vec3::new(0.0, 0.0, -30.0)),
+    ];
+    let mut c = BrainCounters::default();
+    let cmd = b.think(&p, &t, &mut c);
+    assert_eq!(b.mode(), Mode::Objective);
+    assert!(
+        cmd.thrust.x > 0.9,
+        "full thrust at the nearest ship: {cmd:?}"
+    );
+    assert!(p.is_hostile(&p.contacts[0]), "the holder may shoot anyone");
+}
+
+#[test]
+fn squeeze_bot_returns_to_the_safe_zone() {
+    let t = room();
+    let mut b = brain(&t, vec![]);
+    let mut p = perception(Vec3::new(30.0, 0.0, 0.0));
+    p.mode = ModeSense {
+        kind: Some(ls_game::ls_sim::ModeKind::TheSqueeze),
+        running: true,
+        zone: Some(ZoneSense {
+            centre: Vec3::new(-20.0, 0.0, 0.0),
+            radius: 40.0,
+        }),
+        ..ModeSense::default()
+    };
+    let mut c = BrainCounters::default();
+    let cmd = b.think(&p, &t, &mut c);
+    assert_eq!(b.mode(), Mode::Objective);
+    assert!(cmd.thrust.x < -0.5, "towards the centre: {cmd:?}");
+    assert_eq!(c.objective_ticks, 1);
+    // Well inside: free to wander, and only to points inside the zone.
+    p.pos = Vec3::new(-20.0, 0.0, 0.0);
+    p.tick += 1;
+    b.think(&p, &t, &mut c);
+    assert_ne!(b.mode(), Mode::Objective);
+}
+
+#[test]
+fn heist_carrier_flies_home_and_the_enemy_carrier_is_the_target() {
+    let t = room();
+    let mut b = brain(&t, vec![]);
+    let mut p = perception(Vec3::ZERO);
+    p.id = 2;
+    p.team = 0;
+    p.mode = ModeSense {
+        kind: Some(ls_game::ls_sim::ModeKind::Heist),
+        running: true,
+        teams: 2,
+        carrier: true,
+        core: Some(CoreSense {
+            pos: Vec3::ZERO,
+            state: ls_game::ls_sim::modes::heist::core_state::CARRIED,
+            holder: Some(2),
+            holder_side: Some(0),
+        }),
+        extraction: vec![
+            ExtractionSense {
+                pos: Vec3::new(0.0, 0.0, 30.0),
+                radius: 6.0,
+                team: Some(0),
+            },
+            ExtractionSense {
+                pos: Vec3::new(0.0, 0.0, -30.0),
+                radius: 6.0,
+                team: Some(1),
+            },
+        ],
+        ..ModeSense::default()
+    };
+    let mut c = BrainCounters::default();
+    let cmd = b.think(&p, &t, &mut c);
+    assert_eq!(b.mode(), Mode::Objective);
+    assert!(cmd.thrust.z > 0.5, "to the own zone (+Z): {cmd:?}");
+    assert!(
+        !cmd.buttons.contains(Buttons::BOOST),
+        "carriers cannot boost"
+    );
+
+    // Another bot: the enemy carrier is preferred over a closer enemy.
+    let mut b = brain(&t, vec![]);
+    p.id = 5;
+    p.team = 1;
+    p.mode.carrier = false;
+    p.contacts = vec![
+        Contact {
+            id: 2,
+            team: 0,
+            pos: Vec3::new(0.0, 0.0, -30.0),
+            vel: Vec3::ZERO,
+        },
+        Contact {
+            id: 6,
+            team: 0,
+            pos: Vec3::new(12.0, 0.0, 0.0),
+            vel: Vec3::ZERO,
+        },
+    ];
+    b.think(&p, &t, &mut c);
+    assert_eq!(b.target(), Some(2));
+}
+
+#[test]
+fn last_color_standing_hunts_the_most_colourful() {
+    let t = room();
+    let mut b = brain(&t, vec![]);
+    let mut p = perception(Vec3::ZERO);
+    p.mode = ModeSense {
+        kind: Some(ls_game::ls_sim::ModeKind::LastColorStanding),
+        running: true,
+        meters: vec![(3, 32), (4, 100)],
+        ..ModeSense::default()
+    };
+    p.contacts = vec![
+        enemy_at(3, Vec3::new(0.0, 0.0, -20.0)),
+        enemy_at(4, Vec3::new(0.0, 0.0, 28.0)),
+    ];
+    let mut c = BrainCounters::default();
+    b.think(&p, &t, &mut c);
+    assert_eq!(b.target(), Some(4), "the colourful one, though further");
 }

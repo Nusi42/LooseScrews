@@ -101,7 +101,9 @@ Endpoints on the `--bind` address (TCP) and the `--wt-bind` address (UDP, same p
   free-for-all below), else the next entry. Without `--playlist`: `--ruleset` plays that rule
   set on every match (one entry, one world), neither flag plays the default rotation (Team
   Brawl, The Squeeze, Paint the Void, Hot Reactor, Heist, Last Color Standing: the built-in
-  rule sets that exist; random worlds, or `--code`'s world).
+  rule sets that exist; random worlds, or `--code`'s world). A Heist entry with teams plays
+  free-for-all (`teams: 0`) when it is planned for 1-3 players (`sim::heist_variant`, plan
+  §3.2; with 0 players, i.e. nobody connected yet, it keeps its teams).
 - **Swaps**: the next room is built on an `ls-build` worker thread (`Room::new`, 0.6-1.6 s in
   release) while the current room keeps running, so joins never wait for a build: they join the
   current room (also during Results) and move with everyone else. At the swap every connected
@@ -357,6 +359,44 @@ on the way, with a break of `hunt_break_secs` (8 s) after `hunt_secs` (90 s) wit
 or at the end of a route that cannot reach it; otherwise **paint and wander** (cycling the
 paint colour now and then). `BrainCounters::hunt_ticks` counts ticks in Hunt mode.
 
+Mode objectives (`src/brain/objective.rs`, M3 C2), from the replicated mode state
+(`ModeSense::from_mode`: own player flags, objective markers, colour meters):
+
+- **Spectate**: an eliminated player (or a late joiner of an elimination mode) has no ship;
+  the brain idles in `Mode::Spectate` (`spectate_ticks`) until the next match.
+- **The Squeeze**: the zone to keep is the `NEXT_ZONE` once announced (inside the current one,
+  so safe through the whole close), else the `SAFE_ZONE`. Outside its comfort radius
+  (radius minus a quarter, 4-25 u) the bot flies (boosting) back until it is within half of
+  it, right after Tectonic fleeing and before scavenging or fighting; wander points and pickups
+  outside the zone are ignored.
+- **Heist**: the carrier flies to its team's extraction zone (the nearest in free-for-all)
+  before anything else, without boost, shooting on the way; a free or dropped core is fetched
+  by touch; an embedded core is dug out with crater ordnance (Bolt Rocket, then Quicksilver,
+  Heavy Rocket) fired at the core from 6.5 u when the ray hits rock within 4 u of it. About half
+  the bots are miners (`RNG_STREAM_ROLE`) that head for the core even under fire; the others dig
+  when no enemy is in sight; at the core everyone keeps digging. The enemy carrier counts as
+  much closer when choosing targets and hunts; team mates escort their own carrier.
+- **Hot Reactor**: the holder rams the nearest ship (straight at it with boost, wall clearance
+  lowered); everyone else never targets the holder (`Perception::is_hostile`: a hit would pass
+  it to the shooter) and flies away from it while within fuse radius + 12 u.
+- **Last Color Standing**: target and hunt distances are weighted by colour
+  (`Perception::target_weight`: x2 at 0 colour, x1 at 100), so the most colourful go first.
+
+`BrainConfig::objectives = false` plays every mode like a deathmatch (comparisons).
+Lobby: while the `LobbyState` (warm-up or countdown) lists the bot as not ready, `BotCore`
+sends `Ready { ready: true }` (again after 1 s if the lobby still says not ready;
+`BotStats::ready_presses`).
+
+Server list and duels (`src/social.rs`): `--directory <url>` asks `ls-directory`
+(`DirectoryClient::list` with this build's protocol and data hash) before every connection
+and joins the fullest server that still has a free slot. `--accept-duels` registers a presence
+on the game server (`POST /api/presence` every 2 s, id `bot-<name>-<hash>`), so the bot is in the
+roster; every `duel` note in its inbox (and every relayed `duel` invite in the directory when
+`--directory` is given) is accepted (`POST /api/duel/answer` on the challenger's server). The
+runner then leaves (`Disconnect`), joins the duel room with `Hello::room`, plays until the duel
+match is over (`MatchOver`) and returns to its server (`BotStats::duels`). `--room <code>` joins
+a private room directly.
+
 Arsenal use (`src/arsenal.rs`): every weapon of the match's table is a `Gun` (ballistics,
 cost, slot, charge) with a `Role` from its data id (`Role::Other` for unknown ids: fired like
 a laser or a rocket). Primaries are picked by distance band (lasers mid range, kinetic long
@@ -399,6 +439,16 @@ Global navigation (`src/nav.rs`, M1 issue A):
   When the distance left stops shrinking for 2 s while it is followed every tick, the link
   ahead is blocked and the route re-planned; a pause in following (combat orbit, holding still)
   restarts the stall clock instead, and blocked links are re-tested after 30 s.
+
+Mode tests (release only): `tests/mode_matches.rs` plays every mode's built-in rule set,
+unchanged, with 8 bots to a result (0 desyncs, 0 protocol errors), about 60 s for all seven
+tests: Team Brawl to the kill target, The Squeeze to the last ship flying (plus an unarmed
+Squeeze in which only the walls decide), Heist with deliveries, Hot Reactor with passes besides
+detonations, Last Color Standing decided by kills before the stalemate drain, Paint the Void on
+time; eliminated bots spectate. `LS_BOTS_NO_OBJECTIVES=1` plays them with the objective layer
+off and only prints the measurements. `tests/social.rs` runs bots against a real server: Ready
+starts the countdown long before a 10-minute warm-up ends, `--directory` bots find their server,
+and an `--accept-duels` bot plays a challenger's duel and comes back.
 
 Tests: `tests/nav_sweep.rs` (release only, about 20 s): three bots on the soak world
 `LS0C-PNEY-V86Z-VXZM-K4M6-8001-8F8J` and nine random worlds must hit each other within 60 s,

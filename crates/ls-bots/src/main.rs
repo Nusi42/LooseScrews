@@ -2,7 +2,15 @@
 //!
 //! ```text
 //! ls-bots --server ws://127.0.0.1:7777/ws --count 7 [--duration 600] [--transport ws|wt]
+//! ls-bots --directory http://127.0.0.1:7780 --count 4 [--accept-duels]
+//! ls-bots --server ws://127.0.0.1:7777/ws --room R-XXXXXX --count 2
 //! ```
+//!
+//! `--directory` picks the server from an `ls-directory` (this build's
+//! servers, the fullest with room) before every connection. `--accept-duels`
+//! makes the bots accept duel challenges: they register a presence on the
+//! server (so they are in its roster), play the duel in the challenger's
+//! private room and come back afterwards. In the lobby the bots press Ready.
 //!
 //! `--transport wt` plays over WebTransport: the certificate hash and UDP
 //! port come from `GET /cert-hash` on the host and port of `--server`.
@@ -57,6 +65,16 @@ struct Args {
     /// that restart the server on purpose.
     #[arg(long)]
     allow_disconnects: bool,
+    /// Pick the server from this directory (`http://host:port`) instead of
+    /// `--server`.
+    #[arg(long)]
+    directory: Option<String>,
+    /// Private room code to join (`R-...`).
+    #[arg(long)]
+    room: Option<String>,
+    /// Accept duel challenges (and play them in the challenger's room).
+    #[arg(long)]
+    accept_duels: bool,
     /// Log debug output.
     #[arg(long)]
     verbose: bool,
@@ -79,7 +97,7 @@ fn main() -> ExitCode {
         .map(|d| start + Duration::from_secs_f64(d));
     let stop = StopSignal::new(deadline);
     tracing::info!(
-        server = %args.server,
+        server = %args.directory.as_deref().unwrap_or(&args.server),
         transport = args.transport.name(),
         count = args.count,
         duration = ?args.duration,
@@ -97,6 +115,9 @@ fn main() -> ExitCode {
         cfg.start_delay = Duration::from_millis(args.stagger_ms * u64::from(i));
         cfg.reconnect = !args.no_reconnect;
         cfg.transport = args.transport;
+        cfg.directory = args.directory.clone();
+        cfg.room = args.room.clone();
+        cfg.accept_duels = args.accept_duels;
         let stop = stop.clone();
         let spawned = thread::Builder::new()
             .name(name.clone())

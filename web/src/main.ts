@@ -30,6 +30,10 @@
 // VQ1 (game/scaleCues.ts): the horizontal FOV setting with a boost kick, the
 // cockpit hull frame (renderer/hullFrame.ts) and the fit ring around the
 // crosshair (ui/fitRing.ts, probes in ls-wasm).
+// First impression (attract/): a live flythrough behind the start screen and
+// the hulls turning in the ship picker (StartIntro, which also creates the
+// renderer the game then uses), and in the lobby a cinematic camera through
+// the next level while the mouse is free (LobbyCinematic).
 
 import { InputController } from "./input/input.ts";
 import { GpuUnavailableError } from "./renderer/gpu.ts";
@@ -72,6 +76,9 @@ import { emptyInput } from "./input/input.ts";
 import { showLoading, showStartScreen, type StartOptions } from "./ui/startScreen.ts";
 import { sessionView, startSocial } from "./ui/party.ts";
 import { loadWasm } from "./wasm/load.ts";
+import { StartIntro, wantsBackdrop } from "./attract/intro.ts";
+import { LobbyCinematic } from "./attract/lobby.ts";
+import { PanelBay } from "./attract/shipBay.ts";
 import { runGallery, wantsGallery } from "./gallery/gallery.ts";
 import { addRuleEditorLink, showRuleEditor, wantsRuleEditor } from "./rules/editor.ts";
 import { showShowcase, wantsShowcase } from "./renderer/models/showcase.ts";
@@ -138,19 +145,25 @@ async function start(): Promise<void> {
   // Invite links, the server list, parties and duels (ui/party.ts).
   const social = await startSocial(ui, api, location);
   const editorLink = addRuleEditorLink(ui, location.href);
-  const options = await showStartScreen(ui, (code) => {
-    const info = api.checkShareCode(code);
-    try {
-      return info.ok ? { ok: true, code: info.code } : { ok: false, error: info.error };
-    } finally {
-      info.free();
-    }
-  });
+  // The renderer is created behind the interactive start screen, which it decorates (FI).
+  const intro = new StartIntro(canvas, ui, api, wantsBackdrop(location));
+  const options = await showStartScreen(
+    ui,
+    (code) => {
+      const info = api.checkShareCode(code);
+      try {
+        return info.ok ? { ok: true, code: info.code } : { ok: false, error: info.error };
+      } finally {
+        info.free();
+      }
+    },
+    intro.hooks,
+  );
   editorLink.remove();
 
   let renderer: Renderer;
   try {
-    renderer = await Renderer.create(canvas);
+    renderer = await intro.renderer();
   } catch (err) {
     if (err instanceof GpuUnavailableError) {
       showErrorScreen(ui, "WebGPU unavailable", err.message, err.reason);
@@ -191,11 +204,13 @@ async function start(): Promise<void> {
         : GameSession.practice(api, options.shareCode, prefs.horizonAssist, prefs.shipType);
   } catch (err) {
     loading.remove();
+    intro.stop();
     const title = options.mode === "online" ? "Could not join the server" : "Could not build the practice world";
     showErrorScreen(ui, title, message(err), options.mode === "online" ? "network" : "other");
     return;
   }
   loading.remove();
+  intro.stop();
   if (options.mode === "online") social.attach(prefs.name, () => (active ? sessionView(active.game) : null));
   const weaponNames = api.weaponNames();
 
@@ -261,6 +276,8 @@ function runGame(
     });
     const lobbyClock = new LobbyClock();
     let spectator: SpectatorCamera | null = null;
+    // Lobby with the mouse free: a cinematic flight through the next level (FI).
+    const cinematic = new LobbyCinematic();
     let flow: FlowView = { stage: "match", showLobby: false, showResults: false, spectating: false };
     const overlay = new DebugOverlay(ui);
     if (prefs.debugOverlay) overlay.toggle();
@@ -293,6 +310,7 @@ function runGame(
       }
     };
     shipPanel.onPick = pickShip;
+    shipPanel.backdrop = new PanelBay(shipPanel.root, renderer.device, game.team >= 0 ? game.team : 0, renderer.quality.level === "low" ? "low" : "medium");
     const input = new InputController(canvas);
     input.onLockChange = (locked) => hud.showPrompt(!locked);
     hud.showPrompt(true);
@@ -413,6 +431,7 @@ function runGame(
         vfx?.reset();
         particles?.clear();
         spectator = null;
+        cinematic.reset();
         lobbyClock.reset();
         shipBayOpen = false;
         shipError = "";
@@ -446,6 +465,7 @@ function runGame(
       const guided = guidedProjectile(r.projectiles, game.player);
       const shipUp = r.pose ? q.up(r.pose.orientation) : q.up(camera.current.orientation);
       const ride = guided ? eyeballPose(guided, shipUp) : null;
+      const cine = cinematic.update(dt, game, flow.showLobby && !state.pointerLocked && !flow.spectating && !guided, camera.current, renderer.aspect);
       if (flow.spectating) {
         spectator ??= new SpectatorCamera(camera.current);
         const s = session.controls.settings;
@@ -457,12 +477,12 @@ function runGame(
         dt,
         aspect: renderer.aspect,
         viewportHeight: canvas.clientHeight,
-        flying: r.pose !== null && r.pose.alive && !flow.spectating && !guided && !flow.showResults,
+        flying: r.pose !== null && r.pose.alive && !flow.spectating && !guided && !flow.showResults && !cine,
         boosting: state.boost && (r.hud.boost ?? 0) > 0,
       };
-      camera.params.fovY = cues.fovY(cueFrame);
+      camera.params.fovY = cine ? cinematic.fovY(renderer.aspect) : cues.fovY(cueFrame);
       const shake = Math.max(fx.shake, vfx?.shake(time) ?? 0);
-      const view = camera.update(r.pose, spectator ? spectator.view : ride, shakeOffset(shake, time));
+      const view = camera.update(r.pose, spectator ? spectator.view : (cine ?? ride), shakeOffset(shake, time));
       chunkStats = chunks.update(game, view.position, initialLoad ? LOADING_BUDGET : PLAY_BUDGET);
       if (initialLoad && chunkStats.pending === 0) initialLoad = false;
 
@@ -494,8 +514,10 @@ function runGame(
         hullOf: (t) => session.shipChoices().find((c) => c.shipType === t)?.hull ?? 100,
         hideShot,
       });
+      // The cinematic camera sees the own ship too.
+      const shownShips = cine && r.pose && own ? [...r.ships, cinematic.ownShip(game.player, game.team, r.pose, own.shipType, game.shipRadius ?? TINKER_RADIUS)] : r.ships;
       renderer.setScene(
-        buildScene(r.ships, r.projectiles, r.entities, session.visuals, session.teamOf(r.ships), time, {
+        buildScene(shownShips, r.projectiles, r.entities, session.visuals, session.teamOf(r.ships), time, {
           gadgetOf,
           beams: fx.beams,
           flashes: fx.flashes,

@@ -435,6 +435,27 @@ impl GameTerrain {
         self.store.get_mut().generate_all();
     }
 
+    /// Generates the not yet generated chunk nearest `near` (a level built
+    /// lazily, a slice at a time: the client's start-screen backdrop).
+    /// Returns how many chunks are still not generated.
+    pub fn generate_nearest(&mut self, near: Vec3) -> usize {
+        let store = self.store.get_mut();
+        let missing: Vec<ChunkCoord> = store
+            .chunk_coords()
+            .into_iter()
+            .filter(|&c| !store.is_generated(c))
+            .collect();
+        let Some(&next) = missing.iter().min_by(|a, b| {
+            let da = a.aabb().center().distance_squared(near);
+            let db = b.aabb().center().distance_squared(near);
+            da.total_cmp(&db)
+        }) else {
+            return 0;
+        };
+        store.ensure_generated(next);
+        missing.len() - 1
+    }
+
     /// Read access to the chunk store.
     pub fn with_store<R>(&self, f: impl FnOnce(&ChunkStore) -> R) -> R {
         f(&self.store.borrow())
@@ -672,6 +693,27 @@ mod tests {
     /// A small level (2 x 2 x 2 chunks) so tests stay fast in debug builds.
     pub(crate) fn small_terrain(seed: u64) -> GameTerrain {
         GameTerrain::new(Generator::with_size(seed, Sliders::new(40, 30), [2, 2, 2]))
+    }
+
+    #[test]
+    fn generate_nearest_builds_the_level_one_chunk_at_a_time_nearest_first() {
+        let mut t = small_terrain(5);
+        let total = t.chunk_coords().len();
+        let near = Vec3::new(1.0, 1.0, 1.0);
+        let first = t.with_store(|s| s.chunk_at(near)).expect("inside");
+        assert_eq!(t.generate_nearest(near), total - 1);
+        assert!(t.with_store(|s| s.is_generated(first)));
+        let mut left = total - 1;
+        while left > 0 {
+            let next = t.generate_nearest(near);
+            assert_eq!(next, left - 1);
+            left = next;
+        }
+        assert_eq!(t.generate_nearest(near), 0);
+        assert!(t
+            .chunk_coords()
+            .iter()
+            .all(|&c| t.with_store(|s| s.is_generated(c))));
     }
 
     fn open_point(t: &GameTerrain) -> Vec3 {

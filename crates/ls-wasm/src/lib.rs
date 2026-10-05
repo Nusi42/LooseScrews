@@ -703,6 +703,26 @@ impl Game {
             .map_err(js_err)
     }
 
+    /// A practice level for looking at (the start screen's live backdrop):
+    /// no dummies, and chunks are generated when first meshed or probed
+    /// instead of all up front, so building it does not block the page.
+    /// Stepping it is not intended (the first paint score update would
+    /// generate the rest).
+    #[wasm_bindgen(js_name = practicePreview)]
+    pub fn practice_preview(code: &str) -> Result<Game, JsError> {
+        GameCore::practice_preview(code)
+            .map(|core| Game { core })
+            .map_err(js_err)
+    }
+
+    /// Practice levels from [`Game::practice_preview`]: generates the chunk
+    /// nearest the point that is still missing (one chunk, tens of ms) and
+    /// returns how many are left; 0 when all are generated (and online).
+    #[wasm_bindgen(js_name = generateNearest)]
+    pub fn generate_nearest(&mut self, x: f32, y: f32, z: f32) -> u32 {
+        self.core.generate_nearest(Vec3::new(x, y, z)) as u32
+    }
+
     /// [`Game::practice`] flying a ship type (`ShipType::index`; not
     /// allowed types fall back to the Tinker or the first allowed one).
     #[wasm_bindgen(js_name = practiceAs)]

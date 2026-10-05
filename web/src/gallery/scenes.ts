@@ -47,6 +47,12 @@ export interface GalleryScene {
   /** "lights" content: number of glowing shots (each a dynamic light). */
   lights?: number;
   /**
+   * A first-impression page over the live backdrop (attract/galleryPages.ts):
+   * the start screen, the lobby card or the in-game ship bay; `time` is how
+   * long the backdrop flies before the shot. Pose and content do not apply.
+   */
+  page?: "start" | "lobby" | "bay";
+  /**
    * Own ship type (ls-sim ShipType index) whose cockpit frame and fit ring
    * show (VQ1); absent = no cockpit, the plain camera.
    */
@@ -54,6 +60,8 @@ export interface GalleryScene {
 }
 
 const CAVES: GalleryWorld = { seed: 7, enclosure: 50, density: 50 };
+/** The start screen's first backdrop world (attract/backdrop.ts BACKDROP_WORLDS[0]). */
+const BACKDROP: GalleryWorld = { seed: 6, enclosure: 35, density: 65 };
 
 export const SCENES: readonly GalleryScene[] = [
   { id: "cave-closeup", title: "Cave wall close-up", covers: "textures, polygon switches", world: CAVES, pose: "closeup", content: "none", time: 1.0 },
@@ -186,6 +194,11 @@ export const SCENES: readonly GalleryScene[] = [
   },
   { id: "cockpit-skitter", title: "Skitter cockpit", covers: "fit, ships", world: CAVES, pose: "tunnel", content: "none", time: 1.0, ship: 0 },
   { id: "cockpit-tug", title: "Tug cockpit", covers: "fit, ships", world: CAVES, pose: "tunnel", content: "none", time: 1.0, ship: 3 },
+  // First-impression pass (FI): the pages over the live flythrough (caverns open to the sky).
+  { id: "start-screen", title: "Start screen over the live flythrough", covers: "first impression", world: BACKDROP, pose: "tunnel", content: "none", time: 9.0, page: "start" },
+  { id: "start-flythrough", title: "Start flythrough, later in the flight", covers: "first impression", world: BACKDROP, pose: "tunnel", content: "none", time: 24.0, page: "start" },
+  { id: "lobby-flythrough", title: "Lobby card over the cinematic flight", covers: "first impression", world: BACKDROP, pose: "tunnel", content: "none", time: 16.0, page: "lobby" },
+  { id: "ship-bay", title: "Ship bay: the four hulls turning", covers: "first impression, ships", world: BACKDROP, pose: "tunnel", content: "none", time: 6.0, page: "bay" },
 ];
 
 export function sceneById(id: string): GalleryScene | undefined {
@@ -204,6 +217,8 @@ export const PASS_BUDGETS_MS: Readonly<Record<string, number>> = {
   lights: 1.0,
   sky: 0.6,
   post: 1.2,
+  // FI: the hull view behind the ship cards (attract/shipBay.ts; its own small canvas, "medium").
+  bay: 0.8,
 };
 
 /** Whole frame (sum of the passes) at "high" on the reference mid GPU. */

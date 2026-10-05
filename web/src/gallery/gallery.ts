@@ -41,6 +41,7 @@ import { pickCloseup, pickLongest, pickVista, probeAround, raycast, rayMesh, sph
 import { FIT_TUNNEL_RADIUS, sceneById, type GalleryScene } from "./scenes.ts";
 import { applyDecor, decorSpots, pickBorder, type DecorSpot } from "./decor.ts";
 import { explosionAt, simulateVfx } from "./vfxScenes.ts";
+import { runPageScene } from "../attract/galleryPages.ts";
 
 /** Frames rendered before the page reports ready. */
 const WARMUP_FRAMES = 20;
@@ -371,6 +372,11 @@ export async function runGallery(canvas: HTMLCanvasElement, ui: HTMLElement, loc
   try {
     const scene = sceneById(id);
     if (!scene) throw new Error(`unknown gallery scene "${id}"`);
+    // First-impression pages (start screen, lobby, ship bay) over the live backdrop.
+    if (scene.page) {
+      await runPageScene(canvas, ui, scene, status);
+      return;
+    }
     const api = await loadWasm();
     const w = scene.world;
     status.shareCode = api.randomShareCode(w.seed, 0, w.enclosure, w.density);

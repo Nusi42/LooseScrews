@@ -19,7 +19,7 @@ import type { Vec3 } from "../math/vec3.ts";
 import { stripRoomWalls, type Atmosphere } from "./atmosphere.ts";
 import { CanvasSizer } from "./canvas.ts";
 import { Frustum } from "./frustum.ts";
-import { initGpu, type GpuContext } from "./gpu.ts";
+import { contextOn, initGpu, type GpuContext } from "./gpu.ts";
 import { GpuTimer, type GpuTimings } from "./gpuTimer.ts";
 import { LightSystem, lightBindLayoutEntries, type PointLight } from "./lights.ts";
 import { HullFrame } from "./hullFrame.ts";
@@ -268,7 +268,9 @@ export class Renderer {
   readonly particles: ParticleSystem | null;
   private readonly sky: Sky;
   private readonly chunks = new Map<string, GpuMesh>();
-  private readonly meshes: Record<MeshKind, GpuMesh>;
+  /** Instanced meshes, built on first use (the models take ~0.1 s of CPU; FI keeps it off the start screen). */
+  private readonly meshes: Partial<Record<MeshKind, GpuMesh>> = {};
+  private readonly meshBuilders: Readonly<Record<MeshKind, () => MeshData>>;
   private readonly batches: Record<RenderPass, Map<MeshKind, InstanceBatch>> = {
     opaque: new Map(),
     translucent: new Map(),
@@ -293,6 +295,8 @@ export class Renderer {
   detailedTiming = false;
   /** Shader time (s) for this and later frames instead of the wall clock (fixed-pose screenshots). */
   timeOverride: number | null = null;
+  /** False for a renderer on another renderer's device (`create(..., { device })`): `destroy` leaves the device alone. */
+  private ownsDevice = true;
   /** The own ship's cockpit frame (VQ1), drawn last in the scene pass; set its `state` per frame. */
   readonly hullFrame: HullFrame;
 
@@ -304,12 +308,16 @@ export class Renderer {
    */
   static async create(
     canvas: HTMLCanvasElement,
-    options: { quality?: QualityLevel; legacyModels?: boolean; particles?: boolean } = {},
+    options: { quality?: QualityLevel; legacyModels?: boolean; particles?: boolean; device?: GPUDevice } = {},
   ): Promise<Renderer> {
     const search = typeof location === "undefined" ? "" : location.search;
     const forced = options.quality ?? qualityFromSearch(search);
     const particles = options.particles ?? new URLSearchParams(search).get("vfx") !== "off";
-    return new Renderer(canvas, await initGpu(canvas), forced, options.legacyModels ?? false, particles);
+    // `device`: draw a second canvas with another renderer's device (FI ship bay); it stays that renderer's to destroy.
+    const gpu = options.device ? contextOn(canvas, options.device) : await initGpu(canvas);
+    const r = new Renderer(canvas, gpu, forced, options.legacyModels ?? false, particles);
+    r.ownsDevice = !options.device;
+    return r;
   }
 
   private constructor(canvas: HTMLCanvasElement, gpu: GpuContext, forced: QualityLevel | null, legacyModels: boolean, particles: boolean) {
@@ -379,10 +387,7 @@ export class Renderer {
 
     this.timer = GpuTimer.create(device);
 
-    const meshes = {} as Record<MeshKind, GpuMesh>;
-    const builders = legacyModels ? LEGACY_MESH_BUILDERS : MESH_BUILDERS;
-    for (const kind of MESH_KINDS) meshes[kind] = new GpuMesh(device, builders[kind](), kind);
-    this.meshes = meshes;
+    this.meshBuilders = legacyModels ? LEGACY_MESH_BUILDERS : MESH_BUILDERS;
   }
 
   /** Terrain, instanced and translucent pipelines rendering into the HDR target at the quality's MSAA and terrain detail. */
@@ -531,13 +536,18 @@ export class Renderer {
     return this.chunks.size;
   }
 
+  /** Builds every instanced mesh not built yet (before play, so no kind's first use stalls a frame). */
+  prepareMeshes(): void {
+    for (const kind of MESH_KINDS) this.meshes[kind] ??= new GpuMesh(this.device, this.meshBuilders[kind](), kind);
+  }
+
   /** Replaces the instances of one mesh kind in one pass. */
   setInstances(kind: MeshKind, instances: readonly Instance[], pass: RenderPass = "opaque"): void {
     const batches = this.batches[pass];
     let batch = batches.get(kind);
     if (!batch) {
       if (instances.length === 0) return;
-      batch = new InstanceBatch(this.meshes[kind]);
+      batch = new InstanceBatch((this.meshes[kind] ??= new GpuMesh(this.device, this.meshBuilders[kind](), kind)));
       batches.set(kind, batch);
     }
     batch.update(this.device, instances);
@@ -683,7 +693,7 @@ export class Renderer {
     this.clearChunks();
     this.hullFrame.destroy();
     for (const batches of Object.values(this.batches)) for (const batch of batches.values()) batch.destroy();
-    for (const mesh of Object.values(this.meshes)) mesh.destroy();
+    for (const mesh of Object.values(this.meshes)) mesh?.destroy();
     this.depthTexture?.destroy();
     this.msaaTexture?.destroy();
     this.post.destroy();
@@ -694,7 +704,7 @@ export class Renderer {
     this.timer?.destroy();
     this.frameBuffer.destroy();
     this.sizer.dispose();
-    this.device.destroy();
+    if (this.ownsDevice) this.device.destroy();
   }
 
   /** Automatic quality: steps down once if the GPU time of the first seconds exceeds the budget. */

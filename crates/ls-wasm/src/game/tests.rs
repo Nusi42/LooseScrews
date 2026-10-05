@@ -205,6 +205,23 @@ fn practice_rejects_bad_share_codes() {
         .contains("checksum"));
 }
 
+#[test]
+fn practice_preview_builds_lazily_and_generates_on_request() {
+    assert!(GameCore::practice_preview("LS00-nope").is_err());
+    // A small lazy level: nothing generated until asked, then one chunk per call.
+    let mut g = small_practice(0);
+    let near = Vec3::new(1.0, 1.0, 1.0);
+    let first = g.generate_nearest(near);
+    assert_eq!(first, 7, "2 x 2 x 2 chunks, one generated");
+    while g.generate_nearest(near) > 0 {}
+    assert_eq!(g.generate_nearest(near), 0);
+    // The probes work on a level that is not generated yet.
+    let mut lazy = small_practice(0);
+    let o = lazy.terrain().bounds().center();
+    let _ = lazy.raycast(o, Vec3::new(0.0, 0.0, -1.0), 200.0);
+    assert_eq!(lazy.generate_nearest(o), 7);
+}
+
 // ----- online ---------------------------------------------------------------
 
 struct Link {

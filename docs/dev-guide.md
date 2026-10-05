@@ -964,6 +964,24 @@ Without
 GPU than the reference, the check only catches gross regressions; read the absolute numbers on
 the reference class.
 
+First-impression pages (FI): the scenes `start-screen`, `start-flythrough`, `lobby-flythrough`
+and `ship-bay` (`page` in `scenes.ts`) render the real start screen, the lobby card and the
+in-game ship bay over the live backdrop (`web/src/attract/galleryPages.ts`): the flythrough
+steps at a fixed 60 Hz from a fixed seed up to the scene's time and then holds the frame; the
+hull views' GPU time is reported as the pass `bay`. To curate the backdrop's worlds
+(`BACKDROP_WORLDS` in `web/src/attract/backdrop.ts`) try others with `--scenes start-flythrough
+--query world=<seed>_<enclosure>_<density>&t=<seconds>`.
+
+### Start-screen timing
+
+`node tools/browser-smoke/startup.mjs [--web-root dir] [--label name] [--runs 5] [--query k=v]`
+loads the start page headless several times and prints the median time until the start card
+shows, time to interactive (the first moment followed by 5 s without a long task), total
+blocking time, the longest task, the backdrop's first frame and frame rate, and the page's
+`ls:*` performance measures (renderer creation, backdrop world); `startup.json` and a
+screenshot go to `target/startup/<label>/`. Run it against a before build (`--web-root` of a
+copy of its `web/dist`) for comparisons; `--query backdrop=off` measures without the flythrough.
+
 ## 13. Where things are documented
 
 - Rules for contributors and agents: [`CLAUDE.md`](../CLAUDE.md) (keep it in sync when commands

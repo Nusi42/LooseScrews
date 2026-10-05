@@ -23,6 +23,7 @@
 //   --power high|low      GPU on two-GPU machines (low = integrated, ?gpu=low-power) [high]
 //   --quality <level>     render preset high|medium|low (?quality=; no automatic pick) [high]
 //   --grade <preset>      colour grade from post.ts GRADE_PRESETS (?grade=) [none]
+//   --vfx on|off          particle effects (VQ5); off draws the pre-VQ5 mesh effects (?vfx=off) [on]
 //   --budget-scale <x>    multiplies every budget (1 = reference mid GPU at
 //                         "high"; 1.75 = integrated GPU at "medium") [1]
 //   --frames <n>          timed frames averaged per scene [120]
@@ -63,6 +64,7 @@ const defaults = {
   power: "high",
   quality: "high",
   grade: "",
+  vfx: "on",
   "budget-scale": "1",
   frames: "120",
 };
@@ -101,6 +103,7 @@ function parseArgs(argv) {
   if (!["auto", "headless", "headful"].includes(o.mode)) die("--mode must be auto, headless or headful");
   if (!["high", "low"].includes(o.power)) die("--power must be high or low");
   if (!["high", "medium", "low"].includes(o.quality)) die("--quality must be high, medium or low");
+  if (!["on", "off"].includes(o.vfx)) die("--vfx must be on or off");
   if (!/^[\w.-]+$/.test(o.label)) die("--label may only use letters, digits, '.', '_' and '-'");
   const ids = o.scenes ? o.scenes.split(",") : SCENES.map((s) => s.id);
   for (const id of ids) if (!SCENES.some((s) => s.id === id)) die(`unknown scene ${id} (${SCENES.map((s) => s.id).join(", ")})`);
@@ -121,6 +124,7 @@ function parseArgs(argv) {
     power: o.power,
     quality: o.quality,
     grade: o.grade,
+    vfx: o.vfx,
     budgetScale: scale,
     frames,
     noBudget: o["no-budget"],
@@ -300,7 +304,7 @@ async function main() {
   const { server, base } = await serve(opts.webRoot);
   const labelDir = join(opts.outDir, opts.label);
   mkdirSync(labelDir, { recursive: true });
-  const power = `&quality=${opts.quality}${opts.grade ? `&grade=${encodeURIComponent(opts.grade)}` : ""}${opts.power === "low" ? "&gpu=low-power" : ""}`;
+  const power = `&quality=${opts.quality}${opts.grade ? `&grade=${encodeURIComponent(opts.grade)}` : ""}${opts.power === "low" ? "&gpu=low-power" : ""}${opts.vfx === "off" ? "&vfx=off" : ""}`;
   const launch = (headless) =>
     puppeteer.launch({
       executablePath: browserPath,
@@ -405,6 +409,7 @@ async function main() {
         chunksDrawn: status?.chunksDrawn ?? 0,
         triangles: status?.triangles ?? 0,
         instances: status?.instances ?? 0,
+        particles: status?.particles ?? null,
         canTime: status?.canTime ?? false,
         gpu: status?.gpu ?? null,
         budget: null,
@@ -421,7 +426,7 @@ async function main() {
           if (!entry.budget.ok) failed = true;
         }
         const verdict = entry.budget ? (entry.budget.ok ? "within budget" : `OVER BUDGET: ${entry.budget.failures.join("; ")}`) : "";
-        console.log(`${entry.budget && !entry.budget.ok ? "FAIL" : "PASS"}  ${id}: ${timingText(entry)} · ${Math.round(entry.triangles / 1000)}k tris ${verdict}`);
+        console.log(`${entry.budget && !entry.budget.ok ? "FAIL" : "PASS"}  ${id}: ${timingText(entry)} · ${Math.round(entry.triangles / 1000)}k tris${entry.particles ? ` � ${entry.particles} particles` : ""} ${verdict}`);
         console.log(`      ${relative(repoRoot, file)}`);
       }
       manifest.scenes.push(entry);

@@ -18,7 +18,7 @@ export interface GalleryWorld {
 export type PoseKind = "closeup" | "tunnel" | "vista";
 
 /** What is placed in front of the camera besides terrain. */
-export type SceneContent = "none" | "lineup" | "fight";
+export type SceneContent = "none" | "lineup" | "fight" | "explosion" | "stress";
 
 export interface GalleryScene {
   id: string;
@@ -57,6 +57,24 @@ export const SCENES: readonly GalleryScene[] = [
   },
   { id: "ship-lineup", title: "The four hulls", covers: "ships", world: CAVES, pose: "tunnel", content: "lineup", time: 1.0 },
   { id: "fight", title: "Fight frame with an explosion", covers: "effects", world: CAVES, pose: "tunnel", content: "fight", time: 2.15 },
+  {
+    id: "explosion",
+    title: "A ship blowing up, a burning ship, smoke from a rocket hit",
+    covers: "effects",
+    world: CAVES,
+    pose: "tunnel",
+    content: "explosion",
+    time: 3.0,
+  },
+  {
+    id: "particles-stress",
+    title: "Particle budget: about 20 k live particles (an explosion every frame, 120 bolts)",
+    covers: "effects (GPU budget)",
+    world: CAVES,
+    pose: "tunnel",
+    content: "stress",
+    time: 3.0,
+  },
 ];
 
 export function sceneById(id: string): GalleryScene | undefined {

@@ -105,10 +105,12 @@ test("the shaders are split and each scene module carries the frame block and li
 });
 
 test("quality presets: MSAA 4x and 6 bloom mips at high, no MSAA or bloom at low", () => {
-  assert.deepEqual(QUALITY_PRESETS.high, { level: "high", msaa: 4, bloomMips: 6 });
+  const { particles: _hp, ...high } = QUALITY_PRESETS.high;
+  assert.deepEqual(high, { level: "high", msaa: 4, bloomMips: 6 });
   assert.equal(QUALITY_PRESETS.medium.msaa, 4);
   assert.equal(QUALITY_PRESETS.medium.bloomMips, 4);
-  assert.deepEqual(QUALITY_PRESETS.low, { level: "low", msaa: 1, bloomMips: 0 });
+  const { particles: _lp, ...low } = QUALITY_PRESETS.low;
+  assert.deepEqual(low, { level: "low", msaa: 1, bloomMips: 0 });
   assert.equal(qualityFromSearch("?quality=low"), "low");
   assert.equal(qualityFromSearch("?quality=ultra"), null);
   assert.equal(qualityFromSearch(""), null);

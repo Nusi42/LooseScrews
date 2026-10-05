@@ -43,6 +43,24 @@ impl CueView {
     }
 }
 
+/// Client-only cue kind (not an `ls_sim::CueKind`): a ship was hit.
+/// `source` attacker (255 = none), `target` victim, `pos` the impact point,
+/// `value` the damage. The web client's particle effects use it
+/// (web/src/game/vfx.ts `CUE_HIT`: damage smoke, hit sparks).
+pub const CUE_HIT: u8 = 250;
+
+/// The [`CUE_HIT`] cue of a hit (`NetEvent::Hit` fields).
+pub fn hit_cue(attacker: u8, victim: u8, damage: u16, pos: Vec3, tick: u32) -> CueView {
+    CueView {
+        kind: CUE_HIT,
+        source: attacker,
+        target: victim,
+        pos,
+        value: damage,
+        tick: u64::from(tick),
+    }
+}
+
 /// Cues kept until the host takes them (a frame normally takes all).
 pub const MAX_CUES: usize = 128;
 

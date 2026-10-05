@@ -3,8 +3,9 @@
 // ...), one batch per mesh kind (primitives.ts MESH_BUILDERS) in an opaque
 // and a translucent pass, all lit and fogged by the shaders in shaders/.
 // The scene renders linear HDR radiance into an rgba16float target with
-// MSAA (quality.ts presets); post.ts adds bloom, grades, tonemaps (AgX) and
-// encodes sRGB into the swapchain. Passes are timed with timestamp queries
+// MSAA (quality.ts presets); particles.ts draws the GPU particles and dust
+// motes onto the resolved scene (VQ5); post.ts adds bloom, grades, tonemaps
+// (AgX) and encodes sRGB into the swapchain. Passes are timed with timestamp queries
 // when the device has them (gpuTimer.ts).
 //
 // The game calls `setChunk(key, mesh)` with meshes produced by ls-wasm and
@@ -19,6 +20,7 @@ import { initGpu, type GpuContext } from "./gpu.ts";
 import { GpuTimer, type GpuTimings } from "./gpuTimer.ts";
 import { GpuMesh, type MeshData } from "./mesh.ts";
 import { LEGACY_MESH_BUILDERS, MESH_BUILDERS, MESH_KINDS, type MeshKind } from "./models/index.ts";
+import { ParticleSystem } from "./particles.ts";
 import { DEFAULT_POST, HDR_FORMAT, PostChain, type PostSettings } from "./post.ts";
 import { QUALITY_PRESETS, QualityAuto, qualityFromSearch, type QualityLevel, type RenderQuality } from "./quality.ts";
 import { FRAME_UNIFORM_FLOATS, srgbToLinear, TEAM_SLOTS } from "./shaders/frame.ts";
@@ -236,6 +238,8 @@ export class Renderer {
   /** Scene pipelines per MSAA sample count (built when a quality level first needs them). */
   private readonly scenePipelines = new Map<number, ScenePipelines>();
   private readonly post: PostChain;
+  /** GPU particles and dust motes (VQ5); null when switched off (`particles: false`, `?vfx=off`). */
+  readonly particles: ParticleSystem | null;
   private readonly chunks = new Map<string, GpuMesh>();
   private readonly meshes: Record<MeshKind, GpuMesh>;
   private readonly batches: Record<RenderPass, Map<MeshKind, InstanceBatch>> = {
@@ -268,13 +272,15 @@ export class Renderer {
    */
   static async create(
     canvas: HTMLCanvasElement,
-    options: { quality?: QualityLevel; legacyModels?: boolean } = {},
+    options: { quality?: QualityLevel; legacyModels?: boolean; particles?: boolean } = {},
   ): Promise<Renderer> {
-    const forced = options.quality ?? (typeof location === "undefined" ? null : qualityFromSearch(location.search));
-    return new Renderer(canvas, await initGpu(canvas), forced, options.legacyModels ?? false);
+    const search = typeof location === "undefined" ? "" : location.search;
+    const forced = options.quality ?? qualityFromSearch(search);
+    const particles = options.particles ?? new URLSearchParams(search).get("vfx") !== "off";
+    return new Renderer(canvas, await initGpu(canvas), forced, options.legacyModels ?? false, particles);
   }
 
-  private constructor(canvas: HTMLCanvasElement, gpu: GpuContext, forced: QualityLevel | null, legacyModels: boolean) {
+  private constructor(canvas: HTMLCanvasElement, gpu: GpuContext, forced: QualityLevel | null, legacyModels: boolean, particles: boolean) {
     this.canvas = canvas;
     this.device = gpu.device;
     this.context = gpu.context;
@@ -323,6 +329,7 @@ export class Renderer {
     };
     this.scenePipelinesFor(this.qualityLevel.msaa);
     this.post = new PostChain(device, gpu.format);
+    this.particles = particles ? new ParticleSystem(device, this.frameBuffer, this.qualityLevel.particles) : null;
 
     this.timer = GpuTimer.create(device);
 
@@ -420,6 +427,7 @@ export class Renderer {
   /** Switches the quality preset (pipelines and targets follow on the next frame). */
   setQuality(level: QualityLevel): void {
     this.qualityLevel = QUALITY_PRESETS[level];
+    this.particles?.setQuality(this.qualityLevel.particles);
   }
 
   get aspect(): number {
@@ -515,7 +523,8 @@ export class Renderer {
           view: depthView,
           depthClearValue: 1,
           depthLoadOp: first ? "clear" : "load",
-          depthStoreOp: last ? "discard" : "store",
+          // The particle pass reads the depth after the scene (soft particles).
+          depthStoreOp: last && !this.particles ? "discard" : "store",
         },
       });
       pass.setBindGroup(0, this.bindGroup);
@@ -554,6 +563,7 @@ export class Renderer {
     }
     pass.end();
 
+    this.particles?.encode(encoder, sceneView, this.depthTexture!, camera, { width: this.canvas.width, height: this.canvas.height }, timer);
     this.post.encode(encoder, this.context.getCurrentTexture().createView(), this.settings.post, time, timer);
     timer?.endFrame(encoder);
     this.device.queue.submit([encoder.finish()]);
@@ -568,6 +578,7 @@ export class Renderer {
     this.depthTexture?.destroy();
     this.msaaTexture?.destroy();
     this.post.destroy();
+    this.particles?.destroy();
     this.timer?.destroy();
     this.frameBuffer.destroy();
     this.sizer.dispose();
@@ -597,7 +608,8 @@ export class Renderer {
         size: { width, height },
         format: DEPTH_FORMAT,
         sampleCount: samples,
-        usage: GPUTextureUsage.RENDER_ATTACHMENT,
+        // TEXTURE_BINDING: the particle pass reads it (soft particles).
+        usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
       });
     }
     if (samples > 1 && !fits(this.msaaTexture)) {

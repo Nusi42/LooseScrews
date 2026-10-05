@@ -20,7 +20,8 @@
 //   matchInfo():   MATCH_INFO_LEN numbers   [over, winner (-1 = draw/none), team0Cells, team1Cells, surfaceCells, secsSinceEnd]
 //   loadout():     names[i], ammo[i], maxLevels[i] and LOADOUT_INFO_STRIDE bytes info[4i..4i+4] =
 //                  [slot (0 primary, 1 secondary), selected, key (1-10, 0 none), level], primaries first
-//   takeCues():    CUE_STRIDE numbers each  [kind (ls_sim::CueKind), source, target (255 = none), px, py, pz, value, tick]
+//   takeCues():    CUE_STRIDE numbers each  [kind (ls_sim::CueKind), source, target (255 = none), px, py, pz, value, tick];
+//                  kind 250 is the client-only hit cue (game/vfx.ts CUE_HIT: attacker, victim, impact point, damage)
 //   charge():      CHARGE_LEN numbers or empty [weapon, fraction, heldSecs, fullSecs, minSecs, autoRelease, overcharge, 1]
 //   shipChoices(): JSON array of {shipType, name, allowed, current, next, hull, topSpeedPct, damageMult,
 //                  secondarySlots, radius, turnRate, canPassScrap, primaries, secondaries: [[name, count]], gadget}

@@ -31,6 +31,7 @@ import { CONTROLS_LEN, type GameHandle } from "../wasm/api.ts";
 import { loadWasm } from "../wasm/load.ts";
 import { pickCloseup, pickLongest, pickVista, probeAround, raycast, rayMesh, sphereDirections, type Probe, type RayMesh } from "./raycast.ts";
 import { sceneById, type GalleryScene } from "./scenes.ts";
+import { explosionAt, simulateVfx } from "./vfxScenes.ts";
 
 /** Frames rendered before the page reports ready. */
 const WARMUP_FRAMES = 20;
@@ -52,6 +53,8 @@ export interface GalleryStatus {
   canTime: boolean;
   gpu: GpuTimings | null;
   gpuError: string | null;
+  /** Live particles in the frame (VQ5), null without particles. */
+  particles?: number | null;
 }
 
 declare global {
@@ -103,6 +106,7 @@ export function sceneContent(
   cam: { position: Vec3; orientation: Quat },
   visuals: readonly VisualDef[],
   impact: Vec3 | null = null,
+  vfx = false,
 ): SceneInstances {
   const f = q.forward(cam.orientation);
   const r = q.right(cam.orientation);
@@ -172,11 +176,15 @@ export function sceneContent(
     effects.apply([cue(CUE.shockwave, 0, blast, 5)], time - 0.15, ctx);
     effects.apply([cue(CUE.muzzleFlash, 1, v3.addScaled(a, toCam, 0.7), 0)], time - 0.06, ctx);
     flashes = effects.frame(time, ctx).flashes;
+  } else if (scene.content === "explosion") {
+    // VQ5: a ship blowing up (gone at this time), a burning one; the effects are particles (vfxScenes.ts).
+    ships.push(...explosionAt(cam, time, time).ships);
   }
   const teamOf = (id: number): number | undefined => (id === 0 ? 0 : ships.find((s) => s.id === id)?.team);
   return buildScene(ships, shots, [], visuals, teamOf, time, {
     gadgetOf: (id) => (gadgets.has(id) ? "shield" : ""),
     flashes,
+    vfx,
   });
 }
 
@@ -261,7 +269,14 @@ export async function runGallery(canvas: HTMLCanvasElement, ui: HTMLElement, loc
     const impactDir = v3.normalize(v3.add(f, v3.add(v3.scale(rt, 0.35), v3.scale(q.up(pose.orientation), -0.08))));
     const hit = raycast(rayMeshes.values(), pose.position, impactDir, 40);
     const impact = hit ? v3.addScaled(pose.position, impactDir, Math.max(4, hit.t - 0.6)) : null;
-    renderer.setScene(sceneContent(scene, pose, visuals, impact));
+    const particles = renderer.particles;
+    renderer.setScene(sceneContent(scene, pose, visuals, impact, particles !== null));
+    if (particles) {
+      // VQ5: the particles of the scene's synthetic history up to its time (vfxScenes.ts).
+      const fallback = v3.addScaled(pose.position, impactDir, 16);
+      simulateVfx(particles, scene, pose, visuals, impact ?? fallback, LINEUP_RADII, (id) => (scene.content === "fight" && id === 2 ? "shield" : ""));
+      status.particles = particles.liveCount();
+    }
 
     const frame = (): void => {
       const stats = renderer.render(view);

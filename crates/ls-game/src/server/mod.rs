@@ -114,7 +114,13 @@ pub struct RoomStats {
     /// `Input` messages of another match epoch (the previous match's,
     /// still in flight after a transition), dropped.
     pub stale_epoch_inputs: u64,
+    /// `ArchitectAction`s dropped because the queue was full.
+    pub dropped_architect_actions: u64,
 }
+
+/// Most `ArchitectAction`s queued between two
+/// [`Room::take_architect_actions`] calls (the rest are dropped and counted).
+pub const MAX_QUEUED_ARCHITECT_ACTIONS: usize = 64;
 
 /// A lobby request from a client (`Message::Ready`, `PickTeam`,
 /// `Spectate`), queued for the host's lobby ([`Room::take_lobby_requests`]).
@@ -208,6 +214,9 @@ pub struct Room {
     /// The results, once the mode ended (sent once, and to late joiners).
     results: Option<MatchResultsMsg>,
     lobby_requests: Vec<(u8, LobbyRequest)>,
+    /// `ArchitectAction`s (protocol 6) received since the last
+    /// [`Room::take_architect_actions`], with the sender's player.
+    architect_actions: Vec<(PlayerId, ls_net::ArchitectActionMsg)>,
 }
 
 impl Room {
@@ -246,6 +255,7 @@ impl Room {
             room_code: String::new(),
             results: None,
             lobby_requests: Vec::new(),
+            architect_actions: Vec::new(),
         })
     }
 
@@ -325,6 +335,15 @@ impl Room {
     /// last call, in order, with the sender's wire id.
     pub fn take_lobby_requests(&mut self) -> Vec<(u8, LobbyRequest)> {
         std::mem::take(&mut self.lobby_requests)
+    }
+
+    /// The Architect's stroke requests (`Message::ArchitectAction`, protocol
+    /// 6) received since the last call, in order, with the sender's player.
+    /// The Architect mode (B4) validates kind, budget, cooldown, range and
+    /// radius and counts rejects; the room only checks that the values are
+    /// finite (the decoder does) and that the sender is a player.
+    pub fn take_architect_actions(&mut self) -> Vec<(PlayerId, ls_net::ArchitectActionMsg)> {
+        std::mem::take(&mut self.architect_actions)
     }
     /// Queues a message for one client (e.g. `Message::LobbyState`).
     /// Returns false for unknown clients or messages that cannot be encoded.
@@ -562,6 +581,18 @@ impl Room {
             Message::Spectate { spectate } => {
                 self.lobby_requests
                     .push((client, LobbyRequest::Spectate(spectate)));
+                Ok(())
+            }
+            Message::ArchitectAction(a) => {
+                if let Some(c) = self.clients.get(&client) {
+                    // Bounded: a client cannot grow the queue without limit
+                    // between two takes.
+                    if self.architect_actions.len() < MAX_QUEUED_ARCHITECT_ACTIONS {
+                        self.architect_actions.push((c.player, a));
+                    } else {
+                        self.stats.dropped_architect_actions += 1;
+                    }
+                }
                 Ok(())
             }
             Message::Ping {

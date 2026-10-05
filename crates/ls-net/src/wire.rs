@@ -103,86 +103,105 @@ pub mod proj_wire {
     pub const KIND_MASK: u8 = 0x7f;
 }
 
-/// Layout of the 4 state bytes of a dynamic gravity well entity (protocol
-/// 6; `ReplicatedKind::Well`: Paperweight stones, the Architect's Gravity
-/// Chaos+ stroke). The client predictor rebuilds the well from them:
+/// Layout of a dynamic gravity well entity (protocol 6;
+/// `ReplicatedKind::Well`, built by `ls_game::convert::well_entities` from
+/// `ls_sim::gravity::DynamicWell`). The client predictor rebuilds the well:
 ///
 /// ```text
-/// state[0]   range in RANGE_UNIT (0.25 u) steps (up to 63.75 u)
-/// state[1]   peak pull in STRENGTH_UNIT (0.5 %) of the reference per-axis
-///            thrust acceleration (0 = not pulling, e.g. a stone in flight)
-/// state[2..4] low 16 bits of the tick the well ends (little-endian)
+/// state[0]    range in RANGE_UNIT (0.25 u) steps (up to 63.75 u)
+/// state[1]    peak pull in PEAK_UNIT (0.125 u/s^2) steps (up to 31.875)
+/// state[2..4] low 16 bits of the end tick (exclusive; little-endian)
+/// team        start: 0 = active at the snapshot's tick, else the ticks
+///             from the snapshot's tick to the start (1-255; wells starting
+///             later are not sent yet)
 /// ```
 ///
-/// The entity exists while the well acts, so the client needs no start
-/// tick (reconciliation replays from the snapshot that first shows it).
-/// The simulation should create dynamic wells with range and strength on
-/// this grid ([`well_state::quantize_range`],
-/// [`well_state::quantize_strength`]) so the predictor's force is exact.
+/// Range and pull are exact when the simulation creates wells on this grid
+/// ([`well_state::quantize_range`], [`well_state::quantize_peak`]); the
+/// position is an entity position (about 0.03 u steps).
 pub mod well_state {
     /// Range step (u).
     pub const RANGE_UNIT: f32 = 0.25;
-    /// Strength step (fraction of the reference thrust acceleration).
-    pub const STRENGTH_UNIT: f32 = 0.005;
+    /// Peak pull step (u/s^2).
+    pub const PEAK_UNIT: f32 = 0.125;
+    /// A well starting later than this many ticks after the snapshot is not
+    /// sent yet.
+    pub const MAX_START_LEAD: u64 = 255;
+
+    fn byte(v: f32, unit: f32) -> u8 {
+        let q = ls_math::det::round(v / unit);
+        if q.is_nan() {
+            0
+        } else {
+            q.clamp(0.0, 255.0) as u8
+        }
+    }
 
     /// `range` rounded to the wire grid (clamped to 0..=63.75 u).
     pub fn quantize_range(range: f32) -> f32 {
-        range_byte(range) as f32 * RANGE_UNIT
+        byte(range, RANGE_UNIT) as f32 * RANGE_UNIT
     }
 
-    /// `strength` (fraction of the reference acceleration) rounded to the
-    /// wire grid (clamped to 0..=1.275).
-    pub fn quantize_strength(strength: f32) -> f32 {
-        strength_byte(strength) as f32 * STRENGTH_UNIT
+    /// `peak` (u/s^2) rounded to the wire grid (clamped to 0..=31.875).
+    pub fn quantize_peak(peak: f32) -> f32 {
+        byte(peak, PEAK_UNIT) as f32 * PEAK_UNIT
     }
 
-    fn range_byte(range: f32) -> u8 {
-        let q = ls_math::det::round(range / RANGE_UNIT);
-        if q.is_nan() {
+    /// State bytes and team byte of a well with `range` (u), peak pull
+    /// `peak` (u/s^2), active from `start_tick` to `end_tick` (exclusive),
+    /// sent in the snapshot of tick `now`. `None` if it starts more than
+    /// [`MAX_START_LEAD`] ticks later.
+    pub fn encode(
+        range: f32,
+        peak: f32,
+        start_tick: u64,
+        end_tick: u64,
+        now: u64,
+    ) -> Option<([u8; 4], u8)> {
+        let team = if start_tick <= now {
             0
+        } else if start_tick - now <= MAX_START_LEAD {
+            (start_tick - now) as u8
         } else {
-            q.clamp(0.0, 255.0) as u8
-        }
-    }
-
-    fn strength_byte(strength: f32) -> u8 {
-        let q = ls_math::det::round(strength / STRENGTH_UNIT);
-        if q.is_nan() {
-            0
-        } else {
-            q.clamp(0.0, 255.0) as u8
-        }
-    }
-
-    /// State bytes of a well with `range` (u), peak pull `strength` and
-    /// last tick `end_tick`.
-    pub fn encode(range: f32, strength: f32, end_tick: u64) -> [u8; 4] {
+            return None;
+        };
         let end = (end_tick as u16).to_le_bytes();
-        [range_byte(range), strength_byte(strength), end[0], end[1]]
+        Some((
+            [
+                byte(range, RANGE_UNIT),
+                byte(peak, PEAK_UNIT),
+                end[0],
+                end[1],
+            ],
+            team,
+        ))
     }
 
-    /// A decoded well: range (u), peak pull (fraction), end tick.
+    /// A decoded well: range (u), peak pull (u/s^2), start and end tick.
     #[derive(Debug, Clone, Copy, PartialEq)]
     pub struct WellState {
         pub range: f32,
-        pub strength: f32,
+        pub peak: f32,
+        pub start_tick: u64,
         pub end_tick: u64,
     }
 
-    /// Decodes the state bytes; the end tick is the one nearest to `now`
-    /// with the sent low 16 bits (wells last far less than 9 minutes).
-    pub fn decode(state: [u8; 4], now: u64) -> WellState {
+    /// Decodes a well entity of the snapshot of tick `now`: the end tick is
+    /// the one nearest to `now` with the sent low 16 bits (wells last far
+    /// less than 9 minutes), the start `now + team` (`now` when active).
+    pub fn decode(state: [u8; 4], team: u8, now: u64) -> WellState {
         let low = u16::from_le_bytes([state[2], state[3]]) as u64;
-        let base = now & !0xffff;
-        let mut end = base | low;
+        let mut end = (now & !0xffff) | low;
         if end + 0x8000 < now {
             end += 0x1_0000;
         } else if end > now + 0x8000 && end >= 0x1_0000 {
             end -= 0x1_0000;
         }
+        let start = now + team as u64;
         WellState {
             range: state[0] as f32 * RANGE_UNIT,
-            strength: state[1] as f32 * STRENGTH_UNIT,
+            peak: state[1] as f32 * PEAK_UNIT,
+            start_tick: start,
             end_tick: end,
         }
     }
@@ -1153,22 +1172,29 @@ mod tests {
 
     #[test]
     fn well_state_round_trips_on_its_grid() {
-        let s = well_state::encode(16.0, 0.3, 70_000);
-        let w = well_state::decode(s, 69_990);
-        assert_eq!((w.range, w.end_tick), (16.0, 70_000));
-        assert_eq!(w.strength, well_state::quantize_strength(0.3));
-        assert!((w.strength - 0.3).abs() < 1e-6);
+        let (st, team) = well_state::encode(16.0, 9.0, 69_000, 70_000, 69_990).unwrap();
+        assert_eq!(team, 0, "active at the snapshot");
+        let w = well_state::decode(st, team, 69_990);
+        assert_eq!((w.range, w.peak, w.end_tick), (16.0, 9.0, 70_000));
+        assert!(w.start_tick <= 69_990);
+        // A well that starts 120 ticks later (telegraphed) keeps its start.
+        let (st, team) = well_state::encode(20.0, 12.0, 1_120, 2_920, 1_000).unwrap();
+        assert_eq!(well_state::decode(st, team, 1_000).start_tick, 1_120);
+        assert!(well_state::encode(20.0, 12.0, 1_256, 2_920, 1_000).is_none());
         // The end tick is recovered across the 16-bit wrap, before and after.
         for now in [65_530u64, 65_536, 70_000, 69_000, 100] {
             for end in [now, now + 360, now + 1800, now.saturating_sub(5)] {
-                let d = well_state::decode(well_state::encode(10.0, 0.4, end), now);
+                let (st, team) = well_state::encode(10.0, 4.0, 0, end, now).unwrap();
+                let d = well_state::decode(st, team, now);
                 assert_eq!(d.end_tick, end, "now {now} end {end}");
             }
         }
-        // Clamped and NaN-safe.
-        let d = well_state::decode(well_state::encode(1e9, f32::NAN, 0), 0);
-        assert_eq!((d.range, d.strength), (63.75, 0.0));
+        // Clamped and NaN-safe; grid helpers.
+        let (st, team) = well_state::encode(1e9, f32::NAN, 0, 0, 0).unwrap();
+        let d = well_state::decode(st, team, 0);
+        assert_eq!((d.range, d.peak), (63.75, 0.0));
         assert_eq!(well_state::quantize_range(16.1), 16.0);
+        assert_eq!(well_state::quantize_peak(9.06), 9.0);
     }
 
     #[test]

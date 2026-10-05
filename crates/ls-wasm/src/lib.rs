@@ -241,6 +241,14 @@ pub fn entity_kind_names() -> Vec<String> {
         .collect()
 }
 
+/// Id of a comedy event (`ls_sim::EventKind` index, `data/events/<id>.ron`),
+/// "" for none or unknown.
+pub fn event_id(event: u8) -> String {
+    // Filled from A3's `EventKind` once merged.
+    let _ = event;
+    String::new()
+}
+
 /// Lower camel case name of an entity kind (the web client's keys).
 pub fn entity_kind_name(k: ls_sim::ReplicatedKind) -> &'static str {
     use ls_sim::ReplicatedKind::*;
@@ -880,6 +888,38 @@ impl Game {
     #[wasm_bindgen(js_name = pickTeamPacket)]
     pub fn pick_team_packet(&self, team: i32) -> Option<Vec<u8>> {
         self.core.pick_team_packet(u8::try_from(team).ok())
+    }
+
+    /// `ArchitectAction` packet placing a stroke (protocol 6; send reliably;
+    /// `undefined` offline).
+    #[wasm_bindgen(js_name = architectActionPacket)]
+    pub fn architect_action_packet(
+        &self,
+        stroke: u8,
+        x: f32,
+        y: f32,
+        z: f32,
+        radius: f32,
+    ) -> Option<Vec<u8>> {
+        self.core
+            .architect_action_packet(stroke, Vec3::new(x, y, z), radius)
+    }
+
+    /// Protocol 6 ship bits, 3 numbers per ship: `[id, pigmented (0/1),
+    /// hats]` (`ls_net::ship_ext`).
+    #[wasm_bindgen(js_name = shipExt)]
+    pub fn ship_ext(&self) -> Vec<u8> {
+        self.core
+            .ship_ext()
+            .into_iter()
+            .flat_map(|(id, e)| {
+                [
+                    id,
+                    u8::from(e & ls_net::ship_ext::PIGMENTED != 0),
+                    ls_net::ship_ext::hats(e),
+                ]
+            })
+            .collect()
     }
 
     /// `Spectate` packet (spectate from the next match on, or play again).

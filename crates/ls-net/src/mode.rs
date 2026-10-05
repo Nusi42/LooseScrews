@@ -42,9 +42,10 @@
 //!
 //! ```text
 //! mood    u8 mood (calm, bored, grumpy, giddy), u8 event (EventKind index,
-//!         255 = none), u8 phase (mood_phase), u8 target (wire ship id, 255 =
-//!         none), varint phase_start_tick, varint phase_end_tick, 8 parameter
-//!         bytes, then `up`: 1 bit "default" (+Y) or 3 x f32 raw bits
+//!         255 = none), u8 phase (mood_phase = ls_sim::EventPhase), u8
+//!         target (wire ship id, 255 = none), varint active_tick, varint
+//!         phase_end_tick, 8 parameter bytes, then `up`: 1 bit "default"
+//!         (+Y) or 3 x f32 raw bits
 //! ```
 //!
 //! # Race (protocol 6; day-one layout note for B6, Belt Up)
@@ -63,14 +64,16 @@
 //!         held), u8 slot
 //! ```
 //!
-//! # Well entities (protocol 6; day-one layout note for B7 and A4)
+//! # Well entities (protocol 6; day-one layout note for B4 and B7)
 //!
-//! A dynamic gravity well (a Paperweight stone, the Architect's Gravity
-//! Chaos+ stroke) is a generic entity of kind `ReplicatedKind::Well` at the
-//! well's centre whose 4 state bytes are [`crate::wire::well_state`]
-//! (range, strength, end tick). The client predictor rebuilds the well from
-//! them; the entity exists while the well pulls (strength 0 while a stone
-//! is still flying).
+//! Every dynamic gravity well of the world (`ls_sim::gravity::DynamicWell`:
+//! a Paperweight, the Architect's Gravity Chaos+ stroke) goes out as a
+//! generic entity of kind `ReplicatedKind::Well` at the well's centre, built
+//! by `ls_game::convert::well_entities` (ids `0x8000 |` the well key, apart
+//! from the simulation's 15-bit entity ids). Its 4 state bytes and `team`
+//! byte are [`crate::wire::well_state`] (range, peak pull, end tick, start).
+//! The client predictor rebuilds the wells from them; modules only add
+//! `DynamicWell`s and need no wire work.
 //!
 //! Unchanged mode state costs one bit per delta snapshot. Positions are
 //! quantized like ship positions (level bounds + 2 u, 16 bits per axis).
@@ -105,15 +108,14 @@ pub mod mode_player_flags {
     pub const ARCHITECT: u8 = 1 << 3;
 }
 
-/// [`NetMoodView::phase`] values (`ls_sim` event phases).
+/// [`NetMoodView::phase`] values (`ls_sim::EventPhase::index`; meaningless
+/// while `event` is [`NONE`]).
 pub mod mood_phase {
-    /// No event running.
-    pub const IDLE: u8 = 0;
     /// The 3 s telegraph before the event changes anything.
-    pub const ANNOUNCE: u8 = 1;
-    pub const ACTIVE: u8 = 2;
+    pub const ANNOUNCE: u8 = 0;
+    pub const ACTIVE: u8 = 1;
     /// The event winds down (wells fade back in, ducks leave, ...).
-    pub const ENDING: u8 = 3;
+    pub const ENDING: u8 = 2;
 }
 
 /// The comedy director's replicated state (protocol 6): the wire form of
@@ -130,8 +132,10 @@ pub struct NetMoodView {
     pub phase: u8,
     /// Wire ship id of the player the event aims at, [`NONE`] for none.
     pub target: u8,
-    /// Tick the current phase started and ends (0 = none).
-    pub phase_start_tick: u32,
+    /// Tick the event's active phase starts (the time base of everything it
+    /// moves: duck paths, hiccup ticks).
+    pub active_tick: u32,
+    /// Tick the current phase ends.
     pub phase_end_tick: u32,
     /// Event-defined parameters (seeded axis, route index, ...).
     pub params: [u8; 8],
@@ -145,9 +149,9 @@ impl Default for NetMoodView {
         NetMoodView {
             mood: 0,
             event: NONE,
-            phase: mood_phase::IDLE,
+            phase: mood_phase::ANNOUNCE,
             target: NONE,
-            phase_start_tick: 0,
+            active_tick: 0,
             phase_end_tick: 0,
             params: [0; 8],
             up: Vec3::Y,
@@ -163,7 +167,7 @@ pub struct PackedMoodView {
     pub event: u8,
     pub phase: u8,
     pub target: u8,
-    pub phase_start_tick: u32,
+    pub active_tick: u32,
     pub phase_end_tick: u32,
     pub params: [u8; 8],
     pub up: [u32; 3],
@@ -182,7 +186,7 @@ impl From<&NetMoodView> for PackedMoodView {
             event: m.event,
             phase: m.phase,
             target: m.target,
-            phase_start_tick: m.phase_start_tick,
+            active_tick: m.active_tick,
             phase_end_tick: m.phase_end_tick,
             params: m.params,
             up: [m.up.x.to_bits(), m.up.y.to_bits(), m.up.z.to_bits()],
@@ -197,7 +201,7 @@ impl From<&PackedMoodView> for NetMoodView {
             event: m.event,
             phase: m.phase,
             target: m.target,
-            phase_start_tick: m.phase_start_tick,
+            active_tick: m.active_tick,
             phase_end_tick: m.phase_end_tick,
             params: m.params,
             up: Vec3::new(
@@ -475,7 +479,7 @@ fn write_mood(w: &mut BitWriter, m: &PackedMoodView) {
     w.write_u8(m.event);
     w.write_u8(m.phase);
     w.write_u8(m.target);
-    w.write_varint(m.phase_start_tick as u64);
+    w.write_varint(m.active_tick as u64);
     w.write_varint(m.phase_end_tick as u64);
     for b in m.params {
         w.write_u8(b);
@@ -495,7 +499,7 @@ fn read_mood(r: &mut BitReader) -> Result<PackedMoodView, DecodeError> {
         event: r.read_u8()?,
         phase: r.read_u8()?,
         target: r.read_u8()?,
-        phase_start_tick: r.read_varint_u32()?,
+        active_tick: r.read_varint_u32()?,
         phase_end_tick: r.read_varint_u32()?,
         ..PackedMoodView::default()
     };
@@ -1156,7 +1160,7 @@ mod tests {
             event: 10,
             phase: mood_phase::ACTIVE,
             target: 7,
-            phase_start_tick: 12_345,
+            active_tick: 12_345,
             phase_end_tick: 13_245,
             params: [1, 2, 3, 4, 250, 0, 9, 255],
             up: Vec3::new(0.6, 0.0, -0.8),

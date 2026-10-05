@@ -1989,6 +1989,38 @@ impl GameCore {
         self.lobby_packet(Message::Ready { ready })
     }
 
+    /// `ArchitectAction` placing a stroke (online only; the server
+    /// validates it).
+    pub fn architect_action_packet(
+        &self,
+        stroke: u8,
+        center: Vec3,
+        radius: f32,
+    ) -> Option<Vec<u8>> {
+        self.lobby_packet(Message::ArchitectAction(ls_net::ArchitectActionMsg {
+            stroke,
+            center,
+            radius,
+        }))
+    }
+
+    /// Protocol 6 `ext` bits (`ls_net::ship_ext`: pigment, hats) of every
+    /// ship this client knows, as `(id, ext)` (online: the newest snapshot).
+    pub fn ship_ext(&self) -> Vec<(u8, u8)> {
+        match &self.mode {
+            Mode::Online(o) => o
+                .session
+                .latest_snapshot()
+                .map(|s| s.ships.iter().map(|x| (x.id, x.ext)).collect())
+                .unwrap_or_default(),
+            Mode::Practice(p) => p
+                .world
+                .ships()
+                .map(|s| (s.player.0 as u8, ls_game::convert::ship_ext(s)))
+                .collect(),
+        }
+    }
+
     /// `PickTeam` for the next match (`None` team = auto-balance).
     pub fn pick_team_packet(&self, team: Option<u8>) -> Option<Vec<u8>> {
         self.lobby_packet(Message::PickTeam { team })

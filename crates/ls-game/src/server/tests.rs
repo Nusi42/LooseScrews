@@ -1037,3 +1037,37 @@ fn mode_state_in_snapshots_and_results_once_at_the_end() {
         .collect();
     assert_eq!(kinds, vec!["Welcome", "MatchResults"]);
 }
+
+#[test]
+fn architect_actions_are_queued_bounded_and_attributed() {
+    let code = ShareCode::new(78, Sliders::new(40, 30));
+    let mut r = Room::new(MatchConfig::paint_the_void(code), cfg()).unwrap();
+    let a = r.join(&client_hello("a", None, None)).unwrap();
+    let b = r.join(&client_hello("b", None, None)).unwrap();
+    let action = |stroke: u8| ls_net::ArchitectActionMsg {
+        stroke,
+        center: Vec3::new(10.0, 20.0, 30.0),
+        radius: 16.0,
+    };
+    r.handle_packet(a, &Message::ArchitectAction(action(2)).encode().unwrap())
+        .unwrap();
+    r.handle_packet(b, &Message::ArchitectAction(action(5)).encode().unwrap())
+        .unwrap();
+    let pa = r.player_of(a).unwrap();
+    let pb = r.player_of(b).unwrap();
+    assert_eq!(
+        r.take_architect_actions(),
+        vec![(pa, action(2)), (pb, action(5))]
+    );
+    assert!(r.take_architect_actions().is_empty());
+    // A flood between two takes is capped and counted.
+    for _ in 0..crate::server::MAX_QUEUED_ARCHITECT_ACTIONS + 10 {
+        r.handle_message(a, Message::ArchitectAction(action(1)))
+            .unwrap();
+    }
+    assert_eq!(
+        r.take_architect_actions().len(),
+        crate::server::MAX_QUEUED_ARCHITECT_ACTIONS
+    );
+    assert_eq!(r.stats().dropped_architect_actions, 10);
+}

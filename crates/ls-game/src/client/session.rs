@@ -332,6 +332,22 @@ impl ClientSession {
         Message::Spectate { spectate }
     }
 
+    /// The comedy director's state and the level's up of the newest
+    /// snapshot (protocol 6; the default, calm with up +Y, before it).
+    pub fn mood(&self) -> &ls_net::NetMoodView {
+        &self.mode().mood
+    }
+
+    /// The message that places an Architect stroke (protocol 6; the server
+    /// validates it).
+    pub fn architect_action(&self, stroke: u8, center: Vec3, radius: f32) -> Message {
+        Message::ArchitectAction(ls_net::ArchitectActionMsg {
+            stroke,
+            center,
+            radius,
+        })
+    }
+
     /// Players of the newest snapshot (names, teams, ship types, gadgets).
     pub fn players(&self) -> &[NetPlayer] {
         self.latest.as_ref().map_or(&[], |s| &s.players)

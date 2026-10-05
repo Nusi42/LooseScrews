@@ -90,9 +90,10 @@ pub enum ReplicatedKind {
     DiscoBall = 16,
     /// Mimic pickup (`state[0..]` as the pickup it imitates).
     Mimic = 17,
-    /// Dynamic gravity well (Paperweight stone, the Architect's Gravity
-    /// Chaos+ stroke); state bytes per `ls_net::well_state` (range,
-    /// strength, end tick), read by the client predictor.
+    /// Dynamic gravity well (`gravity::DynamicWell`: Paperweight, the
+    /// Architect's Gravity Chaos+ stroke), built by
+    /// `ls_game::convert::well_entities` from the world's dynamic wells;
+    /// state per `ls_net::well_state`, read by the client predictor.
     Well = 18,
 }
 

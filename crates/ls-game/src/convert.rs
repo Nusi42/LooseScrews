@@ -121,7 +121,7 @@ impl NetConv {
             vel: ship.vel,
             rot: ship.orientation,
             flags,
-            ext: 0,
+            ext: ship_ext(ship),
             status: with_status.then(|| self.status(ship)),
         }
     }
@@ -275,6 +275,14 @@ const BUTTON_MAP: [(Buttons, u16); 8] = [
     (Buttons::GADGET, buttons::GADGET),
     (Buttons::WEAPON_MODE, buttons::WEAPON_MODE),
 ];
+
+/// The protocol 6 `ext` bits of a ship (`ls_net::ship_ext`): pigmented
+/// (monochrome levels) and the number of hats worn (Hat rain, saturating).
+pub fn ship_ext(ship: &ShipState) -> u8 {
+    // Pigment (A4) and hats (B3) are filled in once their ship state exists.
+    let _ = ship;
+    0
+}
 
 /// Wire form of a projectile: id truncated to 16 bits (wraps), `kind` is the
 /// weapon id, `owner` the shooter's wire id ([`NO_SHIP`] if they left),

@@ -1454,12 +1454,11 @@ mod tests {
                     mood: 2,
                     event: if tick >= 110 { 4 } else { crate::mode::NONE },
                     phase: match tick {
-                        0..110 => crate::mode::mood_phase::IDLE,
-                        110..120 => crate::mode::mood_phase::ANNOUNCE,
+                        0..120 => crate::mode::mood_phase::ANNOUNCE,
                         _ => crate::mode::mood_phase::ACTIVE,
                     },
                     target: 3,
-                    phase_start_tick: tick / 10 * 10,
+                    active_tick: tick / 10 * 10,
                     phase_end_tick: 400,
                     params: [tick as u8 / 50, 0, 0, 0, 0, 0, 0, 1],
                     up: if tick >= 120 {

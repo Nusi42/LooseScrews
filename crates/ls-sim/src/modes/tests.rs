@@ -210,6 +210,36 @@ fn free_for_all_gives_every_ship_its_own_side() {
 }
 
 #[test]
+fn free_for_all_keeps_a_departed_players_side_while_its_shots_live() {
+    let mut w = world(rules_for(ModeKind::TeamBrawl, Some(0), 60.0));
+    let mut t = room();
+    let a = w.add_player(None, ShipType::Tinker).unwrap();
+    let _b = w.add_player(None, ShipType::Tinker).unwrap();
+    let side_a = w.ship(a).unwrap().team;
+    // a leaves a mine-like entity behind (owned, on its side).
+    let mut mine = EntitySpawn::debris(Vec3::ZERO, Vec3::ZERO, 0.5, 0.0);
+    mine.owner = Some(a);
+    mine.team = side_a;
+    w.spawn_entity(mine);
+    w.remove_player(a);
+    let c = w.add_player(None, ShipType::Tinker).unwrap();
+    assert_ne!(
+        w.ship(c).unwrap().team,
+        side_a,
+        "a's side is still in play through its entity"
+    );
+    // a's leftovers hurt c in full (no friendly-fire scaling).
+    let hull = w.ship(c).unwrap().hull;
+    let src = DamageSource {
+        attacker: Some(a),
+        team: side_a,
+        weapon: None,
+    };
+    w.hook_for_test(&mut t, |ctx| ctx.damage(c, 10.0, Vec3::ZERO, src, true));
+    assert_eq!(w.ship(c).unwrap().hull, hull - 10.0);
+}
+
+#[test]
 fn free_for_all_has_no_friendly_fire_and_credits_kills() {
     let mut r = rules_for(ModeKind::TeamBrawl, Some(0), 60.0);
     r.friendly_fire_percent = 10;

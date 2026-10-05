@@ -582,9 +582,10 @@ async function main() {
       );
       for (const w of compileWarnings) note(`WGSL warning: ${w}`);
       // The renderer builds the scene pipelines (terrain, instanced,
-      // translucent), the light froxel builder (compute) and the post chain (bloom down, bloom up, composite);
-      // later packages add more, so check that these are among them.
-      const required = ["terrain", "instanced", "translucent", "light clusters", "bloom down", "bloom up", "composite"];
+      // translucent), the light froxel builder (compute, VQ6), the particles
+      // (VQ5: particles, dust motes) and the post chain (bloom down, bloom up,
+      // composite); later packages add more, so check that these are among them.
+      const required = ["terrain", "instanced", "translucent", "light clusters", "particles", "dust motes", "bloom down", "bloom up", "composite"];
       const missing = required.filter((l) => !s.pipelines.some((p) => p.label === l));
       check(
         `${label}: every render pipeline validates`,

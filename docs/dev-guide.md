@@ -572,9 +572,14 @@ rejected at the handshake with `DataMismatch`, not desynced. Run the wasm32 unit
 ### 8.6 Client and bots
 
 - **Drawing:** projectiles and pickups use the weapon's `visual`; `SHAPE_STYLES` in
-  `web/src/game/scene.ts` maps each `Shape` to a mesh. A new shape means a variant in the
-  `shapes!` list in `crates/ls-sim/src/visual.rs` (append; the index is on the wire) and a
-  style in `SHAPE_STYLES`. Weapon names, slots and the weapon HUD come from the data.
+  `web/src/game/scene.ts` maps each `Shape` to a mesh, and `VFX_SHAPES` in
+  `web/src/game/vfx.ts` to its particle effects (glowing core instead of the mesh, trail,
+  muzzle flash, impact or explosion radius at visual scale 1). A new shape means a variant in
+  the `shapes!` list in `crates/ls-sim/src/visual.rs` (append; the index is on the wire), a
+  style in `SHAPE_STYLES` and an entry in `VFX_SHAPES` (without one it looks like an energy
+  bolt). A new weapon with an existing shape needs no client code: the visual colour and scale
+  from its data tint and size the effects. Weapon names, slots and the weapon HUD come from the
+  data.
 - **Models:** hulls and props are built in TypeScript with the modelling kit in
   `web/src/renderer/models/kit.ts` (loft, lathe, bevelled box, sphere, mirror, smoothing
   groups); every triangle carries a material part (`PART_*`: hull, livery, trim, metal,
@@ -870,7 +875,8 @@ All servers it starts are stopped at the end; it never uses port 7777.
 `web/src/gallery/scenes.ts` (cave close-up, cave tunnel, open sky, mine shaft, a rock material
 border, paint edges, surface states, the four hulls, a fight frame with an explosion,
 `light-volley` and `light-storm`: a volley of glowing shots down a mine shaft and 64 dynamic
-lights in a cave tunnel, VQ6) at 1920x1080 and saves one PNG per scene, plus a
+lights in a cave tunnel, VQ6; a ship blowing up and the 20 k particle budget scene, VQ5) at
+1920x1080 and saves one PNG per scene, plus a
 `manifest.json` with the share code, the camera pose and the per-pass GPU times, under
 `target/visual-gallery/<label>/`. `target/visual-gallery/index.html` shows every label side by
 side per scene, so a package takes a `before` run on its base and an `after` run on its branch:
@@ -887,7 +893,10 @@ The page is the normal client with `?gallery=<scene id>` (`web/src/gallery/galle
 practice on a share code built from a fixed seed and sliders, no dummies, a camera pose picked
 from the spawn point by CPU ray casts against the chunk meshes (so poses follow generator
 changes), synthetic ships, shots and effect cues drawn through `game/scene.ts`, and a fixed
-shader time. It needs no game server (a static file server on 127.0.0.1 serves `web/dist`).
+shader time. Particles are the sum of what happened before the frame, so scenes with content
+replay a short synthetic history through the normal effect code with a seeded RNG
+(`web/src/gallery/vfxScenes.ts`, `simulateVfx`); the PASS line reports the live particle count.
+It needs no game server (a static file server on 127.0.0.1 serves `web/dist`).
 
 GPU timing: with the optional `timestamp-query` feature every render pass writes timestamps
 (`web/src/renderer/gpuTimer.ts`; labels `terrain`, `objects`, `post`, later `particles`,
@@ -904,7 +913,8 @@ GPU is not available to WebGPU), `--no-budget` records without failing, `--quali
 (default high, `?quality=`; no automatic pick in the gallery), `--grade <preset>` previews a
 colour grade (`GRADE_PRESETS` in `web/src/renderer/post.ts`, `?grade=`), `--lights off`
 renders the same frames without dynamic lights (`?lights=0`; compare the pass times with a
-`--lights on` run for the lights' shading cost). Without
+`--lights on` run for the lights' shading cost), `--vfx off` draws the pre-VQ5 mesh effects
+instead of particles (`?vfx=off`, also in the game). Without
 `timestamp-query` or on a software adapter the budget is not checked. Measured on a much faster
 GPU than the reference, the check only catches gross regressions; read the absolute numbers on
 the reference class.

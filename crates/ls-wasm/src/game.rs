@@ -59,7 +59,8 @@ use ls_worldgen::{ChunkCoord, Generator, Mesh, ShareCode};
 use crate::controls::{Controls, FixedStep, LookAccumulator};
 use crate::inventory::{resolve_select, Inventory, LoadoutView};
 use crate::mechanics::{
-    allowed_or_fallback, push_cue, ship_choices, ChargeView, CueView, GadgetView, ShipChoice,
+    allowed_or_fallback, hit_cue, push_cue, ship_choices, ChargeView, CueView, GadgetView,
+    ShipChoice,
 };
 use crate::scene::{EntityDraw, PlayerInfo};
 use crate::shots::{FireRules, Resources, ShotPredictor, ShotStats};
@@ -867,6 +868,27 @@ impl GameCore {
                 if !p.world.mode().is_running() {
                     p.over_secs += dt.max(0.0) as f32;
                 }
+                // Hits on ships as client cues (particle effects), the same
+                // way the server reports them online (`NetEvent::Hit`).
+                let tick = match &self.mode {
+                    Mode::Practice(p) => p.world.tick(),
+                    Mode::Online(_) => 0,
+                };
+                for h in
+                    ls_game::convert::events_to_net(&events, tick, |p| Some(p.0.min(254) as u8))
+                {
+                    if let NetEvent::Hit {
+                        tick,
+                        attacker,
+                        victim,
+                        damage,
+                        pos,
+                        ..
+                    } = h
+                    {
+                        push_cue(&mut self.cues, hit_cue(attacker, victim, damage, pos, tick));
+                    }
+                }
                 for e in events {
                     self.practice_event(e);
                 }
@@ -1484,7 +1506,17 @@ impl GameCore {
                     }
                     None
                 }
-                NetEvent::Hit { .. } => None,
+                NetEvent::Hit {
+                    tick,
+                    attacker,
+                    victim,
+                    damage,
+                    pos,
+                    ..
+                } => {
+                    push_cue(&mut self.cues, hit_cue(attacker, victim, damage, pos, tick));
+                    None
+                }
             };
             if let Some(l) = line {
                 push_feed(&mut self.feed, l);

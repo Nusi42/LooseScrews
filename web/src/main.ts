@@ -71,6 +71,7 @@ import { addRuleEditorLink, showRuleEditor, wantsRuleEditor } from "./rules/edit
 import { showShowcase, wantsShowcase } from "./renderer/models/showcase.ts";
 import { WreckTypes } from "./game/wrecks.ts";
 import { LightFx, sceneLights } from "./game/lightFx.ts";
+import { Vfx } from "./game/vfx.ts";
 import { parseInvite } from "./rules/model.ts";
 import type { WasmApi } from "./wasm/api.ts";
 
@@ -261,6 +262,15 @@ function runGame(
     let wrecks = new WreckTypes();
     // Dynamic lights (VQ6): timed pulses (muzzle, impacts, explosions); effect systems emit into it too.
     const lightFx = new LightFx();
+    // VQ5 particle effects (null with `?vfx=off`: the mesh effects draw instead).
+    const particles = renderer.particles;
+    const vfx = particles ? new Vfx(particles) : null;
+    if (vfx) {
+      // VQ5 effects emit their own light pulses (muzzle, impacts, explosions, deaths) into VQ6.
+      vfx.lightSink = lightFx;
+      lightFx.watchProjectiles = false;
+    }
+    particles?.clear();
     let shipBayOpen = false;
     let shipError = "";
     let dead = false;
@@ -306,6 +316,7 @@ function runGame(
         // The next match builds its own meshes and instances.
         chunks.clear();
         renderer.clearInstances();
+        renderer.particles?.clear();
         renderer.settings.fogDensity = DEFAULT_SETTINGS.fogDensity;
         renderer.settings.fogColor = DEFAULT_SETTINGS.fogColor;
       }
@@ -388,6 +399,8 @@ function runGame(
         effects = new EffectsState();
         wrecks = new WreckTypes();
         lightFx.clear();
+        vfx?.reset();
+        particles?.clear();
         spectator = null;
         lobbyClock.reset();
         shipBayOpen = false;
@@ -429,7 +442,8 @@ function runGame(
       } else {
         spectator = null;
       }
-      const view = camera.update(r.pose, spectator ? spectator.view : ride, shakeOffset(fx.shake, time));
+      const shake = Math.max(fx.shake, vfx?.shake(time) ?? 0);
+      const view = camera.update(r.pose, spectator ? spectator.view : ride, shakeOffset(shake, time));
       chunkStats = chunks.update(game, view.position, initialLoad ? LOADING_BUDGET : PLAY_BUDGET);
       if (initialLoad && chunkStats.pending === 0) initialLoad = false;
 
@@ -438,27 +452,47 @@ function runGame(
       const own = players.find((p) => p.id === game.player);
       const tracked = r.pose && own ? [...r.ships, { id: game.player, alive: r.pose.alive, position: r.pose.position, shipType: own.shipType }] : r.ships;
       wrecks.observe(tracked, r.entities, time);
-      renderer.setScene(
-        buildScene(r.ships, r.projectiles, r.entities, session.visuals, session.teamOf(r.ships), time, {
-          gadgetOf: (id) => {
-            for (const p of players) if (p.id === id) return gadgetKey(session.gadgetIds, p.gadget);
-            return "";
-          },
-          beams: fx.beams,
-          flashes: fx.flashes,
-          // The guided Eyeball is the camera; hide only that one missile.
-          hideShot: guided ? (p) => p === guided : undefined,
-          shipTypeOf: (id) => players.find((p) => p.id === id)?.shipType,
-          wreckTypeOf: (e) => wrecks.typeOf(e),
-          teams: r.mode.teams,
-        }),
-      );
       const gadgetOf = (id: number): string => {
         for (const p of players) if (p.id === id) return gadgetKey(session.gadgetIds, p.gadget);
         return "";
       };
-      lightFx.observe(r.projectiles, session.visuals, time);
-      lightFx.observeShips(r.ships, time);
+      const hideShot = guided ? (p: (typeof r.projectiles)[number]) => p === guided : undefined;
+      vfx?.update({
+        time,
+        dt,
+        camera: view.position,
+        cameraOrientation: view.orientation,
+        player: game.player,
+        pose: r.pose,
+        ships: r.ships,
+        shots: r.projectiles,
+        entities: r.entities,
+        visuals: session.visuals,
+        cues: r.cues,
+        beams: fx.beams,
+        flashes: fx.flashes,
+        gadgetOf,
+        hullOf: (t) => session.shipChoices().find((c) => c.shipType === t)?.hull ?? 100,
+        hideShot,
+      });
+      renderer.setScene(
+        buildScene(r.ships, r.projectiles, r.entities, session.visuals, session.teamOf(r.ships), time, {
+          gadgetOf,
+          beams: fx.beams,
+          flashes: fx.flashes,
+          // The guided Eyeball is the camera; hide only that one missile.
+          hideShot,
+          shipTypeOf: (id) => players.find((p) => p.id === id)?.shipType,
+          wreckTypeOf: (e) => wrecks.typeOf(e),
+          teams: r.mode.teams,
+          vfx: vfx !== null,
+        }),
+      );
+      // Without VQ5 effects the light pulses come from watching projectiles and ships.
+      if (!vfx) {
+        lightFx.observe(r.projectiles, session.visuals, time);
+        lightFx.observeShips(r.ships, time);
+      }
       const lights = sceneLights({
         ships: r.ships,
         shots: r.projectiles,

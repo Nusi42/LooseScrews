@@ -1,4 +1,5 @@
 use super::*;
+use crate::mechanics::CUE_HIT;
 use ls_game::server::{Room, RoomConfig};
 use ls_math::terrain::TerrainEdit;
 use ls_net::{Reject, RejectReason, PROTOCOL_VERSION};
@@ -1368,4 +1369,66 @@ fn online_match_transition_rebuilds_the_core_in_place() {
     let team = l.core.pick_team_packet(None).unwrap();
     l.room.handle_packet(l.id, &team).unwrap();
     assert_eq!(l.room.take_lobby_requests().len(), 2);
+}
+
+#[test]
+fn practice_hits_on_ships_become_hit_cues() {
+    let mut g = small_practice(1);
+    let me = g.player();
+    // Park the dummy right in front of the own ship and fire the laser at it.
+    if let Mode::Practice(p) = &mut g.mode {
+        let own = p.world.ship(p.me).unwrap();
+        let ahead = own.pos + own.orientation * Vec3::new(0.0, 0.0, -4.0);
+        let dummy = p.world.ships().find(|s| s.player != p.me).unwrap().player;
+        let d = p.world.ship_mut(dummy).unwrap();
+        d.pos = ahead;
+        d.vel = Vec3::ZERO;
+    }
+    g.take_cues();
+    let fire = Controls {
+        buttons: ls_sim::Buttons::FIRE_PRIMARY.0,
+        ..Default::default()
+    };
+    let mut hit = None;
+    for _ in 0..90 {
+        g.frame(DT, fire);
+        if let Some(c) = g.take_cues().into_iter().find(|c| c.kind == CUE_HIT) {
+            hit = Some(c);
+            break;
+        }
+    }
+    let hit = hit.expect("a hit cue");
+    assert_eq!(hit.source, me);
+    assert_ne!(hit.target, me);
+    assert!(hit.value > 0, "damage");
+    assert!(hit.pos.length() > 0.0, "impact point");
+}
+
+#[test]
+fn online_hits_become_hit_cues() {
+    let mut l = connect();
+    for _ in 0..4 {
+        l.tick(Controls::default());
+    }
+    l.core.take_cues();
+    let me = l.core.player();
+    let hits = Message::Events(vec![NetEvent::Hit {
+        tick: 9,
+        attacker: 5,
+        victim: me,
+        weapon: 0,
+        damage: 12,
+        pos: Vec3::new(1.0, 2.0, 3.0),
+    }])
+    .encode()
+    .unwrap();
+    assert_eq!(l.core.handle_packet(&hits).unwrap(), None);
+    let cues = l.core.take_cues();
+    let hit = cues.iter().find(|c| c.kind == CUE_HIT).expect("hit cue");
+    assert_eq!(
+        (hit.source, hit.target, hit.value, hit.tick),
+        (5, me, 12, 9)
+    );
+    assert_eq!(hit.pos, Vec3::new(1.0, 2.0, 3.0));
+    assert!(l.core.take_feed().is_empty(), "hits stay out of the feed");
 }

@@ -13,6 +13,7 @@ import type { Vec3 } from "../math/vec3.ts";
 import { shipMeshKind, wreckMeshKind, type MeshKind } from "../renderer/models/index.ts";
 import { emptyScene, type Instance, type Rgb, type SceneInstances } from "../renderer/renderer.ts";
 import { PAINT_COLORS, type Beam, type Flash } from "./mechanics.ts";
+import { hidesMesh } from "./vfx.ts";
 import { sideColor, TEAM_PALETTE } from "./sides.ts";
 import {
   PROJ_ARMED,
@@ -143,6 +144,7 @@ export function addShips(
   gadgetOf: (id: number) => string = () => "",
   time = 0,
   teams = 2,
+  vfx = false,
 ): void {
   for (const s of ships) {
     if (!s.alive) continue;
@@ -174,8 +176,9 @@ export function addShips(
         rotation: q.fromAxisAngle(UP, time * 0.7),
         scale: scale * SHIELD_SCALE,
         color: [0.55, 0.85, 1],
-        emissive: 1,
-        opacity: 0.22 + 0.06 * Math.sin(time * 5 + phase(s.id)),
+        emissive: vfx ? 0.45 : 1,
+        // With particles the hits ripple across it (game/vfx.ts), so the bubble itself stays faint.
+        opacity: (vfx ? 0.1 : 0.22) + (vfx ? 0.03 : 0.06) * Math.sin(time * 5 + phase(s.id)),
       });
     } else if (s.gadgetActive) {
       push(scene, "translucent", "sphere", {
@@ -244,9 +247,13 @@ export function addProjectiles(
   teamOf: (owner: number) => number | undefined,
   time: number,
   teams = 2,
+  vfx = false,
 ): void {
   for (const p of shots) {
     const visual = visuals[p.visual];
+    // With particles (game/vfx.ts) energy shots are glowing cores with ribbon
+    // trails instead of meshes, and nothing gets a mesh trail or glow shell.
+    const meshless = vfx && hidesMesh(visual);
     const style = styleFor(visual);
     let color = visual?.color ?? WHITE;
     if (style.teamTint) {
@@ -262,7 +269,8 @@ export function addProjectiles(
     if (style.spin) rotation = q.mul(rotation, q.fromAxisAngle({ x: 0, y: 0, z: 1 }, time * style.spin));
     let emissive = style.emissive;
     if (p.state & PROJ_ARMED) emissive = Math.sin(time * 10) > 0 ? 1 : 0.2;
-    push(scene, "opaque", style.mesh, { position: p.position, rotation, scale, color, emissive });
+    if (!meshless) push(scene, "opaque", style.mesh, { position: p.position, rotation, scale, color, emissive });
+    if (vfx) continue;
     if (style.glow) {
       push(scene, "translucent", "sphere", {
         position: p.position,
@@ -316,6 +324,7 @@ export function addEntities(
   time: number,
   hulls: EntityHulls = {},
   teams = 2,
+  vfx = false,
 ): void {
   for (const e of entities) {
     if (e.kind === "marker" && !visuals[e.visual]) continue;
@@ -360,10 +369,11 @@ export function addEntities(
     } else {
       push(scene, "opaque", mesh, inst);
     }
-    if (returning) {
+    // With particles, glow shells are soft sprites (game/vfx.ts).
+    if (returning && !vfx) {
       push(scene, "translucent", "sphere", { position, rotation: q.identity(), scale: scale * 1.8, color, emissive: 1, opacity: 0.3 });
     }
-    if (style.glow) {
+    if (style.glow && !vfx) {
       push(scene, "translucent", "sphere", {
         position,
         rotation: q.identity(),
@@ -394,6 +404,12 @@ export interface SceneExtras extends EntityHulls {
   hideShot?: ((p: ProjectileState) => boolean) | undefined;
   /** Teams of the match (0 = free-for-all: every side its own colour); default 2. */
   teams?: number;
+  /**
+   * Particle effects draw the flashes, beams, trails, glow shells and energy
+   * shot cores (game/vfx.ts); the scene then leaves those meshes out. Default
+   * false (the pre-VQ5 mesh effects, e.g. with `?vfx=off`).
+   */
+  vfx?: boolean;
 }
 
 /** Builds the whole instance scene for one frame. */
@@ -408,13 +424,14 @@ export function buildScene(
 ): SceneInstances {
   const scene = emptyScene();
   const teams = extras.teams ?? 2;
-  addShips(scene, ships, extras.gadgetOf, time, teams);
+  const vfx = extras.vfx ?? false;
+  addShips(scene, ships, extras.gadgetOf, time, teams, vfx);
   const hide = extras.hideShot;
-  addProjectiles(scene, hide ? shots.filter((p) => !hide(p)) : shots, visuals, teamOf, time, teams);
+  addProjectiles(scene, hide ? shots.filter((p) => !hide(p)) : shots, visuals, teamOf, time, teams, vfx);
   // Ship types of the ships in view, unless the caller knows every player's.
   const shipTypeOf = extras.shipTypeOf ?? ((id: number) => ships.find((s) => s.id === id)?.shipType);
-  addEntities(scene, entities, visuals, time, { shipTypeOf, wreckTypeOf: extras.wreckTypeOf }, teams);
-  addEffects(scene, extras.beams ?? [], extras.flashes ?? [], time);
+  addEntities(scene, entities, visuals, time, { shipTypeOf, wreckTypeOf: extras.wreckTypeOf }, teams, vfx);
+  if (!vfx) addEffects(scene, extras.beams ?? [], extras.flashes ?? [], time);
   return scene;
 }
 

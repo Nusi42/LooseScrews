@@ -29,12 +29,14 @@ import { parsePose, parseVisuals, type ProjectileState, type ShipState, type Vis
 import type { GpuTimings } from "../renderer/gpuTimer.ts";
 import { GRADE_PRESETS } from "../renderer/post.ts";
 import { hashSeed } from "../renderer/rockTextures.ts";
+import { mulberry32 } from "../renderer/spriteAtlas.ts";
 import { Renderer, type CameraView, type Rgb, type SceneInstances } from "../renderer/renderer.ts";
 import { CONTROLS_LEN, type GameHandle } from "../wasm/api.ts";
 import { loadWasm } from "../wasm/load.ts";
 import { pickCloseup, pickLongest, pickVista, probeAround, raycast, rayMesh, sphereDirections, type Probe, type RayMesh } from "./raycast.ts";
 import { sceneById, type GalleryScene } from "./scenes.ts";
 import { applyDecor, decorSpots, pickBorder, type DecorSpot } from "./decor.ts";
+import { explosionAt, simulateVfx } from "./vfxScenes.ts";
 
 /** Frames rendered before the page reports ready. */
 const WARMUP_FRAMES = 20;
@@ -58,6 +60,8 @@ export interface GalleryStatus {
   lights: { lights: number; candidates: number } | null;
   gpu: GpuTimings | null;
   gpuError: string | null;
+  /** Live particles in the frame (VQ5), null without particles. */
+  particles?: number | null;
 }
 
 declare global {
@@ -116,6 +120,7 @@ export function sceneContent(
   visuals: readonly VisualDef[],
   impact: Vec3 | null = null,
   lights: PointLight[] = [],
+  vfx = false,
 ): SceneInstances {
   const f = q.forward(cam.orientation);
   const r = q.right(cam.orientation);
@@ -227,6 +232,9 @@ export function sceneContent(
       orientation: q.lookRotation(v3.add(f, v3.scale(r, 0.4)), u), shipType: 3, radius: 0.55, gadgetActive: false,
     });
     lightFx.emit("explosion", impact ?? at(18, 3, -1), time - 0.12);
+  } else if (scene.content === "explosion") {
+    // VQ5: a ship blowing up (gone at this time), a burning one; the effects are particles (vfxScenes.ts).
+    ships.push(...explosionAt(cam, time, time).ships);
   }
   sceneLights({ ships, shots, visuals, flashes, time, gadgetOf: (id) => (gadgets.has(id) ? "shield" : "") }, lights);
   lightFx.frame(time, lights);
@@ -234,6 +242,7 @@ export function sceneContent(
   return buildScene(ships, shots, [], visuals, teamOf, time, {
     gadgetOf: (id) => (gadgets.has(id) ? "shield" : ""),
     flashes,
+    vfx,
   });
 }
 
@@ -333,7 +342,19 @@ export async function runGallery(canvas: HTMLCanvasElement, ui: HTMLElement, loc
     const hit = raycast(rayMeshes.values(), pose.position, impactDir, 40);
     const impact = hit ? v3.addScaled(pose.position, impactDir, Math.max(4, hit.t - 0.6)) : null;
     const lights: PointLight[] = [];
-    renderer.setScene(sceneContent(scene, pose, visuals, impact, lights));
+    const particles = renderer.particles;
+    renderer.setScene(sceneContent(scene, pose, visuals, impact, lights, particles !== null));
+    if (particles) {
+      // VQ5: the particles of the scene's synthetic history up to its time (vfxScenes.ts).
+      // Scenes whose effects come only from VQ5 also take its effect lights (VQ6
+      // pulses); the fight and lights scenes emit theirs in sceneContent.
+      const fallback = v3.addScaled(pose.position, impactDir, 16);
+      const effectLights = scene.content === "explosion" || scene.content === "stress" ? new LightFx() : undefined;
+      if (effectLights) effectLights.random = mulberry32(7);
+      simulateVfx(particles, scene, pose, visuals, impact ?? fallback, LINEUP_RADII, (id) => (scene.content === "fight" && id === 2 ? "shield" : ""), effectLights);
+      effectLights?.frame(scene.time, lights);
+      status.particles = particles.liveCount();
+    }
     // `?lights=0`: the same frame without dynamic lights (cost comparison).
     renderer.setLights(new URLSearchParams(loc.search).get("lights") === "0" ? [] : lights);
 

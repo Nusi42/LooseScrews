@@ -6,6 +6,8 @@
 // `timestamp-query` it stays where it started (frame intervals would also
 // count CPU work such as the initial terrain load).
 
+import type { ParticleQuality } from "./particles.ts";
+
 export type QualityLevel = "low" | "medium" | "high";
 
 export interface RenderQuality {
@@ -18,6 +20,8 @@ export interface RenderQuality {
   terrainDetail: boolean;
   /** Dynamic point lights per frame (VQ6, renderer/lights.ts; at most MAX_LIGHTS = 128). */
   maxLights: number;
+  /** Particle ring size, spawn density and dust motes (VQ5, particles.ts). */
+  particles: ParticleQuality;
 }
 
 /**
@@ -27,9 +31,9 @@ export interface RenderQuality {
  * is core WebGPU, so every adapter runs the same shaders).
  */
 export const QUALITY_PRESETS: Readonly<Record<QualityLevel, RenderQuality>> = {
-  high: { level: "high", msaa: 4, bloomMips: 6, terrainDetail: true, maxLights: 128 },
-  medium: { level: "medium", msaa: 4, bloomMips: 4, terrainDetail: true, maxLights: 32 },
-  low: { level: "low", msaa: 1, bloomMips: 0, terrainDetail: false, maxLights: 16 },
+  high: { level: "high", msaa: 4, bloomMips: 6, terrainDetail: true, maxLights: 128, particles: { capacity: 32768, density: 1, motes: 1500, halfResPx: 32 } },
+  medium: { level: "medium", msaa: 4, bloomMips: 4, terrainDetail: true, maxLights: 32, particles: { capacity: 16384, density: 0.6, motes: 800, halfResPx: 20 } },
+  low: { level: "low", msaa: 1, bloomMips: 0, terrainDetail: false, maxLights: 16, particles: { capacity: 8192, density: 0.35, motes: 0, halfResPx: 12 } },
 };
 
 /** GPU frame budgets (ms) of "high" and "medium" (plan §3). */

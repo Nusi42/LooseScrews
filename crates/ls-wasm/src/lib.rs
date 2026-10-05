@@ -1322,7 +1322,8 @@ mod tests {
     #[test]
     fn name_lists_cover_every_kind_and_shape() {
         let kinds = super::entity_kind_names();
-        assert_eq!(kinds.len(), 10);
+        assert_eq!(kinds.len(), 19);
+        assert_eq!(kinds[ls_sim::ReplicatedKind::Well as usize], "well");
         assert_eq!(kinds[ls_sim::ReplicatedKind::Wreck as usize], "wreck");
         assert_eq!(
             kinds[ls_sim::ReplicatedKind::DustCloud as usize],

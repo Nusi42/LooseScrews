@@ -133,6 +133,10 @@ Verified against `ls-server --help` of this build (`ls-server 0.1.0`).
 | `--warmup <SECONDS>` | `30` | Longest warm-up (flying the next level with weapons off) before the countdown starts, once enough players are there; shorter when everyone is ready. 0 to 3600. `--warmup 0 --countdown 0` turns the lobby off: matches start right away. |
 | `--countdown <SECONDS>` | `10` | Countdown before a match starts, 0 to 3600 |
 | `--private-rooms <N>` | `4` | Most private rooms (duels, parties, custom matches) open at once next to the public room, 0 to 64; each runs on its own CPU core, so at most one per core beyond the public room's |
+| `--directory <URL>` | none | Register with a server directory (`http://host:port`, see [Server directory](#server-directory-optional)) so the server shows up in the in-game server list. Without it the server is reachable by link or address only. |
+| `--server-name <NAME>` | `Loose Screws server` | Name in the server list (up to 48 characters) |
+| `--region <TAG>` | empty | Region tag in the server list, e.g. `eu-west` (up to 16 characters) |
+| `--public-address <HOST:PORT>` | the `--bind` address | The address players reach this server at, as listed in the directory and put into invite links. Set it whenever `--bind` is `0.0.0.0` (then the default is `localhost:<port>`, which only works on this computer) or players come through a router or a domain name. |
 | `--exit-when-empty` | off | Shut down about 2 seconds after the last player leaves (only after at least one player joined). Meant for scripted test runs. |
 | `-h`, `--help` | | Print help |
 | `-V`, `--version` | | Print the version |
@@ -367,12 +371,20 @@ opens it with a code loaded; `&world=LS…` fills the World field.
 
 ### Invite links
 
-An invite link carries a world share code and a rule set code in its address. In this build it
-is a way to **hand both codes to a host**: opening one shows the normal start screen, and online
-players always play the server's world and rules, so the link doesn't change anything by itself.
-The host starts a server with the link's host command (or opens the link with `&editor=rules`
-added to see and copy the codes). Invite links that start the right match automatically are not
-in this build yet.
+An invite link points at a server and may carry a world, a rule set and a party:
+`http://<server>/?join=<host:port>&code=<LSâ€¦>&rules=<LRâ€¦>&party=<P-â€¦>` (every part optional;
+`world=` works like `code=`, `room=<R-â€¦>` joins a private room). Opening one and choosing
+**Play online** joins that server:
+
+- with a **party code**: the party's room (the public room, or its private custom match) and,
+  in team modes, the team of a party mate where team balance allows;
+- with a **world and/or rule set code but no party**: the server opens a private custom match
+  with them (one of its `--private-rooms`) and the player joins it;
+- with neither: the server's normal rotation.
+
+The rule set editor's links (`?world=â€¦&rules=â€¦`) therefore start a custom match on the server
+that serves the page. Hosts can still use the codes for their own server (`--code`, `--ruleset`,
+or open the link with `&editor=rules` added to see and copy them).
 
 ## Banning and balancing weapons
 
@@ -710,9 +722,28 @@ The server checks the whole playlist at startup and refuses to start if an entry
 
 Next to the public room, the server runs up to `--private-rooms` private rooms (default 4) for
 duels, parties and custom matches, each with its own code (`R-` and six characters) and its
-own simulation thread. A private room closes when its last player leaves. Players reach one
-through an invite (coming with the server list and party features); a client asking for an
-unknown or closed room code gets "unknown room".
+own simulation thread. A private room closes when its last player leaves (or a minute after it
+was opened if nobody came). Players reach one through an invite link, a party code or an
+accepted duel; a client asking for an unknown or closed room code gets "unknown room". When all
+private rooms are in use, new duels and custom matches are refused until one closes.
+
+### Parties and duels
+
+Players manage these in the browser ("Party & duels" button in game); the server needs no
+setup beyond `--private-rooms`:
+
+- **Party codes** (`P-` and six characters) are made by the server for a player and live on
+  that server only, while a member is connected and for 10 minutes after the last one left.
+  Members join the leader's room and, in team modes, the leader's team when team sizes stay
+  within one of each other (otherwise the party is split).
+- **Duels**: a player challenges another player on the server (or, through the directory, on
+  another server). The challenged player has 30 seconds to accept; then the challenger's server
+  opens a private two-player room on the challenger's world with the duel rules (free-for-all
+  Team Brawl, first to 10 kills or 5 minutes, unless the challenger gave a rule set code) and
+  both players move there.
+- The browser talks to the server's small JSON API at `/api/â€¦` for this (and for the server
+  list's player names). Players are known by a random id their browser keeps; there are no
+  accounts.
 
 ## Stopping the server
 
@@ -764,16 +795,30 @@ proxy.
 | `--max-invites` | 10000 | Most pending invites |
 | `--rate` / `--burst` | 10 / 40 | Requests per second (and burst) per client IP; raise them behind a reverse proxy |
 
-`http://<host>:7780/servers` shows the current list as JSON. Game servers registering with it
-(`ls-server --directory ...`) and the browser's server list are not in this build yet.
+`http://<host>:7780/servers` shows the current list as JSON.
+
+Game servers join the list with `--directory`:
+
+```sh
+ls-server --directory http://dir.example.com:7780 --server-name "Scrap Den" --region eu-west \
+    --public-address play.example.com:7777
+```
+
+They check in every 10 seconds (a server that stops checking in disappears after 30 seconds)
+and leave the list when stopped with Ctrl+C. The list shows the name, region, current mode,
+world, player count and the players' names, and the browser measures the ping to each server
+itself. Players open it with the **Server list** link on the start screen; the page finds the
+directory through the server that served it (its `--directory`), or from `?directory=<url>` in
+the page address. Only servers of the same game version are listed. A duel challenge to a
+player on another listed server is passed on by the directory.
 
 ## Not in this build yet
 
 - **Modes arrive one by one:** the default rotation only holds the modes whose rule sets are in
   this build; rule sets can't enable mutators yet.
-- **No server list, party codes or accounts.** Players need your address. Invite links
-  carry a world and a rule set code but don't start or join a match by themselves, and private
-  rooms can't be opened from the browser yet.
+- **No accounts or friends lists.** Players are known by a random id their browser keeps;
+  parties exist on one server only. A public directory is not run for you: host your own
+  `ls-directory` (behind an HTTPS proxy for `https://` pages).
 - **No admin commands** while running (kick, change world or rule set, end match). Restart the
   server with new flags; bans and tuning can change between matches through the balance list.
 - **No slider tool:** you can't create a share code with chosen slider values yet, and only

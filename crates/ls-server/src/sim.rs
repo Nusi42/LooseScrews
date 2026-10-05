@@ -47,6 +47,7 @@ use tracing::{debug, info, warn};
 
 use crate::link::SimLink;
 use crate::lobby::{self, warmup_rules, Action, Lobby, LobbyInput, LobbyTiming, Phase};
+use crate::party::{plan_joins, Joiner, Parties};
 use crate::playlist::{Playlist, Rotation};
 use crate::rooms::{RoomStatus, SharedStatus, PRIVATE_ROOM_IDLE};
 use crate::rules::describe;
@@ -70,6 +71,9 @@ pub enum SimCommand {
     Join { hello: Hello, link: SimLink },
     /// Runs a closure against the room (admin, tests).
     Inspect(Box<dyn FnOnce(&mut Room) + Send>),
+    /// The player with this wire id leads (or joins) a party: its later
+    /// party mates ask for its team (`POST /api/party`).
+    SetParty { player: u8, party: String },
 }
 
 impl std::fmt::Debug for SimCommand {
@@ -81,6 +85,11 @@ impl std::fmt::Debug for SimCommand {
                 .field("conn", &link.info().id)
                 .finish(),
             SimCommand::Inspect(_) => f.write_str("Inspect"),
+            SimCommand::SetParty { player, party } => f
+                .debug_struct("SetParty")
+                .field("player", player)
+                .field("party", party)
+                .finish(),
         }
     }
 }
@@ -114,6 +123,8 @@ pub struct SimParams {
     pub close_when_empty: bool,
     /// Extra time every worker build takes (tests of slow builds).
     pub build_delay: Duration,
+    /// The server's parties (member counts; `None` in tests without them).
+    pub parties: Option<Arc<Parties>>,
 }
 
 /// Why a client is removed (for the log and the counters).
@@ -413,11 +424,20 @@ impl Sim {
             past_ticks: 0,
             past_edits: 0,
         };
+        sim.label_room();
         if kind == RoomKind::Warmup {
             sim.build_next(RoomKind::Match, sim.current.clone());
         }
         sim.publish_status(true);
         sim
+    }
+
+    /// A private room's code goes into every `Welcome` (the client's party
+    /// panel and invite links use it); the public room has none.
+    fn label_room(&mut self) {
+        if self.params.close_when_empty {
+            self.room.set_room_code(self.params.label.clone());
+        }
     }
 
     fn run(&mut self) {
@@ -474,6 +494,9 @@ impl Sim {
         let t1 = Instant::now();
         // The match clock only runs while someone plays.
         if self.room.player_count() > 0 {
+            if self.kind == RoomKind::Warmup {
+                lobby::extend_warmup_clock(self.room.world_mut());
+            }
             self.room.step();
             let debris = self.debris_count();
             self.window_debris_peak = self.window_debris_peak.max(debris);
@@ -534,6 +557,7 @@ impl Sim {
         let status = RoomStatus {
             label: self.params.label.clone(),
             phase: key.0,
+            mode: self.current.cfg.rules.mode.kind().id(),
             entry: entry.source.clone(),
             share_code: self.current.share_code.clone(),
             ruleset: self.current.cfg.rules.name.clone(),
@@ -552,13 +576,22 @@ impl Sim {
             match cmd {
                 SimCommand::Join { hello, link } => self.join(hello, link),
                 SimCommand::Inspect(f) => f(&mut self.room),
+                SimCommand::SetParty { player, party } => self.set_party(player, party),
             }
         }
     }
 
     fn join(&mut self, hello: Hello, mut link: SimLink) {
         let conn = link.info().id;
-        match self.room.join(&hello) {
+        // A party member asks for the team of a party mate in the room
+        // (team balance still decides, see `Room::join`); the stored
+        // `Hello` keeps the player's own pick.
+        let party_team = hello.party.as_deref().and_then(|p| self.party_team(p));
+        let request = Hello {
+            preferred_team: party_team.or(hello.preferred_team),
+            ..hello.clone()
+        };
+        match self.room.join(&request) {
             Ok(id) => {
                 let team = self
                     .room
@@ -566,11 +599,13 @@ impl Sim {
                     .into_iter()
                     .find(|c| c.id == id)
                     .map_or(0, |c| c.team);
+                self.party_joined(&hello);
                 info!(
                     room = %self.params.label,
                     conn,
                     player = id,
                     team,
+                    party = hello.party.as_deref().unwrap_or(""),
                     name = %hello.name,
                     remote = %link.info().remote,
                     transport = link.info().transport,
@@ -798,6 +833,7 @@ impl Sim {
     /// and gets its `Welcome` on the same connection.
     fn swap_room(&mut self, room: Room, kind: RoomKind, planned: Planned) {
         let old = std::mem::replace(&mut self.room, room);
+        self.label_room();
         let os = old.stats();
         let p = &mut self.past_matches;
         p.late_inputs += os.late_inputs;
@@ -815,16 +851,36 @@ impl Sim {
         self.kind = kind;
         self.current = planned;
         self.ready.clear();
-        let moved = std::mem::take(&mut self.clients);
+        let mut moved = std::mem::take(&mut self.clients);
         let count = moved.len();
-        for (old_id, mut c) in moved {
-            match self.room.join(&c.hello) {
+        // Parties together where team balance allows (see `plan_joins`);
+        // the plan's team is a request for this room only, the player's own
+        // pick (`PickTeam`) stays in its `Hello`.
+        let joiners: Vec<Joiner> = moved
+            .iter()
+            .map(|(&id, c)| Joiner {
+                id,
+                party: c.hello.party.clone(),
+                preferred: c.hello.preferred_team,
+            })
+            .collect();
+        let plan = plan_joins(self.room.world().teams(), &joiners);
+        for (old_id, team) in plan {
+            let Some(mut c) = moved.remove(&old_id) else {
+                continue;
+            };
+            let hello = Hello {
+                preferred_team: team,
+                ..c.hello.clone()
+            };
+            match self.room.join(&hello) {
                 Ok(id) => {
                     debug!(room = %self.params.label, old_id, player = id, "player moved to the next room");
                     self.clients.insert(id, c);
                 }
                 Err(reject) => {
                     warn!(room = %self.params.label, name = %c.hello.name, reason = %reject.message, "player not accepted by the next room");
+                    self.party_left(&c.hello);
                     if let Ok(bytes) = (Message::Disconnect {
                         reason: format!("{}: {}", Leave::NoRoom.text(), reject.message),
                     })
@@ -887,6 +943,59 @@ impl Sim {
         self.disconnect_all(ROOM_CLOSED_REASON);
         self.publish_status(true);
         info!(room = %self.params.label, "private room closed");
+    }
+
+    // ----- parties -----------------------------------------------------------
+
+    /// The team of a connected member of `party` (team modes only).
+    fn party_team(&self, party: &str) -> Option<u8> {
+        if self.room.world().teams() < 2 {
+            return None;
+        }
+        let mate = self
+            .clients
+            .iter()
+            .find(|(_, c)| c.hello.party.as_deref() == Some(party))
+            .map(|(&id, _)| id)?;
+        self.room
+            .clients()
+            .into_iter()
+            .find(|c| c.id == mate)
+            .map(|c| c.team)
+    }
+
+    fn party_joined(&self, hello: &Hello) {
+        if let (Some(p), Some(parties)) = (hello.party.as_deref(), &self.params.parties) {
+            parties.member_joined(p);
+        }
+    }
+
+    fn party_left(&self, hello: &Hello) {
+        if let (Some(p), Some(parties)) = (hello.party.as_deref(), &self.params.parties) {
+            parties.member_left(p, Instant::now());
+        }
+    }
+
+    /// `SetParty`: the connection of `player` joins `party` (the leader of
+    /// a party created while playing).
+    fn set_party(&mut self, player: u8, party: String) {
+        let Some(c) = self.clients.get_mut(&player) else {
+            debug!(room = %self.params.label, player, "SetParty for an unknown player");
+            return;
+        };
+        if c.hello.party.as_deref() == Some(party.as_str()) {
+            return;
+        }
+        let old = c.hello.party.replace(party);
+        let hello = c.hello.clone();
+        if let Some(old) = old {
+            self.party_left(&Hello {
+                party: Some(old),
+                ..hello.clone()
+            });
+        }
+        self.party_joined(&hello);
+        info!(room = %self.params.label, player, party = hello.party.as_deref().unwrap_or(""), "player leads a party");
     }
 
     // ----- lobby messages ----------------------------------------------------
@@ -1104,6 +1213,7 @@ impl Sim {
     fn remove(&mut self, id: u8, why: Leave) {
         if let Some(mut c) = self.clients.remove(&id) {
             self.room.leave(id);
+            self.party_left(&c.hello);
             c.link.close();
             info!(
                 player = id,
@@ -1120,6 +1230,7 @@ impl Sim {
         for id in ids {
             self.send_disconnect(id, reason);
             if let Some(mut c) = self.clients.remove(&id) {
+                self.party_left(&c.hello);
                 c.link.close();
             }
             self.room.leave(id);
@@ -1273,6 +1384,7 @@ mod tests {
             label: "test".into(),
             close_when_empty: false,
             build_delay: Duration::ZERO,
+            parties: None,
         }
     }
 

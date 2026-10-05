@@ -26,6 +26,13 @@
 //! `--private-rooms` caps the private rooms (duels, parties) next to the
 //! public room.
 //!
+//! Server list: `--directory http://host:port` registers the server with an
+//! `ls-directory` service (heartbeat every 10 s, removed on shutdown) as
+//! `--server-name` in `--region`, reachable at `--public-address`
+//! (`host:port`; default: the bound address). Without `--directory` the
+//! server is reachable by link or address only. Invites, parties and duels
+//! use the JSON API at `/api` (see `ls_server::api`).
+//!
 //! WebTransport listens on UDP `--wt-bind` (default: the `--bind` address,
 //! so the same port number); the hash of its self-signed certificate is
 //! served at `GET /cert-hash`. `--no-webtransport` turns it off.
@@ -118,6 +125,25 @@ struct Args {
     #[arg(long, default_value_t = 4, value_parser = clap::value_parser!(u8).range(0..=64))]
     private_rooms: u8,
 
+    /// Directory service to register with for the server list
+    /// (`http://host:port[/path]`; none by default).
+    #[arg(long, value_name = "URL")]
+    directory: Option<String>,
+
+    /// Server name in the server list.
+    #[arg(long, value_name = "NAME", default_value = ls_server::directory::DEFAULT_SERVER_NAME)]
+    server_name: String,
+
+    /// Region tag in the server list (e.g. eu-west).
+    #[arg(long, value_name = "TAG", default_value = "")]
+    region: String,
+
+    /// Public host:port players reach this server at (server list, invite
+    /// links) [default: the --bind address; localhost for an unspecified
+    /// one].
+    #[arg(long, value_name = "HOST:PORT")]
+    public_address: Option<String>,
+
     /// Shut down gracefully once every player has left (after at least one
     /// joined). For scripted runs such as tools/e2e.*.
     #[arg(long)]
@@ -175,6 +201,19 @@ fn server_config(args: &Args) -> anyhow::Result<ServerConfig> {
         results: Duration::from_secs_f64(args.intermission),
     };
     cfg.private_rooms = usize::from(args.private_rooms);
+    if let Some(url) = &args.directory {
+        ls_directory::DirectoryClient::new(url).context("invalid --directory")?;
+    }
+    if let Some(a) = &args.public_address {
+        ls_directory::api::validate_address(a)
+            .map_err(|e| anyhow::anyhow!("invalid --public-address {a:?}: {e}"))?;
+    }
+    cfg.listing = ls_server::Listing {
+        directory: args.directory.clone(),
+        server_name: Some(args.server_name.clone()),
+        region: args.region.clone(),
+        public_address: args.public_address.clone(),
+    };
     Ok(cfg)
 }
 
@@ -362,6 +401,34 @@ mod tests {
         assert!(cfg.lobby.is_off());
         assert_eq!(cfg.lobby.results, Duration::from_secs(3));
         assert_eq!(cfg.private_rooms, 0);
+        // Server list flags.
+        assert_eq!(cfg.listing.directory, None);
+        let cfg = server_config(
+            &parse(&[
+                "--directory",
+                "http://127.0.0.1:7780",
+                "--server-name",
+                "Den",
+                "--region",
+                "eu",
+                "--public-address",
+                "play.example.com:7777",
+            ])
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            cfg.listing.directory.as_deref(),
+            Some("http://127.0.0.1:7780")
+        );
+        assert_eq!(cfg.listing.server_name.as_deref(), Some("Den"));
+        assert_eq!(cfg.listing.region, "eu");
+        assert_eq!(
+            cfg.listing.public_address.as_deref(),
+            Some("play.example.com:7777")
+        );
+        assert!(server_config(&parse(&["--directory", "https://x"]).unwrap()).is_err());
+        assert!(server_config(&parse(&["--public-address", "a b"]).unwrap()).is_err());
         // --playlist conflicts with --ruleset and --code; ranges are checked.
         assert!(parse(&["--playlist", "p.ron", "--ruleset", "x"]).is_err());
         assert!(parse(&["--playlist", "p.ron", "--code", &code]).is_err());

@@ -205,6 +205,18 @@ Optional: game servers register with heartbeats and the browser lists them. API,
 client library: [architecture/directory.md](architecture/directory.md). Tests:
 `cargo test -p ls-directory` (HTTP tests on `127.0.0.1:0`).
 
+A local server list with two servers (then open http://127.0.0.1:7777/?servers):
+
+```sh
+cargo run -p ls-server --release -- --bind 127.0.0.1:7777 --directory http://127.0.0.1:7780 --server-name One
+cargo run -p ls-server --release -- --bind 127.0.0.1:7778 --directory http://127.0.0.1:7780 --server-name Two
+```
+
+Invites, parties and duels go through the game server's JSON API (`/api/...`,
+[architecture/server.md](architecture/server.md#server-list-invites-parties-and-duels-apirs-partyrs-duelrs-directoryrs-m3-b7));
+`cargo test -p ls-server --test social` runs them against real servers and a real directory
+(two listed servers, a party invite, a local and a relayed duel).
+
 ## 4. Tests
 
 | What | Command | Notes |

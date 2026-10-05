@@ -77,8 +77,12 @@ Endpoints on the `--bind` address (TCP) and the `--wt-bind` address (UDP, same p
   rules, players) and counters; `total_players()` sums them.
 - **Lobby** (`lobby.rs`, pure state machine on sim-thread ticks): `Warmup -> Countdown -> Match
   -> Results -> Warmup`. Warm-up flies the next match's level in a *warm-up room*: the same
-  world and mode with every weapon and gadget banned (empty loadout, no pickups) and a one-hour
-  clock (`warmup_rules`). The countdown starts once the player count fits the playlist entry
+  world, ships and team count with every weapon, gadget and mutator off (empty loadout, no
+  pickups; `warmup_rules`). Whatever the next mode, the warm-up room plays a timer-only mode
+  (`warmup_mode`: Paint the Void without paint, 2 to 4 teams, two for a free-for-all match), so
+  kill targets, lives, last-side-standing checks and objectives can never end or eliminate in a
+  warm-up; the sim thread keeps its one-hour clock from running out (`extend_warmup_clock`).
+  `LobbyState` announces the real next mode. The countdown starts once the player count fits the playlist entry
   and everyone is ready (`Ready`) or `--warmup` seconds (default 30) passed since players
   arrived; it is cancelled when the count stops fitting. If the warm-up passes with a count
   the entry does not fit, the room picks another entry (a new warm-up room); if the rotation
@@ -86,7 +90,8 @@ Endpoints on the `--bind` address (TCP) and the `--wt-bind` address (UDP, same p
   room (built meanwhile) is swapped in. When the mode ends, the result shows for
   `--intermission` seconds while the next entry's warm-up room is built. `--warmup 0
   --countdown 0` (and the library default `ServerConfig::new`) turn the lobby off: no warm-up
-  rooms, Results swaps the next match room in directly.
+  rooms, Results swaps the next match room in directly. A private room's `Welcome` carries its
+  room code (`Room::set_room_code`).
 - **Rotation** (`playlist.rs`): `--playlist <file>` (RON: `Playlist(entries: [(rules: "team_brawl",
   world: Random | RandomSliders(enclosure: (lo, hi), density: (lo, hi)) | Code("LS.."),
   min_players: 4, max_players: 32), ...])`; `rules` is a built-in rule set id (file name in
@@ -102,13 +107,69 @@ Endpoints on the `--bind` address (TCP) and the `--wt-bind` address (UDP, same p
   current room (also during Results) and move with everyone else. At the swap every connected
   player joins the new room with its stored `Hello` (`PickTeam` updates its team) and gets the
   new room's `Welcome` on the same connection, no `Disconnect`; the old room is dropped on an
-  `ls-drop` thread. `ServerConfig::build_delay` stretches builds for tests.
+  `ls-drop` thread. With parties in the room the joins follow `party::plan_joins` (whole parties
+  on one team where balance allows, in an order `Room::join` grants). `ServerConfig::build_delay`
+  stretches builds for tests.
 - **Lobby messages**: the sim thread handles `Ready`, `PickTeam` and `Spectate` itself (the
   room never sees them) and sends `LobbyState` (phase, ticks left, room code, next mode / rule
   set / share code, player range, teams, players with team pick, ready and spectate flags) to
   everyone whenever it changes (the countdown alone is no change), always after the room's own
   packets of the tick, so a new `Welcome` arrives before its lobby state. `Spectate` is stored
   and announced; joining the next room as a spectator needs the room's spectator support.
+
+### Server list, invites, parties and duels (`api.rs`, `party.rs`, `duel.rs`, `directory.rs`, M3 B7)
+
+- **JSON API** on the game port (`api.rs`, routed by `http.rs` for `/api/...`; CORS `*`,
+  `OPTIONS` preflight, POST bodies with `Content-Length` up to 16 KiB, errors
+  `{"error":"..."}`):
+
+  | Request | Body | Reply |
+  | --- | --- | --- |
+  | `GET /api/info` | - | the directory entry (name, address, region, mode, world, rules code, players, protocol, data hash, roster) plus `directory`, `rooms` and `private_rooms_free` |
+  | `GET /api/players` | - | `{"players":[{"id","name"}]}`: present players |
+  | `POST /api/presence` | `{"id","token","name"}` | `{"invites":[note],"address","directory"}` |
+  | `POST /api/party` | `{"room"?,"player"?,"world_code"?,"rules_code"?}` | `{"party","room","address"}` |
+  | `POST /api/rooms` | `{"world_code"?,"rules_code"?}` | `{"room","address"}`: a private custom match |
+  | `POST /api/duel` | `{"id","token","name","to","to_name"?,"world_code"?,"rules_code"?}` | `{"challenge","relayed"}` |
+  | `POST /api/duel/answer` | `{"from","id","accept"}` | `{"room","address"}` |
+
+  Status codes: 400 invalid body or field, 403 wrong token, 404 unknown player, challenge, room
+  or path, 405, 502 directory failed, 503 no private room free. `Social` holds the state and is
+  shared with the `Hub`; `RoomFactory` (also behind `ServerHandle::create_private_room`) opens
+  private rooms.
+- **Presence and identity** (`duel.rs`): the browser keeps a random public player id and a
+  private token (localStorage). `POST /api/presence` (polled every 3 s in game) registers it
+  (the first token claims an id; a later one gets 403), refreshes the name and returns the
+  player's inbox. Players seen within 15 s form the roster (`/api/players`, the directory
+  entry's `roster`).
+- **Parties** (`party.rs`): codes `P-XXXXXX` (6 Crockford base32, parsed leniently like room
+  codes), at most 512 per server. A party points at the public room, a private room (the
+  leader's), or a new private custom match (`world_code`/`rules_code`). `player` (the leader's
+  `Welcome::player_id`) tags the leader's connection (`SimCommand::SetParty`). A `Hello` with a
+  party code is routed to the party's room (`Hub::open`; the party wins over a room code;
+  unknown or ended parties get `Reject { "unknown party ..." }`); in team modes the member asks
+  for the team of a party mate in the room, and `Room::join` still grants only a smallest team,
+  so a party stays together only where the team sizes stay within one (else it is split by join
+  order). At every swap the sim thread re-plans the joins (`plan_joins`). Sim threads count
+  members (`Parties::member_joined/left`); a party ends 10 minutes after its last member left
+  (or after creation if nobody joined) and with its private room.
+- **Duels** (`duel.rs`, `api.rs`): `POST /api/duel` on the challenger's server records a
+  challenge (30 s). A challenged player present on that server sees it in the inbox; otherwise
+  the server relays it through the directory (`POST /invites`, kind `duel`, `address` = this
+  server, the challenger's world and rules codes), and the other player's browser, which polls
+  the directory by its public id, answers on the challenger's server. Accepting opens a private
+  room (`duel_spec`): 2 players, the challenger's world (a fixed random one without), the
+  challenger's rule set code or the built-in `duel` rule set (fallback until
+  `data/rulesets/duel.ron` exists: Team Brawl free-for-all, 10 kills, 5 minutes). Both players
+  get the room code (the answer's reply, the challenger's inbox note `accepted`) and join by
+  invite link; a declined challenge shows up as `declined`.
+- **Directory** (`directory.rs`): with `--directory <url>` the server sends
+  `ls_directory::spawn_heartbeats` (every `heartbeat_secs`, 10 s by default) with
+  `Social::server_info()`: `--server-name`, `--region`, `--public-address` (default: the bound
+  address, `localhost:<port>` for an unspecified one), the WebTransport certificate hash, the
+  public room's mode id, world and rules code, players over all rooms (capped at the public
+  room's limit) and the roster; shutdown removes the entry. Without `--directory` nothing
+  changes (the API still serves invites, parties and local duels).
 
 ### Sim thread policies (`sim.rs`)
 
@@ -145,6 +206,8 @@ ls-server --bind 0.0.0.0:7777 [--wt-bind <addr> | --no-webtransport] --code <sha
     --stats-interval 10 --intermission 10 [--exit-when-empty]
 ls-server --ruleset LR8V-6097-G000-TMBG --ban tectonic_charge --balance-list balance.ron
 ls-server --playlist playlist.ron --warmup 30 --countdown 10 --intermission 10 --private-rooms 4
+ls-server --directory http://127.0.0.1:7780 --server-name "Den" --region eu \
+    --public-address play.example.com:7777
 ```
 
 Rules (`crates/ls-server/src/rules.rs`): `--ruleset` takes a file, a built-in rule set id
@@ -179,6 +242,19 @@ down 2 s after the last player left (scripted runs).
   the server's idle timeout does not fire and held buttons are released at once.
 - Session end (server `Disconnect`, closed socket, desync, GPU device lost): the session is
   disposed (socket closed, wasm game freed) and an error screen shown.
+- Invites, server list, parties and duels (`web/src/ui/party.ts`, `ui/serverList.ts`,
+  `net/social.ts`, `net/ping.ts`): `startSocial` reads the page URL
+  (`?join=<host:port>&party=P-..&room=R-..&code=LS..&rules=LR..&directory=<url>`; `world=` is
+  accepted for `code=`) and hands `main.ts` the WebSocket URL of the `join` server, a wrapped
+  game core whose `Hello` carries the room and party code, and a connection opener that first
+  opens a custom match (`POST /api/rooms`) for a link with a world/rules code but no party or
+  room. `?servers` (the start screen's "Server list" link) shows the server list: the
+  directory's servers of this build (protocol and data hash of the page's server, from
+  `/api/info`), pinged in parallel by WebSocket open time (6 at once, 3 s limit), with Join
+  (invite link) and Duel per roster entry. In game (`attach`): presence poll, directory invite
+  poll, challenge toasts (Accept/Decline) and the "Party & duels" panel (party invite link for
+  the current room and team, Duel buttons for the players on the server, on the current world).
+  Moving to a duel room or another server is a page navigation to its invite link.
 - Match restart (`Disconnect` with `MATCH_RESTART_REASON`): the game is cleaned up, the renderer
   kept, and the client rejoins on its own (`web/src/game/rejoin.ts`: 0.5 s, then 1, 2, 3, 4, 4,
   ... s, up to 12 attempts, then an error screen). Name, horizon assist, look settings and the

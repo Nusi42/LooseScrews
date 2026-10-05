@@ -25,13 +25,22 @@
 //!   bans, a balance list re-read before every match).
 //! - [`server`]: [`ServerConfig`], [`Server::start`] and [`ServerHandle`]
 //!   (graceful shutdown, stats, room inspection).
+//! - Server list, invites, parties and duels (M3 package B7): [`api`] (the
+//!   JSON API at `/api/...` and its state, [`Social`]), [`party`] (party
+//!   codes, routing a `Hello` with a party code, teams), [`duel`] (player
+//!   presence, challenges, duel rooms) and [`directory`] (the `ls-directory`
+//!   heartbeats behind `--directory`).
 //!
 //! The binary in `main.rs` is a thin CLI around this library.
 
+pub mod api;
+pub mod directory;
+pub mod duel;
 pub mod endpoint;
 pub mod http;
 pub mod link;
 pub mod lobby;
+pub mod party;
 pub mod playlist;
 pub mod rooms;
 pub mod rules;
@@ -42,14 +51,16 @@ pub mod timing;
 pub mod ws;
 pub mod wt;
 
+pub use api::Social;
 pub use endpoint::{CertHashInfo, ConnSettings, Endpoint, EndpointContext, Hub};
 pub use lobby::LobbyTiming;
+pub use party::PartyCode;
 pub use playlist::{Playlist, PlaylistEntry, Rotation, WorldChoice};
 pub use rooms::{RoomCode, RoomStatus};
 pub use rules::{load_rule_set, ServerRules};
 pub use server::{
-    match_config, match_config_with, PrivateRoomSpec, Server, ServerConfig, ServerError,
-    ServerHandle,
+    match_config, match_config_with, Listing, PrivateRoomSpec, RoomFactory, Server, ServerConfig,
+    ServerError, ServerHandle,
 };
 pub use stats::StatsSnapshot;
 

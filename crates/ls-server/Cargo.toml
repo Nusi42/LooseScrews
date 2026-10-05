@@ -13,9 +13,11 @@ ls-net.workspace = true
 ls-sim.workspace = true
 ls-worldgen.workspace = true
 ls-game = { workspace = true, features = ["server"] }
+ls-directory = { path = "../ls-directory" }
 anyhow.workspace = true
 thiserror.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 ron.workspace = true
 clap.workspace = true
 tokio.workspace = true

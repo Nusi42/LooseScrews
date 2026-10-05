@@ -29,7 +29,6 @@ import { rejoin, RejoinCancelled, type PlayerPrefs } from "./game/rejoin.ts";
 import { GameSession, type FrameResult } from "./game/session.ts";
 import { buildScene, dustDensityAt, dustFog } from "./game/scene.ts";
 import { connectTransport, transportPreference } from "./net/connect.ts";
-import { serverUrl } from "./net/transport.ts";
 import {
   EffectsState,
   eyeballPose,
@@ -49,6 +48,7 @@ import { Hud } from "./ui/hud.ts";
 import { NameTags, nameTagModel } from "./ui/nameTags.ts";
 import { EndScreen, endScreenModel, Scoreboard, scoreboardModel } from "./ui/scoreboard.ts";
 import { showLoading, showStartScreen, type StartOptions } from "./ui/startScreen.ts";
+import { sessionView, startSocial } from "./ui/party.ts";
 import { loadWasm } from "./wasm/load.ts";
 import { addRuleEditorLink, showRuleEditor, wantsRuleEditor } from "./rules/editor.ts";
 import { parseInvite } from "./rules/model.ts";
@@ -97,6 +97,8 @@ async function start(): Promise<void> {
     return;
   }
 
+  // Invite links, the server list, parties and duels (ui/party.ts).
+  const social = await startSocial(ui, api, location);
   const editorLink = addRuleEditorLink(ui, location.href);
   const options = await showStartScreen(ui, (code) => {
     const info = api.checkShareCode(code);
@@ -135,11 +137,11 @@ async function start(): Promise<void> {
     controls: { ...DEFAULT_CONTROL_SETTINGS },
     shipType: options.shipType,
   };
-  const url = serverUrl(location);
+  const url = social.serverUrl;
   // WebTransport first where available, WebSocket fallback; `?transport=ws|wt` forces one.
-  const open = (u: string) => connectTransport(u, { prefer: transportPreference(location) });
+  const open = social.opener((u: string) => connectTransport(u, { prefer: transportPreference(location) }));
   const connect = (): Promise<GameSession> =>
-    GameSession.connect(api, url, prefs.name, prefs.horizonAssist, open, prefs.controls, prefs.shipType);
+    GameSession.connect(social.api, url, prefs.name, prefs.horizonAssist, open, prefs.controls, prefs.shipType);
 
   const loading = showLoading(ui, options.mode === "online" ? "Connecting…" : "Generating world…");
   let session: GameSession;
@@ -156,6 +158,7 @@ async function start(): Promise<void> {
     return;
   }
   loading.remove();
+  if (options.mode === "online") social.attach(prefs.name, () => (active ? sessionView(active.game) : null));
   const weaponNames = api.weaponNames();
 
   for (;;) {

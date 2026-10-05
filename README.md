@@ -13,7 +13,7 @@ for status and [docs/implementation-plan.md](docs/implementation-plan.md) for la
 ## Quick start
 
 Requirements: stable Rust with the `wasm32-unknown-unknown` target (`rust-toolchain.toml`
-installs it), `wasm-bindgen` CLI 0.2.126, Node.js with npm, and a WebGPU browser (Chrome or Edge).
+installs it), `wasm-bindgen` CLI 0.2.129, Node.js with npm, and a WebGPU browser (Chrome or Edge).
 
 ```sh
 cd web && npm install && npm run build && cd ..               # builds the WASM package and web/dist

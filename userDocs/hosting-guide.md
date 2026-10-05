@@ -59,8 +59,8 @@ You build the server, the bots and the web client from the source repository. Yo
 - Rust (stable). The repository's `rust-toolchain.toml` installs the right toolchain and the
   `wasm32-unknown-unknown` target when you first run `cargo`. The server and bots need Rust
   1.88 or newer.
-- `wasm-bindgen` command line tool, version **0.2.126** exactly:
-  `cargo install wasm-bindgen-cli --version 0.2.126`
+- `wasm-bindgen` command line tool, version **0.2.129** exactly:
+  `cargo install wasm-bindgen-cli --version 0.2.129`
 - Node.js with npm
 
 From the repository root:

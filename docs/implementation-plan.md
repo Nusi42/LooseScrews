@@ -60,7 +60,7 @@ userDocs/               Player-facing manuals and hosting guides
 | Server runtime | tokio; sim runs on a fixed-step thread, I/O on async tasks | Keeps the tick independent of network jitter |
 | Transport | `Transport` trait; WebSocket (`tokio-tungstenite`) first, then WebTransport (`wtransport`) with a self-signed cert and `serverCertificateHashes` | WebSocket unblocks integration; WebTransport is the target |
 | Wire encoding | Hand-written bit packing in `ls-net` (no generic serializer on the hot path) | Hits the 18 B ship-state budget |
-| WASM toolchain | `wasm-bindgen` CLI 0.2.126 (installed), crate pinned to the same version; no wasm-pack | Matches the local toolchain |
+| WASM toolchain | `wasm-bindgen` CLI 0.2.129 (installed), crate pinned to the same version; no wasm-pack | Matches the local toolchain |
 | Web client | TypeScript strict, Vite, plain WebGPU with a small custom renderer | Design recommends WebGPU; no engine lock-in |
 | Package manager | npm | pnpm is not installed |
 

@@ -442,14 +442,15 @@ and Hat rain follow it; cave-in rubble hangs from the first rock along it.
 ### Pigment (`ls_sim::pigment`, `data/world/pigment.ron`)
 
 - Pickups at the level's pickup points (beside the weapon pickups) on monochrome levels and in
-  Last Color Standing: `max(min, ceil(players in play / per_players))`, at most one per point;
-  monochrome 1 per 4, at least 2, respawn 30 s; Last Color Standing 1 per 4, at least 1, 45 s.
+  Last Color Standing, as the rule set's `pigment_pickup` says (`RuleSet::pigment_pickup`, rule
+  set code format 5; `None`: none): `max(min_on_map, ceil(players in play / players_per_pickup))`,
+  at most one per point, respawning `respawn_secs` after it was taken (built-in rule sets: 1 per
+  4, at least 2, 30 s; Last Color Standing 45 s).
   A taken pickup respawns at a free point chosen by the `PIGMENT` key RNG.
 - Taking one: `ShipState::pigment_until = tick + 40 s` (hashed only when non-zero), unless the
   mode's `on_pigment` hook takes it (Last Color Standing: +17 colour, capped at the start
   colour). A pigmented attacker's damage is x1.25 (before friendly-fire scaling and shields).
   A pigmented ship that dies drops a splash pickup (`point: None`, its side) for 15 s.
-  The rule set's pigment settings (A3, format 5) replace the data defaults when present.
 
 ### Radiation (`ls_sim::radiation`, `data/world/radiation.ron`)
 

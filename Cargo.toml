@@ -56,9 +56,9 @@ wtransport = { version = "0.7.2", default-features = false, features = ["self-si
 getrandom = "0.4.3"
 
 # WASM (wasm-bindgen must match the installed CLI exactly)
-wasm-bindgen = "=0.2.126"
-js-sys = "=0.3.103"
-wasm-bindgen-test = "=0.3.76"
+wasm-bindgen = "=0.2.129"
+js-sys = "=0.3.106"
+wasm-bindgen-test = "=0.3.79"
 console_error_panic_hook = "0.1.7"
 
 [profile.release]

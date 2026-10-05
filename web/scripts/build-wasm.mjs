@@ -7,7 +7,7 @@
 //   --debug        build the debug profile (faster compile, much slower game)
 // Honors CARGO_TARGET_DIR (relative paths resolve against the repo root, like cargo
 // run from there). Requires the wasm32-unknown-unknown target and wasm-bindgen CLI
-// 0.2.126 (matching the crate pin in Cargo.toml).
+// 0.2.129 (matching the crate pin in Cargo.toml).
 
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";

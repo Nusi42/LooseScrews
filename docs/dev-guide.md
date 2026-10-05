@@ -22,7 +22,7 @@ Setting up a fresh work folder (this is what `create` does, plus the build):
 ```sh
 node tools/work-folders.mjs create 3      # from a work folder: clone the master into loosescrews.win3 (branch WIN3),
                                           # write .claude/settings.local.json, npm ci in web/ (installs the Git hooks)
-cd <work root>/loosescrews.win3/web && npm run build   # WASM package (wasm-bindgen 0.2.126) + client
+cd <work root>/loosescrews.win3/web && npm run build   # WASM package (wasm-bindgen 0.2.129) + client
 ```
 
 By hand: `git clone <master> loosescrews.winN`, `git checkout -b WINN`,
@@ -95,7 +95,7 @@ the master.
 | Tool | Version | Notes |
 | --- | --- | --- |
 | Rust | stable via `rustup` | `rust-toolchain.toml` selects stable and installs `rustfmt`, `clippy` and the `wasm32-unknown-unknown` target on first use. Minimum versions: 1.85 for the workspace (also clippy's MSRV), 1.88 for `ls-server` and `ls-bots` (`wtransport`). Tested with 1.97.1 |
-| wasm-bindgen CLI | exactly **0.2.126** | `cargo install wasm-bindgen-cli --version 0.2.126 --locked`; installs `wasm-bindgen` and `wasm-bindgen-test-runner`. The crates are pinned to match (`wasm-bindgen =0.2.126`, `js-sys =0.3.103`, `wasm-bindgen-test =0.3.76` in the root `Cargo.toml`); bump all four together |
+| wasm-bindgen CLI | exactly **0.2.129** | `cargo install wasm-bindgen-cli --version 0.2.129 --locked`; installs `wasm-bindgen` and `wasm-bindgen-test-runner`. The crates are pinned to match (`wasm-bindgen =0.2.129`, `js-sys =0.3.106`, `wasm-bindgen-test =0.3.79` in the root `Cargo.toml`); bump all four together |
 | Node.js + npm | Node with built-in TypeScript type stripping (22.18+ or 23.6+); tested with Node 26.7, npm 11.19 | The web unit tests run `.ts` files directly with `node --test`. npm, not pnpm |
 | PowerShell 7 | optional | For `tools/*.ps1` on Windows; the `.sh` twins do the same in bash |
 | Browser | WebGPU (current Chrome or Edge) | Firefox/Safari only where WebGPU is enabled. WebTransport is used when available, WebSocket otherwise |

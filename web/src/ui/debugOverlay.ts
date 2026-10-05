@@ -1,7 +1,9 @@
-// Debug overlay (toggle with F3): frame rate, ping, transport, prediction
-// corrections, predicted shots and terrain chunk streaming.
+// Debug overlay (toggle with F3): frame rate, GPU time per render pass (with
+// `timestamp-query`), ping, transport, prediction corrections, predicted shots
+// and terrain chunk streaming.
 
 import type { DebugStats } from "../game/stats.ts";
+import type { GpuTimings } from "../renderer/gpuTimer.ts";
 
 /** Frames per second over a sliding window of frame timestamps. */
 export class FpsMeter {
@@ -47,12 +49,25 @@ export interface DebugInfo {
   shareCode: string;
   speed: number;
   gpuError: string | null;
+  /** Per-pass GPU times; null without `timestamp-query` (or before the first readback). */
+  gpu?: GpuTimings | null;
+  /** Active render quality preset ("high", "medium", "low"), if known. */
+  quality?: string;
+}
+
+/** "gpu 3.42 ms (worst 4.10) · terrain 1.20 · objects 0.31 · post 1.91", or a note when timing is unavailable. */
+export function formatGpuLine(gpu: GpuTimings | null | undefined, quality?: string): string {
+  const q = quality ? ` · ${quality}` : "";
+  if (!gpu) return `gpu: no timestamp-query${q}`;
+  const passes = gpu.passes.map(([label, ms]) => `${label} ${ms.toFixed(2)}`).join(" · ");
+  return `gpu ${gpu.total.toFixed(2)} ms (worst ${gpu.worst.toFixed(2)})${q}${passes ? ` · ${passes}` : ""}`;
 }
 
 /** The overlay's text lines. */
 export function formatDebugLines(d: DebugInfo): string[] {
   const s = d.stats;
   const lines = [`${d.fps.toFixed(0)} fps · worst frame ${d.worstFrameMs.toFixed(1)} ms`];
+  if (d.gpu !== undefined || d.quality !== undefined) lines.push(formatGpuLine(d.gpu, d.quality));
   if (d.mode === "online") {
     const ping = s.pingMs === null ? "—" : `${Math.round(s.pingMs)} ms`;
     const dropped = d.droppedSends ? ` · ${d.droppedSends} sends skipped` : "";

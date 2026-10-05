@@ -5,7 +5,8 @@
   "type": "module",
   "description": "Automated browser smoke test: headless Chrome/Edge with WebGPU against a local ls-server",
   "scripts": {
-    "smoke": "node smoke.mjs"
+    "smoke": "node smoke.mjs",
+    "gallery": "node gallery.mjs"
   },
   "devDependencies": {
     "puppeteer-core": "25.12.0"

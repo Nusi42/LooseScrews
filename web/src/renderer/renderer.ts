@@ -12,6 +12,7 @@ import type { Vec3 } from "../math/vec3.ts";
 import { CanvasSizer } from "./canvas.ts";
 import { Frustum } from "./frustum.ts";
 import { initGpu, type GpuContext } from "./gpu.ts";
+import { GpuTimer, type GpuTimings } from "./gpuTimer.ts";
 import { GpuMesh, type MeshData } from "./mesh.ts";
 import { MESH_BUILDERS, MESH_KINDS, type MeshKind } from "./primitives.ts";
 import { FRAME_UNIFORM_FLOATS, INSTANCED_WGSL, TEAM_SLOTS, TERRAIN_WGSL, TRANSLUCENT_WGSL } from "./shaders.ts";
@@ -217,6 +218,15 @@ export class Renderer {
   private startTime = performance.now();
   private deviceLost = false;
   private lastGpuError: string | null = null;
+  private readonly timer: GpuTimer | null;
+  /**
+   * Time per pass: with `timestamp-query`, true times terrain and objects as
+   * separate render passes (the debug overlay and the visual gallery switch
+   * it on); false draws the scene in one pass, timed as "scene".
+   */
+  detailedTiming = false;
+  /** Shader time (s) for this and later frames instead of the wall clock (fixed-pose screenshots). */
+  timeOverride: number | null = null;
 
   /** Creates the renderer; throws GpuUnavailableError when WebGPU cannot be used. */
   static async create(canvas: HTMLCanvasElement): Promise<Renderer> {
@@ -320,6 +330,8 @@ export class Renderer {
       depthStencil: { format: DEPTH_FORMAT, depthWriteEnabled: false, depthCompare: "less" },
     });
 
+    this.timer = GpuTimer.create(device);
+
     const meshes = {} as Record<MeshKind, GpuMesh>;
     for (const kind of MESH_KINDS) meshes[kind] = new GpuMesh(device, MESH_BUILDERS[kind](), kind);
     this.meshes = meshes;
@@ -338,6 +350,16 @@ export class Renderer {
   /** Resolves with a message when the GPU device is lost (driver reset, tab backgrounded, ...). */
   get lost(): Promise<string> {
     return this.device.lost.then((info) => info.message || info.reason || "unknown reason");
+  }
+
+  /** Per-pass GPU times (window average), or null without `timestamp-query` or before the first readback. */
+  gpuTimings(): GpuTimings | null {
+    return this.timer?.timings() ?? null;
+  }
+
+  /** True when the device can time passes (`timestamp-query`). */
+  get canTime(): boolean {
+    return this.timer !== null;
   }
 
   get aspect(): number {
@@ -403,25 +425,37 @@ export class Renderer {
 
     const s = this.settings;
     const encoder = this.device.createCommandEncoder({ label: "frame" });
-    const pass = encoder.beginRenderPass({
-      colorAttachments: [
-        {
-          view: this.context.getCurrentTexture().createView(),
-          clearValue: { r: s.fogColor[0], g: s.fogColor[1], b: s.fogColor[2], a: 1 },
-          loadOp: "clear",
-          storeOp: "store",
+    const timer = this.timer;
+    timer?.beginFrame();
+    const split = this.detailedTiming && timer !== null;
+    const colorView = this.context.getCurrentTexture().createView();
+    const depthView = this.depthTexture!.createView();
+    const beginPass = (label: string, first: boolean, last: boolean): GPURenderPassEncoder => {
+      const timestampWrites = timer?.pass(label);
+      const pass = encoder.beginRenderPass({
+        label,
+        ...(timestampWrites ? { timestampWrites } : {}),
+        colorAttachments: [
+          {
+            view: colorView,
+            clearValue: { r: s.fogColor[0], g: s.fogColor[1], b: s.fogColor[2], a: 1 },
+            loadOp: first ? "clear" : "load",
+            storeOp: "store",
+          },
+        ],
+        depthStencilAttachment: {
+          view: depthView,
+          depthClearValue: 1,
+          depthLoadOp: first ? "clear" : "load",
+          depthStoreOp: last ? "discard" : "store",
         },
-      ],
-      depthStencilAttachment: {
-        view: this.depthTexture!.createView(),
-        depthClearValue: 1,
-        depthLoadOp: "clear",
-        depthStoreOp: "discard",
-      },
-    });
-    pass.setBindGroup(0, this.bindGroup);
+      });
+      pass.setBindGroup(0, this.bindGroup);
+      return pass;
+    };
 
     const stats: FrameStats = { chunksTotal: this.chunks.size, chunksDrawn: 0, triangles: 0, instances: 0 };
+    let pass = beginPass(split ? "terrain" : "scene", true, !split);
     pass.setPipeline(this.terrainPipeline);
     for (const mesh of this.chunks.values()) {
       if (mesh.aabb && !this.frustum.intersectsAabb(mesh.aabb)) continue;
@@ -432,6 +466,10 @@ export class Renderer {
       pass.drawIndexed(mesh.indexCount);
       stats.chunksDrawn++;
       stats.triangles += mesh.indexCount / 3;
+    }
+    if (split) {
+      pass.end();
+      pass = beginPass("objects", false, true);
     }
 
     const passes: Array<[RenderPass, GPURenderPipeline]> = [
@@ -448,7 +486,9 @@ export class Renderer {
     }
 
     pass.end();
+    timer?.endFrame(encoder);
     this.device.queue.submit([encoder.finish()]);
+    timer?.afterSubmit();
     return stats;
   }
 
@@ -457,6 +497,7 @@ export class Renderer {
     for (const batches of Object.values(this.batches)) for (const batch of batches.values()) batch.destroy();
     for (const mesh of Object.values(this.meshes)) mesh.destroy();
     this.depthTexture?.destroy();
+    this.timer?.destroy();
     this.frameBuffer.destroy();
     this.sizer.dispose();
     this.device.destroy();
@@ -478,7 +519,7 @@ export class Renderer {
     const d = this.frameData;
     const s = this.settings;
     d.set(viewProj, 0);
-    d.set([cameraPos.x, cameraPos.y, cameraPos.z, (performance.now() - this.startTime) / 1000], 16);
+    d.set([cameraPos.x, cameraPos.y, cameraPos.z, this.timeOverride ?? (performance.now() - this.startTime) / 1000], 16);
     const sun = s.sunDirection;
     const len = Math.hypot(sun.x, sun.y, sun.z) || 1;
     d.set([sun.x / len, sun.y / len, sun.z / len, s.headlight], 20);

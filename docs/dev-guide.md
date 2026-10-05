@@ -832,6 +832,45 @@ To cover a new mechanic: add its loadout to `mechanics.ron` if it needs one, the
 stable classes such as `.hud-charge` or `.ship-card`) with `check(name, ok, detail)`.
 All servers it starts are stopped at the end; it never uses port 7777.
 
+### Visual gallery and GPU budget
+
+`tools/browser-smoke/gallery.mjs` (visual-quality-plan.md VQ8) renders the fixed scenes of
+`web/src/gallery/scenes.ts` (cave close-up, cave tunnel, open sky, mine shaft, the four hulls, a
+fight frame with an explosion) at 1920x1080 and saves one PNG per scene, plus a
+`manifest.json` with the share code, the camera pose and the per-pass GPU times, under
+`target/visual-gallery/<label>/`. `target/visual-gallery/index.html` shows every label side by
+side per scene, so a package takes a `before` run on its base and an `after` run on its branch:
+
+```sh
+cd web && npm run build && cd ..
+node tools/browser-smoke/gallery.mjs --label before        # on the base commit
+node tools/browser-smoke/gallery.mjs --label after         # on the branch
+node tools/browser-smoke/gallery.mjs --index-only --compare before,after
+node tools/browser-smoke/gallery.mjs --help
+```
+
+The page is the normal client with `?gallery=<scene id>` (`web/src/gallery/gallery.ts`): offline
+practice on a share code built from a fixed seed and sliders, no dummies, a camera pose picked
+from the spawn point by CPU ray casts against the chunk meshes (so poses follow generator
+changes), synthetic ships, shots and effect cues drawn through `game/scene.ts`, and a fixed
+shader time. It needs no game server (a static file server on 127.0.0.1 serves `web/dist`).
+
+GPU timing: with the optional `timestamp-query` feature every render pass writes timestamps
+(`web/src/renderer/gpuTimer.ts`; labels `terrain`, `objects`, `post`, later `particles`,
+`lights`, `sky`), averaged over 60 frames. `Renderer.detailedTiming` (on in the gallery and while
+the F3 overlay shows) splits the scene into a terrain and an objects pass; otherwise the scene is
+one pass timed as `scene`. The F3 overlay shows the line `gpu <total> ms (worst ..) · <pass>
+<ms> ...`. The gallery launches the browser with `--enable-webgpu-developer-features`
+(unquantised timestamps) and fails a scene whose pass exceeds its budget share
+(`PASS_BUDGETS_MS`, 1080p "high" on the reference mid GPU) by more than 25 %, or whose frame
+exceeds 8 ms by more than 25 %. `--budget-scale 1.75` checks the integrated-GPU "medium"
+target (14 ms), `--power low` asks for the integrated GPU (`?gpu=low-power`; Chrome needs
+`--use-webgpu-power-preference=force-low-power`, which the script passes, and fails when that
+GPU is not available to WebGPU), `--no-budget` records without failing. Without
+`timestamp-query` or on a software adapter the budget is not checked. Measured on a much faster
+GPU than the reference, the check only catches gross regressions; read the absolute numbers on
+the reference class.
+
 ## 13. Where things are documented
 
 - Rules for contributors and agents: [`CLAUDE.md`](../CLAUDE.md) (keep it in sync when commands

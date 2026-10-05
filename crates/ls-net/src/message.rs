@@ -28,6 +28,9 @@
 //!    Between matches the server sends [`Message::LobbyState`] and
 //!    [`Message::MatchResults`]; clients answer with [`Message::Ready`],
 //!    [`Message::PickTeam`] and [`Message::Spectate`].
+//! 5. The Architect (protocol 6): the round's architect sends
+//!    [`Message::ArchitectAction`] (reliable) to place a stroke; the server
+//!    validates budget, cooldown and range.
 
 use ls_math::{Aabb, TerrainEdit, Vec3};
 
@@ -51,8 +54,13 @@ use crate::wire::{
 /// with the snapshot's projectile motion scale; 5: M3 modes and lobby:
 /// mode state in snapshots, `Welcome` on an open connection with a match
 /// epoch on inputs and snapshots, lobby and results messages, room and
-/// party codes in `Hello`, weapon shots and state in `Inventory`).
-pub const PROTOCOL_VERSION: u16 = 5;
+/// party codes in `Hello`, weapon shots and state in `Inventory`; 6: M4
+/// moods: the mood view (director state and the level's up) in the mode
+/// state, the architect player flag, ship `ext` bits (pigment, hats) in a
+/// ship trailer, the rubber-chicken bit of the projectile kind byte, the
+/// `ArchitectAction` message, new entity kinds and cues; the race section
+/// and the well entity layout are reserved for Belt Up).
+pub const PROTOCOL_VERSION: u16 = 6;
 /// First bytes of a [`Hello`] body: ASCII `LSCR` when read as little-endian.
 pub const MAGIC: u32 = u32::from_le_bytes(*b"LSCR");
 
@@ -292,6 +300,19 @@ pub enum Message {
     Spectate {
         spectate: bool,
     },
+    /// Client (protocol 6): the architect places a stroke.
+    ArchitectAction(ArchitectActionMsg),
+}
+
+/// A stroke the Architect places (`docs/milestone-4-plan.md` §3.5): the
+/// stroke kind (`ls_sim` Architect stroke index), its centre and radius.
+/// Raw `f32` bits; the server validates kind, budget, cooldown, range and
+/// radius (12-24 u) and counts rejected actions.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ArchitectActionMsg {
+    pub stroke: u8,
+    pub center: Vec3,
+    pub radius: f32,
 }
 
 /// Most weapons an [`InventoryMsg`] lists.
@@ -344,6 +365,7 @@ mod tag {
     pub const READY: u8 = 14;
     pub const PICK_TEAM: u8 = 15;
     pub const SPECTATE: u8 = 16;
+    pub const ARCHITECT_ACTION: u8 = 17;
 }
 
 fn write_opt_str(w: &mut BitWriter, s: &Option<String>) {
@@ -416,6 +438,7 @@ impl Message {
             Message::Ready { .. } => "Ready",
             Message::PickTeam { .. } => "PickTeam",
             Message::Spectate { .. } => "Spectate",
+            Message::ArchitectAction(_) => "ArchitectAction",
         }
     }
 
@@ -635,6 +658,17 @@ impl Message {
                 w.write_u8(tag::SPECTATE);
                 w.write_bool(*spectate);
             }
+            Message::ArchitectAction(a) => {
+                if !a.center.is_finite() || !a.radius.is_finite() {
+                    return Err(EncodeError::OutOfRange("stroke must be finite"));
+                }
+                w.write_u8(tag::ARCHITECT_ACTION);
+                w.write_u8(a.stroke);
+                w.write_f32(a.center.x);
+                w.write_f32(a.center.y);
+                w.write_f32(a.center.z);
+                w.write_f32(a.radius);
+            }
         }
         Ok(w.finish())
     }
@@ -843,6 +877,15 @@ impl Message {
             tag::SPECTATE => Message::Spectate {
                 spectate: r.read_bool()?,
             },
+            tag::ARCHITECT_ACTION => Message::ArchitectAction(ArchitectActionMsg {
+                stroke: r.read_u8()?,
+                center: Vec3::new(
+                    r.read_finite_f32()?,
+                    r.read_finite_f32()?,
+                    r.read_finite_f32()?,
+                ),
+                radius: r.read_finite_f32()?,
+            }),
             other => return Err(DecodeError::UnknownTag(other)),
         };
         r.finish()?;
@@ -1166,6 +1209,18 @@ mod tests {
             round_trip(&Message::Ready { ready });
             round_trip(&Message::Spectate { spectate: ready });
         }
+        round_trip(&Message::ArchitectAction(ArchitectActionMsg {
+            stroke: 4,
+            center: Vec3::new(-12.5, 40.25, 1e-3),
+            radius: 18.0,
+        }));
+        assert!(Message::ArchitectAction(ArchitectActionMsg {
+            stroke: 0,
+            center: Vec3::new(f32::NAN, 0.0, 0.0),
+            radius: 12.0,
+        })
+        .encode()
+        .is_err());
         round_trip(&Message::PickTeam { team: None });
         round_trip(&Message::PickTeam { team: Some(3) });
         // Epochs on inputs and snapshots.
@@ -1347,6 +1402,15 @@ mod tests {
                 vel: Vec3::new(12.0, 0.0, -24.0),
                 rot: Quat::from_axis_angle(Vec3::Y, t * 0.1 + id as f32),
                 flags: ship_flags::with_team(ship_flags::ALIVE, id % 2),
+                // Protocol 6 ext bits: a pigmented ship collecting hats.
+                ext: if id == 2 {
+                    crate::wire::ship_ext::with_hats(
+                        crate::wire::ship_ext::PIGMENTED,
+                        tick / 10 % 6,
+                    )
+                } else {
+                    0
+                },
                 status: (id == 3).then_some(ShipStatus {
                     hull: 100,
                     energy: 80,
@@ -1385,6 +1449,25 @@ mod tests {
                     radius: 1.0,
                     pos: Vec3::new(20.0 + t, 5.0, 100.0 - t * 2.0),
                 }],
+                // Protocol 6: an event announces at 110, runs from 120 on.
+                mood: crate::mode::NetMoodView {
+                    mood: 2,
+                    event: if tick >= 110 { 4 } else { crate::mode::NONE },
+                    phase: match tick {
+                        0..110 => crate::mode::mood_phase::IDLE,
+                        110..120 => crate::mode::mood_phase::ANNOUNCE,
+                        _ => crate::mode::mood_phase::ACTIVE,
+                    },
+                    target: 3,
+                    phase_start_tick: tick / 10 * 10,
+                    phase_end_tick: 400,
+                    params: [tick as u8 / 50, 0, 0, 0, 0, 0, 0, 1],
+                    up: if tick >= 120 {
+                        Vec3::new(0.0, 0.8, 0.6)
+                    } else {
+                        Vec3::Y
+                    },
+                },
                 ..Default::default()
             },
             tick,
@@ -1404,6 +1487,7 @@ mod tests {
                 pos: Vec3::new(t + 10.0, 10.0, 10.0),
                 vel: Vec3::new(0.0, 0.0, -180.0),
                 state: 1,
+                chicken: true,
             }],
             entities: vec![
                 NetEntity {
@@ -1474,8 +1558,10 @@ mod tests {
                 assert!((a.pos - b.pos).length() < 0.01);
                 assert!((a.vel - b.vel).length() < 0.01);
                 assert!(a.rot.dot(b.rot).abs() > 0.99999);
-                assert_eq!((a.flags, a.status), (b.flags, b.status));
+                assert_eq!((a.flags, a.ext, a.status), (b.flags, b.ext, b.status));
             }
+            assert_eq!(view.mode.mood, src.mode.mood);
+            assert!(view.projectiles[0].chicken && view.projectiles[0].kind == 1);
             assert_eq!(view.edits, src.edits);
             assert_eq!(view.players, src.players);
             assert_eq!(view.projectiles[0].state, 1);

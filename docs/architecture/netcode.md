@@ -20,8 +20,11 @@ The wire format is versioned by `ls_net::PROTOCOL_VERSION` (checked in `Hello`):
 projectile deltas; 5 (M3) the generic mode state in snapshots, match transitions on an open
 connection (`Welcome` with a match epoch, carried by `Input` and `Snapshot`), the lobby and
 results messages, room and party codes in `Hello` and weapon shot counts and state bytes in
-`Inventory` (see [Match transitions, lobby and mode state](#match-transitions-lobby-and-mode-state-protocol-5)).
-This page describes version 5.
+`Inventory` (see [Match transitions, lobby and mode state](#match-transitions-lobby-and-mode-state-protocol-5));
+6 (M4) the mood view, ship `ext` bits, the rubber-chicken projectile bit, `ArchitectAction`, new
+entity kinds and cues, and the reserved race section and well entity layout (see
+[Protocol 6](#protocol-6-moods-the-architect-belt-up)).
+This page describes version 6.
 
 ## Tick model
 
@@ -313,6 +316,25 @@ client's cooldown estimate only for a key-press off or an instant use. Bots use 
   server gives each new room the previous one's epoch + 1, wrapping). `Input` carries the
   client's epoch, `Snapshot` the room's; `Message::peek_snapshot_epoch` reads it before the
   delta decode, so a delta against a baseline of the old match is dropped instead of failing.
+
+## Protocol 6: moods, The Architect, Belt Up
+
+Added in M4 wave A (`docs/milestone-4-plan.md` §4 "Protocol"); wave B packages add their
+items inside version 6 against this layout. Codecs: `crates/ls-net/src/mode.rs` (mood, race),
+`wire.rs` (`ship_ext`, `proj_wire`, `well_state`), `snapshot.rs` (ship trailer), `message.rs`
+(`ArchitectAction`).
+
+| Item | Wire | Cost |
+| --- | --- | --- |
+| Mood view (`NetModeState::mood`, `ls_net::NetMoodView`) | after the objectives in the mode state: 1 bit "present" (full) or "changed" (delta), then u8 mood, u8 event (`EventKind` index, 255 none), u8 phase (`mood_phase`: idle, announce, active, ending), u8 target (wire ship id, 255 none), varint phase start and end tick, 8 parameter bytes, `up` as 1 bit "+Y" or 3 raw `f32` | 1 bit per delta while unchanged; about 30 B when it changes (+12 B while `up` is turned) |
+| Architect role | `mode_player_flags::ARCHITECT` (bit 3) on the architect's mode player row; `meter` = stroke budget | none |
+| Ship `ext` (`NetShip::ext`, `ls_net::ship_ext`) | bit 0 pigmented, bits 3-7 hats (0-31, saturating). Full ship: flag bit 15 now means "trailer": 1 bit status [4 B], 1 bit ext [u8]. Delta: the flags change bit covers flags and ext (u16 + 1 bit [u8]) | 0 for ships without pigment or hats (still 18 B); 10 bits for one with them |
+| Rubber chicken (`NetProjectile::chicken`, sim `proj_flags::CHICKEN`) | bit 7 of the projectile kind byte (`proj_wire::CHICKEN`; weapon kinds stay below 128) | none |
+| `ArchitectAction` (client to server, reliable, tag 17) | u8 stroke kind, centre and radius as raw `f32` | 17 B |
+| Entity kinds (`ls_sim::ReplicatedKind`, append only) | 10 pigment pickup, 11 drone (`state[0]`: 0 tax, 1 pizza, 2 survey), 12 duck, 13 hat, 14 cat paw, 15 gossip face, 16 disco ball, 17 mimic, 18 well | as any entity |
+| Cues (`ls_sim::CueKind`) | 14 `EventAnnounce` (value = `EventKind`, target = named player, pos = the tell), 15 `CaveInWarning` (pos, value = ticks to the fall), 16 `StrokeTelegraph` (source = architect, pos, value = stroke << 8 \| radius) | as any cue |
+| Well entity state (kind 18; Paperweight, Architect well) | `state[0]` range in 0.25 u, `state[1]` peak pull in 0.5 % of the reference thrust acceleration (0 = not pulling, e.g. a stone in flight), `state[2..4]` low 16 bits of the end tick (`ls_net::well_state`). The entity exists while the well acts; the predictor rebuilds the well from it (no start tick needed: reconciliation replays from the first snapshot that shows it). The simulation creates dynamic wells on this grid (`well_state::quantize_range`, `quantize_strength`) so the predicted force is exact | as any entity |
+| Race section (B6, Belt Up) | reserved: 1 bit after the mood (encoder writes 0, decoder rejects 1 until B6). Layout for B6: u8 heat, u8 heats, u8 heat phase, varint phase end tick, u32 racer mask, per racer: u8 next gate (8 = lap done), varint finish tick (0 none), u8 place (0 none), varint hold end tick (0 none), u8 slot; sent in full when anything changes | 1 bit |
 
 ## Terrain edit replication
 

@@ -76,6 +76,7 @@ pub fn mode_view_to_net(view: &ModeView, wire: impl Fn(PlayerId) -> Option<u8>) 
             .collect(),
         players,
         objectives,
+        mood: Default::default(),
     }
 }
 

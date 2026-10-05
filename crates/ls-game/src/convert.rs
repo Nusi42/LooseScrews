@@ -121,6 +121,7 @@ impl NetConv {
             vel: ship.vel,
             rot: ship.orientation,
             flags,
+            ext: 0,
             status: with_status.then(|| self.status(ship)),
         }
     }
@@ -286,6 +287,7 @@ pub fn projectile_to_net(p: &Projectile, owner: Option<u8>) -> NetProjectile {
         pos: p.pos,
         vel: p.vel,
         state: p.net_state(),
+        chicken: p.flags & ls_sim::proj_flags::CHICKEN != 0,
     }
 }
 

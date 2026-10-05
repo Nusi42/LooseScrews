@@ -73,6 +73,27 @@ pub enum ReplicatedKind {
     Ghost = 7,
     DustCloud = 8,
     Marker = 9,
+    // Protocol 6 (M4; append only, `docs/milestone-4-plan.md` §3.1-§3.8).
+    /// Pigment pickup on a monochrome level (state per A4).
+    PigmentPickup = 10,
+    /// Event drone; `state[0]` = drone role (0 tax, 1 pizza, 2 survey).
+    Drone = 11,
+    /// Duck parade duck.
+    Duck = 12,
+    /// Hat rain hat (falling, resting or scattered).
+    Hat = 13,
+    /// Cat paw (sweep pose in the state bytes).
+    CatPaw = 14,
+    /// Gossip wall face.
+    GossipFace = 15,
+    /// Disco inferno mirror ball.
+    DiscoBall = 16,
+    /// Mimic pickup (`state[0..]` as the pickup it imitates).
+    Mimic = 17,
+    /// Dynamic gravity well (Paperweight stone, the Architect's Gravity
+    /// Chaos+ stroke); state bytes per `ls_net::well_state` (range,
+    /// strength, end tick), read by the client predictor.
+    Well = 18,
 }
 
 impl ReplicatedKind {
@@ -89,6 +110,15 @@ impl ReplicatedKind {
             Ghost,
             DustCloud,
             Marker,
+            PigmentPickup,
+            Drone,
+            Duck,
+            Hat,
+            CatPaw,
+            GossipFace,
+            DiscoBall,
+            Mimic,
+            Well,
         ]
         .get(v as usize)
         .copied()
@@ -384,10 +414,10 @@ mod tests {
             EntitySpawn::dust(Vec3::ZERO, 10.0, 60).lifetime_ticks,
             Some(60)
         );
-        for k in 0..10u8 {
+        for k in 0..19u8 {
             assert_eq!(ReplicatedKind::from_u8(k).unwrap() as u8, k);
         }
-        assert!(ReplicatedKind::from_u8(10).is_none());
+        assert!(ReplicatedKind::from_u8(19).is_none());
         assert_eq!(state_byte(3.2), 4);
         assert_eq!(state_byte(1e9), 255);
         assert_eq!(state_byte(f32::NAN), 0);

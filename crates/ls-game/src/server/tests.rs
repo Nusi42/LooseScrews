@@ -615,6 +615,7 @@ fn guided_projectiles_freeze_the_predicted_ship_and_entities_interpolate() {
             pos: Vec3::new(100.0, 60.0, 100.0),
             vel: Vec3::new(0.0, 0.0, -20.0),
             state: crate::client::GUIDED_STATE_BIT,
+            chicken: false,
         });
     });
     assert!(free.is_synced() && guiding.is_synced());

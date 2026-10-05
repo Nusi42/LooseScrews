@@ -255,6 +255,15 @@ pub fn entity_kind_name(k: ls_sim::ReplicatedKind) -> &'static str {
         Ghost => "ghost",
         DustCloud => "dustCloud",
         Marker => "marker",
+        PigmentPickup => "pigmentPickup",
+        Drone => "drone",
+        Duck => "duck",
+        Hat => "hat",
+        CatPaw => "catPaw",
+        GossipFace => "gossipFace",
+        DiscoBall => "discoBall",
+        Mimic => "mimic",
+        Well => "well",
     }
 }
 

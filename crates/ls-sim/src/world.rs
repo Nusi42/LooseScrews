@@ -169,6 +169,10 @@ pub mod proj_flags {
     pub const CUSTOM_B: u16 = 1 << 7;
     /// Replicated bits.
     pub const NET_MASK: u16 = 0x00ff;
+    /// Drawn as a rubber chicken (Rubber chickens event; flight, damage and
+    /// craters unchanged). Replicated as `ls_net::NetProjectile::chicken`
+    /// (protocol 6), not in the state byte.
+    pub const CHICKEN: u16 = 1 << 8;
     /// Removed by a hook (not replicated; the projectile is gone after the hook).
     pub const REMOVED: u16 = 1 << 15;
 }

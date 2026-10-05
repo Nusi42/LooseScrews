@@ -18,6 +18,8 @@
 //!         objectives: 4 bits count (0..=8), per objective (id order): u8 id,
 //!           u8 kind, u8 team, u8 holder, u8 state, varint timer_end, f32
 //!           radius (raw bits), 3 x u16 position
+//!         mood (protocol 6): 1 bit "present" (not the default) [mood]
+//!         race (protocol 6, B6): 1 bit "present" [race]
 //! delta   1 bit "changed"; if changed:
 //!         1 bit header changed [header]
 //!         1 bit team scores changed [team scores]
@@ -28,7 +30,47 @@
 //!           baseline 1 bit meta changed [the fields between id and position]
 //!           + 1 bit moved [3 component diffs, 2-bit size class each]; new:
 //!           the full objective]
+//!         1 bit mood changed [mood]  (protocol 6)
+//!         1 bit race changed [race]  (protocol 6, B6)
 //! ```
+//!
+//! # Mood (protocol 6)
+//!
+//! The comedy director's replicated state (`ls_sim::MoodView`,
+//! `docs/milestone-4-plan.md` §3.1) and the level's `up` (Bored level),
+//! sent in full whenever any of it changes:
+//!
+//! ```text
+//! mood    u8 mood (calm, bored, grumpy, giddy), u8 event (EventKind index,
+//!         255 = none), u8 phase (mood_phase), u8 target (wire ship id, 255 =
+//!         none), varint phase_start_tick, varint phase_end_tick, 8 parameter
+//!         bytes, then `up`: 1 bit "default" (+Y) or 3 x f32 raw bits
+//! ```
+//!
+//! # Race (protocol 6; day-one layout note for B6, Belt Up)
+//!
+//! `RaceView` goes into its own section after the mood; until B6 adds it
+//! the encoder writes 0 and the decoder rejects 1. B6 fills it in this
+//! layout (all of it sent again when anything in it changes; racers are
+//! few and it changes at gates):
+//!
+//! ```text
+//! race    u8 heat (0-based), u8 heats, u8 heat_phase (start lights,
+//!         racing, results), varint heat_phase_end_tick, then u32 presence
+//!         mask of racers (wire ship ids), per racer in id order: u8
+//!         next_gate (gates passed, 8 = lap done), varint finish_tick (0 =
+//!         not finished), u8 place (0 = none), varint hold_end_tick (0 = not
+//!         held), u8 slot
+//! ```
+//!
+//! # Well entities (protocol 6; day-one layout note for B7 and A4)
+//!
+//! A dynamic gravity well (a Paperweight stone, the Architect's Gravity
+//! Chaos+ stroke) is a generic entity of kind `ReplicatedKind::Well` at the
+//! well's centre whose 4 state bytes are [`crate::wire::well_state`]
+//! (range, strength, end tick). The client predictor rebuilds the well from
+//! them; the entity exists while the well pulls (strength 0 while a stone
+//! is still flying).
 //!
 //! Unchanged mode state costs one bit per delta snapshot. Positions are
 //! quantized like ship positions (level bounds + 2 u, 16 bits per axis).
@@ -58,6 +100,113 @@ pub mod mode_player_flags {
     pub const SPECTATOR: u8 = 1 << 1;
     /// Carries an objective (Heist core, Hot Reactor).
     pub const CARRIER: u8 = 1 << 2;
+    /// The Architect (protocol 6): this player is the round's architect (no
+    /// ship; `meter` is the stroke budget, clamped to 255).
+    pub const ARCHITECT: u8 = 1 << 3;
+}
+
+/// [`NetMoodView::phase`] values (`ls_sim` event phases).
+pub mod mood_phase {
+    /// No event running.
+    pub const IDLE: u8 = 0;
+    /// The 3 s telegraph before the event changes anything.
+    pub const ANNOUNCE: u8 = 1;
+    pub const ACTIVE: u8 = 2;
+    /// The event winds down (wells fade back in, ducks leave, ...).
+    pub const ENDING: u8 = 3;
+}
+
+/// The comedy director's replicated state (protocol 6): the wire form of
+/// `ls_sim::MoodView` plus the level's `up` (`World::up`, Bored level).
+/// Everything an event does to the own ship's movement is a pure function
+/// of this view and the match seed, so the client predictor reproduces it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct NetMoodView {
+    /// Mood index (`ls_sim` moods: 0 calm, 1 bored, 2 grumpy, 3 giddy).
+    pub mood: u8,
+    /// Running event (`ls_sim::EventKind` index), [`NONE`] for none.
+    pub event: u8,
+    /// [`mood_phase`].
+    pub phase: u8,
+    /// Wire ship id of the player the event aims at, [`NONE`] for none.
+    pub target: u8,
+    /// Tick the current phase started and ends (0 = none).
+    pub phase_start_tick: u32,
+    pub phase_end_tick: u32,
+    /// Event-defined parameters (seeded axis, route index, ...).
+    pub params: [u8; 8],
+    /// The level's up direction (unit vector; +Y unless Bored level turned
+    /// it). Sent as raw `f32` bits, so both ends use the same value.
+    pub up: Vec3,
+}
+
+impl Default for NetMoodView {
+    fn default() -> Self {
+        NetMoodView {
+            mood: 0,
+            event: NONE,
+            phase: mood_phase::IDLE,
+            target: NONE,
+            phase_start_tick: 0,
+            phase_end_tick: 0,
+            params: [0; 8],
+            up: Vec3::Y,
+        }
+    }
+}
+
+/// [`NetMoodView`] as stored in packed snapshots (`up` as raw bits, so
+/// `Eq` compares bit patterns).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PackedMoodView {
+    pub mood: u8,
+    pub event: u8,
+    pub phase: u8,
+    pub target: u8,
+    pub phase_start_tick: u32,
+    pub phase_end_tick: u32,
+    pub params: [u8; 8],
+    pub up: [u32; 3],
+}
+
+impl Default for PackedMoodView {
+    fn default() -> Self {
+        PackedMoodView::from(&NetMoodView::default())
+    }
+}
+
+impl From<&NetMoodView> for PackedMoodView {
+    fn from(m: &NetMoodView) -> Self {
+        PackedMoodView {
+            mood: m.mood,
+            event: m.event,
+            phase: m.phase,
+            target: m.target,
+            phase_start_tick: m.phase_start_tick,
+            phase_end_tick: m.phase_end_tick,
+            params: m.params,
+            up: [m.up.x.to_bits(), m.up.y.to_bits(), m.up.z.to_bits()],
+        }
+    }
+}
+
+impl From<&PackedMoodView> for NetMoodView {
+    fn from(m: &PackedMoodView) -> Self {
+        NetMoodView {
+            mood: m.mood,
+            event: m.event,
+            phase: m.phase,
+            target: m.target,
+            phase_start_tick: m.phase_start_tick,
+            phase_end_tick: m.phase_end_tick,
+            params: m.params,
+            up: Vec3::new(
+                f32::from_bits(m.up[0]),
+                f32::from_bits(m.up[1]),
+                f32::from_bits(m.up[2]),
+            ),
+        }
+    }
 }
 
 /// [`NetModeState::phase`] values.
@@ -144,6 +293,8 @@ pub struct NetModeState {
     pub players: Vec<NetModePlayer>,
     /// Objective markers, sorted by id.
     pub objectives: Vec<NetObjective>,
+    /// The comedy director's state and the level's up (protocol 6).
+    pub mood: NetMoodView,
 }
 
 impl NetModeState {
@@ -174,6 +325,7 @@ pub struct PackedModeState {
     pub team_scores: Vec<i64>,
     pub players: Vec<NetModePlayer>,
     pub objectives: Vec<PackedObjective>,
+    pub mood: PackedMoodView,
 }
 
 impl PackedModeState {
@@ -227,6 +379,7 @@ impl Quantizer {
             team_scores: m.team_scores.clone(),
             players,
             objectives,
+            mood: PackedMoodView::from(&m.mood),
         }
     }
 
@@ -258,6 +411,7 @@ impl Quantizer {
                     pos: self.unpack_position(o.pos),
                 })
                 .collect(),
+            mood: NetMoodView::from(&m.mood),
         }
     }
 }
@@ -309,6 +463,62 @@ pub(crate) fn check_mode(m: &PackedModeState) -> Result<(), EncodeError> {
             return Err(EncodeError::OutOfRange("objective radius not finite"));
         }
         prev = Some(o.id);
+    }
+    if !m.mood.up.iter().all(|&b| f32::from_bits(b).is_finite()) {
+        return Err(EncodeError::OutOfRange("mood up not finite"));
+    }
+    Ok(())
+}
+
+fn write_mood(w: &mut BitWriter, m: &PackedMoodView) {
+    w.write_u8(m.mood);
+    w.write_u8(m.event);
+    w.write_u8(m.phase);
+    w.write_u8(m.target);
+    w.write_varint(m.phase_start_tick as u64);
+    w.write_varint(m.phase_end_tick as u64);
+    for b in m.params {
+        w.write_u8(b);
+    }
+    let default_up = m.up == PackedMoodView::default().up;
+    w.write_bool(default_up);
+    if !default_up {
+        for b in m.up {
+            w.write_u32(b);
+        }
+    }
+}
+
+fn read_mood(r: &mut BitReader) -> Result<PackedMoodView, DecodeError> {
+    let mut m = PackedMoodView {
+        mood: r.read_u8()?,
+        event: r.read_u8()?,
+        phase: r.read_u8()?,
+        target: r.read_u8()?,
+        phase_start_tick: r.read_varint_u32()?,
+        phase_end_tick: r.read_varint_u32()?,
+        ..PackedMoodView::default()
+    };
+    for b in &mut m.params {
+        *b = r.read_u8()?;
+    }
+    if !r.read_bool()? {
+        for b in &mut m.up {
+            *b = r.read_finite_f32()?.to_bits();
+        }
+    }
+    Ok(m)
+}
+
+/// The race section (B6, Belt Up): not filled before B6, see the module
+/// docs for its day-one layout.
+fn write_race_absent(w: &mut BitWriter) {
+    w.write_bool(false);
+}
+
+fn read_race_absent(r: &mut BitReader) -> Result<(), DecodeError> {
+    if r.read_bool()? {
+        return Err(DecodeError::Invalid("race section not supported"));
     }
     Ok(())
 }
@@ -462,6 +672,12 @@ pub(crate) fn write_mode_full(w: &mut BitWriter, m: &PackedModeState) {
         w.write_u8(o.id);
         write_objective_full(w, o);
     }
+    let mood = m.mood != PackedMoodView::default();
+    w.write_bool(mood);
+    if mood {
+        write_mood(w, &m.mood);
+    }
+    write_race_absent(w);
 }
 
 pub(crate) fn read_mode_full(r: &mut BitReader) -> Result<PackedModeState, DecodeError> {
@@ -492,6 +708,10 @@ pub(crate) fn read_mode_full(r: &mut BitReader) -> Result<PackedModeState, Decod
         }
         m.objectives.push(read_objective_full(r, id)?);
     }
+    if r.read_bool()? {
+        m.mood = read_mood(r)?;
+    }
+    read_race_absent(r)?;
     Ok(m)
 }
 
@@ -554,6 +774,12 @@ pub(crate) fn write_mode_delta(w: &mut BitWriter, m: &PackedModeState, b: &Packe
             }
         }
     }
+    let mood = m.mood != b.mood;
+    w.write_bool(mood);
+    if mood {
+        write_mood(w, &m.mood);
+    }
+    write_race_absent(w);
 }
 
 pub(crate) fn read_mode_delta(
@@ -617,6 +843,10 @@ pub(crate) fn read_mode_delta(
         }
         m.objectives = out;
     }
+    if r.read_bool()? {
+        m.mood = read_mood(r)?;
+    }
+    read_race_absent(r)?;
     Ok(m)
 }
 
@@ -916,7 +1146,73 @@ mod tests {
                     pos: [1, 2, 3],
                 },
             ],
+            mood: PackedMoodView::default(),
         }
+    }
+
+    fn sample_mood() -> PackedMoodView {
+        PackedMoodView::from(&NetMoodView {
+            mood: 3,
+            event: 10,
+            phase: mood_phase::ACTIVE,
+            target: 7,
+            phase_start_tick: 12_345,
+            phase_end_tick: 13_245,
+            params: [1, 2, 3, 4, 250, 0, 9, 255],
+            up: Vec3::new(0.6, 0.0, -0.8),
+        })
+    }
+
+    #[test]
+    fn mood_round_trips_in_full_and_delta_snapshots() {
+        let base = sample();
+        let mut m = sample();
+        m.mood = sample_mood();
+        check_mode(&m).unwrap();
+        full_round_trip(&m);
+        // Only the mood changed: section bits plus the mood (4 bytes, two
+        // varints, 8 parameter bytes, 1 + 96 bits of up).
+        let bits = delta_round_trip(&m, &base);
+        assert!(bits <= 7 + 32 + 32 + 64 + 97, "{bits}");
+        delta_round_trip(&base, &m);
+        // The default up costs one bit.
+        let mut flat = m.clone();
+        flat.mood.up = PackedMoodView::default().up;
+        let bits_flat = delta_round_trip(&flat, &base);
+        assert_eq!(bits - bits_flat, 96);
+        // Unchanged mood: the whole mode section is one bit.
+        assert_eq!(delta_round_trip(&m, &m), 1);
+        // A default mode state with only a mood is still sent.
+        let only = PackedModeState {
+            mood: sample_mood(),
+            ..Default::default()
+        };
+        assert!(full_round_trip(&only) > 1);
+        // Pack and unpack keep the view exactly.
+        let q = Quantizer::default();
+        let net = NetModeState {
+            mood: NetMoodView::from(&sample_mood()),
+            ..Default::default()
+        };
+        assert_eq!(q.unpack_mode(&q.pack_mode(&net)).mood, net.mood);
+        assert_eq!(NetMoodView::default().up, Vec3::Y);
+        assert_eq!(NetMoodView::default().event, NONE);
+    }
+
+    #[test]
+    fn mood_validation_and_reserved_race_section() {
+        let mut m = sample();
+        m.mood.up[1] = f32::INFINITY.to_bits();
+        assert!(check_mode(&m).is_err());
+        // A race section (B6) is rejected until it exists.
+        let mut w = BitWriter::new();
+        write_mode_full(&mut w, &sample());
+        let len = w.bit_len();
+        let mut bytes = w.finish();
+        // The race bit is the last bit written.
+        let i = len - 1;
+        bytes[i / 8] |= 1 << (i % 8);
+        assert!(read_mode_full(&mut BitReader::new(&bytes)).is_err());
     }
 
     fn full_round_trip(m: &PackedModeState) -> usize {

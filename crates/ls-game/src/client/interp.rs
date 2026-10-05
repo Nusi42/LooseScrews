@@ -112,6 +112,7 @@ mod tests {
             vel: Vec3::new(60.0, 0.0, 0.0),
             rot: Quat::IDENTITY,
             flags: 1,
+            ext: 0,
             status: None,
         }
     }

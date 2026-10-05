@@ -70,6 +70,7 @@ fn resources(s: &ShipState, secondary: WeaponId) -> Resources {
 fn net(p: &ls_sim::Projectile) -> NetProjectile {
     NetProjectile {
         state: 0,
+        chicken: false,
         id: p.id as u16,
         kind: p.weapon.0,
         owner: 0,
@@ -338,6 +339,7 @@ fn reconcile_offsets_fade_and_unconfirmed_shots_are_dropped() {
     let err = Vec3::new(0.3, 0.0, 0.0);
     let server = NetProjectile {
         state: 0,
+        chicken: false,
         id: 7,
         kind: laser.0,
         owner: 0,
@@ -493,6 +495,7 @@ fn weapons_seen_on_own_projectiles_become_selectable() {
         1,
         &[NetProjectile {
             state: 0,
+            chicken: false,
             id: 3,
             kind: rivet.0,
             owner: 0,

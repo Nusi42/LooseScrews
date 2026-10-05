@@ -180,6 +180,8 @@ export interface GameHandle {
   raycast?(ox: number, oy: number, oz: number, dx: number, dy: number, dz: number, max: number): number;
   /** First contact of a swept sphere: [travel, contact xyz, normal xyz], empty when clear within `max`. */
   sweepSphere?(ox: number, oy: number, oz: number, dx: number, dy: number, dz: number, radius: number, max: number): Float32Array;
+  /** Practice levels built lazily (`Game.practicePreview`): generates the missing chunk nearest the point; returns how many are left. */
+  generateNearest?(x: number, y: number, z: number): number;
   /** Practice only (visual gallery test shapes): carve (`add` false) or add a sphere of rock; false online. */
   practiceEdit?(add: boolean, x: number, y: number, z: number, radius: number): boolean;
   /** Practice only (gallery, M3 C1): The Squeeze's shell on the terrain; a radius below 0 removes it. */
@@ -218,5 +220,7 @@ export interface WasmApi {
     fromWelcome(packet: Uint8Array): GameHandle;
     practice(code: string, dummies: number): GameHandle;
     practiceAs?(code: string, dummies: number, shipType: number): GameHandle;
+    /** A practice level for looking at: no dummies, chunks generated lazily (the FI backdrop). */
+    practicePreview?(code: string): GameHandle;
   };
 }

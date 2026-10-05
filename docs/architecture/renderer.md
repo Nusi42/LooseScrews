@@ -373,7 +373,52 @@ timed in `objects` (0.01 ms with two cloaked hulls at 1080p on an RTX 5080).
 has 5 s of GPU-timed frames, steps down once if the median GPU frame exceeds 8 ms ("medium") or
 14 ms ("low"). Without `timestamp-query` it stays at "high" (frame intervals would also count
 CPU work such as the initial terrain load). Scene pipelines are built per MSAA sample count and
-terrain detail when a level first needs them.
+terrain detail when a level first needs them. The start screen's backdrop (FI) runs on the
+game's renderer, so the pick is usually made before the match starts.
+
+## Start screen, lobby flythrough and ship bay (FI)
+
+The first-impression pass (`web/src/attract/`) puts the renderer to work before the match.
+
+| Piece | File |
+| --- | --- |
+| `FlightPath`: an endless cinematic path planned from level probes (ls-wasm `raycast` / `sweepSphere`): candidate directions in a cone around the heading are swept with a 2.2 u sphere, scored by free distance, the view beyond, keeping the heading, a level horizon, not revisiting and an optional attractor direction; each waypoint is nudged to the middle of its passage; a centripetal Catmull-Rom spline sampled by arc length | `attract/flightPath.ts` |
+| `CinematicCamera` (8.5 u/s, eased in, damped look-ahead, banking, `frameYaw`: looks 0.2 rad left of the flight on landscape screens so the action sits right of the panels docked left); `Squadron`: four synthetic ships (one per hull, two teams) weaving ahead of the camera as wide as the room around the path allows, firing bolt bursts and now and then a seeking rocket; a destroyed ship returns 4.5 s later far ahead under a new id (no respawn burst) | `attract/cinematic.ts` |
+| `Backdrop`: the start screen's live level: one of `BACKDROP_WORLDS` (caverns open to the sky, curated in the gallery so the planet shows), atmosphere, path leaning toward the planet (else the sun), exposure x1.18, the game's scene builder, effect library (VQ5) and lights (VQ6) | `attract/backdrop.ts` |
+| `StartIntro`: creates the game's renderer after the start screen's first paint, runs the backdrop, hosts the hull view of the ship picker, hands the renderer (all meshes built) to the game | `attract/intro.ts` |
+| `LobbyCinematic`: in the lobby with the mouse free, the camera leaves the cockpit and flies a path from the current view (the own ship is drawn once the camera is 2.5 u away) | `attract/lobby.ts` |
+| `ShipBayView` / `PanelBay`: the four hulls turning behind the start screen's ship cards and the in-game ship bay (`ui/shipSelect.ts` `CardBackdrop`) | `attract/shipBay.ts` |
+| Gallery pages (`start-screen`, `start-flythrough`, `lobby-flythrough`, `ship-bay`) | `attract/galleryPages.ts` |
+
+**Hull view.** A second `Renderer` on its own canvas behind the cards, sharing the game
+renderer's GPU device (`Renderer.create(canvas, { device })`: `gpu.ts` `contextOn` configures
+the canvas; `destroy()` leaves a borrowed device alone), at "medium" (or "low"), without
+particles (exhaust plumes would cross the neighbouring cards at this scale). Each frame every
+hull is placed where its card's model box projects at 7 u depth (`bayLayout`, 34° vertical FOV)
+and sized so its length fills the box; it turns on a tilted turntable (the selected one faster,
+boosting). Studio lighting: the sun as a key light from above left in front, a warm rim light
+behind and a cool fill below per hull (point lights scaled by r²), a soft engine light, no fog,
+exposure 1.45, bloom 0.9. It draws only while shown; the card elements stay the DOM's, so the
+layout is CSS's (responsive down to phone width).
+
+**Keeping the start screen fast.** The start card shows as before (no GPU work in front of
+it). Then: the renderer is created after the first paint; instanced meshes are built on first
+use (`Renderer.prepareMeshes()` builds the rest before play), which took the VQ4 models' ~0.1 s
+out of the start; the backdrop level is a lazy practice level (ls-wasm `Game.practicePreview`:
+no dummies, no up-front generation, which blocked the page 1.6 s) whose chunks are generated
+one per frame nearest the camera (`Game.generateNearest`, ~10-30 ms each) before meshing, and
+the path is planned in a frame of its own. Chunks mesh under 10 ms per frame while loading and
+4 ms while flying. `?backdrop=off` skips the flythrough. Measured with
+`tools/browser-smoke/startup.mjs` (dev-guide.md), 1920x1080, RTX 5080, median of 5: start card
+shown 66 ms before / 82 ms after; long tasks after it: none before (the renderer was created
+after Play) / two after (renderer creation and the backdrop level's setup, about 100 ms each;
+total blocking time 62 ms; time to interactive 0.69 s); backdrop visible 6.0 s after load,
+57 fps (headless). The 1.6 s level build and the renderer creation no longer happen after the
+Play click for online play.
+
+GPU (gallery, RTX 5080, 1080p, high): `start-screen` 0.37 ms (terrain 0.14, particles 0.05,
+sky 0.05, post 0.08, hull view `bay` 0.04), `lobby-flythrough` 0.26 ms, `ship-bay` 0.43 ms
+(bay 0.05). Budget share of the hull view: `bay` 0.8 ms (`PASS_BUDGETS_MS`).
 
 ## Terrain (VQ3b)
 

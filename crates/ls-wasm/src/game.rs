@@ -588,6 +588,14 @@ impl GameCore {
         Self::practice_with_generator_as(gen, dummies, true, ship).map_err(|e| e.to_string())
     }
 
+    /// A practice level without dummies whose chunks are generated lazily
+    /// (see `Game::practicePreview`).
+    pub fn practice_preview(code: &str) -> Result<GameCore, String> {
+        let code = ShareCode::decode(code).map_err(|e| e.to_string())?;
+        let gen = Generator::from_code(&code).map_err(|e| e.to_string())?;
+        Self::practice_with_generator_as(gen, 0, false, ShipType::Tinker).map_err(|e| e.to_string())
+    }
+
     /// Practice on any generator (tests use small levels). `pregenerate`
     /// builds every chunk up front, so the first paint score update (tick 30)
     /// does not stall a frame.
@@ -740,6 +748,15 @@ impl GameCore {
     /// Terrain edits applied so far.
     pub fn edit_count(&self) -> u32 {
         self.terrain().edit_count()
+    }
+
+    /// Practice: generates the missing chunk nearest `near` and returns how
+    /// many are left (0 when done, and online).
+    pub fn generate_nearest(&mut self, near: Vec3) -> usize {
+        match &mut self.mode {
+            Mode::Online(_) => 0,
+            Mode::Practice(p) => p.terrain.generate_nearest(near),
+        }
     }
 
     /// Distance to the first rock along a ray (VQ1 scale cues; see

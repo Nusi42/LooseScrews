@@ -57,21 +57,25 @@ There is no sound in this build.
 
 ## Starting a game
 
-Open the game page. The start screen has these fields:
+Open the game page. Behind the start screen a camera flies through a generated world (caverns
+that open to the sky) while a few ships fight ahead of it; the world's kind and share code show
+in the bottom right corner. The start screen has these fields:
 
 | Field | What it does |
 | --- | --- |
 | **Pilot name** | Your name, up to 32 bytes. Other pilots see it above your ship, on the scoreboard and in the kill feed. |
 | **Share code** | A world code. Leave it empty to use the server's world (online) or a random world (practice). |
-| **Ship** | The ship type you fly first: Skitter, Tinker (default), Hauler or Tug (see [Ship types](#ship-types)). If the server's rules don't allow it, you get the Tinker or the first allowed type. You can change ships later in the ship bay (**B**). |
-| **Horizon assist** | On by default. Slowly levels your roll so "up" stays up. You can toggle it in flight with **H**. |
+| **Ship** | The ship type you fly first: click one of the four cards (Skitter, Tinker (default), Hauler or Tug; each shows its hull turning). See [Ship types](#ship-types). If the server's rules don't allow it, you get the Tinker or the first allowed type. You can change ships later in the ship bay (**B**). |
+| **Options: Horizon assist** | On by default. Slowly levels your roll so "up" stays up. You can toggle it in flight with **H**. |
 | **View: Field of view** | How wide you see, 80 to 120 degrees across a 16:9 screen (default 100). Narrower screens keep that width; wider screens (21:9) see a little more at the sides, up to 115 degrees. Boosting widens the view by 4 degrees for a sense of speed. |
 | **View: Cockpit frame** | On by default. Shows the nose, the canopy frame (pillars and the bow across the top) and side parts (pods, armour plates, grapple arms) of the ship you fly, so you can judge its size. |
 | **View: Fit ring** | On by default. A thin ring around the crosshair that shows how big your ship is at the rock ahead (see [Will I fit?](#will-i-fit)). |
 
-The page remembers your name, code, ship, horizon assist and view settings for next time. The
-**Rule set editor** link in the bottom right corner opens the
-[rule set editor](#the-rule-set-editor).
+**Options** (horizon assist and the view settings) and **Controls** (every key) fold open
+below the buttons. The page remembers your name, code, ship, horizon assist and view settings
+for next time. The **Rule set editor** link in the bottom right corner opens the
+[rule set editor](#the-rule-set-editor). Without WebGPU the start screen still works, with a
+plain background; the game then explains what is missing when you press a button.
 
 Then choose one of the two buttons:
 
@@ -180,7 +184,9 @@ match and names its mode (see [After the match](#after-the-match)).
 on the left shows the next mode with a one-line summary, the world code and rules, every pilot
 in the room with a tick when ready and their team pick, and what the room waits for. Press
 Enter when you're ready, T to pick a team, O to spectate. The countdown starts when enough
-pilots are there and everyone is ready, or when the warm-up timer runs out.
+pilots are there and everyone is ready, or when the warm-up timer runs out. While the mouse is
+free (Esc), the camera leaves your cockpit and flies a slow tour through the level; click into
+the game to fly your ship again.
 
 **Debug overlay (F3):** frame rate and the slowest recent frame, ping, the connection type
 (WebTransport or WebSocket), prediction corrections, shot counters, terrain chunk counts, your
@@ -205,8 +211,8 @@ a laser bolt**, so running away works only with distance and the bolts' 3-second
 
 **Choosing a ship:**
 
-- On the start screen, pick your first ship in the **Ship** field.
-- In game, press **B** to open the **ship bay**. It shows each type with its numbers and the
+- On the start screen, click your first ship's card in the **Ship** row.
+- In game, press **B** to open the **ship bay**. It shows each type's hull turning, its numbers and the
   loadout you would spawn with. Press **1** to **4** (or click a card) to pick the ship for your
   **next respawn**; the card shows "(next)" and the bay closes. Your current ship is marked
   "(flying)". Press B again to close the bay without choosing.

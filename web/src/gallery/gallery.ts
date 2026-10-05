@@ -46,6 +46,7 @@ import { chargeAt, cloakAt, CLOAKED } from "./vqpScenes.ts";
 import { chargeLight } from "../game/chargeFx.ts";
 import { modeMoment, modeScene } from "./modeScenes.ts";
 import { monochromeGrade } from "../game/modeVisuals.ts";
+import { runPageScene } from "../attract/galleryPages.ts";
 
 /** Frames rendered before the page reports ready. */
 const WARMUP_FRAMES = 20;
@@ -388,6 +389,11 @@ export async function runGallery(canvas: HTMLCanvasElement, ui: HTMLElement, loc
   try {
     const scene = sceneById(id);
     if (!scene) throw new Error(`unknown gallery scene "${id}"`);
+    // First-impression pages (start screen, lobby, ship bay) over the live backdrop.
+    if (scene.page) {
+      await runPageScene(canvas, ui, scene, status);
+      return;
+    }
     const api = await loadWasm();
     const w = scene.world;
     status.shareCode = api.randomShareCode(w.seed, 0, w.enclosure, w.density);

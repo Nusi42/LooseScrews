@@ -1,0 +1,53 @@
+/* First-impression pass (FI): the in-game ship bay's hull view (attract/shipBay.ts PanelBay).
+   Imported by style.css; the start screen's picker is in ui/startScreen.css. */
+
+.ship-panel.has-bay {
+  background: #07090e;
+  overflow: hidden auto;
+  box-shadow:
+    0 24px 60px rgba(0, 0, 0, 0.5),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.07);
+}
+
+.ship-panel > .bay-canvas {
+  position: absolute;
+  inset: 0;
+}
+
+.ship-panel > :not(canvas) {
+  position: relative;
+  z-index: 1;
+}
+
+.ship-card-model {
+  display: none;
+}
+
+.ship-panel.has-bay .ship-card-model {
+  display: block;
+  height: clamp(70px, 13vh, 120px);
+  margin: -4px -6px 4px;
+}
+
+.ship-panel.has-bay .ship-card {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0) 0, rgba(255, 255, 255, 0) 40%, rgba(8, 10, 16, 0.62) 62%);
+  border-color: rgba(255, 255, 255, 0.1);
+}
+
+.ship-panel.has-bay .ship-card.next {
+  border-color: var(--accent);
+  box-shadow:
+    0 0 0 1px var(--accent),
+    0 0 24px rgba(255, 160, 60, 0.2);
+}
+
+.ship-panel.has-bay .ship-card:not(.banned):hover {
+  border-color: rgba(255, 255, 255, 0.28);
+}
+
+.ship-panel.has-bay h2 {
+  font-family: var(--display);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}

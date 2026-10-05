@@ -34,6 +34,18 @@ export function powerPreferenceFrom(search: string): GPUPowerPreference {
   return new URLSearchParams(search).get("gpu") === "low-power" ? "low-power" : "high-performance";
 }
 
+/**
+ * A canvas context on an existing device (a second canvas drawn by the same
+ * GPU device, e.g. the ship bay's hull view next to the game's canvas).
+ */
+export function contextOn(canvas: HTMLCanvasElement, device: GPUDevice): GpuContext {
+  const context = canvas.getContext("webgpu");
+  if (!context) throw new GpuUnavailableError("no-context", "Could not create a WebGPU canvas context.");
+  const format = navigator.gpu.getPreferredCanvasFormat();
+  context.configure({ device, format, alphaMode: "opaque" });
+  return { device, context, format };
+}
+
 export async function initGpu(canvas: HTMLCanvasElement): Promise<GpuContext> {
   if (!("gpu" in navigator) || !navigator.gpu) {
     throw new GpuUnavailableError("no-webgpu", "This browser does not support WebGPU.");

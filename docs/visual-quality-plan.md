@@ -114,6 +114,7 @@ Rules for every package:
 | VQ7 Atmosphere and backdrop | Done (WIN6), merged on WIN1 in wave C round 1; see "VQ7 as built" below. Integration: the environment cube and its sampler moved to group 0 bindings 6-7 (VQ6 owns 1-3). Pillars at the hidden walls fade out since VQP. |
 | VQP Polish | Done (WIN4); see "VQP as built". Fusion Charger charge-up, cloak refraction, own Leech Arc beam drawn locally (M3 carried-over item), pillars fading at hidden walls, thin bores drawn at their true width, canopy frame. Mesh golden hashes re-blessed (sdf unchanged); reference-GPU timing open as for the other packages. |
 | M3 C1 Mode visuals (on the new pipeline, §4) | Done (WIN2), wave C round 2; see milestone-3-plan.md "C1 as built" and renderer.md "Mode effects". The Squeeze's walls and next zone, Heist's zones, beacons and carrier halo, Hot Reactor's fuse sphere and ring are a new analytic pass (`modeFx.ts`, timed `mode`); core and reactor are VQ4-kit props; events and ambience are VQ5 particles with VQ6 pulses; Last Color Standing is VQ2's monochrome grade with a per-pixel keep mask for the ships. The first-impression pass (live flythrough behind the start screen and lobby, rotating hulls in the ship bay) from §4 is not part of C1 (round 2 schedules it separately). Merged on WIN1 in wave C round 2. |
+| FI First impression (start screen, lobby, ship bay) | Done (WIN3), M3 wave C; see "FI as built" below. Start screen over a live flythrough with a dogfight, lobby flythrough while the mouse is free, hulls turning in the ship picker and the in-game ship bay; reference-GPU timing and phone review open. Merged on WIN1 in wave C round 2. |
 
 **VQ9 as built (WIN5):** see [architecture/renderer.md](architecture/renderer.md#sun-occlusion-vq9). The package asked for cheap sun visibility, baked per vertex in the mesher or a shadow map within budget. Chosen: a **shadow map**, because a per-vertex bake cannot stay correct under edits (a crater in a ceiling opens the sun onto floors in other chunks, far beyond `DIRTY_MARGIN`; the bake would need sun rays through the whole level per vertex and cross-chunk invalidation), its 1 u resolution gives blobs instead of shaft edges, and it would cost meshing time that VQ3a already doubled. The mesher is unchanged: no golden hash, no `GENERATOR_VERSION` and no replay hash changes, remesh CPU cost unchanged.
 - `web/src/renderer/sunShadow.ts` (`SunShadow`, `Renderer.sunShadow`): one orthographic `depth16unorm` 4096² map from the sun over the level (about 0.09 u per texel), back faces as casters (no acne on lit rock), region = the chunks seen so far snapped to the 32 u grid. Updates only on terrain changes: `setChunk` marks the old and new chunk extent's texel rectangles dirty (merged, at most 6); the next frame clears each rectangle by a scissored full-screen triangle and redraws the chunks overlapping it. Sealed levels (no sky, Enclosure >= 50: the level box encloses everything, also with the walls not casting, checked with a visibility debug view on caves, mines and the default world) skip the map: visibility 0, no lookups, no updates.
@@ -332,6 +333,26 @@ Before/after shots: `target/visual-gallery/vq5-before/` (base), `vq5-legacy/` (n
 - **Cost**: GPU: the frame draws in the `objects` pass, +0.005-0.01 ms (RTX 5080, gallery `cockpit-*` and `fit-*` scenes; objects pass 0.000 → 0.005-0.010 ms). CPU: the probes run at 30 Hz (every second frame). wasm in Node, 400 random views per world from open points (`sweep + ray`, per probe): seed 7 caverns p50 0.015 / p90 0.026 / p99 0.046 ms, seed 42 caverns 0.025 / 0.089 / 0.132 ms (max 0.38), seed 99 blend 0.041 / 0.065 / 0.129 ms, sky 0.003 / 0.031 / 0.047 ms, mine shafts 0.028 / 0.044 / 0.059 ms: averaged over the 30 Hz schedule at most 0.045 ms per frame at p90. The gallery's fit scene is a worst case (0.17-0.2 ms per probe: its 120 carve edits are evaluated on every field read).
 - **Shots**: gallery labels `vq1-before` (`--query view=legacy`: same build, 75° vertical, no cockpit or ring) and `vq1-after`, scenes `fit-tunnel` (Tinker, ring inside the hole at the dead end, 8.1 u), `fit-tunnel-hauler` (amber ring larger than the hole, 2.5 u), `cockpit-skitter`, `cockpit-tug`; the browser smoke writes `target/browser-smoke/fit-tunnel.png` and checks that the ring shows. `--query` is a new gallery option.
 - **Open**: (1) the 1.2 u test tunnel renders about 0.65 u wide: surface nets on the 1 u grid draw thin tubes much narrower than their field, so in thin tunnels the ring (correctly) looks bigger than the hole you see; VQ3a/VQ3b should look at sub-cell features. (2) Carved holes stop a ship that fits the hole geometrically at the rim edge (the max-of-SDFs edit field is only a bound at the edge, with slope 1, so VQ0's estimate does not help there: the Hauler in a 1.2 u bore stops 0.4 u earlier than a true distance would say); the sweep reports what the simulation does. (3) The frame's hull is team-tinted like the VQ4 hulls; its look is pending a phone review.
+
+### FI as built (WIN3)
+
+See [architecture/renderer.md](architecture/renderer.md#start-screen-lobby-flythrough-and-ship-bay-fi).
+`web/src/attract/` (flight path, cinematic camera and synthetic dogfight, backdrop, start-screen
+glue, lobby cinematic, hull view, gallery pages), the start screen redesigned
+(`ui/startScreen.ts` + `ui/startScreen.css`: CSS/SVG wordmark with a loose-screw mark and a
+chrome sheen, condensed display type, a left-docked glass panel, ship cards with turning hulls,
+options and controls folded, fade in and out, the corner links and the loading card restyled),
+the in-game ship bay's cards get a model box (`ui/shipSelect.ts` `CardBackdrop`, small edit).
+Shared-file edits: `main.ts` (start intro, lobby cinematic, `PanelBay`, about 25 lines),
+`renderer.ts` (`create(..., { device })`, lazy instanced meshes and `prepareMeshes`), `gpu.ts`
+(`contextOn`), `style.css` (two `@import`s), `gallery/gallery.ts` (pages hand-off),
+`gallery/scenes.ts` (`page`, four scenes, `bay` budget), `wasm/api.ts`; Rust: ls-wasm
+`Game.practicePreview` and `Game.generateNearest`, ls-game `GameTerrain::generate_nearest`
+(client only; no hash changes). Before/after: `target/visual-gallery/{FI-before,FI-after}/`
+(the pre-FI start screen and showcase in `target/startup/FI-before/start.png` and
+`target/fi/before-models/`). Open: the lobby flythrough only runs while the mouse is free (a
+locked pointer keeps the cockpit); `prefers-reduced-motion` stills the logo but not the flight;
+the backdrop shows about 6 s after load (the lazy level is generated a chunk per frame).
 
 ### Acceptance (whole track)
 

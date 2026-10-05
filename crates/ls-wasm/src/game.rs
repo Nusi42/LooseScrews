@@ -735,6 +735,36 @@ impl GameCore {
         self.terrain().edit_count()
     }
 
+    /// Distance to the first rock along a ray (VQ1 scale cues; see
+    /// [`crate::probe::raycast`]).
+    pub fn raycast(&self, origin: Vec3, dir: Vec3, max: f32) -> Option<f32> {
+        crate::probe::raycast(self.terrain(), origin, dir, max)
+    }
+
+    /// Where a sphere swept along a ray first touches rock (VQ1 fit ring;
+    /// see [`crate::probe::sweep_sphere`]).
+    pub fn sweep_sphere(
+        &self,
+        origin: Vec3,
+        dir: Vec3,
+        radius: f32,
+        max: f32,
+    ) -> Option<crate::probe::SweepHit> {
+        crate::probe::sweep_sphere(self.terrain(), origin, dir, radius, max)
+    }
+
+    /// Practice only: applies a terrain edit outside the simulation (the
+    /// visual gallery carves fixed test shapes). False online.
+    pub fn practice_edit(&mut self, edit: ls_math::terrain::TerrainEdit) -> bool {
+        match &mut self.mode {
+            Mode::Online(_) => false,
+            Mode::Practice(p) => {
+                p.terrain.apply(edit);
+                true
+            }
+        }
+    }
+
     // ----- network -------------------------------------------------------------
 
     /// Handles one packet from the server. Returns the reason if the server

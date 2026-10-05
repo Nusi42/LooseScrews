@@ -8,7 +8,7 @@ from there to the screen. Wave D of M3 extends it into the full renderer referen
 
 | Step | Target | Code |
 | --- | --- | --- |
-| Scene: terrain chunks (frustum culled per chunk AABB), then opaque instances, then translucent instances (no depth write) | `rgba16float` HDR colour, MSAA 4x at "high"/"medium", resolved into the post chain's HDR texture; `depth24plus` | `renderer.ts`, `shaders/terrain.ts`, `shaders/objects.ts` |
+| Scene: terrain chunks (frustum culled per chunk AABB), then opaque instances, then translucent instances (no depth write), then the cockpit hull frame (own depth range) | `rgba16float` HDR colour, MSAA 4x at "high"/"medium", resolved into the post chain's HDR texture; `depth24plus` | `renderer.ts`, `shaders/terrain.ts`, `shaders/objects.ts` |
 | Bloom down: 13-tap filter, the first step with a Karis average and a soft-knee threshold | up to 6 half-size `rgba16float` mips | `post.ts`, `shaders/post.ts` `BLOOM_DOWN_WGSL` |
 | Bloom up: 3x3 tent, added onto the next larger mip | the same mips | `BLOOM_UP_WGSL` |
 | Composite: bloom (averaged over the mips, added), exposure, colour grade, vignette, AgX tonemap with a look, sRGB encode, half-LSB dither, optional film grain | the swapchain (`getPreferredCanvasFormat()`, non-sRGB, so the shader encodes) | `COMPOSITE_WGSL` |
@@ -31,6 +31,30 @@ With `timestamp-query` every pass writes timestamps (`gpuTimer.ts`), labelled `t
   shows). Terrain: hot rock about 3, charged sparks 5, glow 1.2, paint 0.3-0.4 times its colour.
 - Lighting (`shaders/lighting.ts`, `light(n, p)`): sun 0.9, hemisphere ambient 0.035-0.11, the
   camera headlight. VQ6 adds dynamic lights there.
+
+## Camera, cockpit frame and fit ring (VQ1)
+
+- **Field of view** (`game/camera.ts`): the player sets a horizontal FOV at the 16:9 reference
+  (80-120°, default 100°, i.e. 67.7° vertical). Narrower screens keep that horizontal FOV;
+  wider ones keep the 16:9 vertical FOV (Hor+) up to 115° horizontal (or the setting, if
+  wider). `fovYFor(setting, aspect, kick)` gives the vertical FOV `CameraView.fovY` the
+  renderer uses; `FovKick` eases a +4° boost kick in and out over 250 ms. The view settings
+  (FOV, cockpit frame, fit ring) live in `localStorage` key `ls.view` (`ui/viewSettings.ts`,
+  every access in try/catch) and are set on the start screen.
+- **Cockpit hull frame** (`renderer/hullFrame.ts`, models in `renderer/hullFrameModels.ts`):
+  the nose deck, side parts and canopy pillars of the own ship type, built with the VQ4 kit at
+  the VQ4 hull's dimensions and fit, seen from an eye above the hull's centre line. Drawn last
+  in the scene pass in view space (`Renderer.hullFrame.state`, `null` hides it) with its own
+  projection (near 0.01 u) and its depth squeezed into the front 1/1000 of the shared depth
+  buffer, so rock and ships never cut it. It is lit by the scene at its world position through
+  the VQ4 materials (`shade_model`), with a cockpit shade (painted parts keep 0.3 of the light
+  next to the eye, 0.75 at the nose). Pipeline label `hull frame` (the browser smoke requires
+  it). Cost: one draw of 1.2-2.4 k triangles, timed in the `objects` pass (about 0.005-0.01 ms
+  on an RTX 5080).
+- **Fit ring** (`ui/fitRing.ts`, probes in `game/scaleCues.ts`): DOM/SVG, not GPU. ls-wasm
+  `Game.sweepSphere` sweeps the own hull's sphere along the view (contact measured like the
+  simulation's collision, `crates/ls-wasm/src/probe.rs`) and `Game.raycast` checks the aim
+  point; the ring is the hull radius projected at the contact's depth.
 
 ## Post settings and the grade hook
 

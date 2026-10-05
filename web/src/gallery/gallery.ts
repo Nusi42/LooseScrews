@@ -19,7 +19,10 @@ import * as q from "../math/quat.ts";
 import type { Quat } from "../math/quat.ts";
 import * as v3 from "../math/vec3.ts";
 import type { Vec3 } from "../math/vec3.ts";
-import { boundsCenter, DEFAULT_CAMERA } from "../game/camera.ts";
+import { boundsCenter, DEFAULT_CAMERA, type CameraParams } from "../game/camera.ts";
+import { probeFitRing } from "../game/scaleCues.ts";
+import { teamHull } from "../game/scene.ts";
+import { FitRing, HIDDEN_RING, type FitRingModel } from "../ui/fitRing.ts";
 import { ChunkLoader, LOADING_BUDGET } from "../game/chunks.ts";
 import { CUE, EffectsState, NO_SHIP, type Cue, type EffectsContext, type Flash } from "../game/mechanics.ts";
 import { buildScene } from "../game/scene.ts";
@@ -30,7 +33,7 @@ import { Renderer, type CameraView, type SceneInstances } from "../renderer/rend
 import { CONTROLS_LEN, type GameHandle } from "../wasm/api.ts";
 import { loadWasm } from "../wasm/load.ts";
 import { pickCloseup, pickLongest, pickVista, probeAround, raycast, rayMesh, sphereDirections, type Probe, type RayMesh } from "./raycast.ts";
-import { sceneById, type GalleryScene } from "./scenes.ts";
+import { FIT_TUNNEL_RADIUS, sceneById, type GalleryScene } from "./scenes.ts";
 
 /** Frames rendered before the page reports ready. */
 const WARMUP_FRAMES = 20;
@@ -52,6 +55,33 @@ export interface GalleryStatus {
   canTime: boolean;
   gpu: GpuTimings | null;
   gpuError: string | null;
+  /** VQ1 scenes with a ship: the fit ring shown and the CPU time of its probes (ms per frame, mean of 100). */
+  fit: FitRingModel | null;
+  probeMs: number | null;
+}
+
+/** The pre-VQ1 camera (`?view=legacy`: 75° vertical FOV, no cockpit frame or fit ring) for before shots. */
+export const LEGACY_CAMERA: CameraParams = { fovY: (75 * Math.PI) / 180, near: 0.05, far: 600 };
+
+/** `fit` scene: distance from the camera to the rock ball's face (u), the ball's radius and the tunnel depth. */
+export const FIT_WALL_DISTANCE = 2.5;
+export const FIT_BALL_RADIUS = 3.5;
+export const FIT_TUNNEL_DEPTH = 5;
+
+/**
+ * Edits of the `fit` scene, in order: a rock ball whose face is
+ * FIT_WALL_DISTANCE ahead of `eye`, then a dead-end tunnel of
+ * FIT_TUNNEL_RADIUS bored into it along `dir` (overlapping spheres 0.05 u
+ * apart, so its wall is smooth to 0.0005 u).
+ */
+export function fitTunnelEdits(eye: Vec3, dir: Vec3): { add: boolean; center: Vec3; radius: number }[] {
+  const out = [{ add: true, center: v3.addScaled(eye, dir, FIT_WALL_DISTANCE + FIT_BALL_RADIUS), radius: FIT_BALL_RADIUS }];
+  const from = FIT_WALL_DISTANCE - 1;
+  const steps = Math.round((FIT_TUNNEL_DEPTH + 1) / 0.05);
+  for (let i = 0; i <= steps; i++) {
+    out.push({ add: false, center: v3.addScaled(eye, dir, from + i * 0.05), radius: FIT_TUNNEL_RADIUS });
+  }
+  return out;
 }
 
 declare global {
@@ -212,6 +242,8 @@ export async function runGallery(canvas: HTMLCanvasElement, ui: HTMLElement, loc
     canTime: false,
     gpu: null,
     gpuError: null,
+    fit: null,
+    probeMs: null,
   };
   window.__gallery = status;
   ui.replaceChildren();
@@ -239,7 +271,8 @@ export async function runGallery(canvas: HTMLCanvasElement, ui: HTMLElement, loc
       if (mesh && mesh.indices.length > 0) rayMeshes.set(key, rayMesh(mesh));
       else rayMeshes.delete(key);
     });
-    let view: CameraView = { position: origin, orientation: spawn?.orientation ?? q.identity(), ...DEFAULT_CAMERA };
+    const legacy = new URLSearchParams(loc.search).get("view") === "legacy";
+    let view: CameraView = { position: origin, orientation: spawn?.orientation ?? q.identity(), ...(legacy ? LEGACY_CAMERA : DEFAULT_CAMERA) };
     await loadAround(loader, game, renderer, view, status);
 
     const near = [...rayMeshes.values()].filter((m) => {
@@ -252,7 +285,31 @@ export async function runGallery(canvas: HTMLCanvasElement, ui: HTMLElement, loc
     const pose = pickPose(scene, origin, view.orientation, probes);
     view = { ...view, ...pose };
     status.camera = pose;
+    if (scene.content === "fit") {
+      const f = q.forward(pose.orientation);
+      for (const e of fitTunnelEdits(pose.position, f)) game.practiceEdit?.(e.add, e.center.x, e.center.y, e.center.z, e.radius);
+    }
     await loadAround(loader, game, renderer, view, status);
+
+    // VQ1: the own ship's cockpit frame and the fit ring (not in the legacy view).
+    if (scene.ship !== undefined && !legacy) {
+      const radius = LINEUP_RADII[scene.ship] ?? 0.5;
+      renderer.hullFrame.state = { shipType: scene.ship, radius, color: teamHull(0), glow: 0 };
+      const hud = document.createElement("div");
+      hud.className = "hud";
+      const crosshair = document.createElement("div");
+      crosshair.className = "hud-crosshair";
+      hud.appendChild(crosshair);
+      ui.appendChild(hud);
+      const ring = new FitRing(hud);
+      const probe = (): FitRingModel => probeFitRing(game, pose.position, pose.orientation, radius, view.fovY, canvas.clientHeight || canvas.height);
+      const fit = probe();
+      const t0 = performance.now();
+      for (let i = 0; i < 100; i++) probe();
+      status.probeMs = (performance.now() - t0) / 100;
+      status.fit = fit;
+      ring.update(fit.visible ? fit : HIDDEN_RING);
+    }
 
     const visuals = parseVisuals(game.visuals(), api.visualShapeNames());
     // Fight: the explosion sits where a ray ahead and to the right meets rock.

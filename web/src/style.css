@@ -1896,3 +1896,93 @@ button {
   margin: 4px 0 0;
   color: var(--error);
 }
+
+/* ----- View settings and the fit ring (VQ1, ui/viewSettings.ts, ui/fitRing.ts) ----- */
+
+.view-settings {
+  margin: 0 0 14px;
+  padding: 10px 12px 0;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+}
+
+.view-settings legend {
+  padding: 0 6px;
+  font-size: 13px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.view-settings .check {
+  margin-bottom: 10px;
+}
+
+.field.range {
+  margin-bottom: 10px;
+}
+
+.field.range span {
+  display: flex;
+  justify-content: space-between;
+}
+
+.field.range output {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.field.range input {
+  padding: 0;
+  border: 0;
+  background: none;
+  accent-color: var(--accent);
+}
+
+.fit-ring {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 1px;
+  height: 1px;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.fit-ring g {
+  transition: opacity 120ms linear;
+}
+
+.fit-ring-circle,
+.fit-ring-ticks {
+  fill: none;
+  stroke-linecap: round;
+  filter: drop-shadow(0 0 1.5px rgba(0, 0, 0, 0.85));
+}
+
+.fit-ring-circle {
+  stroke-width: 1.25px;
+  stroke-dasharray: 2 5;
+}
+
+.fit-ring-ticks {
+  stroke-width: 1.75px;
+}
+
+.fit-ring-surface .fit-ring-circle,
+.fit-ring-surface .fit-ring-ticks {
+  stroke: rgba(190, 235, 255, 0.85);
+}
+
+.fit-ring-blocked .fit-ring-circle,
+.fit-ring-blocked .fit-ring-ticks {
+  stroke: rgba(255, 170, 60, 0.95);
+}
+
+.fit-ring-blocked .fit-ring-circle {
+  stroke-dasharray: none;
+}
+
+.hud.spectating .fit-ring {
+  display: none;
+}

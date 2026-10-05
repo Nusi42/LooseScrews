@@ -17,6 +17,7 @@ import { CanvasSizer } from "./canvas.ts";
 import { Frustum } from "./frustum.ts";
 import { initGpu, type GpuContext } from "./gpu.ts";
 import { GpuTimer, type GpuTimings } from "./gpuTimer.ts";
+import { HullFrame } from "./hullFrame.ts";
 import { GpuMesh, type MeshData } from "./mesh.ts";
 import { LEGACY_MESH_BUILDERS, MESH_BUILDERS, MESH_KINDS, type MeshKind } from "./models/index.ts";
 import { DEFAULT_POST, HDR_FORMAT, PostChain, type PostSettings } from "./post.ts";
@@ -259,6 +260,8 @@ export class Renderer {
   detailedTiming = false;
   /** Shader time (s) for this and later frames instead of the wall clock (fixed-pose screenshots). */
   timeOverride: number | null = null;
+  /** The own ship's cockpit frame (VQ1), drawn last in the scene pass; set its `state` per frame. */
+  readonly hullFrame: HullFrame;
 
   /**
    * Creates the renderer; throws GpuUnavailableError when WebGPU cannot be
@@ -316,6 +319,7 @@ export class Renderer {
       entries: [{ binding: 0, resource: { buffer: this.frameBuffer } }],
     });
     this.pipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [bindGroupLayout] });
+    this.hullFrame = new HullFrame(device, bindGroupLayout);
     this.modules = {
       terrain: device.createShaderModule({ label: "terrain", code: TERRAIN_WGSL }),
       instanced: device.createShaderModule({ label: "instanced", code: INSTANCED_WGSL }),
@@ -552,6 +556,7 @@ export class Renderer {
         stats.triangles += (batch.mesh.indexCount / 3) * batch.count;
       }
     }
+    stats.triangles += this.hullFrame.draw(pass, samples, camera, this.sizer.aspect);
     pass.end();
 
     this.post.encode(encoder, this.context.getCurrentTexture().createView(), this.settings.post, time, timer);
@@ -563,6 +568,7 @@ export class Renderer {
 
   destroy(): void {
     this.clearChunks();
+    this.hullFrame.destroy();
     for (const batches of Object.values(this.batches)) for (const batch of batches.values()) batch.destroy();
     for (const mesh of Object.values(this.meshes)) mesh.destroy();
     this.depthTexture?.destroy();

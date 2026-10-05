@@ -17,8 +17,15 @@ export interface GalleryWorld {
  */
 export type PoseKind = "closeup" | "tunnel" | "vista";
 
-/** What is placed in front of the camera besides terrain. */
-export type SceneContent = "none" | "lineup" | "fight";
+/**
+ * What is placed in front of the camera besides terrain. `fit` carves a
+ * fixed test shape (VQ1): a rock ball ahead with a dead-end tunnel of
+ * FIT_TUNNEL_RADIUS bored along the view.
+ */
+export type SceneContent = "none" | "lineup" | "fight" | "fit";
+
+/** Radius of the `fit` scene's tunnel (u): 1.2 u across. */
+export const FIT_TUNNEL_RADIUS = 0.6;
 
 export interface GalleryScene {
   id: string;
@@ -30,6 +37,11 @@ export interface GalleryScene {
   content: SceneContent;
   /** Shader and effect time (s) the frame is rendered at. */
   time: number;
+  /**
+   * Own ship type (ls-sim ShipType index) whose cockpit frame and fit ring
+   * show (VQ1); absent = no cockpit, the plain camera.
+   */
+  ship?: number;
 }
 
 const CAVES: GalleryWorld = { seed: 7, enclosure: 50, density: 50 };
@@ -57,6 +69,28 @@ export const SCENES: readonly GalleryScene[] = [
   },
   { id: "ship-lineup", title: "The four hulls", covers: "ships", world: CAVES, pose: "tunnel", content: "lineup", time: 1.0 },
   { id: "fight", title: "Fight frame with an explosion", covers: "effects", world: CAVES, pose: "tunnel", content: "fight", time: 2.15 },
+  {
+    id: "fit-tunnel",
+    title: "Tinker before a 1.2 u tunnel (fits)",
+    covers: "fit",
+    world: CAVES,
+    pose: "tunnel",
+    content: "fit",
+    time: 1.0,
+    ship: 1,
+  },
+  {
+    id: "fit-tunnel-hauler",
+    title: "Hauler before a 1.2 u tunnel (does not fit)",
+    covers: "fit",
+    world: CAVES,
+    pose: "tunnel",
+    content: "fit",
+    time: 1.0,
+    ship: 2,
+  },
+  { id: "cockpit-skitter", title: "Skitter cockpit", covers: "fit, ships", world: CAVES, pose: "tunnel", content: "none", time: 1.0, ship: 0 },
+  { id: "cockpit-tug", title: "Tug cockpit", covers: "fit, ships", world: CAVES, pose: "tunnel", content: "none", time: 1.0, ship: 3 },
 ];
 
 export function sceneById(id: string): GalleryScene | undefined {

@@ -15,7 +15,7 @@ game's data files, so those pages always match the build.
 - [The HUD](#the-hud)
 - [Ship types](#ship-types)
 - [Your ship: hull, energy, boost and scrap](#your-ship-hull-energy-boost-and-scrap)
-- [Flying](#flying)
+- [Flying](#flying) ([will I fit?](#will-i-fit))
 - [Weapons](#weapons)
 - [Surviving a Tectonic Charge](#surviving-a-tectonic-charge)
 - [Gadgets](#gadgets)
@@ -64,8 +64,11 @@ Open the game page. The start screen has these fields:
 | **Share code** | A world code. Leave it empty to use the server's world (online) or a random world (practice). |
 | **Ship** | The ship type you fly first: Skitter, Tinker (default), Hauler or Tug (see [Ship types](#ship-types)). If the server's rules don't allow it, you get the Tinker or the first allowed type. You can change ships later in the ship bay (**B**). |
 | **Horizon assist** | On by default. Slowly levels your roll so "up" stays up. You can toggle it in flight with **H**. |
+| **View: Field of view** | How wide you see, 80 to 120 degrees across a 16:9 screen (default 100). Narrower screens keep that width; wider screens (21:9) see a little more at the sides, up to 115 degrees. Boosting widens the view by 4 degrees for a sense of speed. |
+| **View: Cockpit frame** | On by default. Shows the nose, canopy pillars and side parts (pods, armour plates, grapple arms) of the ship you fly, so you can judge its size. |
+| **View: Fit ring** | On by default. A thin ring around the crosshair that shows how big your ship is at the rock ahead (see [Will I fit?](#will-i-fit)). |
 
-The page remembers your name, code, ship and horizon assist setting for next time. The
+The page remembers your name, code, ship, horizon assist and view settings for next time. The
 **Rule set editor** link in the bottom right corner opens the
 [rule set editor](#the-rule-set-editor).
 
@@ -131,7 +134,7 @@ rebinding yet.
 
 | Where | What it shows |
 | --- | --- |
-| Center | Crosshair. Your shots fly straight out along it. |
+| Center | Crosshair. Your shots fly straight out along it. Around it, within 12 u of rock ahead, the **fit ring** (see [Will I fit?](#will-i-fit)). |
 | Top center | The **scoreline**: the mode, the match timer (minutes:seconds, red in the last 30 seconds), one score per team in the team colours (Orange, Blue, Lime, Magenta; in Paint the Void the team's share of the surface in percent) or, in free-for-all modes, the top three pilots and your own place, and the score that wins. Below it the mode's stage where it has one (The Squeeze's phase and its timer). |
 | Left, above the meters | In modes with lives your **lives**, in Last Color Standing your **colour** meter |
 | In the view | **Objective markers**: the safe zone and the next zone, the core and who carries it, extraction zones, the reactor with its fuse. Markers outside the view sit at the screen edge with an arrow pointing the way. |
@@ -301,6 +304,20 @@ More flight tips:
   while your nose points almost straight up or down. Turn it off (H) if you want full control.
 - **Leaving the tab** (switching tabs or windows) releases all keys. Online your ship stays in
   the match and drifts to a stop, so don't leave it somewhere dangerous.
+
+### Will I fit?
+
+Your ship is a sphere for collisions: 0.8 u across for the Skitter, 1 u for the Tinker, 1.1 u
+for the Tug and 1.3 u for the Hauler. The **fit ring** around the crosshair is that sphere drawn
+where your ship would first touch rock if you flew straight ahead:
+
+- **Ring inside the opening**: you fit. The ring shows where you would stop (the end of a dead-end
+  tunnel, or the wall you are aiming at; it is pale blue then).
+- **Ring bigger than the opening** (amber): you won't fit. Your hull would touch the rim (or a
+  wall you would scrape) before you reach the point you aim at.
+
+The ring appears within 12 u of the rock and fades away when you are pressed against it. You
+can switch it off on the start screen (**View: Fit ring**).
 
 ## Weapons
 

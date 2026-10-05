@@ -38,7 +38,8 @@
 // launch the Eyeball (guided view), use the Decoy (cooldown shown); lobby: a third
 // ls-server with the lobby on (tools/browser-smoke/lobby.ron, a 12 s match): the lobby card
 // in warm-up, ready with Enter, the countdown, the match, the results screen and the next
-// match's warm-up and match on the same page and connection (no reload, one join); open the rule set editor
+// match's warm-up and match on the same page and connection (no reload, one join); the
+// fit ring before a 1.2 u tunnel (?gallery=fit-tunnel, fit-tunnel.png); open the rule set editor
 // (?editor=rules), change the rules, read the generated code and check that
 // ls-server accepts it (--ruleset <code>). Fails on console errors, page
 // errors, WebGPU validation or uncaptured errors, error screens, blank frames,
@@ -582,9 +583,10 @@ async function main() {
       );
       for (const w of compileWarnings) note(`WGSL warning: ${w}`);
       // The renderer builds the scene pipelines (terrain, instanced,
-      // translucent) and the post chain (bloom down, bloom up, composite);
+      // translucent), the cockpit hull frame (VQ1) and the post chain
+      // (bloom down, bloom up, composite);
       // later packages add more, so check that these are among them.
-      const required = ["terrain", "instanced", "translucent", "bloom down", "bloom up", "composite"];
+      const required = ["terrain", "instanced", "translucent", "bloom down", "bloom up", "composite", "hull frame"];
       const missing = required.filter((l) => !s.pipelines.some((p) => p.label === l));
       check(
         `${label}: every render pipeline validates`,
@@ -755,6 +757,29 @@ async function main() {
       } finally {
         await stop(lserver);
       }
+    }
+
+    // --- fit ring (VQ1): the gallery's fixed pose before a 1.2 u tunnel ---
+    phase = "fit";
+    {
+      const page = await newGamePage();
+      await page.goto(`${base}/?gallery=fit-tunnel`, { waitUntil: "load" });
+      const ready = await page
+        .waitForFunction(() => window.__gallery?.phase === "ready" || window.__gallery?.phase === "error", { timeout: 120_000 })
+        .then(() => page.evaluate(() => window.__gallery))
+        .catch(() => null);
+      if (check("fit: the fit-tunnel scene renders", ready?.phase === "ready", ready ? (ready.error ?? `share code ${ready.shareCode}`) : "timed out")) {
+        const fit = ready.fit;
+        check(
+          "fit: the fit ring shows before the tunnel",
+          Boolean(fit?.visible) && fit.radiusPx > 4,
+          fit ? `${fit.state}, ${fit.radiusPx.toFixed(1)} px at ${fit.depth.toFixed(2)} u, probes ${ready.probeMs?.toFixed(3)} ms` : "no ring",
+        );
+        await shot(page, "fit-tunnel");
+        await gpuReport(page, "fit");
+      }
+      consoleCheck("fit", "fit");
+      await page.close();
     }
 
     // --- 5: rule set editor ---

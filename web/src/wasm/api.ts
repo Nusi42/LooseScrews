@@ -168,6 +168,15 @@ export interface GameHandle {
   pickTeamPacket?(team: number): Uint8Array | undefined;
   /** `Spectate` packet (spectate from the next match on, or play again). */
   spectatePacket?(spectate: boolean): Uint8Array | undefined;
+  // VQ1 scale cues (ls-wasm probe.rs); optional so older fakes keep working.
+  /** Hitbox radius of the own ship type (u). */
+  readonly shipRadius?: number;
+  /** Distance to the first rock (or the level bounds) along a ray, -1 for none within `max`. */
+  raycast?(ox: number, oy: number, oz: number, dx: number, dy: number, dz: number, max: number): number;
+  /** First contact of a swept sphere: [travel, contact xyz, normal xyz], empty when clear within `max`. */
+  sweepSphere?(ox: number, oy: number, oz: number, dx: number, dy: number, dz: number, radius: number, max: number): Float32Array;
+  /** Practice only (visual gallery test shapes): carve (`add` false) or add a sphere of rock; false online. */
+  practiceEdit?(add: boolean, x: number, y: number, z: number, radius: number): boolean;
   free(): void;
 }
 

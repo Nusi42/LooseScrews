@@ -1,8 +1,10 @@
 // Start screen: pilot name, share code, horizon-assist preference and two ways
 // to play: online (the server's world) or practice offline (a local world from
-// the share code, or a random one when the field is empty).
+// the share code, or a random one when the field is empty). The View fieldset
+// (FOV, cockpit frame, fit ring) is ui/viewSettings.ts.
 
 import { checkShareCode, SHARE_CODE_PRINTED_LEN, type ShareCodeCheck } from "./shareCode.ts";
+import { bindViewSettings, viewSettingsHtml } from "./viewSettings.ts";
 
 export type PlayMode = "online" | "practice";
 
@@ -112,6 +114,7 @@ export function showStartScreen(parent: HTMLElement, validate?: CodeValidator): 
         <input name="assist" type="checkbox" />
         <span>Horizon assist (slowly levels your roll)</span>
       </label>
+      ${viewSettingsHtml()}
       <div class="play-row">
         <button type="submit" class="play" value="online">Play online</button>
         <button type="submit" class="play secondary" value="practice">Practice offline</button>
@@ -130,6 +133,7 @@ export function showStartScreen(parent: HTMLElement, validate?: CodeValidator): 
   const codeInput = form.elements.namedItem("code") as HTMLInputElement;
   const assistInput = form.elements.namedItem("assist") as HTMLInputElement;
   const shipInput = form.elements.namedItem("ship") as HTMLSelectElement;
+  bindViewSettings(form);
   shipInput.value = String(readShipType(stored.shipType));
   const error = root.querySelector(".code-error") as HTMLElement;
   nameInput.value = stored.name ?? DEFAULT_NAME;

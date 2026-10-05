@@ -23,6 +23,8 @@
 //   --power high|low      GPU on two-GPU machines (low = integrated, ?gpu=low-power) [high]
 //   --quality <level>     render preset high|medium|low (?quality=; no automatic pick) [high]
 //   --grade <preset>      colour grade from post.ts GRADE_PRESETS (?grade=) [none]
+//   --query <k=v&...>     extra page parameters, e.g. view=legacy (the pre-VQ1
+//                         camera: 75° vertical FOV, no cockpit frame or fit ring) [none]
 //   --budget-scale <x>    multiplies every budget (1 = reference mid GPU at
 //                         "high"; 1.75 = integrated GPU at "medium") [1]
 //   --frames <n>          timed frames averaged per scene [120]
@@ -63,6 +65,7 @@ const defaults = {
   power: "high",
   quality: "high",
   grade: "",
+  query: "",
   "budget-scale": "1",
   frames: "120",
 };
@@ -101,6 +104,7 @@ function parseArgs(argv) {
   if (!["auto", "headless", "headful"].includes(o.mode)) die("--mode must be auto, headless or headful");
   if (!["high", "low"].includes(o.power)) die("--power must be high or low");
   if (!["high", "medium", "low"].includes(o.quality)) die("--quality must be high, medium or low");
+  if (o.query && !/^[\w.=&-]+$/.test(o.query)) die("--query may only use letters, digits and . = & _ -");
   if (!/^[\w.-]+$/.test(o.label)) die("--label may only use letters, digits, '.', '_' and '-'");
   const ids = o.scenes ? o.scenes.split(",") : SCENES.map((s) => s.id);
   for (const id of ids) if (!SCENES.some((s) => s.id === id)) die(`unknown scene ${id} (${SCENES.map((s) => s.id).join(", ")})`);
@@ -121,6 +125,7 @@ function parseArgs(argv) {
     power: o.power,
     quality: o.quality,
     grade: o.grade,
+    query: o.query,
     budgetScale: scale,
     frames,
     noBudget: o["no-budget"],
@@ -300,7 +305,7 @@ async function main() {
   const { server, base } = await serve(opts.webRoot);
   const labelDir = join(opts.outDir, opts.label);
   mkdirSync(labelDir, { recursive: true });
-  const power = `&quality=${opts.quality}${opts.grade ? `&grade=${encodeURIComponent(opts.grade)}` : ""}${opts.power === "low" ? "&gpu=low-power" : ""}`;
+  const power = `&quality=${opts.quality}${opts.grade ? `&grade=${encodeURIComponent(opts.grade)}` : ""}${opts.power === "low" ? "&gpu=low-power" : ""}${opts.query ? `&${opts.query}` : ""}`;
   const launch = (headless) =>
     puppeteer.launch({
       executablePath: browserPath,
@@ -409,6 +414,8 @@ async function main() {
         gpu: status?.gpu ?? null,
         budget: null,
         seconds: (Date.now() - t0) / 1000,
+        // VQ1 scenes with a ship: the fit ring and its probes' CPU time per frame.
+        ...(status?.fit ? { fit: status.fit, probeMs: status.probeMs } : {}),
       };
       const ok = ready && status?.phase === "ready" && !status.gpuError && problems.length === 0;
       if (!ok) {
@@ -422,6 +429,10 @@ async function main() {
         }
         const verdict = entry.budget ? (entry.budget.ok ? "within budget" : `OVER BUDGET: ${entry.budget.failures.join("; ")}`) : "";
         console.log(`${entry.budget && !entry.budget.ok ? "FAIL" : "PASS"}  ${id}: ${timingText(entry)} · ${Math.round(entry.triangles / 1000)}k tris ${verdict}`);
+        if (entry.fit) {
+          const f = entry.fit;
+          console.log(`      fit ring ${f.visible ? `${f.state} ${f.radiusPx.toFixed(1)} px at ${f.depth.toFixed(2)} u` : "hidden"} · probes ${entry.probeMs?.toFixed(3)} ms CPU`);
+        }
         console.log(`      ${relative(repoRoot, file)}`);
       }
       manifest.scenes.push(entry);

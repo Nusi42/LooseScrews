@@ -1,0 +1,13 @@
+// Radiation on asteroid belt levels (M4 Belt Up; docs/milestone-4-plan.md §3.8 "Radiation").
+// Schema: `ls_sim::radiation::RadiationSettings`. Rates in hull per second, distances in u.
+// The dose rate follows the signed distance d to the shelter (the belt volume or the cocoon
+// around the exit): 0 deeper than `deep` inside, rising linearly to `surface_rate` at the
+// surface, then `slope` more per u outside, capped at `cap` (35 u out). It is hull loss that
+// bypasses shields and gadgets and credits nobody; a mode scales it (`radiation_scale`).
+// Changing a number changes the data hash (handshake).
+RadiationSettings(
+    deep: 4.0,
+    surface_rate: 2.0,
+    slope: 0.4,
+    cap: 16.0,
+)

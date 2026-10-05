@@ -164,6 +164,28 @@ seed, then re-bless.
 Sibling tests prove the replay is repeatable, that a cloned world continues identically, and
 that one changed input diverges the hash from that tick on.
 
+### World physics replay hashes (M4)
+
+`ls_sim::world_replays` (M4, A4) plays four more 40 s scripted 8-ship replays with the same
+inputs, one per world physics system: `world/gravity` (Gravity Chaos 100, three static wells and
+a dynamic well from 10 s to 20 s, the sandbox rule set so ordnance bends), `world/cave_in` (a
+12 u high arena at Instability 100, ten Bolt Rockets each: cave-ins happen), `world/pigment`
+(a monochrome level, odd players fly at the nearest pigment) and `world/radiation` (a small belt
+with half the ships above it: radiation kills). Their hashes are the `world/` lines of
+`crates/ls-sim/tests/fixtures/mood_replays.txt` (the director's event replays share the file),
+checked on native and wasm32 by `world_replays::tests::world_replays_match_the_fixture`, which
+also asserts each system acted. Re-bless only the `world/` lines:
+
+```sh
+LS_BLESS_MOOD_REPLAYS=1 cargo test -p ls-sim --lib world_replays
+```
+
+Every world physics system is inert when its input is off (no wells, Instability 0, no
+monochrome level, no belt, world +Y up) and the state hash then skips its state, so
+`REPLAY_GOLDEN_HASH` and the per-mode replays stay as they were, except Last Color Standing,
+whose rule set now has pigment pickups (its mode replay and `LCS_REPLAY_GOLDEN_HASH`
+re-blessed in A4).
+
 ### Milestone 3 record
 
 What M3 changed deliberately (plan [§4](../milestone-3-plan.md#4-determinism-and-handshake-impacts)):

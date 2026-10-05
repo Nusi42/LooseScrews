@@ -321,6 +321,19 @@ pub trait ModeModule: Send + Sync + Debug {
         None
     }
 
+    /// Scale of the radiation dose on belt levels (M4; default 1, 0 turns
+    /// it off; Belt Up's rule set setting, its start lights).
+    fn radiation_scale(&self, _m: &ModeRef) -> f32 {
+        1.0
+    }
+
+    /// A pigment pickup touched by `player` (M4): `true` if the mode takes
+    /// it instead of the pigmented state (Last Color Standing restores
+    /// colour); default `false`.
+    fn on_pigment(&self, _m: &mut ModeMut, _player: PlayerId, _colour: u8) -> bool {
+        false
+    }
+
     /// The solid shell the mode adds to the terrain at tick `now` (The
     /// Squeeze's walls); the world hands it to the terrain at the start of
     /// every tick ([`crate::SimTerrain::set_shell`]). A pure function of the

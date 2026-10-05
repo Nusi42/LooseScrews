@@ -305,6 +305,7 @@ pub fn entity_kind_name(k: ls_sim::ReplicatedKind) -> &'static str {
         Ghost => "ghost",
         DustCloud => "dustCloud",
         Marker => "marker",
+        PigmentPickup => "pigmentPickup",
     }
 }
 
@@ -1363,7 +1364,8 @@ mod tests {
     #[test]
     fn name_lists_cover_every_kind_and_shape() {
         let kinds = super::entity_kind_names();
-        assert_eq!(kinds.len(), 10);
+        assert_eq!(kinds.len(), 11);
+        assert_eq!(kinds[10], "pigmentPickup");
         assert_eq!(kinds[ls_sim::ReplicatedKind::Wreck as usize], "wreck");
         assert_eq!(
             kinds[ls_sim::ReplicatedKind::DustCloud as usize],

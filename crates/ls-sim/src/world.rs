@@ -15,10 +15,17 @@
 //! 4. entities (debris physics, decoys, entity hooks, expiry);
 //! 5. scrap piles and pickups;
 //! 6. ship trails (Borrowed Time history);
-//! 7. mode: the mode's `on_tick` hook, then `end_check` (timer, scores,
+//! 7. world physics (M4): radiation on belt levels, pigment pickups on
+//!    monochrome levels, ended dynamic wells, Instability's strain decay and
+//!    cave-ins;
+//! 8. mode: the mode's `on_tick` hook, then `end_check` (timer, scores,
 //!    eliminations; see [`crate::modes`]);
-//! 8. comedy director: mood, the running event's hooks, rolls (see
+//! 9. comedy director: mood, the running event's hooks, rolls (see
 //!    [`crate::director`]).
+//!
+//! Gravity wells act inside stages 2-4: ships through their movement
+//! environment ([`crate::ship::MoveEnv`]), flagged projectiles before their
+//! swept move, debris before its physics step.
 //!
 //! Before stage 1: the mode's `on_start` hook on the first tick, then the
 //! deferred terrain edits due this tick ([`Ctx::later`]).
@@ -35,19 +42,25 @@ use crate::director::{
     DirectorDef, DirectorEvent, DirectorInput, DirectorState, EventEffects, MoodView,
 };
 use crate::entity::{
-    state_byte, step_debris, Entity, EntityKind, EntitySpawn, EntityView, ReplicatedKind, Source,
-    DEBRIS_PUSH, MAX_DEBRIS, NO_TEAM, WIRE_ID_MASK,
+    state_byte, step_debris, step_debris_pulled, Entity, EntityKind, EntitySpawn, EntityView,
+    ReplicatedKind, Source, DEBRIS_PUSH, MAX_DEBRIS, NO_TEAM, WIRE_ID_MASK,
 };
 use crate::events::{EventTable, MoveEffects};
 use crate::gadgets::{GadgetActivation, GadgetBehavior, GadgetUse, IncomingHit};
+use crate::gravity::{DynamicWell, GravitySettings, WellField};
 use crate::hash::StateHasher;
+use crate::instability::{InstabilitySettings, InstabilityState};
 use crate::mode::{
     player_flags, MatchPhase, MatchResults, ModeState, ModeView, ResultRow, MAX_FFA_SIDE, MAX_TEAMS,
 };
 use crate::modes::{Kill, ModeCtx, ModeHit, ModeModule, ModeMut, ModeRef};
 use crate::mutators::MutatorModule;
+use crate::pigment::{PigmentPickup, PigmentPickupRule, PigmentSettings, PigmentState};
 use crate::ruleset::{PickupKind, ResolvedRules};
-use crate::ship::{move_sphere, simulate_movement, ChargeState, PlayerId, ShipState, WeaponState};
+use crate::ship::{
+    move_sphere, simulate_movement, simulate_movement_env, ChargeState, PlayerId, ShipState,
+    WeaponState,
+};
 use crate::terrain::{segment_sphere, SimTerrain, TerrainLayers};
 use crate::visual::{BuiltinVisual, VisualId, VisualTable};
 use crate::weapons::{ChargeAction, EntityHit, HitResponse, ShipHit, Shot, WeaponBehavior};
@@ -94,11 +107,13 @@ pub struct MatchSetup {
     #[serde(default)]
     pub heist: Option<crate::modes::heist::HeistLevel>,
     /// The level's gravity well sites (Gravity Chaos; on belt levels the
-    /// shepherd moons), from `ls_worldgen::Generator::gravity_wells`.
+    /// shepherd moons), from `ls_worldgen::Generator::gravity_wells`. Each
+    /// carries its strength (0-1) and range; [`crate::gravity`] turns them
+    /// into a pull.
     #[serde(default)]
     pub wells: Vec<ls_math::level::WellSite>,
     /// The asteroid belt (belt levels only; Belt Up, radiation), from
-    /// `ls_worldgen::Generator::belt`.
+    /// `ls_worldgen::Generator::belt`. `None` on classic levels.
     #[serde(default)]
     pub belt: Option<ls_math::level::BeltSite>,
     /// The level's Absurdity slider (0-100): the comedy director runs at
@@ -106,6 +121,14 @@ pub struct MatchSetup {
     /// rooms, scripted replays): no events.
     #[serde(default)]
     pub absurdity: u8,
+    /// The level's Gravity Chaos slider (0-100). M4: 0 turns the static
+    /// `wells` off (they come with their own strength and range).
+    #[serde(default)]
+    pub gravity_chaos: u8,
+    /// A monochrome level (Palette 80 or more): pigment pickups
+    /// ([`crate::pigment`]). Last Color Standing is monochrome anyway. M4.
+    #[serde(default)]
+    pub monochrome: bool,
 }
 
 /// Everything needed to start a match.
@@ -159,6 +182,9 @@ struct SimConfig {
     absurdity: u8,
     /// Bit per `EventKind`: events the rule set bans.
     banned_events: u32,
+    /// Pigment pickups of this match (monochrome levels, Last Color
+    /// Standing), `None` otherwise.
+    pigment_rule: Option<PigmentPickupRule>,
 }
 
 impl SimConfig {
@@ -400,12 +426,14 @@ impl Trail {
 /// terrain, with the mode's material override (`ModeModule::material_at`).
 struct TerrainRef<'a, T: ?Sized>(&'a T, Option<ModeMaterial<'a>>);
 
-/// What `TerrainRef` needs for the mode's material override.
+/// What `TerrainRef` needs for the mode's material override (and the
+/// rubble regions of cave-ins, which are weak rock).
 struct ModeMaterial<'a> {
     module: &'a dyn ModeModule,
     state: &'a ModeState,
     rules: &'a crate::ruleset::ModeRules,
     now: u64,
+    instability: &'a InstabilityState,
 }
 
 impl<T: SimTerrain + ?Sized> TerrainLayers for TerrainRef<'_, T> {
@@ -415,7 +443,11 @@ impl<T: SimTerrain + ?Sized> TerrainLayers for TerrainRef<'_, T> {
     fn material_at(&self, p: Vec3) -> u8 {
         self.1
             .as_ref()
-            .and_then(|m| m.module.material_at(m.state, m.rules, m.now, p))
+            .and_then(|m| {
+                m.module
+                    .material_at(m.state, m.rules, m.now, p)
+                    .or_else(|| m.instability.material_at(p))
+            })
             .unwrap_or_else(|| self.0.material_at(p))
     }
 }
@@ -473,6 +505,16 @@ pub struct World {
     /// The running event's scalar effects this tick (derived from the
     /// director at the start of each tick; not hashed).
     effects: EventEffects,
+    /// The level's up (M4; horizon assist levels to it; Bored level turns it).
+    up: Vec3,
+    /// Static wells of the level plus the dynamic wells (M4).
+    wells: WellField,
+    /// Strain cells, the coming cave-in and rubble regions (M4).
+    instability: InstabilityState,
+    /// Pigment pickups (M4, monochrome levels).
+    pigment: PigmentState,
+    /// Set while a cave-in applies its own edits (they add no strain).
+    no_strain: bool,
 }
 
 impl World {
@@ -553,6 +595,20 @@ impl World {
             .map(|(_, d)| crate::gadgets::behavior(&d.id))
             .collect();
         let visuals = VisualTable::new(&config.weapons, &config.gadgets);
+        let wells = WellField::new(
+            &config.setup.wells,
+            config.setup.gravity_chaos,
+            GravitySettings::builtin(),
+        );
+        // The rule set's pigment pickups (format 5) on monochrome levels;
+        // Last Color Standing levels are monochrome anyway.
+        let pigment_rule = if config.setup.monochrome
+            || config.rules.mode.kind() == crate::mode::ModeKind::LastColorStanding
+        {
+            config.rules.pigment_pickup
+        } else {
+            None
+        };
         let charged_drain_per_sec = config
             .weapons
             .iter()
@@ -580,6 +636,7 @@ impl World {
                 mutator_modules,
                 absurdity,
                 banned_events,
+                pigment_rule,
             }),
             tick: 0,
             ships: BTreeMap::new(),
@@ -599,6 +656,11 @@ impl World {
             deferred_edits: Vec::new(),
             director: DirectorState::default(),
             effects: EventEffects::NONE,
+            up: Vec3::Y,
+            wells,
+            instability: InstabilityState::default(),
+            pigment: PigmentState::default(),
+            no_strain: false,
         };
         let mut events = Vec::new();
         world.update_pickup_spawns(&mut events);
@@ -1231,11 +1293,24 @@ impl World {
             if !fx.is_none() {
                 crate::director::apply_move_effects_before(ship, &fx);
             }
+            // Wells and the level's up (M4); a level without wells and with
+            // world +Y up runs the M1-M3 flight model unchanged.
+            let plain = self.wells.is_empty() && self.up == Vec3::Y;
             if limits.is_none() {
-                simulate_movement(ship, &move_cmd, tuning, &*terrain);
+                if plain {
+                    simulate_movement(ship, &move_cmd, tuning, &*terrain);
+                } else {
+                    let env = self.wells.move_env(ship.pos, now, tuning, self.up);
+                    simulate_movement_env(ship, &move_cmd, tuning, &*terrain, &env);
+                }
             } else {
                 let (limited, _) = limits.apply(tuning, &move_cmd);
-                simulate_movement(ship, &move_cmd, &limited, &*terrain);
+                if plain {
+                    simulate_movement(ship, &move_cmd, &limited, &*terrain);
+                } else {
+                    let env = self.wells.move_env(ship.pos, now, &limited, self.up);
+                    simulate_movement_env(ship, &move_cmd, &limited, &*terrain, &env);
+                }
             }
             if !fx.is_none() {
                 crate::director::apply_move_effects_after(ship, &fx, pos_before);
@@ -1306,7 +1381,10 @@ impl World {
             }
         }
 
-        // 7. Mode: its tick, newly eliminated players leave play, then the
+        // 7. World physics (M4): radiation, pigment, wells, Instability.
+        self.world_physics(&cfg, terrain, now, &mut events);
+
+        // 8. Mode: its tick, newly eliminated players leave play, then the
         //    end check.
         self.run_mode_hook(&cfg, terrain, &mut events, |module, m| module.on_tick(m));
         let out: Vec<PlayerId> = self
@@ -1498,6 +1576,7 @@ impl World {
                 state: &self.mode,
                 rules: &cfg.rules.mode,
                 now: self.tick,
+                instability: &self.instability,
             }),
         );
         let view = View {
@@ -1865,6 +1944,10 @@ impl World {
             if p.is_removed() {
                 continue;
             }
+            // Wells bend flagged projectiles (ordnance, mines; M4).
+            if !p.is_stuck() && !self.wells.is_empty() && cfg.weapons.get(p.weapon).gravity {
+                p.vel += self.wells.body_accel(p.pos, now) * DT;
+            }
             if !p.is_stuck() && !self.move_projectile(cfg, terrain, &mut p, events) {
                 continue;
             }
@@ -2074,6 +2157,7 @@ impl World {
             return;
         }
         let mut expired: Vec<u32> = Vec::new();
+        let wake = GravitySettings::builtin().wake_accel;
         for e in &mut self.entities {
             if now >= e.expires_tick {
                 expired.push(e.id);
@@ -2086,7 +2170,17 @@ impl World {
             }
             match e.kind {
                 EntityKind::Debris => {
-                    step_debris(e, &*terrain);
+                    // Wells pull debris (M4).
+                    let pull = if self.wells.is_empty() {
+                        Vec3::ZERO
+                    } else {
+                        self.wells.body_accel(e.pos, now)
+                    };
+                    if pull.length_squared() > wake * wake {
+                        step_debris_pulled(e, &*terrain, pull);
+                    } else {
+                        step_debris(e, &*terrain);
+                    }
                 }
                 EntityKind::Decoy => {
                     move_sphere(&*terrain, &mut e.pos, &mut e.vel, e.radius, 0.3);
@@ -2261,6 +2355,21 @@ impl World {
                     }));
                 }
                 Command::Edit(edit) => {
+                    // Craters strain the rock (Instability, M4).
+                    if let TerrainEdit::SubtractSphere { center, radius } = edit {
+                        if cfg.setup.instability > 0 && !self.no_strain {
+                            let material = self
+                                .instability
+                                .material_at(center)
+                                .unwrap_or_else(|| terrain.material_at(center));
+                            self.instability.add_strain(
+                                InstabilitySettings::builtin(),
+                                center,
+                                radius,
+                                material,
+                            );
+                        }
+                    }
                     terrain.apply_edit(&edit);
                     if edit.changes_geometry() {
                         let (c, r) = (edit.center(), edit.radius());
@@ -2445,6 +2554,8 @@ impl World {
                 }
                 Command::Emit(e) => events.push(e),
                 Command::EditLater { tick, edit } => self.deferred_edits.push((tick, edit)),
+                Command::AddWell(w) => self.add_well(w),
+                Command::RemoveWell { key } => self.remove_well(key),
             }
         }
     }
@@ -2483,6 +2594,11 @@ impl World {
         direct: bool,
         events: &mut Vec<Event>,
     ) {
+        // Pigment (M4): a pigmented attacker deals +25 %.
+        let damage = match source.attacker.and_then(|a| self.ships.get(&a)) {
+            Some(a) if a.pigmented(now) => damage * (1.0 + PigmentSettings::builtin().damage_bonus),
+            _ => damage,
+        };
         let Some(ship) = self.ships.get_mut(&target) else {
             return;
         };
@@ -2583,6 +2699,8 @@ impl World {
         let Some(ship) = self.ships.get_mut(&victim) else {
             return;
         };
+        let pigmented = ship.pigmented(now);
+        ship.pigment_until = 0;
         ship.hull = 0.0;
         ship.alive = false;
         ship.deaths += 1;
@@ -2638,6 +2756,18 @@ impl World {
                     self.scrap.remove(i);
                 }
             }
+        }
+        // Pigment (M4): a pigmented ship drops a splash in its colour.
+        if pigmented && cfg.pigment_rule.is_some() {
+            let id = self.alloc_entity_id();
+            let secs = PigmentSettings::builtin().splash_secs;
+            self.pigment.pickups.push(PigmentPickup {
+                id,
+                pos: wreck_pos,
+                point: None,
+                side: team,
+                expires_tick: now + ls_math::Tick::ticks_for_secs(secs).max(1),
+            });
         }
     }
 
@@ -2871,6 +3001,7 @@ impl World {
                     .filter(|p| p.content.is_some())
                     .map(|p| p.id),
             )
+            .chain(self.pigment.pickups.iter().map(|p| p.id))
             .map(|id| id & WIRE_ID_MASK)
             .collect();
         for _ in 0..=WIRE_ID_MASK {
@@ -2997,6 +3128,19 @@ impl World {
                 owner: None,
                 team: NO_TEAM,
                 state,
+            });
+        }
+        for p in &self.pigment.pickups {
+            out.push(EntityView {
+                id: p.id,
+                kind: ReplicatedKind::PigmentPickup,
+                visual: BuiltinVisual::UpgradePickup.id(),
+                pos: p.pos,
+                vel: Vec3::ZERO,
+                rot: Quat::IDENTITY,
+                owner: None,
+                team: if p.point.is_none() { p.side } else { NO_TEAM },
+                state: [p.point.is_none() as u8, p.side, 0, 0],
             });
         }
         for s in &self.scrap {
@@ -3132,7 +3276,376 @@ impl World {
                 hash_edit(&mut h, e);
             }
         }
+        // World physics (M4), only when present (quiet matches keep their
+        // M3 hashes).
+        if self.up != Vec3::Y {
+            h.write_u8(0x75);
+            h.write_vec3(self.up);
+        }
+        if !self.wells.dynamics.is_empty() {
+            h.write_u8(0x77);
+            h.write_u32(self.wells.dynamics.len() as u32);
+            for w in &self.wells.dynamics {
+                h.write_u32(w.key);
+                h.write_vec3(w.pos);
+                h.write_f32(w.peak_accel);
+                h.write_f32(w.range);
+                h.write_u64(w.start_tick);
+                h.write_u64(w.end_tick);
+                h.write_u16(w.owner.map_or(u16::MAX, |p| p.0));
+            }
+        }
+        if !self.instability.is_empty() {
+            h.write_u8(0x1e);
+            self.instability.hash_into(&mut h);
+        }
+        if !self.pigment.is_empty() {
+            h.write_u8(0x91);
+            self.pigment.hash_into(&mut h);
+        }
         h.finish()
+    }
+}
+
+// ----- world physics (M4) ---------------------------------------------------
+
+impl World {
+    /// The level's up (world +Y unless an event turned it; horizon assist
+    /// levels the roll to it).
+    pub fn up(&self) -> Vec3 {
+        self.up
+    }
+
+    /// Turns the level's up (Bored level; normalized, ignored if zero).
+    pub fn set_up(&mut self, up: Vec3) {
+        if let Some(u) = up.try_normalize() {
+            self.up = u;
+        }
+    }
+
+    /// Every well of the match now: the level's static wells and the
+    /// dynamic ones (the client predictor evaluates the same field).
+    pub fn well_field(&self) -> &WellField {
+        &self.wells
+    }
+
+    /// The dynamic wells (active, or starting later).
+    pub fn dynamic_wells(&self) -> &[DynamicWell] {
+        &self.wells.dynamics
+    }
+
+    /// Adds a dynamic well (also [`Command::AddWell`]); ignored if it ends
+    /// before it starts or has no strength.
+    pub fn add_well(&mut self, w: DynamicWell) {
+        if w.end_tick > w.start_tick && w.peak_accel > 0.0 && w.range > 0.0 && w.pos.is_finite() {
+            self.wells.dynamics.push(w);
+        }
+    }
+
+    /// Removes the dynamic wells with `key` (also [`Command::RemoveWell`]).
+    pub fn remove_well(&mut self, key: u32) {
+        self.wells.dynamics.retain(|w| w.key != key);
+    }
+
+    /// Removes every dynamic well (a new heat, tests).
+    pub fn clear_wells(&mut self) {
+        self.wells.dynamics.clear();
+    }
+
+    /// Strain cells, the coming cave-in and the rubble regions.
+    pub fn instability(&self) -> &InstabilityState {
+        &self.instability
+    }
+
+    /// Pigment pickups in the level (monochrome levels).
+    pub fn pigment_pickups(&self) -> &[PigmentPickup] {
+        &self.pigment.pickups
+    }
+
+    /// Radiation dose rate (hull/s, with the mode's scale) at `p`; 0 on
+    /// classic levels.
+    pub fn dose_rate(&self, p: Vec3) -> f32 {
+        let cfg = &self.config;
+        let Some(belt) = &cfg.setup.belt else {
+            return 0.0;
+        };
+        let scale = cfg.mode_module.radiation_scale(&self.mode_ref(cfg));
+        if scale <= 0.0 {
+            return 0.0;
+        }
+        crate::radiation::dose_rate(belt, crate::radiation::RadiationSettings::builtin(), p) * scale
+    }
+
+    /// Stage 7 of a tick (see the module docs).
+    fn world_physics<T: SimTerrain + ?Sized>(
+        &mut self,
+        cfg: &SimConfig,
+        terrain: &mut T,
+        now: u64,
+        events: &mut Vec<Event>,
+    ) {
+        self.radiation(cfg, now, events);
+        if !self.wells.dynamics.is_empty() {
+            self.wells.dynamics.retain(|w| now < w.end_tick);
+        }
+        self.step_pigment(cfg, now, events);
+        if cfg.setup.instability > 0 {
+            self.step_instability(cfg, terrain, now, events);
+        }
+    }
+
+    /// Radiation on belt levels: hull loss past shields, no kill credit.
+    fn radiation(&mut self, cfg: &SimConfig, now: u64, events: &mut Vec<Event>) {
+        let Some(belt) = &cfg.setup.belt else {
+            return;
+        };
+        let scale = cfg.mode_module.radiation_scale(&self.mode_ref(cfg));
+        if scale <= 0.0 {
+            return;
+        }
+        let settings = crate::radiation::RadiationSettings::builtin();
+        let mut dead = Vec::new();
+        for s in self.ships.values_mut() {
+            if !s.alive {
+                continue;
+            }
+            let rate = crate::radiation::dose_rate(belt, settings, s.pos) * scale;
+            if rate <= 0.0 {
+                continue;
+            }
+            s.hull -= rate * DT;
+            if s.hull <= 0.0 {
+                dead.push(s.player);
+            }
+        }
+        for id in dead {
+            self.kill(cfg, now, id, None, None, events);
+        }
+    }
+
+    /// Pigment pickups: expiry, collection, respawns (see [`crate::pigment`]).
+    fn step_pigment(&mut self, cfg: &SimConfig, now: u64, events: &mut Vec<Event>) {
+        let Some(rule) = cfg.pigment_rule else {
+            return;
+        };
+        let settings = PigmentSettings::builtin();
+        self.pigment.pickups.retain(|p| p.expires_tick > now);
+        // Collection (lowest player id first).
+        let mut i = 0;
+        while i < self.pigment.pickups.len() {
+            let pk = self.pigment.pickups[i];
+            let taker = self
+                .ships
+                .values()
+                .find(|s| {
+                    let reach = PICKUP_RADIUS + cfg.tuning(s.ship_type).radius;
+                    s.alive && s.pos.distance_squared(pk.pos) <= reach * reach
+                })
+                .map(|s| s.player);
+            let Some(id) = taker else {
+                i += 1;
+                continue;
+            };
+            self.pigment.pickups.remove(i);
+            if pk.point.is_some() {
+                self.pigment
+                    .respawns
+                    .push(now + ls_math::Tick::ticks_for_secs(rule.respawn_secs as f32).max(1));
+            }
+            let consumed = cfg.mode_module.on_pigment(
+                &mut ModeMut {
+                    state: &mut self.mode,
+                    rules: &cfg.rules.mode,
+                    mutators: &cfg.rules.mutators,
+                    ships: &self.ships,
+                    now,
+                },
+                id,
+                settings.restore_colour,
+            );
+            if !consumed {
+                if let Some(s) = self.ships.get_mut(&id) {
+                    s.pigment_until =
+                        now + ls_math::Tick::ticks_for_secs(settings.duration_secs).max(1);
+                }
+            }
+            events.push(Event::Cue(Cue {
+                kind: CueKind::Pigment,
+                source: Some(id),
+                target: None,
+                pos: pk.pos,
+                value: pk.point.is_none() as u16,
+            }));
+        }
+        // How many regular pickups the players in play want.
+        let points = cfg.setup.pickup_points.len();
+        let players = self
+            .ships
+            .keys()
+            .filter(|id| !self.mode.player(**id).is_some_and(|p| p.is_out()))
+            .count();
+        let want = rule.count(players).min(points);
+        while self.pigment.regular() > want && !self.pigment.respawns.is_empty() {
+            self.pigment.respawns.pop();
+        }
+        while self.pigment.regular() < want {
+            self.pigment.respawns.push(now);
+        }
+        // Due respawns at free pickup points.
+        if !self.pigment.respawns.iter().any(|&t| t <= now) {
+            return;
+        }
+        let seed = ls_math::rng::mix64(
+            cfg.seed ^ ls_math::rng::mix64(crate::pigment::PIGMENT_RNG_KEY ^ now.rotate_left(32)),
+        );
+        let mut rng = Pcg32::new(seed, crate::behavior::RNG_STREAM_MODULES);
+        let mut pending = std::mem::take(&mut self.pigment.respawns);
+        pending.sort_unstable();
+        for t in pending {
+            if t > now {
+                self.pigment.respawns.push(t);
+                continue;
+            }
+            let free: Vec<u16> = (0..points as u16)
+                .filter(|i| !self.pigment.pickups.iter().any(|p| p.point == Some(*i)))
+                .collect();
+            if free.is_empty() {
+                self.pigment.respawns.push(t);
+                continue;
+            }
+            let point = free[rng.below(free.len() as u32) as usize];
+            let id = self.alloc_entity_id();
+            self.pigment.pickups.push(PigmentPickup {
+                id,
+                pos: cfg.setup.pickup_points[point as usize],
+                point: Some(point),
+                side: 0,
+                expires_tick: u64::MAX,
+            });
+        }
+    }
+
+    /// Instability: strain decay, the warning, the cave-in.
+    fn step_instability<T: SimTerrain + ?Sized>(
+        &mut self,
+        cfg: &SimConfig,
+        terrain: &mut T,
+        now: u64,
+        events: &mut Vec<Event>,
+    ) {
+        let settings = InstabilitySettings::builtin();
+        if now % ls_math::TICK_HZ as u64 == 0 && !self.instability.cells.is_empty() {
+            self.instability.decay(settings);
+        }
+        if let Some(p) = self.instability.pending {
+            if now >= p.due_tick {
+                self.instability.pending = None;
+                self.cave_in(cfg, terrain, now, p.pos, events);
+            }
+            return;
+        }
+        let interval = ls_math::Tick::ticks_for_secs(settings.min_interval_secs);
+        if self
+            .instability
+            .last_cave_in
+            .is_some_and(|t| now < t + interval)
+        {
+            return;
+        }
+        let threshold = settings.threshold(cfg.setup.instability);
+        let setup = &cfg.setup;
+        let excluded = |p: Vec3| {
+            setup.spawns.iter().any(|s| {
+                s.pos.distance_squared(p) < settings.spawn_clearance * settings.spawn_clearance
+            }) || setup.heist.as_ref().is_some_and(|h| {
+                p.distance(h.core) < h.chamber_radius + h.knot_radius
+                    || h.extraction
+                        .iter()
+                        .any(|(c, r)| p.distance(*c) < r + settings.extraction_clearance)
+            })
+        };
+        let Some(pos) = self.instability.take_over_threshold(threshold, excluded) else {
+            return;
+        };
+        let warn = ls_math::Tick::ticks_for_secs(settings.warning_secs).max(1);
+        self.instability.pending = Some(crate::instability::PendingCaveIn {
+            pos,
+            due_tick: now + warn,
+        });
+        self.instability.last_cave_in = Some(now);
+        events.push(Event::Cue(Cue {
+            kind: CueKind::CaveInWarning,
+            source: None,
+            target: None,
+            pos,
+            value: warn.min(u16::MAX as u64) as u16,
+        }));
+    }
+
+    /// Brings the rock down at `pos` (see [`crate::instability`]).
+    fn cave_in<T: SimTerrain + ?Sized>(
+        &mut self,
+        cfg: &SimConfig,
+        terrain: &mut T,
+        now: u64,
+        pos: Vec3,
+        events: &mut Vec<Event>,
+    ) {
+        let settings = InstabilitySettings::builtin();
+        let ships: Vec<(Vec3, f32)> = self
+            .ships
+            .values()
+            .filter(|s| s.alive)
+            .map(|s| (s.pos, cfg.tuning(s.ship_type).radius))
+            .collect();
+        let seed = ls_math::rng::mix64(
+            cfg.seed
+                ^ ls_math::rng::mix64(crate::instability::CAVE_IN_RNG_KEY ^ now.rotate_left(32)),
+        );
+        let mut rng = Pcg32::new(seed, crate::behavior::RNG_STREAM_MODULES);
+        let Some(plan) =
+            crate::instability::plan_cave_in(settings, &*terrain, self.up, pos, &mut rng, &ships)
+        else {
+            return;
+        };
+        let mut cmds = Vec::new();
+        if let Some(h) = plan.hollow {
+            cmds.push(Command::Edit(TerrainEdit::SubtractSphere {
+                center: h.center,
+                radius: h.radius,
+            }));
+        }
+        for r in &plan.rubble {
+            cmds.push(Command::Edit(TerrainEdit::AddSphere {
+                center: r.center,
+                radius: r.radius,
+            }));
+        }
+        for &(p, v, r, scrap) in &plan.debris {
+            cmds.push(Command::SpawnEntity(Box::new(EntitySpawn::debris(
+                p, v, r, scrap,
+            ))));
+        }
+        for s in self.ships.values().filter(|s| s.alive) {
+            let near = plan.rubble.iter().find(|r| {
+                s.pos.distance(r.center) - r.radius - cfg.tuning(s.ship_type).radius
+                    < settings.damage_radius
+            });
+            if let Some(r) = near {
+                let push = (s.pos - r.center).normalize_or_zero() * 4.0;
+                cmds.push(Command::Damage {
+                    target: s.player,
+                    amount: settings.damage,
+                    knockback: push,
+                    source: DamageSource::ENVIRONMENT,
+                    direct: false,
+                });
+            }
+        }
+        self.no_strain = true;
+        self.apply_commands(cfg, terrain, cmds, events);
+        self.no_strain = false;
+        self.instability.add_rubble(settings, &plan.rubble);
     }
 }
 
@@ -3285,6 +3798,10 @@ fn hash_ship(h: &mut StateHasher, s: &ShipState) {
     for (w, v) in &s.weapon_state {
         h.write_u8(w.0);
         h.write_u32(*v);
+    }
+    if s.pigment_until != 0 {
+        h.write_u8(0x91);
+        h.write_u64(s.pigment_until);
     }
 }
 

@@ -74,12 +74,16 @@ Missiles and mines with a limited count, found as pickups.
 | **Stalker Mine** | secondary | 35 | 3 | 1.3/s | 1 (carry 5) | 6 | mine, lasts 60 s | 45 within 4 u, hurts you | 7 | crater Ø 2 u | wears it | pickup, 2 per pickup |
 | **Tectonic Charge** | secondary | 100 | 1 | 1 per 2 s | 1 (carry 1) | 15 | 150 | 110 within 25 u, hurts you | 20 | – | passes through | pickup, 1 per pickup |
 
-- **Seeker:** homes on targets in a 30° cone within 60 u.
-- **Swarm Pod:** releases 6 homing blobs of 6 damage on impact.
-- **Flash Pod:** blinds pilots within 15 u for 2 s.
-- **Prox Mine:** arms after 1 s, goes off within 2 u.
-- **Stalker Mine:** arms after 1 s, creeps at 4 u/s toward enemies within 10 u, goes off within 1.5 u.
-- **Tectonic Charge:** everything within 4 u dies; 6 sub-charges of 35 splash follow.
+- **Bolt Rocket:** gravity wells bend it.
+- **Seeker:** homes on targets in a 30° cone within 60 u; gravity wells bend it.
+- **Quicksilver:** gravity wells bend it.
+- **Eyeball:** gravity wells bend it.
+- **Swarm Pod:** releases 6 homing blobs of 6 damage on impact; gravity wells bend it.
+- **Heavy Rocket:** gravity wells bend it.
+- **Flash Pod:** blinds pilots within 15 u for 2 s; gravity wells bend it.
+- **Prox Mine:** arms after 1 s, goes off within 2 u; gravity wells bend it.
+- **Stalker Mine:** arms after 1 s, creeps at 4 u/s toward enemies within 10 u, goes off within 1.5 u; gravity wells bend it.
+- **Tectonic Charge:** everything within 4 u dies; 6 sub-charges of 35 splash follow; gravity wells bend it.
 
 ## Specials
 
@@ -99,7 +103,7 @@ The comedy weapons: rarer pickups, each with its own trick.
 - **Borrowed Time:** rewinds you 3 s; weapons offline 3 s.
 - **Magnet Sneeze:** pulls things in a 60° cone within 20 u.
 - **Polite Laser:** hold to charge, full at 1.5 s, no shot before 1.5 s, fires by itself.
-- **Seed Grenade:** 2% chance of a giant rubber duck.
+- **Seed Grenade:** 2% chance of a giant rubber duck; gravity wells bend it.
 
 ## Weapon parameters
 

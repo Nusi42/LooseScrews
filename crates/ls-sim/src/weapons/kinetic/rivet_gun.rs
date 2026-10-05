@@ -99,6 +99,7 @@ pub(crate) mod testkit {
             instability: 0,
             absurdity: 0,
             heist: None,
+            ..Default::default()
         };
         World::new(WorldConfig::paint_the_void(7, setup)).unwrap()
     }

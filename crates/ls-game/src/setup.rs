@@ -312,6 +312,9 @@ pub fn match_setup(
         instability: code.sliders.instability,
         absurdity: code.sliders.absurdity,
         heist: heist_level(&gen),
+        // M4 world physics (A4); A1 fills the generator's wells and belt.
+        gravity_chaos: code.sliders.gravity_chaos,
+        monochrome: code.sliders.palette >= ls_sim::pigment::MONOCHROME_PALETTE,
     })
 }
 
@@ -338,6 +341,8 @@ pub fn belt_setup(code: &ShareCode, teams: u8, gen: &Generator, belt: &BeltSite)
         wells: gen.gravity_wells().to_vec(),
         belt: Some(belt.clone()),
         absurdity: code.sliders.absurdity,
+        gravity_chaos: code.sliders.gravity_chaos,
+        monochrome: code.sliders.palette >= ls_sim::pigment::MONOCHROME_PALETTE,
     }
 }
 

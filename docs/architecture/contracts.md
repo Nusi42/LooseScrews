@@ -38,7 +38,7 @@ tests are in [determinism.md](determinism.md). The contract part is the RNG stre
   | `ls_game::setup::RNG_STREAM_PICKUP_POINTS` | `0x4741_4d45_5f50_4b50` ("GAME_PKP") | Pickup point placement, `Pcg32::from_seed(world_seed, ..)` |
   | `ls_sim::modes::the_squeeze::RNG_STREAM_SQUEEZE` | `0x5349_4d5f_5351_5a45` ("SIM_SQZE") | The Squeeze: safe-zone centres, `Pcg32::new(mix64(match_seed ^ mix64(phase ^ stream)), ..)` per phase, and wall scrap, `Pcg32::new(mix64(match_seed ^ mix64(tick ^ stream.rotate_left(17))), ..)` per batch |
   | `ls_sim::director::RNG_STREAM_MOOD` | `0x5349_4d5f_4d4f_4f44` ("SIM_MOOD") | The comedy director and its events (`director::mood_rng(match_seed, tick, key)`): `Pcg32::new(mix64(match_seed ^ mix64(tick ^ key.rotate_left(17) ^ stream)), stream)`, a fresh generator per draw; key 0 the roll, 1 the mood drift, 2 the event choice, `(event index << 32) ^ k` the events (`EventCtx::rng`) |
-  | `ls_sim::behavior::RNG_STREAM_MODULES` | `0x5349_4d5f_4d4f_4453` ("SIM_MODS") | Weapon and gadget modules (`Ctx::rng(key)`): `Pcg32::new(mix64(match_seed ^ mix64(key ^ tick.rotate_left(32))), ..)`, a private stream per key and tick. Seed Grenade growth uses the same stream id keyed only by the match seed and the projectile id (no tick: `seed_grenade::growth`) |
+  | `ls_sim::behavior::RNG_STREAM_MODULES` | `0x5349_4d5f_4d4f_4453` ("SIM_MODS") | Weapon and gadget modules (`Ctx::rng(key)`): `Pcg32::new(mix64(match_seed ^ mix64(key ^ tick.rotate_left(32))), ..)`, a private stream per key and tick. Seed Grenade growth uses the same stream id keyed only by the match seed and the projectile id (no tick: `seed_grenade::growth`). M4 world physics draw the same way with fixed keys: cave-in shapes `instability::CAVE_IN_RNG_KEY` (`0x4341_5645_494e`, "CAVEIN"), pigment respawn points `pigment::PIGMENT_RNG_KEY` (`0x0050_4947_4d45_4e54`, "PIGMENT") |
 
   The simulation's `match_seed` (`WorldConfig::seed`) is
   `mix64(world_seed ^ ls_game::setup::MATCH_SEED_SALT)` with the salt `0x4d41_5443_485f_5345`
@@ -367,6 +367,99 @@ Types the generator produces and the simulation and client read (M4, generator v
   1e-4 u (rotation constants through `ls_math::det`); voxel meshes of rotated wedges may differ
   by less than a cell.
 
+## World physics (`ls_sim`, M4)
+
+Package A4 of [milestone-4-plan.md](../milestone-4-plan.md) (§3.3, §3.4, §3.8). Numbers live in
+`data/world/*.ron` (embedded, in the data hash). Every system is inert when its input is off
+(no wells, Instability 0, no monochrome, no belt, world +Y up): the state hash then skips its
+state, so pre-M4 replays keep their hashes.
+
+### `MatchSetup` fields (filled by `ls_game::setup`)
+
+| Field | Meaning |
+| --- | --- |
+| `wells: Vec<ls_math::level::WellSite>` | Static wells (generator sites, a belt's shepherd moons; A1, "Levels") with their own `strength` (0-1) and `range` |
+| `belt: Option<ls_math::level::BeltSite>` | The asteroid belt of a Belt archetype level (A1, "Levels"); `None` on classic levels |
+| `gravity_chaos: u8` | Gravity Chaos slider; 0 turns the static wells off |
+| `monochrome: bool` | Palette >= `pigment::MONOCHROME_PALETTE` (80): pigment pickups. Last Color Standing is monochrome anyway |
+| `instability: u8` | (M3) Instability slider: crater scale, strain, cave-ins; Tectonic crack reach |
+
+### Gravity wells (`ls_sim::gravity`, `data/world/gravity.ron`)
+
+- Force law per well: `a = G d / (r^2 + s^2)^1.5 * (1 - r^2 / R^2)^2` toward its centre (`d` =
+  centre - point, `r = |d|`, softening `s` = 3 u, zero beyond the range `R`), `G = peak * s^2 /
+  0.38490018` so the untapered law peaks at `peak` (u/s^2) at `r = s / sqrt 2`. Only `sqrt`.
+- Static wells: `peak = max_peak_accel (12 u/s^2, 40 % of the Tinker's per-axis thrust
+  acceleration) x site.strength` (clamped to 0-1; the generator sets Gravity Chaos / 100), `R =
+  site.range` (the generator's 20-40 u); none at Gravity Chaos 0.
+- Dynamic wells (`DynamicWell { key, pos, peak_accel, range, start_tick, end_tick, owner }`):
+  added by modules (`Ctx::add_well`, `Command::AddWell`, `World::add_well`), active for
+  `start_tick <= tick < end_tick`, dropped after `end_tick`, removed early by key
+  (`Ctx::remove_well`). They pull everyone, their owner too. Hashed.
+- Sum: statics in order, then active dynamics in order (`WellField::accel_at`). The total on a
+  ship is clamped to `ship_clamp` (0.4) x its type's `thrust_accel`; on debris and projectiles to
+  `body_clamp` (12 u/s^2).
+- Who is pulled: ships (in `simulate_movement_env`, see below), debris (pull added before its
+  physics step; pulled debris rests only in rock contact), and projectiles whose weapon data says
+  `gravity: true` (all ordnance and the Seed Grenade; not stuck ones) before their swept move.
+  Energy bolts and kinetic rounds fly straight.
+- Ships (`ls_sim::ship::MoveEnv { gravity, up, drift_secs }`, `simulate_movement_env`; the
+  predictor must call it with the same environment: `WellField::move_env(pos, tick, tuning,
+  up)` at the ship's position before the move): per local axis, with input (or on slippery
+  paint) the pull is added after the axis step; without input the dampers aim at the drift speed
+  `g * drift_secs` (1 s, at most the cap) instead of 0, so an idle or coasting ship falls toward
+  a well and thrust (at least 2.5x the clamped pull) always escapes. `MoveEnv::DEFAULT` (no pull,
+  +Y up) is the M3 flight model bit for bit.
+
+### The level's up (`World::up`)
+
+World +Y unless an event turns it (`World::set_up`, Bored level). Horizon assist levels the
+roll against it (`MoveEnv::up`; +Y keeps the M3 arithmetic). Hashed when not +Y. Level hiccups
+and Hat rain follow it; cave-in rubble hangs from the first rock along it.
+
+### Instability (`ls_sim::instability`, `data/world/instability.ron`)
+
+- Crater scale: `Ctx::crater` multiplies by `1 + 0.4 * instability / 100` after the rock
+  strength (exactly 1 at 0). `Ctx::crater_exact` and `Ctx::crater_material` (Tectonic cracks,
+  whose reach Instability already sets) are not grown.
+- Strain: every applied `SubtractSphere` adds `4/3 pi r^3 x factor(material at the centre)`
+  (weak 1.5, rock 1, hard 0.5) to its cell `floor(p / 16 u)`, with a strain-weighted centre;
+  every 60 ticks all cells lose 3 %. A cave-in's own edits add none.
+- Cave-in: when no cave-in is pending and the last one started 8 s ago or more, the cell with
+  the most strain at or over `threshold(i) = 35 x (100 / i)^0.18` (infinite at 0) is taken; its
+  centre gets a `CaveInWarning` cue and the rock comes down 90 ticks later: a hollow
+  (`SubtractSphere`) above the first rock along `up` within 24 u, 5-9 `AddSphere` rubble spheres
+  (1.5-3 u) hanging from it, 4-8 debris, 20 damage without attacker to ships within 3 u of the
+  rubble. Never within 24 u of a spawn point, in the Heist chamber or within 6 u of an extraction
+  zone, nor without a ceiling in reach. Rubble overlapping a ship (+1 u) is left out, and for
+  every ship within 14 u of the rubble a best-first flood fill on a 1 u grid must reach open
+  space 14 u away with the rubble if it could without (else the rubble nearest that ship is
+  dropped until it can).
+- Rubble regions (`RubbleSphere`) are weak rock for the simulation's material queries (the mode's
+  material override first, then rubble, then the terrain); the last 512 are kept. Strain cells,
+  the pending cave-in, the last cave-in tick and rubble are hashed.
+
+### Pigment (`ls_sim::pigment`, `data/world/pigment.ron`)
+
+- Pickups at the level's pickup points (beside the weapon pickups) on monochrome levels and in
+  Last Color Standing: `max(min, ceil(players in play / per_players))`, at most one per point;
+  monochrome 1 per 4, at least 2, respawn 30 s; Last Color Standing 1 per 4, at least 1, 45 s.
+  A taken pickup respawns at a free point chosen by the `PIGMENT` key RNG.
+- Taking one: `ShipState::pigment_until = tick + 40 s` (hashed only when non-zero), unless the
+  mode's `on_pigment` hook takes it (Last Color Standing: +17 colour, capped at the start
+  colour). A pigmented attacker's damage is x1.25 (before friendly-fire scaling and shields).
+  A pigmented ship that dies drops a splash pickup (`point: None`, its side) for 15 s.
+  The rule set's pigment settings (A3, format 5) replace the data defaults when present.
+
+### Radiation (`ls_sim::radiation`, `data/world/radiation.ron`)
+
+On levels with a belt only. Signed distance `d` to the shelter: the belt (an annulus of
+rectangular cross-section) or the cocoon sphere, `BeltSite::shelter_distance` (see "Levels"). Rate (hull/s): 0
+for `d <= -4`, `2 x (1 + d / 4)` inside, `min(2 + 0.4 d, 16)` outside; times the mode's
+`radiation_scale` (default 1). Applied to living ships every tick as hull loss past shields and
+gadgets; at 0 hull the ship dies without a killer (`Killed { killer: None }`). No `Damaged`
+events (the HUD reads hull and `ls_sim::radiation::dose_rate`).
+
 ## Game data ids (`ls-sim`)
 
 Every peer derives these from the same embedded data (the data hash in the handshake makes
@@ -380,8 +473,8 @@ sure it is the same data); details in [arsenal-framework.md](arsenal-framework.m
 | `ShipType::index` | Skitter 0, Tinker 1, Hauler 2, Tug 3 (wire, rule set codes) |
 | `VisualId` | Index in `VisualTable::new(weapons, gadgets)`: 8 built-ins, then 2 per weapon (projectile, pickup), then 1 per gadget |
 | Entity wire id | `entity id & 0x7fff`, unique among live entities (the allocator skips ids in use) |
-| `ReplicatedKind` | Entity `kind` byte: Debris 0, WeaponPickup 1, UpgradePickup 2, GadgetPickup 3, ScrapPile 4, Wreck 5, Decoy 6, Ghost 7, DustCloud 8, Marker 9 |
-| `CueKind` | Cue `kind` byte (`ls_sim::behavior::CueKind`) |
+| `ReplicatedKind` | Entity `kind` byte: Debris 0, WeaponPickup 1, UpgradePickup 2, GadgetPickup 3, ScrapPile 4, Wreck 5, Decoy 6, Ghost 7, DustCloud 8, Marker 9, PigmentPickup 10 (M4; state `[splash 0/1, side of a splash, 0, 0]`) |
+| `CueKind` | Cue `kind` byte (`ls_sim::behavior::CueKind`); M4 appends `CaveInWarning` 14 (`pos`, `value` = ticks until the rock comes down) and `Pigment` 15 (`source` took a pigment pickup at `pos`, `value` 1 for a splash) |
 | Data hash | `ls_sim::data_hash()`: FNV-1a over all embedded `data/` files sorted by path (path, 0, length, bytes without CR), plus `SIM_BEHAVIOR_VERSION` |
 | `ModeKind` index | Paint the Void 0, Team Brawl 1, The Squeeze 2, Heist 3, Hot Reactor 4, Last Color Standing 5 (append only): rule set code mode index, wire mode kind, `LobbyState::next_mode`; `ModeKind::id` is the module and directory mode id (`the_squeeze`; its rule set file is `squeeze.ron`) |
 | `Mutator` index | Instagib 0 (`Mutator::ALL` order, append only; rule set codes) |

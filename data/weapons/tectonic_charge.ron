@@ -34,6 +34,8 @@ WeaponDef(
     terrain: (crater_radius: 0.0),
     shield: PassThrough(1.0),
     max_ammo: 1,
+    // Gravity wells bend it in flight (M4).
+    gravity: true,
     visual: (shape: Charge, color: (255, 120, 0), scale: 2.0),
     params: {
         "core_radius": 4.0, "core_damage": 10000.0,

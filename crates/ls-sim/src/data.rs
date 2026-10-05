@@ -1,6 +1,6 @@
 //! The game data set: every `data/` file the simulation embeds (weapons,
-//! ships, gadgets, rule sets, comedy events and the director), the tables
-//! built from them, and the data hash.
+//! ships, gadgets, rule sets, comedy events and the director, world
+//! physics), the tables built from them, and the data hash.
 //!
 //! The data hash is a deterministic FNV-1a hash over all embedded files,
 //! sorted by path (`weapons/scrap_laser.ron`, ...): for each file its path,
@@ -51,9 +51,18 @@ pub fn builtin_files() -> Vec<(&'static str, &'static str)> {
     );
     files.extend(crate::ruleset::BUILTIN_RULESETS.iter().copied());
     files.extend(crate::director::DirectorDef::builtin_files());
+    files.extend(WORLD_FILES.iter().copied());
     files.sort_by(|a, b| a.0.cmp(b.0));
     files
 }
+
+/// The world physics files (`data/world/*.ron`, M4).
+pub const WORLD_FILES: [(&str, &str); 4] = [
+    ("world/gravity.ron", crate::gravity::GRAVITY_RON),
+    ("world/instability.ron", crate::instability::INSTABILITY_RON),
+    ("world/pigment.ron", crate::pigment::PIGMENT_RON),
+    ("world/radiation.ron", crate::radiation::RADIATION_RON),
+];
 
 /// Hash of a set of data files (see the module docs); order-independent.
 pub fn hash_files<'a>(files: impl IntoIterator<Item = (&'a str, &'a str)>) -> u64 {
@@ -108,7 +117,7 @@ mod tests {
         let files = builtin_files();
         assert_eq!(
             files.len(),
-            27 + 3 + 4 + crate::ruleset::BUILTIN_RULESETS.len() + 1 + 18
+            27 + 3 + 4 + crate::ruleset::BUILTIN_RULESETS.len() + 1 + 18 + WORLD_FILES.len()
         );
         assert_eq!(
             data_hash(),
@@ -151,7 +160,7 @@ mod tests {
             let disk = std::fs::read_to_string(root.join(path)).unwrap();
             assert_eq!(disk.replace('\r', ""), text.replace('\r', ""), "{path}");
         }
-        for dir in ["weapons", "ships", "gadgets", "rulesets", "events"] {
+        for dir in ["weapons", "ships", "gadgets", "rulesets", "events", "world"] {
             for entry in std::fs::read_dir(root.join(dir)).unwrap() {
                 let name = entry.unwrap().file_name().into_string().unwrap();
                 if name.ends_with(".ron") {

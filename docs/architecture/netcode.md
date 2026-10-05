@@ -192,8 +192,12 @@ room sends `Message::Inventory` reliably to each client whenever its ship's inve
   residual against `ship.pos + (vel - ship.vel) x time` (the muzzle offset folds into the
   flight time); id gaps below 16 cost 5 bits.
 - **Joins.** Snapshots to a client start with its first `Input` (sent once its session is
-  built), so a join costs one full snapshot, plus one per snapshot interval of round trip until
-  the client's first `ack_snapshot` arrives; after that every snapshot is a delta. Sending
+  built), so a join costs one full snapshot; the client gets no further snapshot until its
+  `ack_snapshot` arrives or `FULL_SNAPSHOT_RETRY_TICKS` (30 ticks, 0.5 s) passed (then another
+  full one: the first may have been lost). After that every snapshot is a delta. Until M3 a
+  full snapshot went out every snapshot interval until the first acknowledgement, so a slow
+  round trip or a client busy after a transition cost 2 or more (1.02-1.09 per join or
+  transition in C3's e2e runs on a busy machine; milestone-3-plan.md "Milestone soak"). Sending
   snapshots during level generation made each join cost ~8 full snapshots, starvation reports
   and prediction snaps (M1 issue B; regression test
   `a_join_costs_one_full_snapshot_and_starves_once` in `crates/ls-game/tests/netplay.rs`).

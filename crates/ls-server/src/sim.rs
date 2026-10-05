@@ -1325,6 +1325,7 @@ impl Sim {
             dropped_inputs = rs.dropped_inputs.saturating_sub(w.dropped_inputs),
             compensated_hits = rs.compensated_hits.saturating_sub(w.compensated_hits),
             encode_errors = rs.encode_errors.saturating_sub(w.encode_errors),
+            full_snapshots = rs.full_snapshots.saturating_sub(w.full_snapshots),
             snapshot_kib_s =
                 (rs.snapshot_bytes.saturating_sub(w.snapshot_bytes)) as f64 / 1024.0 / secs,
             unreliable_dropped = dropped,

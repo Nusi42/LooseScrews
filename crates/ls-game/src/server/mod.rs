@@ -72,6 +72,14 @@ impl Default for RoomConfig {
     }
 }
 
+/// A client without a usable baseline gets one full snapshot, then no
+/// snapshot until it acknowledges one or this many ticks passed (the full
+/// snapshot may have been lost). Without the pause a full snapshot went out
+/// every snapshot interval until the first acknowledgement came back, so a
+/// join or match transition cost two or more full snapshots whenever the
+/// round trip (or a busy client) took longer than one interval.
+pub const FULL_SNAPSHOT_RETRY_TICKS: u32 = 30;
+
 /// A packet for one client.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Outgoing {
@@ -97,6 +105,8 @@ pub struct RoomStats {
     /// Lag-compensated hits (target displacements).
     pub compensated_hits: u64,
     pub snapshots_sent: u64,
+    /// Full snapshots (no baseline) among `snapshots_sent`.
+    pub full_snapshots: u64,
     pub snapshot_bytes: u64,
     /// Messages that could not be encoded and were not sent (only reachable
     /// with inconsistent state; a non-zero value is a bug).
@@ -155,6 +165,8 @@ struct ClientState {
     /// and a prediction snap on the client.
     ready: bool,
     acked_snapshot: Option<u32>,
+    /// Tick of the last full snapshot sent (see [`FULL_SNAPSHOT_RETRY_TICKS`]).
+    full_sent: Option<u32>,
     sent: SnapshotHistory,
     /// Terrain edits the client is known to have.
     known_edits: u32,
@@ -477,6 +489,7 @@ impl Room {
                 started: false,
                 ready: false,
                 acked_snapshot: None,
+                full_sent: None,
                 sent: SnapshotHistory::default(),
                 known_edits: self.terrain.edit_count(),
                 inventory_sent: None,
@@ -784,68 +797,85 @@ impl Room {
             .map(|(&id, _)| id)
             .collect();
         for id in ids {
-            let ships = self
-                .clients
-                .iter()
-                .filter_map(|(&sid, c)| {
-                    let s = self.world.ship(c.player)?;
-                    Some(self.conv.ship_to_net(sid, s, sid == id))
-                })
-                .collect();
+            // A full snapshot on its way and not acknowledged yet: no
+            // snapshot this time (the inventory below still goes out).
             let c = &self.clients[&id];
-            let from = (c.known_edits as usize).min(log.len());
-            let to = (from + self.cfg.max_edits_per_snapshot).min(log.len());
-            let mut snap = Snapshot {
-                mode: mode.clone(),
-                tick,
-                ack_input: c.ack_input as u32,
-                edit_base: from as u32,
-                edits: log[from..to].to_vec(),
-                ships,
-                projectiles: projectiles.clone(),
-                entities: entities.clone(),
-                players: players.clone(),
-                scores: scores.clone(),
-                match_ticks_left,
-            };
-            snap.retain_relevant(
-                id,
-                &SimRelevance {
-                    world: &self.world,
-                    clients: &self.clients,
-                },
-            );
-            let mut packed = self.conv.quantizer().pack_snapshot(&snap);
-            let baseline = c.sent.choose_baseline(tick, c.acked_snapshot);
-            // Straight projectiles within a few position steps of their
-            // predicted path go out as predicted (one bit each); what is
-            // sent is what the client stores, so both stay identical.
-            if let Some(b) = baseline.and_then(|t| c.sent.get(t)) {
-                ls_net::settle_projectiles(&mut packed, b, ls_net::SETTLE_TOLERANCE);
-            }
-            let msg = Message::Snapshot(Box::new(SnapshotMsg {
-                epoch: self.cfg.epoch,
-                baseline,
-                snapshot: packed.clone(),
-            }));
-            match msg.encode_with(&c.sent) {
-                Ok(bytes) => {
-                    self.stats.snapshots_sent += 1;
-                    self.stats.snapshot_bytes += bytes.len() as u64;
-                    self.outgoing.push(Outgoing {
-                        client: id,
-                        channel: Channel::Unreliable,
-                        bytes,
-                    });
+            let held = c.sent.choose_baseline(tick, c.acked_snapshot).is_none()
+                && c.full_sent
+                    .is_some_and(|t| tick.wrapping_sub(t) < FULL_SNAPSHOT_RETRY_TICKS);
+            'snapshot: {
+                if held {
+                    break 'snapshot;
                 }
-                // Only reachable with inconsistent state; skip this client's snapshot.
-                Err(_) => {
-                    self.stats.encode_errors += 1;
-                    continue;
+                let ships = self
+                    .clients
+                    .iter()
+                    .filter_map(|(&sid, c)| {
+                        let s = self.world.ship(c.player)?;
+                        Some(self.conv.ship_to_net(sid, s, sid == id))
+                    })
+                    .collect();
+                let c = &self.clients[&id];
+                let from = (c.known_edits as usize).min(log.len());
+                let to = (from + self.cfg.max_edits_per_snapshot).min(log.len());
+                let mut snap = Snapshot {
+                    mode: mode.clone(),
+                    tick,
+                    ack_input: c.ack_input as u32,
+                    edit_base: from as u32,
+                    edits: log[from..to].to_vec(),
+                    ships,
+                    projectiles: projectiles.clone(),
+                    entities: entities.clone(),
+                    players: players.clone(),
+                    scores: scores.clone(),
+                    match_ticks_left,
+                };
+                snap.retain_relevant(
+                    id,
+                    &SimRelevance {
+                        world: &self.world,
+                        clients: &self.clients,
+                    },
+                );
+                let mut packed = self.conv.quantizer().pack_snapshot(&snap);
+                let baseline = c.sent.choose_baseline(tick, c.acked_snapshot);
+                // Straight projectiles within a few position steps of their
+                // predicted path go out as predicted (one bit each); what is
+                // sent is what the client stores, so both stay identical.
+                if let Some(b) = baseline.and_then(|t| c.sent.get(t)) {
+                    ls_net::settle_projectiles(&mut packed, b, ls_net::SETTLE_TOLERANCE);
                 }
-            }
-            if let Some(c) = self.clients.get_mut(&id) {
-                c.sent.push(packed);
+                let msg = Message::Snapshot(Box::new(SnapshotMsg {
+                    epoch: self.cfg.epoch,
+                    baseline,
+                    snapshot: packed.clone(),
+                }));
+                match msg.encode_with(&c.sent) {
+                    Ok(bytes) => {
+                        self.stats.snapshots_sent += 1;
+                        if baseline.is_none() {
+                            self.stats.full_snapshots += 1;
+                        }
+                        self.stats.snapshot_bytes += bytes.len() as u64;
+                        self.outgoing.push(Outgoing {
+                            client: id,
+                            channel: Channel::Unreliable,
+                            bytes,
+                        });
+                    }
+                    // Only reachable with inconsistent state; skip this client's snapshot.
+                    Err(_) => {
+                        self.stats.encode_errors += 1;
+                        break 'snapshot;
+                    }
+                }
+                if let Some(c) = self.clients.get_mut(&id) {
+                    c.sent.push(packed);
+                    if baseline.is_none() {
+                        c.full_sent = Some(tick);
+                    }
+                }
             }
             // The own inventory, reliably, whenever it changed.
             let inv = self

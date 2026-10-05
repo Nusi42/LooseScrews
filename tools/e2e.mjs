@@ -48,6 +48,17 @@
 //                           bots find the server through the directory
 //                           (`ls-bots --directory <url>`; auto: when the bots
 //                           binary has the flag) [auto]
+//   --private-rooms <spec>  private rooms next to the public one, each with
+//                           its own bots: `rules:bots,...` with a built-in
+//                           rule set id or LR code, e.g. `duel:2,team_brawl:4`
+//                           (opened with POST /api/rooms; logs in
+//                           bots-<room>.log) [none]
+//   --welcome-probes on|off a one-bot join right after every match end and
+//                           warm-up swap of the public room, i.e. while the
+//                           next room is being built; checks its Welcome
+//                           time (the server then gets one player slot
+//                           more than --count) [on with --playlist, else off]
+//   --welcome-budget-ms <n> longest Welcome wait of a probe [200]
 //
 // Checks: the server serves web/dist/index.html (and its assets); bots exit 0
 // with every bot joined and no protocol errors or desyncs; the server logs no
@@ -65,9 +76,14 @@
 // --directory: the server is listed (name, address, players, protocol and
 // data hash as its /api/info; with --playlist the listed mode and world
 // follow the rotation) and removed when it shuts down.
+// --private-rooms: per room, its bots joined once and stayed (no disconnects,
+// protocol errors or desyncs), full snapshots per join or transition within
+// --max-full-per-join, a match reached its result, tick p99 under budget.
+// --welcome-probes: every probe got its Welcome within --welcome-budget-ms.
 
 import { spawn, spawnSync } from "node:child_process";
 import { createWriteStream, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createSocket } from "node:dgram";
 import { createServer } from "node:net";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -102,6 +118,9 @@ const defaults = {
   directory: "",
   "directory-bin": "",
   "bots-directory": "auto",
+  "private-rooms": "",
+  "welcome-probes": "",
+  "welcome-budget-ms": "200",
 };
 
 function parseArgs(argv) {
@@ -128,6 +147,13 @@ function parseArgs(argv) {
   o["log-dir"] = resolve(o["log-dir"]);
   if (o.transport !== "ws" && o.transport !== "wt") die("--transport must be ws or wt");
   if (!["auto", "on", "off"].includes(o["bots-directory"])) die("--bots-directory must be auto, on or off");
+  if (!["", "on", "off"].includes(o["welcome-probes"])) die("--welcome-probes must be on or off");
+  let privateRooms;
+  try {
+    privateRooms = parsePrivateRooms(o["private-rooms"]);
+  } catch (e) {
+    die(e.message);
+  }
   const rotating = o.playlist !== "";
   if (rotating && o.playlist !== "quick" && o.playlist !== "default") {
     o.playlist = resolve(o.playlist);
@@ -174,7 +200,20 @@ function parseArgs(argv) {
     directory: o.directory,
     directoryBin,
     botsDirectory: o["bots-directory"],
+    privateRooms,
+    welcomeProbes: o["welcome-probes"] === "" ? rotating : o["welcome-probes"] === "on",
+    welcomeBudgetMs: posNum(o["welcome-budget-ms"], "welcome-budget-ms"),
   };
+}
+
+/** `rules:bots,...` -> [{rules, bots}] (exported for tests). */
+export function parsePrivateRooms(spec) {
+  if (!spec) return [];
+  return spec.split(",").map((part) => {
+    const m = /^\s*([A-Za-z0-9_-]+):(\d+)\s*$/.exec(part);
+    if (!m || !(Number(m[2]) > 0)) throw new Error(`--private-rooms: bad entry "${part}" (want rules:bots)`);
+    return { rules: m[1], bots: Number(m[2]) };
+  });
 }
 
 function posInt(v, name) {
@@ -324,7 +363,7 @@ const sourceMatches = (source, logged) => source.split("|").includes(logged);
 
 // ----- process helpers -----------------------------------------------------------
 
-function freePort() {
+function freeTcpPort() {
   return new Promise((res, rej) => {
     const s = createServer();
     s.once("error", rej);
@@ -333,6 +372,31 @@ function freePort() {
       s.close(() => res(port));
     });
   });
+}
+
+/** True when UDP `port` can be bound on 127.0.0.1. */
+function udpFree(port) {
+  return new Promise((res) => {
+    const s = createSocket("udp4");
+    s.once("error", () => {
+      s.close();
+      res(false);
+    });
+    s.bind(port, "127.0.0.1", () => s.close(() => res(true)));
+  });
+}
+
+/**
+ * A port free for TCP and UDP: the server binds WebTransport (UDP) on its
+ * game port too, and Windows reserves UDP ranges (Hyper-V, WinNAT) that a
+ * free TCP port may fall into (os error 10013).
+ */
+async function freePort() {
+  for (let i = 0; i < 20; i++) {
+    const port = await freeTcpPort();
+    if (await udpFree(port)) return port;
+  }
+  return freeTcpPort();
 }
 
 /** Spawns `bin`, tees output to `logFile` and collects the text. */
@@ -531,6 +595,26 @@ function checkBots(bots, exit, opts) {
   return t;
 }
 
+/** Welcome times (ms) of the bots' "joined" lines, in order (exported for tests). */
+export function welcomeTimes(text) {
+  return text
+    .replace(ANSI, "")
+    .split(/\r?\n/)
+    .filter((l) => l.includes(" joined"))
+    .map((l) => num(parseFields(l).welcome_ms))
+    .filter((v) => Number.isFinite(v));
+}
+
+/** Lines of room `label` with `marker`, as fields (exported for tests). */
+export function roomLines(text, label, marker) {
+  return text
+    .replace(ANSI, "")
+    .split(/\r?\n/)
+    .filter((l) => l.includes(marker))
+    .map(parseFields)
+    .filter((f) => f.room === label);
+}
+
 /** Lines of the public room with `marker`, as fields. */
 function publicLines(lines, marker) {
   return lines
@@ -578,7 +662,13 @@ function checkServer(server, exit, opts) {
   check("no skipped ticks", skipped === 0, `${final.skipped_ticks} skipped`);
   const peak = Math.max(...active.map((w) => num(w.players)));
   check(`server saw ${opts.count} players`, peak >= opts.count, `peak ${peak}`);
-  check("snapshots flowed", num(final.snapshots_sent) > 0 && active.every((w) => num(w.snapshot_kib_s) > 0),
+  // A window reported right after a room swap counts only the new room's
+  // traffic (the server's window counters restart with each room), and the
+  // first snapshot of a room waits for each client's first input (its
+  // session rebuild takes a few ticks): skip windows of a room younger than
+  // a second.
+  const flowing = active.filter((w) => !(num(w.tick) < 60));
+  check("snapshots flowed", num(final.snapshots_sent) > 0 && flowing.every((w) => num(w.snapshot_kib_s) > 0),
     `${final.snapshots_sent} snapshots, ${(num(final.snapshot_bytes) / 1048576).toFixed(1)} MiB`);
 
   if (opts.playlist) return;
@@ -676,6 +766,53 @@ function checkRotation(server, totals, opts, plan) {
   }
 }
 
+/** Per private room: its bots and the room's server lines. */
+function checkPrivateRooms(rooms, server, opts) {
+  for (const r of rooms) {
+    const name = `private ${r.rules} (${r.code ?? "not opened"})`;
+    if (!r.code) {
+      check(`${name}: opened`, false, r.error);
+      continue;
+    }
+    const text = r.proc.text.replace(ANSI, "");
+    check(`${name}: bots exited 0`, r.exit.code === 0 && !r.exit.killed, r.exit.killed ? "killed after timeout" : `exit code ${r.exit.code}`);
+    const t = botTotals(text);
+    if (!t) {
+      check(`${name}: bots summary parsed`, false, "no totals line");
+    } else {
+      check(`${name}: all ${r.bots} bots joined exactly once, none dropped`, t.joins === r.bots && t.disconnects === 0,
+        `joins ${t.joins}, disconnects ${t.disconnects}, in-place transitions ${t.restarts}`);
+      const per = t.joins + t.restarts;
+      if (t.full !== null && opts.maxFullPerJoin > 0) {
+        check(`${name}: at most ${opts.maxFullPerJoin} full snapshot(s) per join or transition`, t.full <= opts.maxFullPerJoin * per,
+          `${t.full} full snapshots for ${per} joins or transitions`);
+      }
+    }
+    const pe = text.match(/protocol errors (\d+), desyncs (\d+)/);
+    check(`${name}: no protocol errors or desyncs`, !!pe && pe[1] === "0" && pe[2] === "0", pe ? pe[0] : "line missing");
+    const overs = roomLines(server.text, r.code, "match over; building the next room");
+    check(`${name}: a match reached its result`, overs.length > 0,
+      overs.map((o) => `${o.mode} winner ${o.winner_side}, ${num(o.left_s).toFixed(0)} s left`).join("; ") || "no finished match");
+    const windows = roomLines(server.text, r.code, "tick stats").filter((w) => num(w.players) > 0);
+    const p99 = Math.max(0, ...windows.map((w) => num(w.p99_us)));
+    check(`${name}: tick p99 < ${opts.p99BudgetUs} us`, windows.length > 0 && p99 < opts.p99BudgetUs,
+      `worst p99 ${p99} us, max ${Math.max(0, ...windows.map((w) => num(w.max_us)))} us over ${windows.length} windows`);
+  }
+}
+
+function checkProbes(probes, opts) {
+  const times = probes.map((p) => ({ ...p, ms: welcomeTimes(p.proc.text)[0] }));
+  const joined = times.filter((p) => Number.isFinite(p.ms));
+  const worst = joined.reduce((a, p) => (p.ms > (a?.ms ?? -1) ? p : a), null);
+  check("welcome probes joined during next-room builds", probes.length > 0 && joined.length === probes.length,
+    `${joined.length} of ${probes.length} probes joined`);
+  if (joined.length) {
+    const sorted = joined.map((p) => p.ms).sort((a, b) => a - b);
+    check(`every probe's Welcome within ${opts.welcomeBudgetMs} ms`, worst.ms <= opts.welcomeBudgetMs,
+      `median ${sorted[Math.floor(sorted.length / 2)].toFixed(1)} ms, worst ${worst.ms.toFixed(1)} ms (after ${worst.trigger})`);
+  }
+}
+
 /** Polls the directory's `GET /servers` until `stop()`; returns the snapshots. */
 async function pollDirectory(url, stop) {
   const snaps = [];
@@ -767,6 +904,8 @@ async function main() {
       ...listing,
       "--web-root", opts.webRoot,
       "--stats-interval", String(opts.statsInterval),
+      // A free slot for the Welcome probes next to the bots.
+      ...(opts.welcomeProbes ? ["--max-players", String(Math.max(8, opts.count + 1))] : []),
       "--exit-when-empty",
     ],
     join(opts.logDir, "server.log"),
@@ -807,11 +946,81 @@ async function main() {
     opts.botsBin,
     [...target, "--count", String(opts.count), "--duration", String(opts.duration), "--transport", opts.transport],
     join(opts.logDir, "bots.log"),
-    (l) => /WARN|ERROR|^result:/.test(l),
+    (l) => /WARN|ERROR|^result:/.test(l) && !l.includes("slow bot step"),
   );
+  // Private rooms, each with its own bots process.
+  const wsUrl = `ws://127.0.0.1:${port}/ws`;
+  const privateRooms = [];
+  for (const [i, r] of opts.privateRooms.entries()) {
+    const room = { ...r, code: null, error: "", proc: null, exit: null };
+    privateRooms.push(room);
+    try {
+      const reply = await fetch(`${base}/api/rooms`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ rules_code: r.rules }),
+        signal: AbortSignal.timeout(10_000),
+      });
+      const body = await reply.json();
+      if (!reply.ok || !body.room) throw new Error(`HTTP ${reply.status}: ${JSON.stringify(body)}`);
+      room.code = body.room;
+    } catch (e) {
+      room.error = String(e?.message ?? e);
+      continue;
+    }
+    note(`private room ${room.code}: ${r.rules}, ${r.bots} bots`);
+    room.proc = run(
+      `room${i + 1}`,
+      opts.botsBin,
+      ["--server", wsUrl, "--room", room.code, "--count", String(r.bots), "--duration", String(opts.duration),
+        "--transport", opts.transport, "--name-prefix", `room${i + 1}bot`, "--seed", String(1000 + i)],
+      join(opts.logDir, `bots-${room.code}.log`),
+      (l) => /WARN|ERROR|^result:/.test(l) && !l.includes("slow bot step"),
+    );
+  }
+
+  // Welcome probes: a one-bot join right after the public room's match end
+  // or warm-up swap (the next room is being built on a worker thread then).
+  const probes = [];
+  let probing = opts.welcomeProbes;
+  if (probing) {
+    mkdirSync(join(opts.logDir, "probes"), { recursive: true });
+    let seen = 0;
+    server.listeners.push(() => {
+      if (!probing) return;
+      const end = server.text.lastIndexOf("\n");
+      if (end <= seen) return;
+      const fresh = server.text.slice(seen, end).replace(ANSI, "").split(/\r?\n/);
+      seen = end;
+      for (const l of fresh) {
+        const f = parseFields(l);
+        if (f.room !== "public") continue;
+        const trigger = l.includes("match over; building the next room")
+          ? `match ${f.entry} over`
+          : l.includes("next room swapped in") && f.warmup === "true"
+            ? `warm-up swap (${f.entry})`
+            : null;
+        if (!trigger) continue;
+        const n = probes.length + 1;
+        const proc = run(
+          `probe${n}`,
+          opts.botsBin,
+          ["--server", wsUrl, "--count", "1", "--duration", "1", "--stagger-ms", "0", "--transport", opts.transport,
+            "--name-prefix", `probe${n}-`, "--seed", String(5000 + n)],
+          join(opts.logDir, "probes", `probe${n}.log`),
+          null,
+        );
+        probes.push({ trigger, proc });
+      }
+    });
+  }
+
   let polling = Boolean(directoryUrl);
   const dirSnaps = directoryUrl ? pollDirectory(directoryUrl, () => !polling) : Promise.resolve([]);
   const botsExit = await waitExit(bots, (opts.duration + 60) * 1000);
+  probing = false;
+  for (const r of privateRooms) if (r.proc) r.exit = await waitExit(r.proc, 60_000);
+  for (const p of probes) await waitExit(p.proc, 30_000);
   // --exit-when-empty: the server stops ~2 s after the last bot left.
   const serverExit = await waitExit(server, 30_000);
   polling = false;
@@ -833,6 +1042,8 @@ async function main() {
   checkServer(server, serverExit, opts);
   if (plan) checkRotation(server, totals, opts, plan);
   checkTransport(bots, server, opts);
+  if (privateRooms.length) checkPrivateRooms(privateRooms, server, opts);
+  if (opts.welcomeProbes) checkProbes(probes, opts);
   if (directoryUrl) checkDirectory(snaps, info, `127.0.0.1:${port}`, afterShutdown, opts);
   finish(opts);
 }

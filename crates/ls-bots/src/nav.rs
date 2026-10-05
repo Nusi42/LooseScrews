@@ -52,7 +52,7 @@
 //! depends on when the worker thread finishes.
 
 use std::cmp::Reverse;
-use std::collections::{BinaryHeap, HashMap, VecDeque};
+use std::collections::{BinaryHeap, VecDeque};
 use std::fmt;
 use std::time::Duration;
 
@@ -191,6 +191,83 @@ impl Active {
 
     fn contains(&self, c: [i32; 3]) -> bool {
         (0..3).all(|a| c[a] >= self.lo[a] && c[a] <= self.hi[a])
+    }
+}
+
+/// Reusable A* state for [`NavGrid::find_path_with`] (one per bot: a few
+/// bytes per grid cell, allocated on the first search; a clone starts empty).
+#[derive(Debug, Default)]
+pub struct PathScratch {
+    nodes: SearchNodes,
+    open: BinaryHeap<Reverse<(u32, usize)>>,
+}
+
+impl Clone for PathScratch {
+    fn clone(&self) -> Self {
+        PathScratch::default()
+    }
+}
+
+impl PathScratch {
+    /// Starts a search over `cells` cells: bumps the search number, which
+    /// invalidates every entry of the previous search at once.
+    fn begin(&mut self, cells: usize) -> &mut SearchNodes {
+        let n = &mut self.nodes;
+        if n.stamp.len() != cells || n.search >= CLOSED - 1 {
+            n.stamp = vec![0; cells];
+            n.g = vec![0.0; cells];
+            n.parent = vec![0; cells];
+            n.search = 0;
+        }
+        n.search += 1;
+        n
+    }
+}
+
+/// Per-cell search entries; an entry is valid when its stamp is the current
+/// search number (closed: the stamp with the top bit set).
+#[derive(Debug, Clone, Default)]
+struct SearchNodes {
+    search: u32,
+    stamp: Vec<u32>,
+    g: Vec<f32>,
+    parent: Vec<u32>,
+}
+
+const CLOSED: u32 = 1 << 31;
+const NO_PARENT: u32 = u32::MAX;
+
+impl SearchNodes {
+    fn seen(&self, i: usize) -> bool {
+        self.stamp[i] & !CLOSED == self.search
+    }
+    fn closed(&self, i: usize) -> bool {
+        self.stamp[i] == self.search | CLOSED
+    }
+    fn close(&mut self, i: usize) {
+        self.stamp[i] = self.search | CLOSED;
+    }
+    /// Cost so far (infinite for a node this search has not reached).
+    fn g(&self, i: usize) -> f32 {
+        if self.seen(i) {
+            self.g[i]
+        } else {
+            f32::INFINITY
+        }
+    }
+    /// Records a (better) cost and parent of an open node (`usize::MAX`:
+    /// the start).
+    fn set(&mut self, i: usize, g: f32, parent: usize) {
+        self.stamp[i] = self.search;
+        self.g[i] = g;
+        self.parent[i] = if parent == usize::MAX {
+            NO_PARENT
+        } else {
+            parent as u32
+        };
+    }
+    fn parent(&self, i: usize) -> Option<usize> {
+        (self.seen(i) && self.parent[i] != NO_PARENT).then(|| self.parent[i] as usize)
     }
 }
 
@@ -481,9 +558,14 @@ impl NavGrid {
 
     /// Position of node `i`.
     pub fn node_pos(&self, i: usize) -> Vec3 {
+        self.node_pos_in(i, self.coords(i))
+    }
+
+    /// [`NavGrid::node_pos`] of node `i` at cell coordinates `c`.
+    fn node_pos_in(&self, i: usize, c: [i32; 3]) -> Vec3 {
         let r = self.rep[i];
         let unit = self.cfg.cell / 254.0;
-        self.centre(self.coords(i)) + Vec3::new(r[0] as f32, r[1] as f32, r[2] as f32) * unit
+        self.centre(c) + Vec3::new(r[0] as f32, r[1] as f32, r[2] as f32) * unit
     }
 
     /// Free space (u) at node `i` (0 for a non-node).
@@ -491,6 +573,7 @@ impl NavGrid {
         self.clear[i] as f32 / CLEAR_SCALE
     }
 
+    #[cfg(test)]
     fn neighbours(&self, i: usize) -> impl Iterator<Item = usize> + '_ {
         let e = self.edges[i];
         (0..26)
@@ -844,12 +927,29 @@ impl NavGrid {
 
     /// A* from `from` to `to` over the grid. `None` if either end has no
     /// node nearby; a partial route (to the node closest to `to`) if the
-    /// goal is out of reach or the expansion cap was hit.
+    /// goal is out of reach or the expansion cap was hit. Allocates its
+    /// search state; [`Navigator`] reuses one ([`NavGrid::find_path_with`]).
     pub fn find_path<T: TerrainQuery + ?Sized>(
         &self,
         terrain: &T,
         from: Vec3,
         to: Vec3,
+    ) -> Option<Path> {
+        self.find_path_with(terrain, from, to, &mut PathScratch::default())
+    }
+
+    /// [`NavGrid::find_path`] with reusable search state: per-cell arrays
+    /// stamped with a search number, so a search touches only the nodes it
+    /// expands (a hash map of the expanded nodes made long searches take
+    /// 60-125 ms on cave levels, and every bot of a match re-plans towards
+    /// the same objective at about the same time: the bots stalled together
+    /// and the server reported input starvation, M3 soak).
+    pub fn find_path_with<T: TerrainQuery + ?Sized>(
+        &self,
+        terrain: &T,
+        from: Vec3,
+        to: Vec3,
+        scratch: &mut PathScratch,
     ) -> Option<Path> {
         let start = self.nearest_node(terrain, from, true)?;
         let goal = self.nearest_node(terrain, to, false)?;
@@ -865,21 +965,20 @@ impl NavGrid {
         let w = self.cfg.heuristic_weight;
         let h = |i: usize| self.node_pos(i).distance(goal_pos);
 
-        // node -> (g, parent, closed)
-        let mut info: HashMap<usize, (f32, usize, bool)> = HashMap::new();
-        let mut open: BinaryHeap<Reverse<(u32, usize)>> = BinaryHeap::new();
-        info.insert(start, (0.0, usize::MAX, false));
+        let mut open = std::mem::take(&mut scratch.open);
+        open.clear();
+        let info = scratch.begin(self.clear.len());
+        info.set(start, 0.0, usize::MAX);
         open.push(Reverse(((h(start) * w).to_bits(), start)));
         let mut best = (h(start), start);
         let mut expansions = 0;
         let mut reached = false;
         while let Some(Reverse((_, cur))) = open.pop() {
-            let entry = info.get_mut(&cur).expect("queued nodes have info");
-            if entry.2 {
+            if info.closed(cur) {
                 continue;
             }
-            entry.2 = true;
-            let g = entry.0;
+            info.close(cur);
+            let g = info.g(cur);
             if cur == goal {
                 reached = true;
                 break;
@@ -892,26 +991,35 @@ impl NavGrid {
             if expansions > max_expansions {
                 break;
             }
-            let pc = self.node_pos(cur);
-            for nb in self.neighbours(cur) {
-                let pn = self.node_pos(nb);
-                let narrow = (WIDE - self.node_clearance(nb)).clamp(0.0, 1.0);
-                let ng = g + pc.distance(pn) * (1.0 + narrow);
-                let e = info.entry(nb).or_insert((f32::INFINITY, usize::MAX, false));
-                if e.2 || ng >= e.0 {
+            // Neighbour positions from the current cell's coordinates (no
+            // index division per neighbour); same values as `node_pos`.
+            let cc = self.coords(cur);
+            let pc = self.node_pos_in(cur, cc);
+            let edges = self.edges[cur];
+            for (k, d) in DIRS.iter().enumerate() {
+                if edges & (1 << k) == 0 {
                     continue;
                 }
-                *e = (ng, cur, false);
-                open.push(Reverse(((ng + h(nb) * w).to_bits(), nb)));
+                let nb = (cur as isize + self.offsets[k]) as usize;
+                if info.closed(nb) {
+                    continue;
+                }
+                let pn = self.node_pos_in(nb, [cc[0] + d[0], cc[1] + d[1], cc[2] + d[2]]);
+                let narrow = (WIDE - self.node_clearance(nb)).clamp(0.0, 1.0);
+                let ng = g + pc.distance(pn) * (1.0 + narrow);
+                if ng >= info.g(nb) {
+                    continue;
+                }
+                info.set(nb, ng, cur);
+                open.push(Reverse(((ng + pn.distance(goal_pos) * w).to_bits(), nb)));
             }
         }
+        scratch.open = open;
+        let info = &scratch.nodes;
         let end = if reached { goal } else { best.1 };
         let mut nodes = vec![end];
         let mut cur = end;
-        while let Some(&(_, parent, _)) = info.get(&cur) {
-            if parent == usize::MAX {
-                break;
-            }
+        while let Some(parent) = info.parent(cur) {
             nodes.push(parent);
             cur = parent;
         }
@@ -1075,6 +1183,13 @@ struct Route {
 
 /// Re-plan a route at least this often (ticks).
 const REPLAN_TICKS: u64 = 4 * 60;
+/// A route is re-planned for a moving goal at most this often (ticks): a
+/// goal that moves every tick (the Heist core and its carrier) made every
+/// bot of a match search again every tick, and a search can take tens of
+/// milliseconds. Bots that fell behind run several ticks in one loop turn,
+/// so they fell further behind (stalls of 0.3-0.7 s and input starvation
+/// on the server in Heist, M3 soak).
+const MIN_REPLAN_TICKS: u64 = 15;
 /// Re-plan when the distance to the next waypoint has not shrunk for this
 /// many ticks.
 const STUCK_TICKS: u64 = 120;
@@ -1116,6 +1231,8 @@ pub struct Navigator {
     last_steer: Option<u64>,
     /// Links blocked after stalls, with the tick they are re-tested.
     blocked: Vec<(usize, usize, u64)>,
+    /// A* state reused by every search.
+    scratch: PathScratch,
 }
 
 impl Navigator {
@@ -1128,6 +1245,7 @@ impl Navigator {
             retry_at: 0,
             last_steer: None,
             blocked: Vec::new(),
+            scratch: PathScratch::default(),
         }
     }
 
@@ -1242,7 +1360,8 @@ impl Navigator {
         let mut replan = match &mut self.route {
             None => true,
             Some(r) => {
-                let moved = r.goal.distance(goal) > (0.25 * pos.distance(goal)).max(6.0);
+                let moved = r.goal.distance(goal) > (0.25 * pos.distance(goal)).max(6.0)
+                    && now >= r.planned_at + MIN_REPLAN_TICKS;
                 let mut changed = false;
                 if r.version != version && now >= r.planned_at + 30 {
                     // Only changes near the route matter.
@@ -1271,7 +1390,10 @@ impl Navigator {
                 self.route = None;
                 return None;
             }
-            match self.grid.find_path(terrain, pos, goal) {
+            match self
+                .grid
+                .find_path_with(terrain, pos, goal, &mut self.scratch)
+            {
                 Some(path) if !path.points.is_empty() => {
                     self.failures = 0;
                     let grow = Vec3::splat(self.grid.config().cell);
@@ -1474,6 +1596,31 @@ mod tests {
         // A diagonal line: 8 cells plus the exact goal.
         assert!(p.points.len() <= 10, "{:?}", p.points);
         assert_eq!(*p.points.last().unwrap(), Vec3::new(8.0, 0.0, 8.0));
+    }
+
+    /// One reused search state gives every search the same route as a
+    /// fresh one (stale entries of earlier searches never leak in).
+    #[test]
+    fn reused_search_state_matches_fresh_searches() {
+        let t = WallRoom {
+            hole: 0.8,
+            craters: vec![],
+        };
+        let g = built(&t);
+        let mut scratch = PathScratch::default();
+        let ends = [
+            (Vec3::new(-20.0, 0.0, -20.0), Vec3::new(20.0, 0.0, -20.0)),
+            (Vec3::new(20.0, 5.0, 10.0), Vec3::new(-20.0, -5.0, 10.0)),
+            (Vec3::new(-10.0, 0.0, 0.0), Vec3::new(-12.0, 3.0, 4.0)),
+            (Vec3::new(-20.0, 0.0, -20.0), Vec3::new(20.0, 0.0, -20.0)),
+        ];
+        for (from, to) in ends {
+            let fresh = g.find_path(&t, from, to).unwrap();
+            let reused = g.find_path_with(&t, from, to, &mut scratch).unwrap();
+            assert_eq!(fresh.points, reused.points);
+            assert_eq!(fresh.nodes, reused.nodes);
+            assert_eq!(fresh.complete, reused.complete);
+        }
     }
 
     #[test]

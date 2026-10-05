@@ -298,7 +298,7 @@ pwsh tools/e2e.ps1 --transport wt                   # bots over WebTransport
 pwsh tools/e2e.ps1 --ruleset data/rulesets/sandbox_all_weapons.ron --count 8 --duration 330   # every weapon as a pickup
 pwsh tools/e2e.ps1 --ruleset tools/e2e-rulesets/sandbox_debris.ron --count 8 --duration 330 --min-debris 64
 pwsh tools/e2e.ps1 --count 8 --playlist quick --directory local   # every mode in rotation, ~11 min (M3)
-pwsh tools/e2e.ps1 --count 8 --playlist default --duration 3600   # the M3 soak: the default rotation for an hour
+pwsh tools/e2e.ps1 --count 8 --playlist default --duration 3600 --private-rooms duel:2,team_brawl:4   # the M3 soak
 node tools/e2e.mjs --help
 ```
 
@@ -342,6 +342,19 @@ show it with its name, players, protocol and data hash (as `/api/info`), its mod
 must follow the rotation, and the entry must go when the server shuts down. With
 `--bots-directory auto` the bots find the server through the directory when `ls-bots` has a
 `--directory` flag (C2), else they join by address.
+
+`--private-rooms duel:2,team_brawl:4` opens private rooms next to the public one
+(`POST /api/rooms` with a built-in rule set id or `LR` code) and runs a bots process per room
+(`ls-bots --room R-...`, log `bots-<room>.log`); each room must keep its bots on one connection
+without protocol errors or desyncs, at most one full snapshot per join or transition, reach a
+match result and stay under the tick budget. With `--playlist` the run also sends Welcome
+probes (`--welcome-probes on|off`): right after every match end and warm-up swap of the public
+room, while the next room is being built, a one-bot `ls-bots` joins for a second; its `joined`
+line carries `welcome_ms` (Hello sent to Welcome received), which must stay within
+`--welcome-budget-ms` (200). The server then gets one player slot more than `--count`.
+Bots log `slow bot step` (one packet or loop turn of 50 ms or more, with the bot's mode) to
+tell a stalled bot from a slow server when the server reports input starvation; the server's
+`tick stats` line counts `full_snapshots` per window.
 
 ## 7. Profiling tips
 

@@ -161,6 +161,47 @@ fn snapshots_at_30_hz_with_delta_after_ack() {
     assert_eq!(delta, 9);
 }
 
+/// A client slow to acknowledge its first (full) snapshot gets no second
+/// full one until [`FULL_SNAPSHOT_RETRY_TICKS`] passed: one full snapshot per
+/// join or match transition (M3 soak); after the acknowledgement, deltas.
+#[test]
+fn one_full_snapshot_until_acknowledged_or_retry() {
+    let mut r = room();
+    let id = r.join(&client_hello("a", None, None)).unwrap();
+    r.take_outgoing();
+    r.handle_message(id, input_msg(&[2], Vec3::ZERO, None))
+        .unwrap();
+    let mut history = SnapshotHistory::default();
+    let mut kinds = Vec::new();
+    let step = |r: &mut Room, history: &mut SnapshotHistory, kinds: &mut Vec<(u64, bool)>| {
+        let rep = r.step();
+        for o in r.take_outgoing() {
+            if let Message::Snapshot(sm) = Message::decode_with(&o.bytes, history).unwrap() {
+                kinds.push((rep.tick, sm.baseline.is_none()));
+                history.push(sm.snapshot);
+            }
+        }
+    };
+    // No acknowledgement (a client busy with its level, a slow link): one
+    // full snapshot, then a retry once the retry time passed.
+    let retry = u64::from(FULL_SNAPSHOT_RETRY_TICKS);
+    for _ in 0..retry + 2 {
+        step(&mut r, &mut history, &mut kinds);
+    }
+    assert_eq!(kinds, vec![(2, true), (2 + retry, true)], "{kinds:?}");
+    // Acknowledged: deltas from now on.
+    let acked = history.get(2 + retry as u32).map(|s| s.tick).unwrap();
+    r.handle_message(id, input_msg(&[retry + 4], Vec3::ZERO, Some(acked)))
+        .unwrap();
+    kinds.clear();
+    for _ in 0..6 {
+        step(&mut r, &mut history, &mut kinds);
+    }
+    assert_eq!(kinds.len(), 3);
+    assert!(kinds.iter().all(|&(_, full)| !full), "{kinds:?}");
+    assert_eq!(r.stats().full_snapshots, 2);
+}
+
 /// A client that is still building its level (no input yet) gets no
 /// snapshots: they would queue up unread, all full (nothing is acknowledged
 /// yet), and cost one full snapshot, one starvation report and one
@@ -430,8 +471,25 @@ fn inventory_messages_and_far_moving_debris() {
     };
     r.step();
     r.step();
-    let first = inventories(&mut r);
+    // The first (full) snapshot, kept as the baseline of later ones.
+    let out = r.take_outgoing();
+    let mut history = SnapshotHistory::default();
+    for o in &out {
+        if let Ok(Message::Snapshot(sm)) = Message::decode(&o.bytes) {
+            history.push(sm.snapshot);
+        }
+    }
+    let first: Vec<ls_net::InventoryMsg> = out
+        .iter()
+        .filter_map(|o| match Message::decode(&o.bytes) {
+            Ok(Message::Inventory(inv)) => Some(inv),
+            _ => None,
+        })
+        .collect();
     assert_eq!(first.len(), 1, "sent once the client is ready");
+    // The client acknowledges the first (full) snapshot, so more follow.
+    r.handle_message(a, input_msg(&[3], Vec3::ZERO, Some(2)))
+        .unwrap();
     let ship = r.world().ship(pa).unwrap();
     assert_eq!(first[0].weapons.len(), ship.weapons.len());
     assert_eq!(first[0].primary, ship.primary.unwrap().0);
@@ -455,17 +513,22 @@ fn inventory_messages_and_far_moving_debris() {
     ));
     r.step();
     let out = r.take_outgoing();
-    let snap = out.iter().find_map(|o| match Message::decode(&o.bytes) {
-        Ok(Message::Snapshot(sm)) => Some(r.conv().quantizer().unpack_snapshot(&sm.snapshot)),
-        _ => None,
-    });
+    let snap = out
+        .iter()
+        .find_map(|o| match Message::decode_with(&o.bytes, &history) {
+            Ok(Message::Snapshot(sm)) => Some(r.conv().quantizer().unpack_snapshot(&sm.snapshot)),
+            _ => None,
+        });
     r.step();
     let out2 = r.take_outgoing();
     let snap = snap.or_else(|| {
-        out2.iter().find_map(|o| match Message::decode(&o.bytes) {
-            Ok(Message::Snapshot(sm)) => Some(r.conv().quantizer().unpack_snapshot(&sm.snapshot)),
-            _ => None,
-        })
+        out2.iter()
+            .find_map(|o| match Message::decode_with(&o.bytes, &history) {
+                Ok(Message::Snapshot(sm)) => {
+                    Some(r.conv().quantizer().unpack_snapshot(&sm.snapshot))
+                }
+                _ => None,
+            })
     });
     let inv: Vec<ls_net::InventoryMsg> = out
         .iter()
@@ -908,10 +971,15 @@ fn mode_state_in_snapshots_and_results_once_at_the_end() {
     let mut s =
         crate::client::ClientSession::from_welcome_with(&welcome, ls_sim::GameData::builtin())
             .unwrap();
+    // Delivers to the client, which acknowledges its newest snapshot.
     let deliver = |r: &mut Room, s: &mut crate::client::ClientSession| {
         for o in r.take_outgoing() {
             s.handle_packet(&o.bytes).unwrap();
         }
+        let ack = s.latest_snapshot().map(|l| l.tick);
+        let next = r.tick() + 1;
+        r.handle_message(a, input_msg(&[next], Vec3::ZERO, ack))
+            .unwrap();
     };
     r.handle_message(a, input_msg(&[1], Vec3::ZERO, None))
         .unwrap();

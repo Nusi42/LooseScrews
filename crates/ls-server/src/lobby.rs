@@ -98,6 +98,9 @@ pub fn warmup_rules(rules: &RuleSet) -> RuleSet {
     r.starting_loadout.secondaries.clear();
     r.starting_loadout.gadget = None;
     r.mode.set_field("match_secs", WARMUP_MATCH_SECS);
+    // The Squeeze: no walls closing in during a warm-up (1023 s is the
+    // field's largest code value; other modes ignore the name).
+    r.mode.set_field("first_phase_secs", 1023.0);
     r
 }
 
@@ -438,6 +441,12 @@ mod tests {
             .iter()
             .all(|(_, w)| rules.availability(&w.id).is_banned()));
         assert_eq!(rules.mode.match_secs(), WARMUP_MATCH_SECS);
+        let squeeze = warmup_rules(&RuleSet::default_for(ls_sim::ModeKind::TheSqueeze));
+        assert!(squeeze.resolve(&mc.weapons).is_ok());
+        assert!(matches!(
+            squeeze.mode,
+            ls_sim::ModeRules::TheSqueeze(m) if m.first_phase_secs == 1023.0
+        ));
         // A room builds, a player joins, holds fire for a while: nothing breaks.
         let cfg = RoomConfig {
             pregenerate: false,

@@ -375,6 +375,7 @@ damage, and set HUD flags; they run after the mode's hooks.
 | `on_pickup` | a ship touches a pickup | `ModeState` + the ship |
 | `on_tick`, `end_check` | stage 7 | `ModeCtx`, `ModeRef` |
 | `view` | `World::mode_view` | `ModeState` |
+| `terrain_shell` | start of every tick, before anything moves: the shell the terrain adds (`SimTerrain::set_shell`) | `ModeState` + tick |
 
 The world keeps the generic `mode::ModeState` (part of the state hash: kind, teams, phase,
 timer, stage and stage end tick, paint coverage, team scores, score target, per-player
@@ -384,8 +385,15 @@ with the winning side, timer, stage, team scores, top 32 players with lives and 
 objective markers, HUD `view_flags`). `World::results` is the results table (winner or draw,
 kills, deaths, mode score per player). Modules that do not override a hook get the generic
 fallback (kills score, a suicide or team kill costs a point, lives where the mode has them,
-end on one side left, `score_target` or the timer); the six M3 modes other than Paint the Void
-are such stubs until wave B.
+end on one side left, `score_target` or the timer); the M3 modes not yet implemented are such
+stubs until their wave B package lands.
+
+The Squeeze (`modes/the_squeeze.rs`, `data/rulesets/squeeze.ron`) is implemented: phases on a
+fixed timeline (warning with a `NEXT_ZONE` marker, then the close), safe zones from the
+`RNG_STREAM_SQUEEZE` stream, a solid shell the world hands the terrain every tick
+(`terrain_shell`, see [contracts.md](contracts.md#shell-layer-the-squeeze)), crushing through
+shields while touching a moving wall, wall scrap debris, one life and the last ship flying;
+the module docs have the rules and the replicated schedule.
 
 Teams are per match: `teams` 2-4 (the smallest team gets a joining player; a team without
 spawn points of its own uses any spawn point) or 0 = free-for-all, where every ship is its own

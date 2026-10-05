@@ -36,6 +36,7 @@ tests are in [determinism.md](determinism.md). The contract part is the RNG stre
   | `ls_sim::world::RNG_STREAM_PICKUPS` | `0x5349_4d5f_5049_434b` ("SIM_PICK") | Weapon pickup rolls, seeded with `Pcg32::from_seed(match_seed, ..)` |
   | `ls_game::setup::RNG_STREAM_SPAWNS` | `0x4741_4d45_5f53_504e` ("GAME_SPN") | Team spawn point placement, `Pcg32::from_seed(world_seed, ..)` |
   | `ls_game::setup::RNG_STREAM_PICKUP_POINTS` | `0x4741_4d45_5f50_4b50` ("GAME_PKP") | Pickup point placement, `Pcg32::from_seed(world_seed, ..)` |
+  | `ls_sim::modes::the_squeeze::RNG_STREAM_SQUEEZE` | `0x5349_4d5f_5351_5a45` ("SIM_SQZE") | The Squeeze: safe-zone centres, `Pcg32::new(mix64(match_seed ^ mix64(phase ^ stream)), ..)` per phase, and wall scrap, `Pcg32::new(mix64(match_seed ^ mix64(tick ^ stream.rotate_left(17))), ..)` per batch |
   | `ls_sim::behavior::RNG_STREAM_MODULES` | `0x5349_4d5f_4d4f_4453` ("SIM_MODS") | Weapon and gadget modules (`Ctx::rng(key)`): `Pcg32::new(mix64(match_seed ^ mix64(key ^ tick.rotate_left(32))), ..)`, a private stream per key and tick. Seed Grenade growth uses the same stream id keyed only by the match seed and the projectile id (no tick: `seed_grenade::growth`) |
 
   The simulation's `match_seed` (`WorldConfig::seed`) is
@@ -85,6 +86,35 @@ planes and crater/add-rock spheres are exact. Code uses it in two ways:
   gaps a human can now fly through.
 
 A terrain that adds a new field must keep it 1-Lipschitz; it does not have to be exact.
+
+### Shell layer (The Squeeze)
+
+A mode can add a solid shell to the terrain: `ls_sim::ShellSphere { center, radius }`, rock
+everywhere outside the sphere, field `radius - |p - center|` (exact, 1-Lipschitz, negative
+in its rock). A terrain with a shell answers `sdf` as `min(terrain, shell)`, so ships,
+projectiles, debris and raycasts treat it like rock.
+
+- The world sets it at the start of every tick: `SimTerrain::set_shell(mode.terrain_shell(state,
+  tick))` (`ls_sim::modes::ModeModule::terrain_shell`; `None` in modes without walls).
+  `SimTerrain::set_shell` defaults to ignoring it; `ls_sim::ShelledTerrain<T>` is the reference
+  wrapper (tests, tools) and `ls_game::GameTerrain` implements it for real levels. The Squeeze's
+  own rules (crushing, swallowed ships) do not depend on the terrain implementing it.
+- It is a runtime layer, not a `TerrainEdit`: not logged, not on the wire, not a generator
+  change (worldgen golden hashes and share codes stay), and not in `GameTerrain::state_hash`
+  (that hashes the chunk store), so peers compare terrain at any time.
+- Clients derive it: the shell is a pure function of the replicated mode state and the tick
+  (`ls_sim::modes::the_squeeze::ShellSchedule::shell_at` over the `SAFE_ZONE` / `NEXT_ZONE`
+  objectives). Zone centres are whole units, so `ls_game::mode::squeeze_shell` snaps the
+  quantized marker positions back and gets the server's shell bit for bit;
+  `ClientSession::tick` sets it on its terrain for the predicted tick.
+- While closing, the shell moves in steps of at most `SHELL_STEP` = 0.5 u of surface travel
+  (centre shift plus radius change; quantized progress), so each step changes meshes only in a
+  thin band. `GameTerrain::take_dirty_chunks` adds the chunks a shell change since its last call
+  can change: those with corners near open space (terrain above -2.5 u, tracked per 8 u block)
+  where one of the two shells is within 2.5 u of its surface; `GameTerrain::mesh_chunk` meshes
+  a chunk the shell reaches from its padded samples combined with the shell (same surface-nets
+  mesher, paint, states and materials). See `docs/milestone-3-plan.md` (B2 as built) for the
+  measured remesh cost.
 
 ### `TerrainEdit`
 

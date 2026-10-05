@@ -99,7 +99,7 @@ mod tests {
     #[test]
     fn hash_is_stable_and_sensitive() {
         let files = builtin_files();
-        assert_eq!(files.len(), 27 + 3 + 4 + 2);
+        assert_eq!(files.len(), 27 + 3 + 4 + 3);
         assert_eq!(
             data_hash(),
             with_behavior_version(hash_files(files.clone()))

@@ -58,6 +58,12 @@ declared with `default-features = false`; `ls-server` enables `features = ["serv
   dirty; whoever owns the terrain calls it once per tick (server: optional, it does not mesh;
   client: with its display tick).
 - Dirty chunks accumulate until `take_dirty_chunks()`; `mesh_chunk(c)` runs surface nets.
+- Shell layer (The Squeeze, [contracts.md](contracts.md#shell-layer-the-squeeze)):
+  `set_shell` (also `SimTerrain::set_shell`, called by `World::step` every tick) makes
+  everything outside the safe sphere solid for `sdf` and meshes; `take_dirty_chunks()` adds the
+  chunks the shell's movement since its last call changed (near open space only),
+  `mesh_chunk` meshes those the shell reaches from the combined samples. Not logged, not in
+  `state_hash()`.
 - `state_hash()` = edit count and lasting edits (geometry, paint, the scorch part of surface
   edits) + SDF on a 4 u lattice + every painted or scorched cell (team, colour, scorch). It is
   independent of time (a late joiner's pruned log agrees with the full one), needs no full
@@ -150,7 +156,10 @@ itself from it with the same game data (on error it stays unchanged), keeps its 
 `Incoming::MatchTransition { epoch }`; hosts rebuild what they derived from the old level
 (meshes, bot navigation). Inputs are stamped with `epoch()`; snapshots of another epoch are
 counted (`stale_epoch_snapshots`) and ignored. A snapshot whose mode is ended freezes the
-prediction after the mode's `end_tick`.
+prediction after the mode's `end_tick`. In The Squeeze, `tick` sets the terrain's shell for the
+predicted tick from the mode state (`ls_game::mode::squeeze_shell`, exact: the schedule is a
+pure function of the replicated zones and the tick), so the walls the own ship collides with
+and the meshes match the server's.
 
 `frame` is `plan_ticks(due)` (advances the clock, returns how many ticks to run: `due` plus up to
 4 while catching up, 64 before sync, or one fewer when skipping) followed by `run_ticks(n, due,
@@ -295,6 +304,7 @@ rewound target positions for projectile tests would remove the displacement tric
 | `tests/netplay.rs::lag_compensation_hits_target_that_moved_after_the_shot` | 5-tick latency each way; the target starts climbing as the shot is fired. Without compensation the shot misses on the server, with it the rewound target takes a direct hit |
 | `tests/netplay.rs::slow_setup_client_syncs_within_a_few_round_trips` | A client that builds its session 240 ticks after the `Welcome` synchronizes within 3 round trips |
 | `tests/netplay.rs::a_join_costs_one_full_snapshot_and_starves_once` | M1 issue B regression: bots with 250-350 ms level generation on 1-tick links, joining, rejoining with reused wire ids and after a match restart (fresh room): exactly 1 full snapshot per join (at most `1 + (RTT - 1) / 2` on an 8-tick RTT), at most 1 starvation report and 1 prediction snap, and none of the three after the join settled; a few late inputs per client while joining (the catch-up) and none after the join settled |
+| `tests/squeeze.rs` | The Squeeze on generated levels: the client derives the server's shell from snapshots at every tick; walls close in every phase on 8 seeds, deterministically, never with a living ship inside the shell (release); shell remeshing within the frame budget on 8 seeds, printing per-chunk cost, dirty counts and backlog (release); the default rule set runs a full 8-player match in a headless `Room` to a result (release) |
 | `tests/transition.rs` | Three match transitions on the same connections (local, 3-tick and lossy reordering links): every session rebuilds in place, one full snapshot per transition on a local link (on longer links the ones sent before the first acknowledgement, as for any join), terrain equal to the server's, results and lobby state received, synced again, prediction converged; inputs and snapshots of another epoch are dropped on both ends |
 | `server::tests` | epoch and room code in `Welcome`, lobby requests queued, stale-epoch inputs dropped, `send`/`broadcast`, shot counts and state bytes in the inventory, mode state in snapshots, results once at an early end and to late joiners, join/leave/team balance, full room, late/duplicate/missing inputs (repeat last), no missing inputs before the first input, no snapshots before the first input, 30 Hz snapshots with deltas after acks, 250 ms history, `leave` drops queued packets before the id is reused, per-command rewind, unencodable `Welcome` rejects without a ghost ship, inventory messages only on change, far moving debris culled and sent without velocity, guided-projectile prediction and entity interpolation in a `ClientSession` |
 | `client::*::tests` | input redundancy, prediction without corrections against a delayed server, misprediction correction and smoothing, replay of inputs sent before the first snapshot, frozen prediction after the match end, interpolation, clock (including catching up from far behind, a snapshot backlog counting as one starvation) |

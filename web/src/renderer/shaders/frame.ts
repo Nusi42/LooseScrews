@@ -11,8 +11,11 @@
 /** Number of paint team colour slots, indexed by team id; ids >= TEAM_SLOTS (NO_TEAM = 255) are unpainted. */
 export const TEAM_SLOTS = 4;
 
-/** Size of the Frame uniform struct in f32 units (192 bytes). */
-export const FRAME_UNIFORM_FLOATS = 48;
+/** Size of the Frame uniform struct in f32 units (208 bytes). */
+export const FRAME_UNIFORM_FLOATS = 52;
+
+/** Mip of the environment cube the fog samples (16 texels per face: a smooth version of the sky; VQ7). */
+export const FOG_ENV_LOD = 5;
 
 /**
  * Terrain vertex attribute `team` (u32): bits 0-7 paint team (255 =
@@ -33,8 +36,12 @@ struct Frame {
   fog_color: vec4f,    // rgb fog colour (linear), w = exp2 fog density
   rock_color: vec4f,   // rgb unpainted surface colour (linear)
   team_colors: array<vec4f, ${TEAM_SLOTS}>, // linear
+  fog_height: vec4f,   // height fog: x density at z (world y), y falloff per u upwards; w = weight of the sky's haze (0 = flat fog_color)
 };
 @group(0) @binding(0) var<uniform> frame: Frame;
+// The world's environment cube (renderer/sky.ts, VQ7): the fog takes its colour from it.
+@group(0) @binding(6) var env_cube: texture_cube<f32>;
+@group(0) @binding(7) var env_samp: sampler;
 
 // Display (sRGB-encoded) colour to linear, exact piecewise curve.
 fn srgb_to_linear(c: vec3f) -> vec3f {
@@ -43,11 +50,23 @@ fn srgb_to_linear(c: vec3f) -> vec3f {
   return select(hi, lo, c <= vec3f(0.04045));
 }
 
+// exp2-squared distance fog plus an exponential height fog (integrated
+// along the view ray), coloured by the sky's haze in the view direction
+// (tinted toward the sun and the nebula) or by the flat fog colour.
 fn apply_fog(color: vec3f, world_pos: vec3f) -> vec3f {
-  let d = distance(world_pos, frame.camera_pos.xyz);
+  let v = world_pos - frame.camera_pos.xyz;
+  let d = length(v);
   let fd = frame.fog_color.w * d;
-  let fog = 1.0 - exp2(-fd * fd);
-  return mix(color, frame.fog_color.rgb, clamp(fog, 0.0, 1.0));
+  var trans = exp2(-fd * fd);
+  let h = frame.fog_height;
+  if (h.x > 0.0) {
+    let k = max(h.y * v.y, -60.0);
+    let ratio = select((1.0 - exp(-k)) / k, 1.0, abs(k) < 1e-3);
+    trans *= exp(-h.x * d * exp(-h.y * (frame.camera_pos.y - h.z)) * ratio);
+  }
+  let dir = v / max(d, 1e-4);
+  let haze = mix(frame.fog_color.rgb, textureSampleLevel(env_cube, env_samp, dir, ${FOG_ENV_LOD}.0).rgb, h.w);
+  return mix(color, haze, clamp(1.0 - trans, 0.0, 1.0));
 }
 `;
 

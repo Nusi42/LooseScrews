@@ -666,7 +666,10 @@ world generator (version 3) start with `LS0C` to `LS0F`.
 - **Sliders:** the code stores all seven sliders from the design (Enclosure, Density,
   Verticality, Gravity Chaos, Palette, Absurdity, Instability). In this build **Enclosure** (open
   sky to dense mine shafts) and **Density** (few to many pillars and floating rocks) shape the
-  world, and **Instability** sets how far a Tectonic Charge's cracks spread. Every level also has
+  world, **Instability** sets how far a Tectonic Charge's cracks spread, and **Palette** drains
+  the colour from the picture (100 is nearly black and white). The seed also picks the sky:
+  open worlds float in space with stars, a nebula, a sun and a planet. The edge of an open
+  world is invisible; a faint blue grid shows it when you fly close. Every level also has
   a network of caverns and tunnels that links both teams' ends. There's no screen to set sliders
   yet: random practice worlds and server worlds pick them for you.
 

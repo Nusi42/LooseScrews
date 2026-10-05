@@ -27,6 +27,7 @@ import { buildScene } from "../game/scene.ts";
 import type { PointLight } from "../renderer/lights.ts";
 import { parsePose, parseVisuals, type ProjectileState, type ShipState, type VisualDef } from "../game/views.ts";
 import type { GpuTimings } from "../renderer/gpuTimer.ts";
+import { atmosphereFor } from "../renderer/atmosphere.ts";
 import { GRADE_PRESETS } from "../renderer/post.ts";
 import { hashSeed } from "../renderer/rockTextures.ts";
 import { mulberry32 } from "../renderer/spriteAtlas.ts";
@@ -83,9 +84,18 @@ export function pickPose(
   fallback: Quat,
   probes: readonly Probe[],
   border: Probe | null = null,
+  sky: { sun: Vec3; planet: Vec3 | null } | null = null,
 ): { position: Vec3; orientation: Quat } {
   const up = { x: 0, y: 1, z: 0 };
   const look = (dir: Vec3): Quat => q.lookRotation(dir, Math.abs(dir.y) > 0.95 ? { x: 1, y: 0, z: 0 } : up);
+  if (scene.pose === "sun" || scene.pose === "planet") {
+    const target = scene.pose === "sun" ? sky?.sun : (sky?.planet ?? sky?.sun);
+    if (!target) return { position: origin, orientation: fallback };
+    // Put the target up and to the right of the centre (rule of thirds).
+    const side = v3.normalize(v3.cross(target, Math.abs(target.y) > 0.95 ? { x: 1, y: 0, z: 0 } : up));
+    const dir = v3.normalize(v3.add(target, v3.add(v3.scale(side, -0.32), { x: 0, y: -0.16, z: 0 })));
+    return { position: origin, orientation: look(dir) };
+  }
   if (scene.pose === "closeup" || scene.pose === "border") {
     const p = (scene.pose === "border" ? border : null) ?? pickCloseup(probes, 9, 5);
     if (!p || !p.hit) return { position: origin, orientation: fallback };
@@ -101,6 +111,50 @@ export function pickPose(
   }
   const p = scene.pose === "vista" ? pickVista(probes, 40, 150) : pickLongest(probes, PROBE_RANGE);
   return p ? { position: origin, orientation: look(p.dir) } : { position: origin, orientation: fallback };
+}
+
+/**
+ * Sun pose (VQ7): a camera position a little behind a rock as seen from the
+ * sun, so the rock covers the sun and its light shafts fan out past the
+ * rock's edges. Tries the probe hits nearest the origin first; null when no
+ * rock works (the caller falls back to looking at the sun from the origin).
+ */
+export function pickSunPose(
+  meshes: readonly RayMesh[],
+  probes: readonly Probe[],
+  origin: Vec3,
+  sun: Vec3,
+  room: { min: Vec3; max: Vec3 } | null,
+): { position: Vec3; orientation: Quat } | null {
+  const up = { x: 0, y: 1, z: 0 };
+  const side = v3.normalize(v3.cross(sun, Math.abs(sun.y) > 0.95 ? { x: 1, y: 0, z: 0 } : up));
+  const lift = v3.cross(side, sun);
+  const inside = (p: Vec3): boolean =>
+    !room || (p.x > room.min.x + 3 && p.y > room.min.y + 3 && p.z > room.min.z + 3 && p.x < room.max.x - 3 && p.y < room.max.y - 3 && p.z < room.max.z - 3);
+  const hits = probes
+    .filter((p) => p.hit && p.hit.t > 6 && p.hit.t < 90)
+    .map((p) => v3.addScaled(origin, p.dir, (p.hit?.t ?? 0) + 1.0))
+    .filter(inside);
+  for (const rock of hits.slice(0, 24)) {
+    for (const back of [18, 28]) {
+      // Slide sideways from behind the rock until the sun just clears its edge.
+      for (const dir of [side, lift, v3.scale(side, -1), v3.scale(lift, -1)]) {
+        for (let k = 0.5; k <= 6; k += 0.5) {
+          const cam = v3.addScaled(v3.addScaled(rock, sun, -back), dir, k);
+          if (!inside(cam)) break;
+          const hit = raycast(meshes, cam, sun, back + 6);
+          if (hit && hit.t < back - 8) break; // something else in the way
+          if (hit) continue; // still behind the rock (what lies beyond it does not matter)
+          // Not inside rock: open space around the camera.
+          const free = sphereDirections(12).every((d) => (raycast(meshes, cam, d, 1.5) ?? { t: 2 }).t > 1.2);
+          if (!free) break;
+          const look = v3.normalize(v3.add(sun, v3.add(v3.scale(side, -0.22), v3.scale(lift, -0.12))));
+          return { position: cam, orientation: q.lookRotation(look, Math.abs(look.y) > 0.95 ? { x: 1, y: 0, z: 0 } : up) };
+        }
+      }
+    }
+  }
+  return null;
 }
 
 function shapeId(visuals: readonly VisualDef[], shape: string): number {
@@ -296,6 +350,10 @@ export async function runGallery(canvas: HTMLCanvasElement, ui: HTMLElement, loc
     renderer.detailedTiming = true;
     renderer.timeOverride = scene.time;
     renderer.settings.terrainSeed = hashSeed(status.shareCode);
+    // The world's sky, fog and grade (VQ7) before its chunks arrive.
+    // `?atmosphere=off`: the pre-VQ7 look (flat fog, no sky, neutral grade) for before shots.
+    const atmosphere = atmosphereFor(status.shareCode, game.bounds());
+    if (new URLSearchParams(loc.search).get("atmosphere") !== "off") renderer.setAtmosphere(atmosphere);
     // `?grade=<preset>`: try a colour grade (post.ts GRADE_PRESETS).
     const grade = new URLSearchParams(loc.search).get("grade");
     if (grade && grade in GRADE_PRESETS) renderer.settings.post.grade = GRADE_PRESETS[grade as keyof typeof GRADE_PRESETS];
@@ -320,7 +378,8 @@ export async function runGallery(canvas: HTMLCanvasElement, ui: HTMLElement, loc
     });
     const probes = probeAround(near, origin, sphereDirections(PROBES), PROBE_RANGE);
     const border = scene.pose === "border" ? pickBorder(probes, near, origin) : null;
-    const pose = pickPose(scene, origin, view.orientation, probes, border);
+    const sunPose = scene.pose === "sun" ? pickSunPose(near, probes, origin, atmosphere.sunDirection, atmosphere.room) : null;
+    const pose = sunPose ?? pickPose(scene, origin, view.orientation, probes, border, { sun: atmosphere.sunDirection, planet: atmosphere.planet?.direction ?? null });
     view = { ...view, ...pose };
     status.camera = pose;
     if ((scene.decor ?? "none") !== "none") {

@@ -3,8 +3,9 @@
 // ...), one batch per mesh kind (primitives.ts MESH_BUILDERS) in an opaque
 // and a translucent pass, all lit and fogged by the shaders in shaders/.
 // The scene renders linear HDR radiance into an rgba16float target with
-// MSAA (quality.ts presets); particles.ts draws the GPU particles and dust
-// motes onto the resolved scene (VQ5); post.ts adds bloom, grades, tonemaps
+// MSAA (quality.ts presets); in open levels sky.ts draws the sky under the
+// resolved scene and adds light shafts (VQ7); particles.ts draws the GPU
+// particles and dust motes on top (VQ5); post.ts adds bloom, grades, tonemaps
 // (AgX) and encodes sRGB into the swapchain. Passes are timed with timestamp queries
 // when the device has them (gpuTimer.ts).
 //
@@ -15,6 +16,7 @@ import * as mat4 from "../math/mat4.ts";
 import * as q from "../math/quat.ts";
 import type { Quat } from "../math/quat.ts";
 import type { Vec3 } from "../math/vec3.ts";
+import { stripRoomWalls, type Atmosphere } from "./atmosphere.ts";
 import { CanvasSizer } from "./canvas.ts";
 import { Frustum } from "./frustum.ts";
 import { initGpu, type GpuContext } from "./gpu.ts";
@@ -28,6 +30,7 @@ import { TerrainMaterial } from "./rockTextures.ts";
 import { terrainVertexData } from "./terrainBlend.ts";
 import { QUALITY_PRESETS, QualityAuto, qualityFromSearch, type QualityLevel, type RenderQuality } from "./quality.ts";
 import { FRAME_UNIFORM_FLOATS, srgbToLinear, TEAM_SLOTS } from "./shaders/frame.ts";
+import { Sky } from "./sky.ts";
 import { INSTANCED_WGSL, TRANSLUCENT_WGSL } from "./shaders/objects.ts";
 import { TERRAIN_WGSL } from "./shaders/terrain.ts";
 
@@ -54,6 +57,10 @@ export interface RenderSettings {
   headlight: number;
   /** Per-world terrain look (strata tilt, rock pattern offsets; rockTextures.ts `hashSeed` of the share code); default 0. */
   terrainSeed?: number;
+  /** Height fog (VQ7): density per u at world height `baseY`, falling off by `falloff` per u upwards; density 0 = off. */
+  heightFog: { density: number; falloff: number; baseY: number };
+  /** 0..1 how much the fog takes the sky's haze colour (the environment cube) instead of `fogColor` (VQ7). */
+  skyHaze: number;
   /** Exposure, bloom, vignette, grain, AgX look and colour grade (post.ts). */
   post: PostSettings;
 }
@@ -70,6 +77,8 @@ export const DEFAULT_SETTINGS: RenderSettings = {
   ],
   sunDirection: { x: 0.35, y: 0.85, z: 0.4 },
   headlight: 0.9,
+  heightFog: { density: 0, falloff: 0.1, baseY: 0 },
+  skyHaze: 0,
   post: DEFAULT_POST,
 };
 
@@ -256,6 +265,7 @@ export class Renderer {
   private readonly post: PostChain;
   /** GPU particles and dust motes (VQ5); null when switched off (`particles: false`, `?vfx=off`). */
   readonly particles: ParticleSystem | null;
+  private readonly sky: Sky;
   private readonly chunks = new Map<string, GpuMesh>();
   private readonly meshes: Record<MeshKind, GpuMesh>;
   private readonly batches: Record<RenderPass, Map<MeshKind, InstanceBatch>> = {
@@ -326,6 +336,7 @@ export class Renderer {
       size: FRAME_UNIFORM_FLOATS * 4,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
+    this.sky = new Sky(device);
     const bindGroupLayout = device.createBindGroupLayout({
       label: "frame",
       entries: [
@@ -335,12 +346,20 @@ export class Renderer {
           buffer: { type: "uniform" },
         },
         ...lightBindLayoutEntries(),
+        // The sky's environment cube for the fog (VQ7, sky.ts; frame.ts ENV_BINDING).
+        { binding: 6, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, texture: { viewDimension: "cube" } },
+        { binding: 7, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, sampler: { type: "filtering" } },
       ],
     });
     this.lightSystem = new LightSystem(device);
     this.bindGroup = device.createBindGroup({
       layout: bindGroupLayout,
-      entries: [{ binding: 0, resource: { buffer: this.frameBuffer } }, ...this.lightSystem.bindGroupEntries()],
+      entries: [
+        { binding: 0, resource: { buffer: this.frameBuffer } },
+        ...this.lightSystem.bindGroupEntries(),
+        { binding: 6, resource: this.sky.envView },
+        { binding: 7, resource: this.sky.envSampler },
+      ],
     });
     this.pipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [bindGroupLayout] });
     this.terrainMaterial = new TerrainMaterial(device);
@@ -464,11 +483,35 @@ export class Renderer {
     return this.sizer.aspect;
   }
 
+  /**
+   * The world's atmosphere (atmosphere.ts `atmosphereFor`; VQ7): sky, sun,
+   * fog and colour grade. Call it before the world's chunks arrive: in open
+   * levels `setChunk` hides the level box's sealing walls. Null restores the
+   * defaults (no sky, flat fog, neutral grade).
+   */
+  setAtmosphere(a: Atmosphere | null): void {
+    this.sky.setAtmosphere(a);
+    const s = this.settings;
+    if (!a) {
+      this.settings = { ...s, fogColor: DEFAULT_SETTINGS.fogColor, fogDensity: DEFAULT_SETTINGS.fogDensity, sunDirection: DEFAULT_SETTINGS.sunDirection, heightFog: DEFAULT_SETTINGS.heightFog, skyHaze: 0, post: { ...s.post, grade: DEFAULT_POST.grade } };
+      return;
+    }
+    this.settings = { ...s, fogColor: a.fogColor, fogDensity: a.fogDensity, sunDirection: a.sunDirection, heightFog: a.heightFog, skyHaze: 1, post: { ...s.post, grade: a.grade } };
+  }
+
+  /** The active atmosphere, or null. */
+  get atmosphere(): Atmosphere | null {
+    return this.sky.atmosphere;
+  }
+
   /** Adds or replaces the terrain chunk `key`; `null` or an empty mesh removes it. */
   setChunk(key: string, mesh: MeshData | null): void {
-    this.lightSystem.setChunk(key, mesh);
     this.chunks.get(key)?.destroy();
     this.chunks.delete(key);
+    // Open levels: the sky shows where the level box's walls would be.
+    const room = this.sky.visible ? this.sky.atmosphere?.room : null;
+    if (mesh && room) mesh = stripRoomWalls(mesh, room);
+    this.lightSystem.setChunk(key, mesh);
     if (mesh && mesh.indices.length > 0) {
       this.chunks.set(key, new GpuMesh(this.device, mesh, `chunk ${key}`, terrainVertexData(mesh)));
     }
@@ -558,11 +601,14 @@ export class Renderer {
     const sceneView = this.post.sceneView;
     const colorView = samples > 1 ? this.msaaTexture!.createView() : sceneView;
     const depthView = this.depthTexture!.createView();
+    // Open levels clear to transparent black: the sky is drawn under the scene after the resolve (sky.ts).
+    const sky = this.sky.visible;
+    const clearValue = sky ? { r: 0, g: 0, b: 0, a: 0 } : { r: fog[0] ?? 0, g: fog[1] ?? 0, b: fog[2] ?? 0, a: 1 };
     const beginPass = (label: string, first: boolean, last: boolean): GPURenderPassEncoder => {
       const timestampWrites = timer?.pass(label);
       const color: GPURenderPassColorAttachment = {
         view: colorView,
-        clearValue: { r: fog[0] ?? 0, g: fog[1] ?? 0, b: fog[2] ?? 0, a: 1 },
+        clearValue,
         loadOp: first ? "clear" : "load",
         storeOp: samples > 1 && last ? "discard" : "store",
       };
@@ -617,6 +663,9 @@ export class Renderer {
     }
     pass.end();
 
+    if (sky) this.sky.composite(encoder, this.post.sceneHdr, camera, time, timer);
+    if (quality.shafts) this.sky.encodeShafts(encoder, this.post.sceneHdr, viewProj, timer);
+    // Particles after the sky and shafts: smoke and glows draw over the finished backdrop.
     this.particles?.encode(encoder, sceneView, this.depthTexture!, camera, { width: this.canvas.width, height: this.canvas.height }, timer);
     this.post.encode(encoder, this.context.getCurrentTexture().createView(), this.settings.post, time, timer);
     timer?.endFrame(encoder);
@@ -635,6 +684,7 @@ export class Renderer {
     this.terrainMaterial.destroy();
     this.lightSystem.destroy();
     this.particles?.destroy();
+    this.sky.destroy();
     this.timer?.destroy();
     this.frameBuffer.destroy();
     this.sizer.dispose();
@@ -701,6 +751,8 @@ export class Renderer {
       const c = s.teamColors[i] ?? s.rockColor;
       d.set([...lin(c), 1], 32 + i * 4);
     }
+    const h = s.heightFog;
+    d.set([h.density, h.falloff, h.baseY, s.skyHaze], 48);
     this.device.queue.writeBuffer(this.frameBuffer, 0, d);
   }
 }

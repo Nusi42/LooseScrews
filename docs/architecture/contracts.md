@@ -19,7 +19,7 @@ depth: [determinism.md](determinism.md).
 | Time | `Tick(u64)` at `TICK_HZ = 60`; `DT = 1.0 / 60.0` (`f32`, bits `0x3c888889`) |
 | Durations from data | seconds in RON, converted with `Tick::ticks_for_secs` |
 | Level box | `ls_worldgen::Generator::bounds()`: `[0,256] x [0,128] x [0,256]` u at the default size, min corner at the origin (not centred); sealed by 2 u walls, outside counts as solid |
-| Connection network | Generator version 2: every level carves 8 caverns (4 x 2 grid; the outer columns in the team spawn zones) and 9 + 3 tunnels of radius 4 u linking them, applied last as `max(terrain, carve)` (`ls_worldgen::network`); tunnel centre lines keep at least 3 u of clearance. `ls_game::setup` only places spawns and pickups with a straight 1.5 u (`CONNECT_MARGIN`) link to it |
+| Connection network | Since generator version 2 (unchanged in 3): every level carves 8 caverns (4 x 2 grid; the outer columns in the team spawn zones) and 9 + 3 tunnels of radius 4 u linking them, applied last as `max(terrain, carve)` (`ls_worldgen::network`); tunnel centre lines keep at least 3 u of clearance. `ls_game::setup` only places spawns and pickups with a straight 1.5 u (`CONNECT_MARGIN`) link to it |
 
 ## Determinism
 
@@ -324,7 +324,14 @@ sure it is the same data); details in [arsenal-framework.md](arsenal-framework.m
 | Entity wire id | `entity id & 0x7fff`, unique among live entities (the allocator skips ids in use) |
 | `ReplicatedKind` | Entity `kind` byte: Debris 0, WeaponPickup 1, UpgradePickup 2, GadgetPickup 3, ScrapPile 4, Wreck 5, Decoy 6, Ghost 7, DustCloud 8, Marker 9 |
 | `CueKind` | Cue `kind` byte (`ls_sim::behavior::CueKind`) |
-| Data hash | `ls_sim::data_hash()`: FNV-1a over all embedded `data/` files sorted by path (path, 0, length, bytes without CR) |
+| Data hash | `ls_sim::data_hash()`: FNV-1a over all embedded `data/` files sorted by path (path, 0, length, bytes without CR), plus `SIM_BEHAVIOR_VERSION` |
+| `ModeKind` index | Paint the Void 0, Team Brawl 1, The Squeeze 2, Heist 3, Hot Reactor 4, Last Color Standing 5 (append only): rule set code mode index, wire mode kind, `LobbyState::next_mode`; `ModeKind::id` is the module and directory mode id (`the_squeeze`; its rule set file is `squeeze.ron`) |
+| `Mutator` index | Instagib 0 (`Mutator::ALL` order, append only; rule set codes) |
+| Side ids | Teams 0-3 (`MAX_TEAMS` 4); in free-for-all every ship its own side 0-253 (`MAX_FFA_SIDE`) in `ShipState::team`, `NetPlayer::team`, `NetModePlayer::side`, `ResultRow::side`, `Welcome::team`; 255 = no side (`mode::NO_SIDE`, `ls_net::mode::NONE`); ship flags keep only the 2 low bits |
+| Objective kinds | `mode::objective_kind`: `SAFE_ZONE` 0, `NEXT_ZONE` 1, `CORE` 2, `EXTRACTION` 3, `REACTOR` 4, `CUSTOM` 255; at most 8 per view (`MAX_OBJECTIVES`) |
+| Player mode flags | `mode::player_flags`: `ELIMINATED` 1, `SPECTATOR` 2, `CARRIER` 4 (replicated; `move_limits` reads them, so the predictor applies the carrier's limits) |
+| View flags | `mode::view_flags` (u16): `INSTAGIB` 1, `MONOCHROME` 2, `PAINT_SCORES` 4, `LIVES` 8, `METER` 16 |
+| Room and party codes | `R-` / `P-` + 6 Crockford base32 symbols; parsing ignores case and a missing prefix and reads O as 0, I/L as 1 (`ls-server` `rooms.rs`, `party.rs`) |
 
 ## Network quantization (`ls-net`)
 

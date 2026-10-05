@@ -108,11 +108,17 @@ with `REPLAY_GOLDEN_HASH`:
 cargo test -p ls-sim replay_golden_hash
 ```
 
-Modes add their own replay goldens next to their module (wave B): Heist's
-`modes::heist::tests::heist_replay_golden_hash` (`HEIST_REPLAY_GOLDEN_HASH`) runs 8 scripted
-bots for 60 s on a box room with a vein (mining with rockets, the collapse, carrying,
-deliveries) and checks the same hash on native and wasm32; the test prints the new value
-after a deliberate change.
+Each mode also has a tailored replay golden next to its module (M3 wave B), a 60 s scripted
+match that exercises its rules, checked on native and wasm32 (each test prints the new value
+after a deliberate change):
+
+| Rule set | Constant | Test module | Value |
+| --- | --- | --- | --- |
+| Team Brawl, Instagib Brawl, duel | `TEAM_BRAWL_REPLAY_GOLDEN`, `INSTAGIB_BRAWL_REPLAY_GOLDEN`, `DUEL_REPLAY_GOLDEN` | `modes::team_brawl::tests` (8 ships, kill target 255) | `0x4324_af1e_2f87_4773`, `0x61ed_c96b_b3c7_4e0a`, `0xbf16_09a8_44fe_9b5c` |
+| The Squeeze | `SQUEEZE_REPLAY_GOLDEN_HASH` | `modes::the_squeeze::tests` (4 ships, all five phases closing) | `0xb7d4_e8da_9cd6_639a` |
+| Heist | `HEIST_REPLAY_GOLDEN_HASH` | `modes::heist::tests` (8 bots in a box room with a vein: mining, collapse, carrying, deliveries) | `0x9aa1_4ec8_8a94_291b` |
+| Hot Reactor | `HOT_REACTOR_REPLAY_GOLDEN_HASH` | `modes::hot_reactor::tests` | `0xa94b_6f50_7b53_d4f3` |
+| Last Color Standing | `LCS_REPLAY_GOLDEN_HASH` | `modes::last_color_standing::tests` (stalemate shortened to 30 s) | `0x7bcd_a0fc_22ef_666a` |
 
 When a behaviour change re-blesses `REPLAY_GOLDEN_HASH` without a `data/` change, also bump
 `ls_sim::SIM_BEHAVIOR_VERSION` (see [below](#data-hash-and-behaviour-version)).
@@ -144,6 +150,19 @@ seed, then re-bless.
 
 Sibling tests prove the replay is repeatable, that a cloned world continues identically, and
 that one changed input diverges the hash from that tick on.
+
+### Milestone 3 record
+
+What M3 changed deliberately (plan [§4](../milestone-3-plan.md#4-determinism-and-handshake-impacts)):
+
+| Item | Change | Why |
+| --- | --- | --- |
+| `SIM_BEHAVIOR_VERSION` | 4 -> 5 (wave A) | mode framework, per-match teams, Tectonic cracks spread over 6 ticks; later waves changed no existing behaviour (new rule set files change the data hash anyway) |
+| `REPLAY_GOLDEN_HASH` | unchanged (`0x8321_c0ab_902b_8ee5`) | the scripted replay fires no Tectonic Charge and plays two-team Paint the Void, which runs bit-identically through the framework; the crack change is pinned by `tectonic_charge::tests::cracks_spread_over_six_ticks_and_match_the_m2_set` |
+| `GENERATOR_VERSION` | 2 -> 3 (B3) | the Heist site (core vein chamber, extraction caverns) in every level; worldgen goldens re-blessed, share codes re-encoded (`LS0C`-`LS0F`), a seventh (Heist) world in the golden list |
+| Worldgen mesh goldens | re-blessed twice on version 3 without a version bump (VQ3a mesher, VQP thin bores) | mesher changes only: `sdf` and share-code geometry unchanged |
+| Per-mode replays | new (C3): `ls_sim::golden` and `crates/ls-sim/tests/fixtures/mode_replays.txt`, plus the module goldens above | one replay per built-in rule set on native, wasm32 and the shipped WASM package |
+| The Squeeze | no generator change | the walls are a runtime shell layer (`ShelledTerrain`, `GameTerrain::set_shell`), outside worldgen goldens and `GameTerrain::state_hash` |
 
 ### Other pinned values
 

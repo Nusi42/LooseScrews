@@ -275,18 +275,23 @@ before handing in a change. It honours `CARGO_TARGET_DIR`. Note that it rebuilds
 
 ### Generated player reference
 
-`userDocs/reference/{weapons,ships,gadgets}.md` are generated from `data/weapons`,
-`data/ships`, `data/gadgets` and the default rule set by `tools/gen-weapon-docs.mjs` (its own
-RON reader, no build needed). Never edit them by hand:
+`userDocs/reference/{weapons,ships,gadgets,modes}.md` are generated from `data/weapons`,
+`data/ships`, `data/gadgets` and `data/rulesets` (plus the mode list of the generated
+`web/src/rules/catalog.ts` for the team counts each mode allows) by `tools/gen-weapon-docs.mjs`
+(its own RON reader, no build needed). Never edit them by hand:
 
 ```sh
-node tools/gen-weapon-docs.mjs           # rewrite the three pages after a data change
+node tools/gen-weapon-docs.mjs           # rewrite the four pages after a data change
 node tools/gen-weapon-docs.mjs --check   # CI: exit 1 if a page is missing or stale
 ```
 
 Descriptions a table cell needs (the notes under each weapon family, parameter units) live in
-the generator; what a weapon does in prose belongs in the
-[player manual](../userDocs/player-manual.md#weapons), which links to the tables.
+the generator, and so do the mode texts of `modes.md` (`MODES`, and `MODE_FIELDS`: one meaning
+per mode setting; `tools/test/gen-weapon-docs.test.mjs` fails when a new `ModeRules` field has
+none); what a weapon or a mode does in prose belongs in the
+[player manual](../userDocs/player-manual.md#weapons), which links to the tables. The
+pre-commit and post-edit checks run `--check` after edits in those `data/` folders, the
+catalog or the generator.
 
 ## 6. End-to-end run
 

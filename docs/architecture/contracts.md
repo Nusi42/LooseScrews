@@ -278,11 +278,17 @@ hands the client a `MeshData` (`web/src/renderer/mesh.ts`) by flattening only:
 `teams` as the `Uint8Array` field `team` with values unchanged; `states` travel as the
 optional `surface` field, `materials` and `colors` through `ChunkMesh.materials()` and
 `ChunkMesh.paintColors()` (unknown colour ids become plain), occlusion through `ChunkMesh.ao()`
-as the optional `MeshData.ao` (`Uint8Array`, one byte per vertex; the terrain shader multiplies
-its ambient light by it, VQ3b). The web client packs the first ones into
+as the optional `MeshData.ao` (`Uint8Array`, one byte per vertex; the terrain shader darkens its
+light by it, VQ3b). The web client packs the first ones into
 one `u32` terrain vertex attribute (`web/src/renderer/shaders/frame.ts`): bits 0-7 paint team (255
 unpainted), bits 8-15 surface states, bits 16-23 material + 1 (0 unknown), bits 24-31 paint
-colour; without the optional layers the packing is the M1 one. Coloured paint draws a
+colour; without the optional layers the packing is the M1 one. For terrain chunks the client
+also builds two `unorm8x4` per vertex (`web/src/renderer/terrainBlend.ts`): AO, weak rock, hard
+rock and paint coverage, then hot, charged, glowing and scorched, as one-hot weights blurred over
+the mesh edges near borders (vertices within 1.5 u of a chunk face keep their own values, so
+both chunks agree on shared vertices), and dilates the paint team and colour onto unpainted
+vertices next to paint; the shader sharpens the interpolated weights into organic borders
+(renderer.md "Terrain"). Coloured paint draws a
 per-effect pattern (red stripes, blue waves, yellow dots) in a dark shade of the team colour,
 so neither the effect nor the owner relies on hue alone. The client renders with back-face
 culling and `frontFace: "ccw"`.

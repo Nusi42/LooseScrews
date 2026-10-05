@@ -2,6 +2,8 @@
 // §3, VQ8). Pure data and maths: imported by the in-page gallery
 // (gallery.ts) and by tools/browser-smoke/gallery.mjs (Node strips the types).
 
+import type { SceneDecor } from "./decor.ts";
+
 /** World of a scene: the share code is `randomShareCode(seed, 0, enclosure, density)`. */
 export interface GalleryWorld {
   seed: number;
@@ -13,9 +15,10 @@ export interface GalleryWorld {
  * How the camera pose is picked from the spawn point by CPU ray casts
  * against the chunk meshes (raycast.ts): `closeup` a rock wall about 4 u
  * ahead, `tunnel` the longest near-horizontal view, `vista` a far wall or
- * island 40-150 u away.
+ * island 40-150 u away, `border` a close-up of a rock material border
+ * (decor.ts pickBorder; falls back to `closeup`).
  */
-export type PoseKind = "closeup" | "tunnel" | "vista";
+export type PoseKind = "closeup" | "tunnel" | "vista" | "border";
 
 /** What is placed in front of the camera besides terrain. */
 export type SceneContent = "none" | "lineup" | "fight";
@@ -28,6 +31,8 @@ export interface GalleryScene {
   world: GalleryWorld;
   pose: PoseKind;
   content: SceneContent;
+  /** Paint or surface states put on the rock the camera looks at (decor.ts); default none. */
+  decor?: SceneDecor;
   /** Shader and effect time (s) the frame is rendered at. */
   time: number;
 }
@@ -53,6 +58,27 @@ export const SCENES: readonly GalleryScene[] = [
     world: { seed: 7, enclosure: 100, density: 30 },
     pose: "tunnel",
     content: "none",
+    time: 1.0,
+  },
+  { id: "material-border", title: "Rock material border", covers: "textures, polygon switches", world: CAVES, pose: "border", content: "none", time: 1.0 },
+  {
+    id: "paint-edge",
+    title: "Paint edges (plain, stripes, dots)",
+    covers: "polygon switches",
+    world: CAVES,
+    pose: "closeup",
+    content: "none",
+    decor: "paint",
+    time: 1.0,
+  },
+  {
+    id: "surface-states",
+    title: "Hot, charged, glowing and scorched rock",
+    covers: "polygon switches, effects",
+    world: CAVES,
+    pose: "closeup",
+    content: "none",
+    decor: "states",
     time: 1.0,
   },
   { id: "ship-lineup", title: "The four hulls", covers: "ships", world: CAVES, pose: "tunnel", content: "lineup", time: 1.0 },

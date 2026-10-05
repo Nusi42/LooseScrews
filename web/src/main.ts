@@ -31,6 +31,7 @@
 import { InputController } from "./input/input.ts";
 import { GpuUnavailableError } from "./renderer/gpu.ts";
 import { DEFAULT_SETTINGS, Renderer, type FrameStats } from "./renderer/renderer.ts";
+import { hashSeed } from "./renderer/rockTextures.ts";
 import { boundsCenter, ShipCamera } from "./game/camera.ts";
 import { ChunkLoader, LOADING_BUDGET, PLAY_BUDGET, type ChunkStats } from "./game/chunks.ts";
 import { DEFAULT_CONTROL_SETTINGS } from "./game/controls.ts";
@@ -452,6 +453,7 @@ function runGame(
       const fog = dustFog(DEFAULT_SETTINGS, dustDensityAt(view.position, r.entities, session.visuals));
       renderer.settings.fogDensity = fog.fogDensity;
       renderer.settings.fogColor = fog.fogColor;
+      renderer.settings.terrainSeed = hashSeed(session.game.shareCode); // per-world rock look (VQ3b)
       // Per-pass GPU timing (separate terrain/objects passes) while the overlay shows.
       renderer.detailedTiming = overlay.visible;
       frameStats = renderer.render(view);

@@ -26,11 +26,13 @@ import { buildScene } from "../game/scene.ts";
 import { parsePose, parseVisuals, type ProjectileState, type ShipState, type VisualDef } from "../game/views.ts";
 import type { GpuTimings } from "../renderer/gpuTimer.ts";
 import { GRADE_PRESETS } from "../renderer/post.ts";
+import { hashSeed } from "../renderer/rockTextures.ts";
 import { Renderer, type CameraView, type SceneInstances } from "../renderer/renderer.ts";
 import { CONTROLS_LEN, type GameHandle } from "../wasm/api.ts";
 import { loadWasm } from "../wasm/load.ts";
 import { pickCloseup, pickLongest, pickVista, probeAround, raycast, rayMesh, sphereDirections, type Probe, type RayMesh } from "./raycast.ts";
 import { sceneById, type GalleryScene } from "./scenes.ts";
+import { applyDecor, decorSpots, pickBorder, type DecorSpot } from "./decor.ts";
 
 /** Frames rendered before the page reports ready. */
 const WARMUP_FRAMES = 20;
@@ -72,15 +74,18 @@ export function pickPose(
   origin: Vec3,
   fallback: Quat,
   probes: readonly Probe[],
+  border: Probe | null = null,
 ): { position: Vec3; orientation: Quat } {
   const up = { x: 0, y: 1, z: 0 };
   const look = (dir: Vec3): Quat => q.lookRotation(dir, Math.abs(dir.y) > 0.95 ? { x: 1, y: 0, z: 0 } : up);
-  if (scene.pose === "closeup") {
-    const p = pickCloseup(probes, 9, 5);
+  if (scene.pose === "closeup" || scene.pose === "border") {
+    const p = (scene.pose === "border" ? border : null) ?? pickCloseup(probes, 9, 5);
     if (!p || !p.hit) return { position: origin, orientation: fallback };
-    // Stand 3.5 u off the wall and look at it obliquely (25° to the side),
-    // so the relief and the material borders read.
-    const position = v3.addScaled(origin, p.dir, p.hit.t - 3.5);
+    // Stand 3.5 u off the wall (4.5 u for a border or decor, so both sides
+    // show) and look at it obliquely (25° to the side), so the relief and
+    // the material borders read.
+    const off = scene.pose === "border" || (scene.decor ?? "none") !== "none" ? 4.5 : 3.5;
+    const position = v3.addScaled(origin, p.dir, Math.max(1, p.hit.t - off));
     const side = v3.normalize(v3.cross(p.dir, Math.abs(p.dir.y) > 0.95 ? { x: 1, y: 0, z: 0 } : up));
     const a = (25 * Math.PI) / 180;
     const dir = v3.normalize(v3.add(v3.scale(p.dir, Math.cos(a)), v3.scale(side, Math.sin(a))));
@@ -228,14 +233,17 @@ export async function runGallery(canvas: HTMLCanvasElement, ui: HTMLElement, loc
     const renderer = await Renderer.create(canvas);
     renderer.detailedTiming = true;
     renderer.timeOverride = scene.time;
+    renderer.settings.terrainSeed = hashSeed(status.shareCode);
     // `?grade=<preset>`: try a colour grade (post.ts GRADE_PRESETS).
     const grade = new URLSearchParams(loc.search).get("grade");
     if (grade && grade in GRADE_PRESETS) renderer.settings.post.grade = GRADE_PRESETS[grade as keyof typeof GRADE_PRESETS];
     status.canTime = renderer.canTime;
 
     const rayMeshes = new Map<string, RayMesh>();
+    // Paint and surface states of the scene's decor (set once the pose is known).
+    let spots: DecorSpot[] = [];
     const loader = new ChunkLoader((key, mesh) => {
-      renderer.setChunk(key, mesh);
+      renderer.setChunk(key, mesh ? applyDecor(mesh, spots) : mesh);
       if (mesh && mesh.indices.length > 0) rayMeshes.set(key, rayMesh(mesh));
       else rayMeshes.delete(key);
     });
@@ -249,9 +257,19 @@ export async function runGallery(canvas: HTMLCanvasElement, ui: HTMLElement, loc
       return Math.hypot(dx, dy, dz) < PROBE_RANGE;
     });
     const probes = probeAround(near, origin, sphereDirections(PROBES), PROBE_RANGE);
-    const pose = pickPose(scene, origin, view.orientation, probes);
+    const border = scene.pose === "border" ? pickBorder(probes, near, origin) : null;
+    const pose = pickPose(scene, origin, view.orientation, probes, border);
     view = { ...view, ...pose };
     status.camera = pose;
+    if ((scene.decor ?? "none") !== "none") {
+      // Decor goes where the camera looks.
+      const ahead = raycast(rayMeshes.values(), pose.position, q.forward(pose.orientation), 30);
+      if (ahead) {
+        const target = v3.addScaled(pose.position, q.forward(pose.orientation), ahead.t);
+        spots = decorSpots(scene.decor ?? "none", target, ahead.normal);
+        for (const [key, rm] of rayMeshes) renderer.setChunk(key, applyDecor(rm.mesh, spots));
+      }
+    }
     await loadAround(loader, game, renderer, view, status);
 
     const visuals = parseVisuals(game.visuals(), api.visualShapeNames());

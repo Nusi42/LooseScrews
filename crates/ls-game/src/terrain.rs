@@ -1142,6 +1142,45 @@ mod tests {
         }
     }
 
+    /// Normals and occlusion read the field up to the sample grid's halo
+    /// (and the occlusion probes) away from a vertex, so a wall moving next
+    /// to a chunk must remesh it too: after every 0.5 u step, remeshing the
+    /// dirty chunks gives exactly the meshes of meshing everything (positions,
+    /// normals and occlusion), on several seeds and wall paths.
+    #[test]
+    fn shell_steps_keep_normals_and_occlusion_current() {
+        for seed in [3u64, 11, 29] {
+            let mut t = small_terrain(seed);
+            let coords = t.chunk_coords();
+            let mut meshes: BTreeMap<ChunkCoord, Mesh> =
+                coords.iter().map(|&k| (k, t.mesh_chunk(k))).collect();
+            let c0 = t.bounds().center() + Vec3::new(2.0, -3.0, 1.5);
+            let mut radius = 34.0;
+            let mut step = 0;
+            while radius > 8.0 {
+                let f = step as f32 * 0.37;
+                t.set_shell(Some(ShellSphere {
+                    center: c0 + Vec3::new(f.sin() * 2.0, f.cos() * 1.5, f * 0.2),
+                    radius,
+                }));
+                for k in t.take_dirty_chunks() {
+                    meshes.insert(k, t.mesh_chunk(k));
+                }
+                if step % 6 == 0 {
+                    for &k in &coords {
+                        assert_eq!(
+                            meshes[&k],
+                            t.mesh_chunk(k),
+                            "seed {seed} radius {radius} {k:?}"
+                        );
+                    }
+                }
+                radius -= 0.5;
+                step += 1;
+            }
+        }
+    }
+
     #[test]
     fn paint_coverage_through_sim_terrain() {
         let mut t = small_terrain(7);

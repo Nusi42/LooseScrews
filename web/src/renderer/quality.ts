@@ -14,6 +14,8 @@ export interface RenderQuality {
   msaa: 1 | 4;
   /** Bloom mip levels (0 = no bloom). */
   bloomMips: number;
+  /** Terrain detail (VQ3b): macro, grain and vein samples on top of the rock layer (9 vs 3 texture samples). */
+  terrainDetail: boolean;
 }
 
 /**
@@ -23,9 +25,9 @@ export interface RenderQuality {
  * is core WebGPU, so every adapter runs the same shaders).
  */
 export const QUALITY_PRESETS: Readonly<Record<QualityLevel, RenderQuality>> = {
-  high: { level: "high", msaa: 4, bloomMips: 6 },
-  medium: { level: "medium", msaa: 4, bloomMips: 4 },
-  low: { level: "low", msaa: 1, bloomMips: 0 },
+  high: { level: "high", msaa: 4, bloomMips: 6, terrainDetail: true },
+  medium: { level: "medium", msaa: 4, bloomMips: 4, terrainDetail: true },
+  low: { level: "low", msaa: 1, bloomMips: 0, terrainDetail: false },
 };
 
 /** GPU frame budgets (ms) of "high" and "medium" (plan §3). */

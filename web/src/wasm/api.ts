@@ -8,6 +8,7 @@
 //   remoteShips(): SHIP_STRIDE floats each  [id, team, alive, boosting, px, py, pz, qx, qy, qz, qw,
 //                                            shipType, radius, gadgetActive]
 //   projectiles(): PROJECTILE_STRIDE floats [kind, owner, px, py, pz, vx, vy, vz, visual, state]
+//     (state: the proj_flags low byte, plus 256 for a rubber chicken, M4 C1)
 //   entities():    ENTITY_STRIDE floats     [id, kind, visual, owner, team, px, py, pz, vx, vy, vz,
 //                                            qx, qy, qz, qw, state0, state1, state2, state3, radius (0 = unknown)]
 //   visuals():     VISUAL_STRIDE floats per visual id [shapeIndex (into visualShapeNames()), r, g, b (0..1), scale]
@@ -204,6 +205,8 @@ export interface GameHandle {
   wells?(): Float32Array;
   /** The level's up (unit vector; +Y unless Bored level turned it). */
   up?(): Float32Array;
+  /** What the running comedy event does at `tick` (M4 C1, ls-wasm `events::event_fx_json`); absent in older cores. */
+  eventFx?(tick: number): string;
   /** Monochrome level (Palette 80+ or Last Color Standing): pigment rules and the ink look. */
   readonly monochrome?: boolean;
   /** Radiation dose rate (hull per second) at a point; 0 on classic levels. */

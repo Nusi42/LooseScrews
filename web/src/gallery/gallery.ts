@@ -41,6 +41,7 @@ import { pickCloseup, pickCorner, pickLongest, pickVista, probeAround, raycast, 
 import { FIT_TUNNEL_RADIUS, needsWorldCode, sceneById, worldSliders, type GalleryScene } from "./scenes.ts";
 import { levelPose } from "./levelScenes.ts";
 import { prepareWorldScene, runWorldScene, type WorldPrep } from "./worldScenes.ts";
+import { runEventScene } from "./eventScenesRun.ts";
 import { applyDecor, decorSpots, pickBorder, type DecorSpot } from "./decor.ts";
 import { explosionAt, simulateVfx } from "./vfxScenes.ts";
 import { pickShadePose, pickSunWallPose } from "./shadePose.ts";
@@ -614,6 +615,27 @@ export async function runGallery(canvas: HTMLCanvasElement, ui: HTMLElement, loc
         center: boundsCenter(game.bounds()),
         lights,
       });
+    } else if (scene.content === "event" && scene.eventScene) {
+      // M4 C1: a comedy event's frame (eventScenesRun.ts); the side view and the hiccup bump move the camera.
+      const ev = runEventScene({
+        spec: scene.eventScene,
+        renderer,
+        game,
+        pose,
+        time: scene.time,
+        visuals,
+        particles,
+        ui,
+        canvas,
+        ray: (o, d, max) => raycast(rayMeshes.values(), o, d, max)?.t ?? -1,
+        enabled: new URLSearchParams(loc.search).get("eventfx") !== "off",
+        center: boundsCenter(game.bounds()),
+        lights,
+        wallAhead,
+        view,
+      });
+      status.particles = ev.particles;
+      if (ev.view) view = ev.view;
     } else {
       const content = sceneContent(scene, pose, visuals, impact, lights, particles !== null && scene.content !== "lights", wallAhead);
       // Pigmented hulls (M4 A7 keep mask): their colour survives the monochrome ink.
@@ -623,7 +645,7 @@ export async function runGallery(canvas: HTMLCanvasElement, ui: HTMLElement, loc
       }
       renderer.setScene(content);
     }
-    if (particles && scene.content !== "mode" && scene.content !== "world") {
+    if (particles && scene.content !== "mode" && scene.content !== "world" && scene.content !== "event") {
       // VQ5: the particles of the scene's synthetic history up to its time (vfxScenes.ts).
       // Scenes whose effects come only from VQ5 also take its effect lights (VQ6
       // pulses); the fight and lights scenes emit theirs in sceneContent.

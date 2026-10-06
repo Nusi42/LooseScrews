@@ -2,6 +2,8 @@
 // composite (exposure, colour grade, bloom, vignette, AgX tonemap, sRGB
 // encode, dither, optional film grain). Driven by renderer/post.ts.
 
+import { PIXEL_WGSL } from "../pixelPost.ts";
+
 /** Fullscreen triangle; uv (0,0) is the top-left texel. */
 const FULLSCREEN_VS = /* wgsl */ `
 struct PostVsOut {
@@ -109,7 +111,7 @@ fn fs_main(in: PostVsOut) -> @location(0) vec4f {
 export const KEEP_ALPHA = 0.0625;
 
 /** Floats in the composite uniform (struct Post below). */
-export const POST_UNIFORM_FLOATS = 36;
+export const POST_UNIFORM_FLOATS = 40;
 
 /**
  * Final composite into the swapchain: exposure, colour grade (ASC CDL slope /
@@ -135,6 +137,7 @@ struct Post {
   ink_look: vec4f,        // ink (M4 A7): x toon, y paper grain, z monochrome ink, w contrast
   ink_paper: vec4f,       // rgb paper (linear), w = 1 when the ink look is on
   ink_color: vec4f,       // rgb ink (linear), w = 1 when the ink lines are valid this frame
+  pixel: vec4f,           // Wrong genre's 8-bit look (M4 C1, pixelPost.ts): x cell (px), y palette, z dither, w = 1 when on
 };
 @group(0) @binding(0) var scene: texture_2d<f32>;
 @group(0) @binding(1) var bloom: texture_2d<f32>;
@@ -143,6 +146,7 @@ struct Post {
 @group(0) @binding(4) var ink_lines: texture_2d<f32>;
 
 const LUMA = vec3f(0.2126, 0.7152, 0.0722);
+${PIXEL_WGSL}
 
 fn agx_contrast(x: vec3f) -> vec3f {
   let x2 = x * x;
@@ -271,7 +275,11 @@ fn grade(c: vec3f, keep_px: f32) -> vec3f {
 @fragment
 fn fs_main(in: PostVsOut) -> @location(0) vec4f {
   let size = vec2f(textureDimensions(scene));
-  let px = textureLoad(scene, vec2i(in.clip.xy), 0);
+  // Wrong genre (M4 C1): every pixel of a cell takes the cell centre's colour.
+  let on_px = post.pixel.w > 0.5;
+  let fc = select(in.clip.xy, min(pixel_center(in.clip.xy), size - vec2f(0.5)), on_px);
+  let uv = select(in.uv, fc / size, on_px);
+  let px = textureLoad(scene, vec2i(fc), 0);
   var hdr = px.rgb;
   // Colour kept through the monochrome grade (objects.ts marks it in the alpha).
   let keep_px = clamp((px.a - 1.0) / ${KEEP_ALPHA}, 0.0, 1.0);
@@ -279,25 +287,29 @@ fn fs_main(in: PostVsOut) -> @location(0) vec4f {
   if (post.misc.w > 0.5) {
     // The upsampled chain holds the sum of every mip (light above the
     // threshold only); average it and add it.
-    let b = textureSampleLevel(bloom, samp, in.uv, 0.0).rgb / max(post.misc.z, 1.0);
+    let b = textureSampleLevel(bloom, samp, uv, 0.0).rgb / max(post.misc.z, 1.0);
     hdr += b * post.offset_bloom.w;
   }
   hdr *= post.slope_exposure.w;
   hdr = grade(hdr, keep_px);
   // Vignette: darken toward the corners (aspect-corrected radius).
-  let q = (in.uv - 0.5) * vec2f(size.x / size.y, 1.0);
+  let q = (uv - 0.5) * vec2f(size.x / size.y, 1.0);
   hdr *= 1.0 - post.look.w * smoothstep(0.35, 1.1, dot(q, q) * 1.6);
   var ldr = agx_eotf(agx_look(agx(hdr)));
   if (post.ink_paper.w > 0.5) {
-    ldr = ink(ldr, in.clip.xy, keep_px);
+    ldr = ink(ldr, fc, keep_px);
   }
   if (post.misc.x > 0.0) {
-    let n = hash12(in.clip.xy + fract(post.misc.y * 7.13) * 431.0) - 0.5;
+    let n = hash12(fc + fract(post.misc.y * 7.13) * 431.0) - 0.5;
     ldr *= 1.0 + post.misc.x * n;
   }
   var out = linear_to_srgb(clamp(ldr, vec3f(0.0), vec3f(1.0)));
-  // Triangular-ish dither of half an 8-bit step.
-  out += (hash12(in.clip.xy) - 0.5) / 255.0;
+  if (on_px) {
+    out = pixel_palette(out, in.clip.xy);
+  } else {
+    // Triangular-ish dither of half an 8-bit step.
+    out += (hash12(in.clip.xy) - 0.5) / 255.0;
+  }
   return vec4f(out, 1.0);
 }
 `;

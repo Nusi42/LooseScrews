@@ -1,0 +1,362 @@
+/* The comedy events' HUD (ui/eventBanner.ts, M4 C1): the event card under
+   the mode bar (a big card while the event is announced, a pill while it
+   runs), Bored level's down arrow, Wrong genre's retro title card and the
+   sleepy Z's. Imported by style.css. */
+
+.event-hud {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 5;
+}
+
+.event-card {
+  --event-accent: #ffb347;
+  position: absolute;
+  top: 104px;
+  left: 50%;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  grid-template-rows: auto auto;
+  align-items: center;
+  column-gap: 14px;
+  box-sizing: border-box;
+  min-width: 300px;
+  max-width: min(560px, calc(100vw - 32px));
+  padding: 12px 22px 12px 12px;
+  border: 1px solid var(--glass-edge);
+  border-radius: 18px;
+  background:
+    radial-gradient(120% 140% at 0% 50%, color-mix(in srgb, var(--event-accent) 26%, transparent), transparent 62%),
+    var(--glass-strong);
+  box-shadow:
+    var(--glass-shadow),
+    0 0 40px -12px var(--event-accent);
+  backdrop-filter: blur(8px);
+  opacity: 0;
+  transform: translate(-50%, -24px) scale(0.6);
+  transition:
+    opacity 0.25s ease,
+    transform 0.35s cubic-bezier(0.5, 0, 0.75, 0);
+}
+
+.event-card.shown {
+  opacity: 1;
+  transform: translate(-50%, 0) scale(1) rotate(-1.5deg);
+}
+
+.event-card.shown.announce {
+  animation: event-pop 0.55s cubic-bezier(0.18, 1.6, 0.4, 1) both;
+}
+
+@keyframes event-pop {
+  0% {
+    transform: translate(-50%, -30px) scale(0.3) rotate(-12deg);
+  }
+  60% {
+    transform: translate(-50%, 0) scale(1.08) rotate(2deg);
+  }
+  100% {
+    transform: translate(-50%, 0) scale(1) rotate(-1.5deg);
+  }
+}
+
+.event-icon {
+  grid-row: 1 / span 2;
+  width: 58px;
+  height: 58px;
+  border-radius: 16px;
+  color: var(--event-accent);
+  background: radial-gradient(circle at 50% 40%, color-mix(in srgb, var(--event-accent) 30%, rgba(0, 0, 0, 0.35)), rgba(0, 0, 0, 0.35) 72%);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--event-accent) 45%, transparent);
+}
+
+.event-card.announce .event-icon {
+  animation: event-wiggle 0.6s ease-in-out infinite alternate;
+}
+
+@keyframes event-wiggle {
+  from {
+    transform: rotate(-8deg) scale(1);
+  }
+  to {
+    transform: rotate(8deg) scale(1.06);
+  }
+}
+
+.event-icon svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  padding: 6px;
+  box-sizing: border-box;
+}
+
+.event-ring {
+  display: none;
+}
+
+.event-text {
+  min-width: 0;
+}
+
+.event-kicker {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--event-accent);
+}
+
+.event-name {
+  font-size: 30px;
+  font-weight: 900;
+  line-height: 1.05;
+  letter-spacing: -0.01em;
+  color: #fff;
+  text-shadow:
+    0 2px 0 color-mix(in srgb, var(--event-accent) 55%, #000),
+    0 0 18px color-mix(in srgb, var(--event-accent) 45%, transparent);
+}
+
+.event-target {
+  margin-top: 2px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.event-bar-track {
+  grid-column: 1 / span 2;
+  height: 4px;
+  margin-top: 10px;
+  border-radius: 2px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.event-bar {
+  height: 100%;
+  border-radius: 2px;
+  background: var(--event-accent);
+  box-shadow: 0 0 10px var(--event-accent);
+  transform-origin: left center;
+}
+
+/* While the event runs: a pill with the icon, the name and a ring of the time left. */
+.event-card.active {
+  top: 100px;
+  min-width: 0;
+  padding: 5px 16px 5px 5px;
+  column-gap: 10px;
+  border-radius: 999px;
+  grid-template-columns: auto auto;
+}
+
+.event-card.shown.active {
+  transform: translate(-50%, 0) scale(1);
+}
+
+.event-card.active .event-icon {
+  position: relative;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+}
+
+.event-card.active .event-icon svg {
+  padding: 5px;
+}
+
+.event-card.active .event-ring {
+  display: block;
+  position: absolute;
+  left: 5px;
+  top: 5px;
+  width: 36px;
+  height: 36px;
+  transform: rotate(-90deg);
+}
+
+.event-ring-track,
+.event-ring-fill {
+  fill: none;
+  stroke-width: 2.5;
+}
+
+.event-ring-track {
+  stroke: rgba(255, 255, 255, 0.12);
+}
+
+.event-ring-fill {
+  stroke: var(--event-accent);
+  stroke-linecap: round;
+}
+
+.event-card.active .event-kicker,
+.event-card.active .event-target,
+.event-card.active .event-bar-track {
+  display: none;
+}
+
+.event-card.active .event-name {
+  font-size: 15px;
+  font-weight: 800;
+  text-shadow: none;
+}
+
+/* Bored level: the new down on a ring around the crosshair. */
+.event-down {
+  --down-angle: 0deg;
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 150px;
+  height: 150px;
+  transform: translate(-50%, -50%);
+  opacity: 0;
+  transition: opacity 0.4s;
+}
+
+.event-down svg {
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.event-down-ring {
+  fill: none;
+  stroke: rgba(230, 226, 214, 0.22);
+  stroke-width: 1.5;
+  stroke-dasharray: 3 7;
+}
+
+.event-down-arrow {
+  transform-origin: 60px 60px;
+  transform: rotate(var(--down-angle));
+  fill: #e9e3d2;
+  filter: drop-shadow(0 0 6px rgba(0, 0, 0, 0.8));
+}
+
+.event-down span {
+  position: absolute;
+  left: 50%;
+  top: calc(100% + 6px);
+  transform: translateX(-50%);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.25em;
+  text-transform: uppercase;
+  color: #e9e3d2;
+  text-shadow: 0 1px 4px #000;
+}
+
+/* Wrong genre: a blocky title card. */
+.event-retro {
+  position: absolute;
+  left: 50%;
+  top: 34%;
+  transform: translate(-50%, -50%);
+  text-align: center;
+  font-family: "Courier New", ui-monospace, monospace;
+  font-weight: 900;
+  opacity: 0;
+  image-rendering: pixelated;
+}
+
+.event-retro-title {
+  font-size: clamp(34px, 6vw, 72px);
+  letter-spacing: 0.12em;
+  color: #fff1e8;
+  text-shadow:
+    4px 4px 0 #ff004d,
+    8px 8px 0 #1d2b53;
+}
+
+.event-retro-sub {
+  margin-top: 10px;
+  font-size: clamp(14px, 1.8vw, 22px);
+  letter-spacing: 0.3em;
+  color: #ffec27;
+  text-shadow: 3px 3px 0 #1d2b53;
+}
+
+/* The side view has no crosshair, fit ring or cockpit. */
+#ui.event-side-view .hud-crosshair,
+#ui.event-side-view .fit-ring {
+  display: none;
+}
+
+/* Bored level's announcement: Z's drifting up. */
+.event-zzz {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  opacity: 0;
+  transition: opacity 0.5s;
+}
+
+.event-zzz span {
+  --i: 0;
+  position: absolute;
+  bottom: -60px;
+  left: calc(22% + var(--i) * 9%);
+  font-size: calc(34px + var(--i) * 7px);
+  font-weight: 900;
+  font-style: italic;
+  color: rgba(233, 227, 210, 0.75);
+  text-shadow: 0 2px 10px rgba(0, 0, 0, 0.6);
+  opacity: 0;
+}
+
+.event-zzz.drifting span {
+  animation: event-zzz 3.2s ease-in infinite;
+  animation-delay: calc(var(--i) * -0.45s);
+}
+
+@keyframes event-zzz {
+  0% {
+    transform: translate(0, 0) rotate(-10deg);
+    opacity: 0;
+  }
+  15% {
+    opacity: 1;
+  }
+  100% {
+    transform: translate(60px, -75vh) rotate(18deg);
+    opacity: 0;
+  }
+}
+
+/* Comic words popping on the screen ("HIC!"). */
+.event-pop {
+  --pop-color: #8fd3ff;
+  position: absolute;
+  font-size: clamp(44px, 7vw, 96px);
+  font-weight: 900;
+  font-style: italic;
+  letter-spacing: 0.02em;
+  color: #fff;
+  -webkit-text-stroke: 3px #10141f;
+  paint-order: stroke fill;
+  text-shadow:
+    5px 5px 0 var(--pop-color),
+    9px 9px 0 #10141f;
+  white-space: nowrap;
+  will-change: transform, opacity;
+}
+
+@media (max-width: 640px) {
+  .event-card {
+    top: 92px;
+    min-width: 0;
+    padding: 8px 14px 8px 8px;
+  }
+  .event-icon {
+    width: 44px;
+    height: 44px;
+  }
+  .event-name {
+    font-size: 21px;
+  }
+}

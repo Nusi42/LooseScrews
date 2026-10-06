@@ -54,6 +54,20 @@ export interface CameraView {
   far: number;
 }
 
+/** The cake wave of Everything is cake (M4 C1): rock within `radius` of `origin` is cake, `amount` 0..1. */
+export interface CakeWave {
+  origin: Vec3;
+  radius: number;
+  up: Vec3;
+  amount: number;
+}
+
+/** TerrainParams floats of a cake wave: [origin xyz, radius, up xyz, amount] (zeros = off). */
+export function packCake(c: CakeWave | null | undefined): Float32Array {
+  if (!c || c.amount <= 0) return new Float32Array(8);
+  return Float32Array.from([c.origin.x, c.origin.y, c.origin.z, Math.max(0, c.radius), c.up.x, c.up.y, c.up.z, Math.min(1, c.amount)]);
+}
+
 export interface RenderSettings {
   fogColor: Rgb;
   /** exp2 fog density per u; 0 disables fog. */
@@ -66,6 +80,8 @@ export interface RenderSettings {
   headlight: number;
   /** Per-world terrain look (strata tilt, rock pattern offsets; rockTextures.ts `hashSeed` of the share code); default 0. */
   terrainSeed?: number;
+  /** Everything is cake (M4 C1, shaders/cake.ts): the cake wave on the terrain; absent or null = rock. */
+  cake?: CakeWave | null;
   /** Height fog (VQ7): density per u at world height `baseY`, falling off by `falloff` per u upwards; density 0 = off. */
   heightFog: { density: number; falloff: number; baseY: number };
   /** 0..1 how much the fog takes the sky's haze colour (the environment cube) instead of `fogColor` (VQ7). */
@@ -348,6 +364,12 @@ export class Renderer {
   timeOverride: number | null = null;
   /** Open levels: rock fades into the sky before the hidden walls (VQP); false = cut off sharply (before shots). */
   roomFade = true;
+  /**
+   * Wrong genre's side view (M4 C1): the terrain draws its back faces too,
+   * as a flat brick fill (shaders/cutaway.ts), so rock the near plane cuts
+   * open reads as solid ground. Off in normal play.
+   */
+  terrainCutaway = false;
   /** False for a renderer on another renderer's device (`create(..., { device })`): `destroy` leaves the device alone. */
   private ownsDevice = true;
   /** The own ship's cockpit frame (VQ1), drawn last in the scene pass; set its `state` per frame. */
@@ -465,7 +487,8 @@ export class Renderer {
   /** Terrain, instanced and translucent pipelines rendering into the HDR target at the quality's MSAA and terrain detail. */
   private scenePipelinesFor(quality: RenderQuality): ScenePipelines {
     const samples = quality.msaa;
-    const key = `${samples}:${quality.terrainDetail ? 1 : 0}`;
+    const cut = this.terrainCutaway;
+    const key = `${samples}:${quality.terrainDetail ? 1 : 0}:${cut ? 1 : 0}`;
     const cached = this.scenePipelines.get(key);
     if (cached) return cached;
     const device = this.device;
@@ -484,7 +507,8 @@ export class Renderer {
           targets: [{ format: HDR_FORMAT }],
           constants: { DETAIL: quality.terrainDetail ? 1 : 0 },
         },
-        primitive: { topology: "triangle-list", cullMode: TERRAIN_CULL_MODE, frontFace: "ccw" },
+        // Wrong genre's cutaway (M4 C1) draws back faces too: rock opened by the near plane shows its fill.
+        primitive: { topology: "triangle-list", cullMode: cut ? "none" : TERRAIN_CULL_MODE, frontFace: "ccw" },
         depthStencil,
         multisample,
       }),
@@ -934,6 +958,7 @@ export class Renderer {
     d.set([...lin(s.fogColor), s.fogDensity], 24);
     d.set([...lin(s.rockColor), 1], 28);
     this.terrainMaterial.setSeed(s.terrainSeed ?? 0);
+    this.terrainMaterial.setCake(packCake(s.cake));
     for (let i = 0; i < TEAM_SLOTS; i++) {
       const c = s.teamColors[i] ?? s.rockColor;
       d.set([...lin(c), 1], 32 + i * 4);

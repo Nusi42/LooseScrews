@@ -50,7 +50,7 @@ export const PASSIVE_AGGRESSIVE: VoicePack = {
     "event.customer_survey": ["{target}, your feedback matters. Rate us."],
     "event.disco_inferno": ["Disco time. Try to look like you're enjoying it."],
     "event.big_head_day": ["Big head day. Some of you are ready already."],
-    "event.moving_day": ["We're rearranging the pickups. Don't touch anything."],
+    "event.moving_day": ["We're rearranging the pickups. Don't touch anything.", "Apologies for the mess. We were told it would be quick."],
     "event.mimic_pickups": ["Some pickups bite. Read the labels next time."],
     "event.level_hiccups": ["The level has the hiccups. Let's not make a thing of it."],
   },

@@ -31,6 +31,7 @@ use wasm_bindgen::prelude::*;
 
 pub mod beam;
 pub mod controls;
+pub mod events;
 pub mod game;
 pub mod inventory;
 pub mod level;
@@ -723,7 +724,9 @@ pub fn ships_array(ships: &[game::ShipView]) -> Vec<f32> {
     v
 }
 
-/// Per projectile `[kind, owner, px, py, pz, vx, vy, vz, visual, state]`.
+/// Per projectile `[kind, owner, px, py, pz, vx, vy, vz, visual, state]`
+/// (`state`: the replicated `proj_flags` low byte, plus 256 for a rubber
+/// chicken).
 pub fn projectiles_array(shots: &[game::ProjectileView]) -> Vec<f32> {
     let mut v = Vec::with_capacity(shots.len() * PROJECTILE_STRIDE);
     for p in shots {
@@ -737,7 +740,8 @@ pub fn projectiles_array(shots: &[game::ProjectileView]) -> Vec<f32> {
             p.vel.y,
             p.vel.z,
             p.visual as f32,
-            p.state as f32,
+            // Bit 8: a rubber chicken (Rubber chickens event, M4 C1).
+            (p.state as u32 | if p.chicken { 256 } else { 0 }) as f32,
         ]);
     }
     v
@@ -982,6 +986,15 @@ impl Game {
     pub fn up(&self) -> Vec<f32> {
         let u = self.core.up();
         vec![u.x, u.y, u.z]
+    }
+
+    /// What the running comedy event does at `tick` (fractional ticks
+    /// round down) as JSON (`events::event_fx_json`): well scale, hit scale,
+    /// rubber chickens, the Bored level turn, the hiccup ticks, the cake
+    /// wave's origin (M4 C1).
+    #[wasm_bindgen(js_name = eventFx)]
+    pub fn event_fx(&self, tick: f64) -> String {
+        self.core.event_fx(tick)
     }
 
     /// Monochrome level (Palette 80+): pigment rules and the ink look.
@@ -1456,9 +1469,20 @@ mod tests {
             vel: Vec3::X,
             visual: 17,
             state: 2,
+            chicken: false,
         }]);
         assert_eq!(p.len(), super::PROJECTILE_STRIDE);
         assert_eq!((p[0], p[5], p[8], p[9]), (4.0, 1.0, 17.0, 2.0));
+        let c = super::projectiles_array(&[ProjectileView {
+            kind: 4,
+            owner: 1,
+            pos: Vec3::ZERO,
+            vel: Vec3::X,
+            visual: 17,
+            state: 2,
+            chicken: true,
+        }]);
+        assert_eq!(c[9], 258.0);
         let e = super::entities_array(&[EntityDraw {
             id: 300,
             kind: 5,

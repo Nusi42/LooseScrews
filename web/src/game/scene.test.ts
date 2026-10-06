@@ -80,7 +80,10 @@ test("procedural meshes are valid and about one unit across", () => {
     assert.ok(m.indices.length >= 12, kind);
     let max = 0;
     for (const v of m.positions) max = Math.max(max, Math.abs(v));
-    assert.ok(max > 0.2 && max < 1.0, `${kind} extent ${max}`);
+    // M4 C1's balloon head is a unit sphere (with its knot), its pupil is in the same units, and the tape strip is one unit long.
+    const limit = kind === "balloon" || kind === "balloon_face" || kind === "box_tape" ? 1.25 : 1.0;
+    const least = kind === "pupil" ? 0.05 : 0.2;
+    assert.ok(max > least && max < limit, `${kind} extent ${max}`);
   }
 });
 

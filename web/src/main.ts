@@ -34,6 +34,8 @@
 // the hulls turning in the ship picker (StartIntro, which also creates the
 // renderer the game then uses), and in the lobby a cinematic camera through
 // the next level while the mouse is free (LobbyCinematic).
+// M4 C1 (game/events/): the comedy events' banner, announcer lines and
+// visuals (camera overrides, props, the pixel look, the cake wave).
 
 import { InputController } from "./input/input.ts";
 import { GpuUnavailableError } from "./renderer/gpu.ts";
@@ -94,6 +96,8 @@ import { audioEngine, MatchAudio } from "./audio/index.ts";
 import { wantsWorldFx, WorldVisuals } from "./game/worldFx.ts";
 import type { PointLight } from "./renderer/lights.ts";
 import { showAudioDemo, wantsAudioDemo } from "./audio/demo.ts";
+import { emptyOutput, EventVisuals, fxFromMood, parseEventFx, wantsEventFx, wellPoints } from "./game/events/index.ts";
+import { EventHud } from "./ui/eventBanner.ts";
 
 /** Largest frame time passed to the simulation; longer stalls (tab switch) are clamped. */
 const MAX_FRAME_DT = 0.1;
@@ -324,6 +328,10 @@ function runGame(
     // World visuals (M4 B5): gravity wells, cave-ins, pigment, the level's mood; `?worldfx=off` skips them.
     const world = new WorldVisuals(particles, wantsWorldFx(location), audioEngine());
     let worldShake = 0;
+    // Comedy event visuals (M4 C1; `?eventfx=off` keeps only the banner and the announcer).
+    const eventHud = new EventHud(ui);
+    const events = new EventVisuals({ particles, sound: audioEngine(), hud: eventHud, announcer: audio.announcer, enabled: wantsEventFx(location) });
+    let eventShake = 0;
     let mono = 0;
     let shipBayOpen = false;
     let shipError = "";
@@ -384,6 +392,9 @@ function runGame(
       lobby.dispose();
       audio.dispose();
       world.dispose();
+      events.dispose();
+      eventHud.dispose();
+      if (!renderer.isLost) events.apply(renderer, emptyOutput());
       delete ui.dataset["stage"];
       delete ui.dataset["matches"];
       overlay.dispose();
@@ -461,6 +472,7 @@ function runGame(
         charging.forget();
         modeVfx?.reset();
         world.reset();
+        events.reset();
         audio.newMatch(game.shareCode);
         mono = 0;
         particles?.clear();
@@ -517,8 +529,37 @@ function runGame(
         boosting: state.boost && (r.hud.boost ?? 0) > 0,
       };
       camera.params.fovY = cine ? cinematic.fovY(renderer.aspect) : cues.fovY(cueFrame);
-      const shake = Math.max(fx.shake, vfx?.shake(time) ?? 0, worldShake);
-      const view = camera.update(r.pose, spectator ? spectator.view : (cine ?? ride), shakeOffset(shake, time));
+      const shake = Math.max(fx.shake, vfx?.shake(time) ?? 0, worldShake, eventShake);
+      const camView = camera.update(r.pose, spectator ? spectator.view : (cine ?? ride), shakeOffset(shake, time));
+      // Comedy events (M4 C1): what the running event does, its banner and visuals; the side view and the hiccup bump move the camera.
+      const evTick = game.nowTick?.() ?? 0;
+      const evUp = game.up?.();
+      const evTeams = session.teamOf(r.ships);
+      const ev = events.update(
+        {
+          time,
+          dt,
+          tick: evTick,
+          fx: game.eventFx ? parseEventFx(game.eventFx(evTick)) : fxFromMood(r.mode.mood, evTick),
+          mood: r.mode.mood,
+          camera: camView,
+          own: r.pose && r.pose.alive && !flow.spectating && !guided ? { id: game.player, team: game.team, position: r.pose.position, orientation: r.pose.orientation, velocity: r.pose.velocity, shipType: r.players.find((p) => p.id === game.player)?.shipType ?? 1, radius: game.shipRadius ?? TINKER_RADIUS } : null,
+          ships: r.ships,
+          shots: r.projectiles,
+          entities: r.entities,
+          visuals: session.visuals,
+          cues: r.cues,
+          wells: wellPoints(game.wells?.()),
+          up: evUp && evUp.length >= 3 ? { x: evUp[0] ?? 0, y: evUp[1] ?? 1, z: evUp[2] ?? 0 } : r.mode.mood.up,
+          colorOf: (id) => teamHull(evTeams(id) ?? 0, r.mode.teams),
+          raycast: game.raycast ? (o, d, max) => game.raycast?.(o.x, o.y, o.z, d.x, d.y, d.z, max) ?? -1 : undefined,
+          quiet: flow.showResults || flow.showLobby,
+          screenHeight: canvas.height,
+        },
+        (id) => names.get(id) ?? "",
+      );
+      eventShake = ev.shake;
+      const view = ev.view ?? camView;
       chunkStats = chunks.update(game, view.position, initialLoad ? LOADING_BUDGET : PLAY_BUDGET);
       if (initialLoad && chunkStats.pending === 0) initialLoad = false;
 
@@ -531,7 +572,9 @@ function runGame(
         for (const p of players) if (p.id === id) return gadgetKey(session.gadgetIds, p.gadget);
         return "";
       };
-      const hideShot = guided ? (p: (typeof r.projectiles)[number]) => p === guided : undefined;
+      const hideShot = events.hideShot(guided ? (p: (typeof r.projectiles)[number]) => p === guided : undefined, ev);
+      const drawnShips = events.ships(r.ships, ev);
+      const drawnShots = events.shots(r.projectiles, ev);
       charging.apply(r.cues, time, game.player, r.projectiles);
       const charges = charging.glows({
         now: time,
@@ -552,8 +595,8 @@ function runGame(
         cameraOrientation: view.orientation,
         player: game.player,
         pose: r.pose,
-        ships: r.ships,
-        shots: r.projectiles,
+        ships: drawnShips,
+        shots: drawnShots,
         entities: r.entities,
         visuals: session.visuals,
         cues: r.cues,
@@ -608,8 +651,10 @@ function runGame(
       worldShake = wf.shake;
       audio.update({ time, dt, player: game.player, online: session.isOnline, stage: flow.stage, camera: view, pose: r.pose, ships: r.ships, projectiles: r.projectiles, entities: r.entities, cues: r.cues, visuals: session.visuals, boosting: cueFrame.boosting, gadgetOf, gadgetIds: session.gadgetIds, names });
       // The cinematic camera sees the own ship too.
-      const shownShips = cine && r.pose && own ? [...r.ships, cinematic.ownShip(game.player, game.team, r.pose, own.shipType, game.shipRadius ?? TINKER_RADIUS)] : r.ships;
-      const scene = buildScene(shownShips, r.projectiles, r.entities, session.visuals, session.teamOf(r.ships), time, {
+      // ...and so does an event's side view (M4 C1).
+      const shownShips = (cine || ev.thirdPerson) && r.pose && own ? [...drawnShips, cinematic.ownShip(game.player, game.team, r.pose, own.shipType, game.shipRadius ?? TINKER_RADIUS)] : drawnShips;
+      const shownEntities = ev.hideEntities.size > 0 ? r.entities.filter((e) => !ev.hideEntities.has(e.id)) : r.entities;
+      const scene = buildScene(shownShips, drawnShots, shownEntities, session.visuals, session.teamOf(r.ships), time, {
           gadgetOf,
           beams: fx.beams,
           flashes: fx.flashes,
@@ -626,6 +671,7 @@ function runGame(
       addModeProps(scene, modeInput);
       const worldLights: PointLight[] = [...wf.lights];
       world.addToScene(scene, r.entities, time, r.mode.teams, worldLights);
+      events.addToScene(scene, worldLights, ev);
       renderer.setScene(scene);
       renderer.setModeVolumes(modeVolumes(modeInput));
       renderer.setWorldVolumes(wf.volumes);
@@ -670,7 +716,8 @@ function runGame(
       // Last Color Standing: the own cockpit frame keeps its meter's colour like the other hulls (D5).
       const ownStyle = playerStyleFor(r.mode, r.mode.teams)?.(game.player, game.team) ?? wf.ownStyle ?? undefined;
       const frameState = cues.hullFrame(cueFrame, own?.shipType ?? 1, game.shipRadius ?? TINKER_RADIUS, ownStyle?.color ?? teamHull(game.team, r.mode.teams));
-      renderer.hullFrame.state = frameState && ownStyle ? { ...frameState, keepColor: ownStyle.keepColor } : frameState;
+      renderer.hullFrame.state = ev.thirdPerson ? null : frameState && ownStyle ? { ...frameState, keepColor: ownStyle.keepColor } : frameState;
+      events.apply(renderer, ev);
       hud.fitRing.update(cues.fitRing(cueFrame, game, r.pose?.position ?? view.position, view.orientation, view.fovY));
       // Per-pass GPU timing (separate terrain/objects passes) while the overlay shows.
       renderer.detailedTiming = overlay.visible;

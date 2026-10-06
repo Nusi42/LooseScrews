@@ -24,6 +24,7 @@ import {
 import { buildProp, crateModel, gadgetModel, harpoonModel, mineModel, paperweightModel, rocketModel, upgradeModel } from "./props.ts";
 import { coreModel, reactorModel } from "./modeProps.ts";
 import { pigmentDropModel } from "./worldProps.ts";
+import { balloonFaceModel, balloonModel, boxFlapModel, cardboardBoxModel, coffeeMugModel, giantEggModel, pupilModel, rubberChickenModel, tapeStripModel } from "./eventProps.ts";
 import { hullOf } from "./ships.ts";
 import { wreckModel } from "./wrecks.ts";
 
@@ -56,7 +57,17 @@ export type MeshKind =
   | "core"
   | "reactor"
   | "paperweight"
-  | "pigment";
+  | "pigment"
+  // M4 C1 event props (eventProps.ts).
+  | "chicken"
+  | "giant_egg"
+  | "moving_box"
+  | "box_flap"
+  | "box_tape"
+  | "balloon"
+  | "balloon_face"
+  | "pupil"
+  | "coffee_mug";
 
 /** Hull mesh of a ship type (unknown types: the Tinker's). */
 export function shipMeshKind(shipType: number): ShipMeshKind {
@@ -102,6 +113,16 @@ export const MESH_BUILDERS: Readonly<Record<MeshKind, () => MeshData>> = {
   paperweight: buildProp(paperweightModel),
   // M4 B5: the pigment drop (worldProps.ts).
   pigment: buildProp(pigmentDropModel),
+  // M4 C1: comedy event props (eventProps.ts).
+  chicken: buildProp(rubberChickenModel),
+  giant_egg: buildProp(giantEggModel),
+  moving_box: buildProp(cardboardBoxModel),
+  box_flap: buildProp(boxFlapModel),
+  box_tape: buildProp(tapeStripModel),
+  balloon: buildProp(balloonModel),
+  balloon_face: buildProp(balloonFaceModel),
+  pupil: buildProp(pupilModel),
+  coffee_mug: buildProp(coffeeMugModel),
 };
 
 /** The pre-VQ4 primitives for every kind (one dart for all hulls, one wreck). */
@@ -132,6 +153,15 @@ export const LEGACY_MESH_BUILDERS: Readonly<Record<MeshKind, () => MeshData>> = 
   reactor: () => sphereMesh(1),
   paperweight: () => sphereMesh(1),
   pigment: () => sphereMesh(1),
+  chicken: () => sphereMesh(1),
+  giant_egg: () => sphereMesh(1),
+  moving_box: () => sphereMesh(1),
+  box_flap: () => sphereMesh(1),
+  box_tape: () => sphereMesh(1),
+  balloon: () => sphereMesh(1),
+  balloon_face: () => sphereMesh(1),
+  pupil: () => sphereMesh(1),
+  coffee_mug: () => sphereMesh(1),
 };
 
 export const MESH_KINDS = Object.keys(MESH_BUILDERS) as MeshKind[];

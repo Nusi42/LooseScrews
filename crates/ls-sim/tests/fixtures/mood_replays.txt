@@ -25,7 +25,7 @@ event/level_hiccups 0x6b9224e27f293e27
 event/tax_drone 0xd773270f8b425ac7
 event/gossip_wall 0x65662aed6d49213e
 event/pizza_delivery 0xc524cea6beb4c7fc
-event/customer_survey 0x1d330e49ae746f55
+event/customer_survey 0x02be6d04f80d9df7
 event/mimic_pickups 0x36736ce95e657fab
 event/cat_paw 0x7dbb9d7e00feb0fd
 event/tired_announcer 0xf9b752ea6bf7b101

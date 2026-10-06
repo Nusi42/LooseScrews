@@ -1,6 +1,7 @@
 // Data-driven entity and projectile rendering (scene.ts), the M2 decoders
 // (views.ts), the weapon panel, name tags and the new input bindings.
 
+import { VISITOR_MESH_KINDS } from "../renderer/models/visitors.ts";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { KEY_BINDINGS, WEAPON_ACTIONS, wheelStep, WHEEL_STEP } from "../input/bindings.ts";
@@ -80,7 +81,10 @@ test("procedural meshes are valid and about one unit across", () => {
     assert.ok(m.indices.length >= 12, kind);
     let max = 0;
     for (const v of m.positions) max = Math.max(max, Math.abs(v));
-    assert.ok(max > 0.2 && max < 1.0, `${kind} extent ${max}`);
+    // The event visitors (M4 C2) are built at their size in the sim (drones of radius 0.9, the 2.5 u survey
+    // panel) and their small parts (siren domes, stars) at theirs.
+    const visitor = (VISITOR_MESH_KINDS as readonly string[]).includes(kind);
+    assert.ok(max > (visitor ? 0.1 : 0.2) && max < (visitor ? 1.4 : 1.0), `${kind} extent ${max}`);
   }
 });
 

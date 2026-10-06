@@ -22,7 +22,6 @@
 use ls_math::{Tick, Vec3};
 
 use crate::behavior::{Command, Cue, CueKind};
-use crate::entity::EntityKind;
 use crate::events::drone::{
     self, Flight, DRONE_LEAVING, DRONE_WAITING, DRONE_WORKING, OUTCOME_SHOT_DOWN, ROLE_PIZZA,
 };
@@ -91,7 +90,7 @@ impl EventModule for PizzaDelivery {
         );
         e.event.pos = entry;
         let mut spawn = drone::prop(
-            EntityKind::Drone,
+            drone::DRONE,
             entry,
             f.radius,
             e.def.param("hp", 30.0),
@@ -103,7 +102,7 @@ impl EventModule for PizzaDelivery {
     }
 
     fn on_tick(&self, e: &mut EventCtx) {
-        let Some(mut d) = drone::first_prop(&e.ctx.view, EntityKind::Drone) else {
+        let Some(mut d) = drone::first_prop(&e.ctx.view, drone::DRONE) else {
             return;
         };
         let f = flight(e);
@@ -136,7 +135,7 @@ impl EventModule for PizzaDelivery {
                 DRONE_LEAVING,
                 drone::hp_percent(d.hp, hp_max),
             ];
-            e.ctx.set_entity(&d);
+            e.ctx.pose_entity(&d);
             return;
         }
         let target = drone::living(&view, e.event.target);
@@ -178,10 +177,10 @@ impl EventModule for PizzaDelivery {
             DRONE_WORKING,
             drone::hp_percent(d.hp, hp_max),
         ];
-        e.ctx.set_entity(&d);
+        e.ctx.pose_entity(&d);
     }
 
     fn on_end(&self, e: &mut EventCtx) {
-        drone::remove_props(e.ctx, EntityKind::Drone);
+        drone::remove_props(e.ctx, drone::DRONE);
     }
 }

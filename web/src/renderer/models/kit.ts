@@ -36,6 +36,15 @@ export const PART_GLOW = 9;
 export const PART_SCORCH = 10;
 /** Steady white lamp (floodlights). */
 export const PART_LAMP = 11;
+/**
+ * M4 C2 (event visitors): carved stone in the instance colour with a
+ * weathered grain (the gossip face), glossy white enamel (teeth,
+ * eyeballs) and wet pink flesh (lips, tongues). Numbered from 20, so other
+ * packages' parts can take 12 and up.
+ */
+export const PART_STONE = 20;
+export const PART_ENAMEL = 21;
+export const PART_FLESH = 22;
 export const PART_PLAIN = 255;
 
 /** Picks a part per loft/lathe quad: `segment` runs along the axis, `side` around it. */

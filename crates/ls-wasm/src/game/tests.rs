@@ -1562,3 +1562,19 @@ fn charge_start_cues_carry_the_charging_weapon() {
     assert_eq!(start.source, l.core.player());
     assert_eq!(start.target, fusion.0, "the charging weapon");
 }
+
+#[test]
+fn pickup_points_follow_the_worlds_pickup_order_online_and_in_practice() {
+    // Mimic pickups names pickups by their index in this list (M4 C2).
+    let l = connect();
+    let server = &l.room.world().setup().pickup_points;
+    assert!(!server.is_empty());
+    assert_eq!(l.core.pickup_points(), server.as_slice());
+    let p = small_practice(0);
+    match &p.mode {
+        Mode::Practice(pr) => {
+            assert_eq!(p.pickup_points(), pr.world.setup().pickup_points.as_slice())
+        }
+        Mode::Online(_) => unreachable!("practice"),
+    }
+}

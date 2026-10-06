@@ -2017,6 +2017,15 @@ impl GameCore {
         }
     }
 
+    /// The match's pickup points in the world's pickup order (the spawn
+    /// indices Mimic pickups names in its mood params; M4 C2).
+    pub fn pickup_points(&self) -> &[Vec3] {
+        match &self.mode {
+            Mode::Online(o) => o.session.pickup_points(),
+            Mode::Practice(p) => &p.world.setup().pickup_points,
+        }
+    }
+
     /// The level's up (Bored level turns it; M4).
     pub fn up(&self) -> Vec3 {
         match &self.mode {

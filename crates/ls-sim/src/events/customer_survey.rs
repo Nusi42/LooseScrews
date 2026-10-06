@@ -14,16 +14,17 @@
 //! Drone entity (`ReplicatedKind::Drone`): `state` = `[ROLE_SURVEY,
 //! rating (0 none yet, 1-5), phase (working, leaving), hp percent]`, radius
 //! = half the panel width. Outcome cue (`CueKind::EventOutcome`): rating
-//! 1-5 (source = the shooter, target = the leader) or 0 (no answer).
+//! 1-5 (source = the shooter, target = the leader) or 0 (no answer). A
+//! rating is also the leader's title in the match results ([`Award`] with
+//! the stars as its value, `MatchResults::awards`).
 //!
 //! Numbers: `data/events/customer_survey.ron`.
 
 use ls_math::{Quat, Vec3};
 
 use crate::behavior::{Command, Cue, CueKind};
-use crate::entity::EntityKind;
 use crate::events::drone::{self, DRONE_LEAVING, DRONE_WORKING, ROLE_SURVEY};
-use crate::events::{EventCtx, EventKind, EventModule, EventPhase, EventRef};
+use crate::events::{Award, EventCtx, EventKind, EventModule, EventPhase, EventRef};
 
 /// Customer survey.
 #[derive(Debug)]
@@ -93,7 +94,7 @@ impl EventModule for CustomerSurvey {
         };
         let (pos, rot) = panel_pose(t.pos, t.orientation, e.def.param("distance", 2.5));
         let mut spawn = drone::prop(
-            EntityKind::Drone,
+            drone::DRONE,
             pos,
             e.def.param("panel_half_width", 1.25),
             e.def.param("hp", 15.0),
@@ -105,7 +106,7 @@ impl EventModule for CustomerSurvey {
     }
 
     fn on_tick(&self, e: &mut EventCtx) {
-        let Some(mut d) = drone::first_prop(&e.ctx.view, EntityKind::Drone) else {
+        let Some(mut d) = drone::first_prop(&e.ctx.view, drone::DRONE) else {
             if e.event.phase == EventPhase::Ending && e.event.vars[V_TOLD] == 0 {
                 tell(e, None, e.event.pos, 0);
             }
@@ -124,6 +125,14 @@ impl EventModule for CustomerSurvey {
             let star = star_at(point, d.pos, right, d.radius);
             e.event.vars[V_RATING] = star as i64;
             e.event.pos = d.pos;
+            // The rating goes into the results (`MatchResults::awards`).
+            if let Some(player) = e.event.target {
+                e.event.award = Some(Award {
+                    kind: EventKind::CustomerSurvey,
+                    player,
+                    value: star as u32,
+                });
+            }
             tell(e, by, d.pos, star);
             e.ctx.push(Command::RemoveEntity { id: d.id });
             drone::end_now(e);
@@ -144,7 +153,7 @@ impl EventModule for CustomerSurvey {
                 DRONE_LEAVING,
                 drone::hp_percent(d.hp, hp_max),
             ];
-            e.ctx.set_entity(&d);
+            e.ctx.pose_entity(&d);
             return;
         }
         if let Some(t) = drone::living(&e.ctx.view, e.event.target) {
@@ -159,10 +168,10 @@ impl EventModule for CustomerSurvey {
             DRONE_WORKING,
             drone::hp_percent(d.hp, hp_max),
         ];
-        e.ctx.set_entity(&d);
+        e.ctx.pose_entity(&d);
     }
 
     fn on_end(&self, e: &mut EventCtx) {
-        drone::remove_props(e.ctx, EntityKind::Drone);
+        drone::remove_props(e.ctx, drone::DRONE);
     }
 }

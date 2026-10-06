@@ -14,7 +14,6 @@
 //!
 //! Numbers: `data/events/gossip_wall.ron`.
 
-use crate::entity::EntityKind;
 use crate::events::drone;
 use crate::events::{EffectCtx, EventCtx, EventKind, EventModule, EventPhase};
 use crate::ShipState;
@@ -59,7 +58,7 @@ impl EventModule for GossipWall {
         let (pos, normal) = face_site(view.terrain, &living, view.terrain.bounds().center());
         e.event.pos = pos;
         let mut spawn = drone::prop(
-            EntityKind::GossipFace,
+            drone::GOSSIP_FACE,
             pos,
             e.def.param("face_radius", 3.0),
             1.0,
@@ -70,18 +69,18 @@ impl EventModule for GossipWall {
     }
 
     fn on_tick(&self, e: &mut EventCtx) {
-        let Some(mut face) = drone::first_prop(&e.ctx.view, EntityKind::GossipFace) else {
+        let Some(mut face) = drone::first_prop(&e.ctx.view, drone::GOSSIP_FACE) else {
             return;
         };
         let talking = (e.event.phase == EventPhase::Active) as u8;
         if face.state[0] != talking {
             face.state[0] = talking;
-            e.ctx.set_entity(&face);
+            e.ctx.pose_entity(&face);
         }
     }
 
     fn on_end(&self, e: &mut EventCtx) {
-        drone::remove_props(e.ctx, EntityKind::GossipFace);
+        drone::remove_props(e.ctx, drone::GOSSIP_FACE);
     }
 
     /// Every ship is shown to everyone while the face talks.

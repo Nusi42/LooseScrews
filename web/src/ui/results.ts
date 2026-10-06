@@ -51,6 +51,8 @@ export interface ResultTitle {
 /** How each event's award reads (unknown events: their id as the label). */
 const EVENT_TITLES: Readonly<Record<string, { label: string; detail: (value: number) => string }>> = {
   hat_rain: { label: "Hat Baron", detail: (v) => `${v} ${v === 1 ? "hat" : "hats"}` },
+  // M4 C2: the Customer survey's rating of the leader (1-5 stars).
+  customer_survey: { label: "Customer rating", detail: (v) => `${"★".repeat(Math.max(0, Math.min(5, v)))} ${v} of 5` },
 };
 
 function titleOf(event: string): { label: string; detail: (value: number) => string } {

@@ -1,0 +1,329 @@
+/* M4 C2: the visitor events' HUD (ui/visitorHud.ts): gossip markers and bubble, survey prompt, pizza ring, toasts. */
+
+.visitor-hud {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+.visitor-marker {
+  position: absolute;
+  left: 0;
+  top: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  margin-left: -60px;
+  width: 120px;
+  margin-top: -38px;
+  filter: drop-shadow(0 0 6px rgba(255, 90, 160, 0.6)) drop-shadow(0 1px 1px rgba(0, 0, 0, 0.9));
+  animation: visitor-marker-pulse 1.1s ease-in-out infinite;
+}
+
+.visitor-marker.hidden {
+  display: none;
+}
+
+.visitor-marker-eye svg {
+  width: 26px;
+  height: 18px;
+  display: block;
+}
+
+.visitor-marker-name {
+  margin-top: 2px;
+  padding: 1px 7px;
+  border-radius: 9px;
+  background: rgba(60, 10, 40, 0.72);
+  border: 1px solid rgba(255, 130, 190, 0.85);
+  color: #ffe1ef;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+.visitor-marker-arrow {
+  display: none;
+  position: absolute;
+  left: 50%;
+  top: 14px;
+  width: 0;
+  height: 0;
+  border-left: 7px solid transparent;
+  border-right: 7px solid transparent;
+  border-bottom: 11px solid #ff7fbf;
+  transform: translate(-50%, -50%) rotate(calc(var(--arrow) + 90deg)) translateY(-26px);
+}
+
+.visitor-marker.edge .visitor-marker-arrow {
+  display: block;
+}
+
+.visitor-marker.edge .visitor-marker-eye {
+  opacity: 0.85;
+}
+
+@keyframes visitor-marker-pulse {
+  0%,
+  100% {
+    opacity: 0.85;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+/* Gossip speech bubble at the face. */
+.gossip-bubble {
+  position: absolute;
+  left: 0;
+  top: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: 360px;
+  margin-left: -170px;
+  margin-top: -88px;
+  padding: 10px 16px 10px 10px;
+  border-radius: 22px;
+  background: #fff7ef;
+  border: 3px solid #2d2026;
+  color: #2d2026;
+  font-size: 17px;
+  font-weight: 700;
+  line-height: 1.25;
+  box-shadow: 0 4px 0 rgba(0, 0, 0, 0.35), 0 0 22px rgba(255, 140, 190, 0.45);
+}
+
+.gossip-bubble::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: -18px;
+  width: 0;
+  height: 0;
+  border-left: 12px solid transparent;
+  border-right: 12px solid transparent;
+  border-top: 18px solid #2d2026;
+  transform: translateX(-50%) skewX(-18deg);
+}
+
+.gossip-bubble.docked::after {
+  display: none;
+}
+
+.gossip-bubble.hidden {
+  display: none;
+}
+
+.gossip-bubble.pop {
+  animation: gossip-pop 0.32s cubic-bezier(0.2, 1.6, 0.4, 1);
+}
+
+@keyframes gossip-pop {
+  from {
+    scale: 0.6;
+    opacity: 0;
+  }
+  to {
+    scale: 1;
+    opacity: 1;
+  }
+}
+
+.gossip-bubble-face svg {
+  width: 40px;
+  height: 40px;
+  display: block;
+}
+
+.gossip-bubble-text {
+  font-style: italic;
+}
+
+/* Customer survey prompt for the surveyed leader. */
+.survey-prompt {
+  position: absolute;
+  right: 3%;
+  top: 30%;
+  padding: 10px 22px 12px;
+  border-radius: 14px;
+  background: rgba(14, 58, 60, 0.82);
+  border: 2px solid #46c9c9;
+  color: #e8fffd;
+  text-align: center;
+  box-shadow: 0 0 24px rgba(70, 201, 201, 0.45);
+}
+
+.survey-prompt.hidden {
+  display: none;
+}
+
+.survey-title {
+  font-size: 19px;
+  font-weight: 800;
+}
+
+.survey-stars {
+  margin-top: 2px;
+  font-size: 26px;
+  letter-spacing: 6px;
+  color: #ffd257;
+  animation: survey-twinkle 1.6s linear infinite;
+}
+
+.survey-sub {
+  font-size: 12px;
+  color: #a9e3df;
+}
+
+@keyframes survey-twinkle {
+  0%,
+  100% {
+    text-shadow: 0 0 4px rgba(255, 210, 87, 0.4);
+  }
+  50% {
+    text-shadow: 0 0 14px rgba(255, 210, 87, 1);
+  }
+}
+
+/* Pizza hold ring around the crosshair for the recipient. */
+.pizza-hold {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 132px;
+  height: 132px;
+  margin: -66px 0 0 -66px;
+}
+
+.pizza-hold.hidden {
+  display: none;
+}
+
+.pizza-hold svg {
+  width: 100%;
+  height: 100%;
+  transform: rotate(-90deg);
+  filter: drop-shadow(0 0 6px rgba(255, 170, 60, 0.7));
+}
+
+.pizza-track {
+  fill: none;
+  stroke: rgba(255, 220, 160, 0.2);
+  stroke-width: 7;
+}
+
+.pizza-arc {
+  fill: none;
+  stroke: #ffc243;
+  stroke-width: 7;
+  stroke-linecap: round;
+  stroke-dasharray: 0 999;
+}
+
+.pizza-label {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -22px;
+  text-align: center;
+  color: #ffe2a8;
+  font-size: 13px;
+  font-weight: 800;
+  text-shadow: 0 1px 2px #000;
+}
+
+/* Toasts: what the visitors just did. */
+.visitor-toasts {
+  position: absolute;
+  left: 50%;
+  top: 24%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+
+.visitor-toast {
+  padding: 5px 14px;
+  border-radius: 10px;
+  background: rgba(20, 16, 24, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  color: #f3eef4;
+  font-size: 14px;
+  font-weight: 600;
+  white-space: nowrap;
+  animation: visitor-toast-in 0.25s ease-out;
+}
+
+.visitor-toast.own {
+  font-size: 17px;
+  font-weight: 800;
+  border-color: #ffb347;
+  color: #fff3df;
+}
+
+.visitor-toast[data-event="tax_drone"] {
+  border-color: #e6c463;
+}
+
+.visitor-toast[data-event="pizza_delivery"] {
+  border-color: #ff8c4a;
+}
+
+.visitor-toast[data-event="customer_survey"] {
+  border-color: #46c9c9;
+}
+
+.visitor-toast[data-event="mimic_pickups"] {
+  border-color: #b6e04a;
+}
+
+.visitor-toast-stars {
+  margin-left: 8px;
+  letter-spacing: 2px;
+}
+
+.star {
+  color: rgba(255, 255, 255, 0.22);
+}
+
+.visitor-toast-stars .star.on {
+  color: #ffc21a;
+  text-shadow: 0 0 6px rgba(255, 194, 26, 0.8);
+}
+
+.survey-stars .star {
+  color: #ffd257;
+}
+
+@keyframes visitor-toast-in {
+  from {
+    transform: translateY(-8px);
+    opacity: 0;
+  }
+  to {
+    transform: none;
+    opacity: 1;
+  }
+}
+
+@media (max-width: 700px) {
+  .gossip-bubble {
+    max-width: 240px;
+    font-size: 14px;
+    margin-left: -120px;
+  }
+  .visitor-toast {
+    white-space: normal;
+    font-size: 12px;
+  }
+  .visitor-toast.own {
+    font-size: 14px;
+  }
+}

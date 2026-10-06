@@ -204,6 +204,8 @@ export interface GameHandle {
   wells?(): Float32Array;
   /** The level's up (unit vector; +Y unless Bored level turned it). */
   up?(): Float32Array;
+  /** The match's pickup points, [x, y, z] each, in the world's order (Mimic pickups' spawn indices index it; M4 C2). */
+  pickupPoints?(): Float32Array;
   /** Monochrome level (Palette 80+ or Last Color Standing): pigment rules and the ink look. */
   readonly monochrome?: boolean;
   /** Radiation dose rate (hull per second) at a point; 0 on classic levels. */

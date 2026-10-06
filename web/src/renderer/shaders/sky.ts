@@ -173,7 +173,7 @@ fn fs_main(in: FsOut) -> @location(0) vec4f {
 `;
 
 /** Floats of the sky pass uniform (struct Sky). */
-export const SKY_UNIFORM_FLOATS = 64;
+export const SKY_UNIFORM_FLOATS = 68;
 
 export const SKY_WGSL = /* wgsl */ `
 ${FULLSCREEN_VS}
@@ -195,8 +195,14 @@ struct Sky {
   room_max: vec4f,
   viewport: vec4f,    // xy size in pixels
   band: vec4f,        // xyz galactic band normal, w = band width
+  turn: vec4f,        // unit quaternion from world directions to the sky's frame (M4 B5: Bored level turns the sky)
 };
 @group(0) @binding(0) var<uniform> sky: Sky;
+
+fn sky_frame(d: vec3f) -> vec3f {
+  let q = sky.turn;
+  return d + 2.0 * cross(q.xyz, cross(q.xyz, d) + q.w * d);
+}
 @group(0) @binding(1) var env_cube: texture_cube<f32>;
 @group(0) @binding(2) var env_samp: sampler;
 @group(0) @binding(3) var planet_tex: texture_2d<f32>;
@@ -352,10 +358,12 @@ fn boundary(d: vec3f) -> vec3f {
 @fragment
 fn fs_main(in: FsOut) -> @location(0) vec4f {
   let ndc = vec2f(in.uv.x * 2.0 - 1.0, 1.0 - in.uv.y * 2.0);
-  let d = normalize(sky.fwd.xyz + ndc.x * sky.right.xyz + ndc.y * sky.up.xyz);
+  let dw = normalize(sky.fwd.xyz + ndc.x * sky.right.xyz + ndc.y * sky.up.xyz);
   // Derivatives first (uniform control flow: the grid strength is a uniform).
+  // The boundary grid stays on the level box; everything else turns with the sky.
   var grid = vec3f(0.0);
-  if (sky.cam.w > 0.0) { grid = boundary(d); }
+  if (sky.cam.w > 0.0) { grid = boundary(dw); }
+  let d = sky_frame(dw);
   var c = textureSampleLevel(env_cube, env_samp, d, 0.0).rgb;
   // More stars along the galactic band.
   let bd = dot(d, sky.band.xyz);

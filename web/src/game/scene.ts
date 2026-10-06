@@ -468,6 +468,8 @@ export interface SceneExtras extends EntityHulls {
   refractCloak?: boolean;
   /** Ship colour override (M3 C1: Last Color Standing). */
   shipStyle?: ShipStyleFn | null;
+  /** Entity kinds another module draws (M4 B5: pigment pickups, game/worldFx.ts). */
+  skipKinds?: ReadonlySet<string> | undefined;
 }
 
 /** Builds the whole instance scene for one frame. */
@@ -488,7 +490,8 @@ export function buildScene(
   addProjectiles(scene, hide ? shots.filter((p) => !hide(p)) : shots, visuals, teamOf, time, teams, vfx);
   // Ship types of the ships in view, unless the caller knows every player's.
   const shipTypeOf = extras.shipTypeOf ?? ((id: number) => ships.find((s) => s.id === id)?.shipType);
-  addEntities(scene, entities, visuals, time, { shipTypeOf, wreckTypeOf: extras.wreckTypeOf }, teams, vfx);
+  const skip = extras.skipKinds;
+  addEntities(scene, skip ? entities.filter((e) => !skip.has(e.kind)) : entities, visuals, time, { shipTypeOf, wreckTypeOf: extras.wreckTypeOf }, teams, vfx);
   if (!vfx) addEffects(scene, extras.beams ?? [], extras.flashes ?? [], time);
   return scene;
 }

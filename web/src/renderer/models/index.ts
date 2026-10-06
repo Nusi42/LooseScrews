@@ -23,6 +23,7 @@ import {
 } from "../primitives.ts";
 import { buildProp, crateModel, gadgetModel, harpoonModel, mineModel, paperweightModel, rocketModel, upgradeModel } from "./props.ts";
 import { coreModel, reactorModel } from "./modeProps.ts";
+import { pigmentDropModel } from "./worldProps.ts";
 import { hullOf } from "./ships.ts";
 import { wreckModel } from "./wrecks.ts";
 
@@ -54,7 +55,8 @@ export type MeshKind =
   | "duck"
   | "core"
   | "reactor"
-  | "paperweight";
+  | "paperweight"
+  | "pigment";
 
 /** Hull mesh of a ship type (unknown types: the Tinker's). */
 export function shipMeshKind(shipType: number): ShipMeshKind {
@@ -98,6 +100,8 @@ export const MESH_BUILDERS: Readonly<Record<MeshKind, () => MeshData>> = {
   reactor: buildProp(reactorModel),
   // M4 B7.
   paperweight: buildProp(paperweightModel),
+  // M4 B5: the pigment drop (worldProps.ts).
+  pigment: buildProp(pigmentDropModel),
 };
 
 /** The pre-VQ4 primitives for every kind (one dart for all hulls, one wreck). */
@@ -127,6 +131,7 @@ export const LEGACY_MESH_BUILDERS: Readonly<Record<MeshKind, () => MeshData>> = 
   core: () => sphereMesh(1),
   reactor: () => sphereMesh(1),
   paperweight: () => sphereMesh(1),
+  pigment: () => sphereMesh(1),
 };
 
 export const MESH_KINDS = Object.keys(MESH_BUILDERS) as MeshKind[];

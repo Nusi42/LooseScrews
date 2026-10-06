@@ -40,6 +40,7 @@ import { loadWasm } from "../wasm/load.ts";
 import { pickCloseup, pickCorner, pickLongest, pickVista, probeAround, raycast, rayMesh, sphereDirections, type Probe, type RayMesh } from "./raycast.ts";
 import { FIT_TUNNEL_RADIUS, needsWorldCode, sceneById, worldSliders, type GalleryScene } from "./scenes.ts";
 import { levelPose } from "./levelScenes.ts";
+import { prepareWorldScene, runWorldScene, type WorldPrep } from "./worldScenes.ts";
 import { applyDecor, decorSpots, pickBorder, type DecorSpot } from "./decor.ts";
 import { explosionAt, simulateVfx } from "./vfxScenes.ts";
 import { pickShadePose, pickSunWallPose } from "./shadePose.ts";
@@ -511,6 +512,20 @@ export async function runGallery(canvas: HTMLCanvasElement, ui: HTMLElement, loc
       const tilt = q.fromAxisAngle(q.right(pose.orientation), (scene.pitch * Math.PI) / 180);
       pose.orientation = q.normalize(q.mul(tilt, pose.orientation));
     }
+    // M4 B5 world scenes: their own camera (wells, the cave-in spot) and the rubble's terrain edits.
+    let worldPrep: WorldPrep | null = null;
+    if (scene.content === "world" && scene.worldFx) {
+      worldPrep = prepareWorldScene(
+        scene.worldFx,
+        pose,
+        api.levelWells?.(status.shareCode) ?? null,
+        (o, d, max) => raycast(rayMeshes.values(), o, d, max)?.t ?? -1,
+        (add, c, r) => game.practiceEdit?.(add, c.x, c.y, c.z, r) ?? false,
+      );
+      pose.position = worldPrep.pose.position;
+      pose.orientation = worldPrep.pose.orientation;
+      if (worldPrep.edited) loader.reset(game);
+    }
     // `?roomfade=off`: rock cut off sharply at the hidden walls (pre-VQP).
     renderer.roomFade = new URLSearchParams(loc.search).get("roomfade") !== "off";
     view = { ...view, ...pose };
@@ -583,6 +598,22 @@ export async function runGallery(canvas: HTMLCanvasElement, ui: HTMLElement, loc
         renderer.hullFrame.state = { ...own, color: style.color, keepColor: style.keepColor };
       }
       if (particles) status.particles = particles.liveCount();
+    } else if (scene.content === "world" && scene.worldFx && worldPrep) {
+      status.particles = runWorldScene({
+        kind: scene.worldFx,
+        renderer,
+        game,
+        prep: worldPrep,
+        time: scene.time,
+        visuals,
+        particles,
+        ui,
+        canvas,
+        ray: (o, d, max) => raycast(rayMeshes.values(), o, d, max)?.t ?? -1,
+        enabled: new URLSearchParams(loc.search).get("worldfx") !== "off",
+        center: boundsCenter(game.bounds()),
+        lights,
+      });
     } else {
       const content = sceneContent(scene, pose, visuals, impact, lights, particles !== null && scene.content !== "lights", wallAhead);
       // Pigmented hulls (M4 A7 keep mask): their colour survives the monochrome ink.
@@ -592,7 +623,7 @@ export async function runGallery(canvas: HTMLCanvasElement, ui: HTMLElement, loc
       }
       renderer.setScene(content);
     }
-    if (particles && scene.content !== "mode") {
+    if (particles && scene.content !== "mode" && scene.content !== "world") {
       // VQ5: the particles of the scene's synthetic history up to its time (vfxScenes.ts).
       // Scenes whose effects come only from VQ5 also take its effect lights (VQ6
       // pulses); the fight and lights scenes emit theirs in sceneContent.

@@ -6,6 +6,7 @@ import type { Quat } from "../math/quat.ts";
 import type { Vec3 } from "../math/vec3.ts";
 import type { SceneDecor } from "./decor.ts";
 import { LEVEL_SCENES } from "./levelScenes.ts";
+import { MOOD_SCENES, type WorldSceneKind } from "./moodScenes.ts";
 import type { ModeSceneKind } from "./modeScenes.ts";
 
 /**
@@ -66,7 +67,7 @@ export type PoseKind = "closeup" | "tunnel" | "vista" | "border" | "sun" | "plan
  * one flies (weaponScenes.ts, M4 B7), `paperweight-wall` the same with the
  * landed stone on the rock ahead.
  */
-export type SceneContent = "none" | "lineup" | "fight" | "lights" | "explosion" | "stress" | "fit" | "charge" | "cloak" | "mode" | "shadow" | "paperweight" | "paperweight-wall";
+export type SceneContent = "none" | "lineup" | "fight" | "lights" | "explosion" | "stress" | "fit" | "charge" | "cloak" | "mode" | "shadow" | "paperweight" | "paperweight-wall" | "world";
 
 /** Radius of the `fit` scene's tunnel (u): 1.2 u across. */
 export const FIT_TUNNEL_RADIUS = 0.6;
@@ -106,6 +107,8 @@ export interface GalleryScene {
   belowCeiling?: number;
   /** "mode" content: which mode's visuals (M3 C1, modeScenes.ts). */
   mode?: ModeSceneKind;
+  /** "world" content: which world visual (M4 B5, moodScenes.ts / worldScenes.ts). */
+  worldFx?: WorldSceneKind;
   /**
    * A fixed camera instead of the picked pose, for scenes whose before and
    * after shots must match while the meshes (and so the picked pose) change
@@ -403,6 +406,8 @@ export const SCENES: readonly GalleryScene[] = [
   // M4 A1: level shapes, gravity wells and the asteroid belt (generator version 4).
   ...LEVEL_SCENES,
   ...paletteScenes(),
+  // M4 B5: wells, cave-ins, pigment, moods and the Bored level turn.
+  ...MOOD_SCENES,
   // World workshop (M4 A8): the workshop page over the preview of the world it makes.
   { id: "workshop", title: "World workshop over its preview", covers: "world workshop", world: BACKDROP, pose: "tunnel", content: "none", time: 8.0, page: "workshop", workshop: { seed: "6", sliders: [38, 60, 50, 30, 0, 40, 30], archetype: "classic" } },
   { id: "workshop-tall", title: "World workshop: a tall world (Verticality 90)", covers: "world workshop", world: BACKDROP, pose: "tunnel", content: "none", time: 8.0, page: "workshop", workshop: { seed: "5150", sliders: [55, 45, 90, 0, 20, 60, 50], archetype: "classic" } },
@@ -438,6 +443,8 @@ export const PASS_BUDGETS_MS: Readonly<Record<string, number>> = {
   mode: 1.0,
   // M4 A7: the Palette slider's ink lines (outlines and hatching; only from Palette 50).
   ink: 0.8,
+  // M4 B5: gravity wells (lensing, glow, core stone), cave-in cracks and rubble (wells.ts; only the rectangle they cover).
+  wells: 0.4,
   // FI: the hull view behind the ship cards (attract/shipBay.ts; its own small canvas, "medium").
   bay: 0.8,
 };

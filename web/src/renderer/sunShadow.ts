@@ -214,6 +214,75 @@ export function sunShadowBindLayoutEntries(): GPUBindGroupLayoutEntry[] {
   ];
 }
 
+/**
+ * A turning sun (M4 B5: Bored level turns the level's up, and the sun with
+ * it) would redraw the whole map every frame. Instead the map for a new sun
+ * direction is drawn into a second map over SPREAD_SLICES frames (one band of
+ * rows each) while the scene keeps using the finished one; then it is copied
+ * over and the next direction starts. Shadows lag the sun by at most twice
+ * that many frames (about 3 degrees at the turn's speed).
+ */
+export const SPREAD_SLICES = 8;
+
+/** Rows [y0, y1) of slice `i` of `n` in a `size`² map. */
+export function sliceRows(i: number, n: number, size: number): [number, number] {
+  return [Math.floor((i * size) / n), Math.floor(((i + 1) * size) / n)];
+}
+
+/**
+ * Bookkeeping of a spread redraw (pure; SunShadow drives the GPU side):
+ * `request` a direction; `step` gives the slice to draw this frame and says
+ * when the last one is drawn (then `adopt` the pending direction). A
+ * direction requested while a redraw runs waits for it to finish (only the
+ * newest waiting one is kept).
+ */
+export class SunSweep {
+  pending: Vec3 | null = null;
+  next = 0;
+  wanted: Vec3 | null = null;
+  readonly slices: number;
+
+  constructor(slices = SPREAD_SLICES) {
+    this.slices = slices;
+  }
+
+  /** The newest direction asked for (null when idle). */
+  get latest(): Vec3 | null {
+    return this.wanted ?? this.pending;
+  }
+
+  request(d: Vec3): void {
+    if (this.pending) {
+      this.wanted = d;
+    } else {
+      this.pending = d;
+      this.next = 0;
+    }
+  }
+
+  /** The slice to draw now, and whether it is the last of the pending direction. */
+  step(): { slice: number; last: boolean } | null {
+    if (!this.pending) return null;
+    const slice = this.next++;
+    return { slice, last: this.next >= this.slices };
+  }
+
+  /** The pending direction is drawn: returns it and starts the waiting one, if any. */
+  adopt(): Vec3 | null {
+    const done = this.pending;
+    this.pending = this.wanted;
+    this.wanted = null;
+    this.next = 0;
+    return done;
+  }
+
+  cancel(): void {
+    this.pending = null;
+    this.wanted = null;
+    this.next = 0;
+  }
+}
+
 /** Statistics of the last update (debug overlay, gallery). */
 export interface ShadowStats {
   /** Map size in texels. */
@@ -224,6 +293,9 @@ export interface ShadowStats {
   /** Updates since start (full redraws included). */
   updates: number;
   full: number;
+  /** Slices drawn for spread redraws (a turning sun) and next maps swapped in (M4 B5). */
+  slices?: number;
+  swaps?: number;
 }
 
 export class SunShadow {
@@ -261,7 +333,16 @@ export class SunShadow {
   bench: "full" | "chunk" | null = null;
   /** Ships and wrecks cast sun shadows (the ship map, D5); false = only rock does. */
   shipShadows = true;
-  readonly stats: ShadowStats = { size: 0, rects: 0, draws: 0, updates: 0, full: 0 };
+  readonly stats: ShadowStats = { size: 0, rects: 0, draws: 0, updates: 0, full: 0, slices: 0, swaps: 0 };
+  /** Spread redraw of a turning sun (M4 B5): the next map, its frame and its own caster uniform. */
+  private readonly sweep = new SunSweep();
+  private sweepFrame: ShadowFrame | null = null;
+  private sweepChanged: Aabb[] = [];
+  private back: GPUTexture | null = null;
+  private idleFrames = 0;
+  private readonly sweepUniform: GPUBuffer;
+  private readonly sweepData = new Float32Array(SUN_SHADOW_UNIFORM_FLOATS);
+  private readonly sweepBindGroup: GPUBindGroup;
 
   /**
    * `size`: the terrain map (1 = no shadows: a placeholder); the ship map is
@@ -297,6 +378,15 @@ export class SunShadow {
     this.casterBindGroup = device.createBindGroup({
       layout: this.casterLayout,
       entries: [{ binding: 0, resource: { buffer: this.uniform } }],
+    });
+    this.sweepUniform = device.createBuffer({
+      label: "sun shadow sweep",
+      size: SUN_SHADOW_UNIFORM_FLOATS * 4,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    this.sweepBindGroup = device.createBindGroup({
+      layout: this.casterLayout,
+      entries: [{ binding: 0, resource: { buffer: this.sweepUniform } }],
     });
     const module = device.createShaderModule({ label: "sun shadow caster", code: SHADOW_CASTER_WGSL });
     const layout = device.createPipelineLayout({ bindGroupLayouts: [this.casterLayout] });
@@ -349,7 +439,8 @@ export class SunShadow {
       label,
       size: { width: size, height: size },
       format: SHADOW_FORMAT,
-      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+      // COPY_*: a spread redraw (a turning sun, M4 B5) copies the finished next map over the current one.
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC | GPUTextureUsage.COPY_DST,
     });
   }
 
@@ -416,20 +507,48 @@ export class SunShadow {
     this.writeUniform();
   }
 
-  /** Direction toward the sun; a change redraws the whole map. */
-  setSun(dir: Vec3): void {
+  /**
+   * Direction toward the sun; a change redraws the whole map. With `spread`
+   * (a sun that keeps turning, M4 B5) the new map is drawn over
+   * SPREAD_SLICES frames while the old one stays in use (SunSweep).
+   */
+  setSun(dir: Vec3, spread = false): void {
     const d = normalize(dir);
-    if (Math.abs(d.x - this.sun.x) + Math.abs(d.y - this.sun.y) + Math.abs(d.z - this.sun.z) < 1e-6) return;
+    const same = (a: Vec3): boolean => Math.abs(d.x - a.x) + Math.abs(d.y - a.y) + Math.abs(d.z - a.z) < 1e-6;
+    if (spread && this.frame && this.region && this.enabled && !this.sealed && this.size > 1) {
+      if (same(this.sweep.latest ?? this.sun)) return;
+      if (!this.sweep.pending) {
+        this.sweepFrame = shadowFrame(d, this.region, this.size);
+        this.sweepChanged = [];
+      }
+      this.sweep.request(d);
+      return;
+    }
+    this.sweep.cancel();
+    if (same(this.sun)) return;
     this.sun = d;
     this.reframe();
+  }
+
+  /** A spread redraw is under way (the map lags the requested sun). */
+  get sweeping(): boolean {
+    return this.sweep.pending !== null;
   }
 
   /** A chunk was added, replaced or removed (`before` / `after`: its old and new extent). */
   chunkChanged(before: Aabb | null, after: Aabb | null): void {
     if (after && (!this.region || !boxContains(this.region, after))) {
       this.region = snapBox(this.region ? boxUnion(this.region, after) : after);
+      // A growing region starts over, at the newest direction asked for.
+      const latest = this.sweep.latest;
+      if (latest) this.sun = latest;
+      this.sweep.cancel();
       this.reframe();
       return;
+    }
+    if (this.sweep.pending) {
+      // Redrawn in the next map once it is swapped in.
+      for (const b of [before, after]) if (b) this.sweepChanged.push(b);
     }
     if (this.full || !this.frame) return;
     for (const b of [before, after]) {
@@ -441,7 +560,7 @@ export class SunShadow {
 
   /** Every chunk is gone (new match): the region starts over. */
   clear(): void {
-
+    this.sweep.cancel();
     this.region = null;
     this.frame = null;
     this.dirty = [];
@@ -468,8 +587,12 @@ export class SunShadow {
   }
 
   private writeUniform(): void {
-    const d = this.data;
-    const f = this.frame;
+    this.packUniform(this.data, this.frame);
+    this.device.queue.writeBuffer(this.uniform, 0, this.data);
+  }
+
+  /** The uniform block for the map drawn with frame `f` (the scene's, or a sweep's next map). */
+  private packUniform(d: Float32Array, f: ShadowFrame | null): void {
     const on = this.enabled && f !== null;
     const mode = !this.enabled ? 0 : this.sealed ? -1 : on ? 1 : 0;
     if (f) d.set(f.clip, 0);
@@ -480,7 +603,68 @@ export class SunShadow {
     const ship = this.shipFrame;
     if (ship) d.set(ship.clip, 28);
     d.set([ship ? 1 : 0, SHIP_SHADOW_PCF_TEXELS / this.shipSize, ship ? SHIP_SHADOW_BIAS / ship.depthRange : 0, 0], 44);
-    this.device.queue.writeBuffer(this.uniform, 0, d);
+  }
+
+  /**
+   * One slice of a spread redraw into the next map; after the last one the
+   * next map is copied over the scene's and its frame takes over.
+   */
+  private encodeSweep(encoder: GPUCommandEncoder, chunks: ReadonlyMap<string, GpuMesh>, timer: PassTimer): void {
+    const step = this.enabled && !this.sealed && this.region ? this.sweep.step() : null;
+    if (!step) {
+      if (this.back && ++this.idleFrames > 120) {
+        this.back.destroy();
+        this.back = null;
+      }
+      return;
+    }
+    this.idleFrames = 0;
+    const f = this.sweepFrame;
+    if (!f) {
+      this.sweep.cancel();
+      return;
+    }
+    this.back ??= this.createTexture(this.size, "sun shadow map (next)");
+    this.packUniform(this.sweepData, f);
+    this.device.queue.writeBuffer(this.sweepUniform, 0, this.sweepData);
+    const [y0, y1] = sliceRows(step.slice, this.sweep.slices, this.size);
+    const rect: Rect = [0, y0, this.size, y1];
+    const timestampWrites = timer?.pass("shadow");
+    const pass = encoder.beginRenderPass({
+      label: "sun shadow sweep",
+      ...(timestampWrites ? { timestampWrites } : {}),
+      colorAttachments: [],
+      depthStencilAttachment: { view: this.back.createView(), depthClearValue: 1, depthLoadOp: step.slice === 0 ? "clear" : "load", depthStoreOp: "store" },
+    });
+    pass.setBindGroup(0, this.sweepBindGroup);
+    pass.setScissorRect(rect[0], rect[1], rect[2] - rect[0], rect[3] - rect[1]);
+    pass.setPipeline(this.casterPipeline);
+    for (const mesh of chunks.values()) {
+      if (!mesh.aabb || mesh.indexCount === 0) continue;
+      const r = texelRect(f.clip, mesh.aabb, this.size);
+      if (!r || !rectsOverlap(r, rect)) continue;
+      pass.setVertexBuffer(0, mesh.positionBuffer);
+      pass.setIndexBuffer(mesh.indexBuffer, "uint32");
+      pass.drawIndexed(mesh.indexCount);
+    }
+    pass.end();
+    this.stats.slices = (this.stats.slices ?? 0) + 1;
+    if (!step.last) return;
+    // The next map is complete: it becomes the scene's map.
+    encoder.copyTextureToTexture({ texture: this.back }, { texture: this.texture }, { width: this.size, height: this.size });
+    this.sun = this.sweep.adopt() ?? this.sun;
+    this.frame = f;
+    this.full = false;
+    this.dirty = [];
+    for (const b of this.sweepChanged) {
+      const r = texelRect(f.clip, b, this.size);
+      if (r) this.dirty = addDirty(this.dirty, r);
+    }
+    this.sweepChanged = [];
+    const waiting = this.sweep.pending;
+    this.sweepFrame = waiting && this.region ? shadowFrame(waiting, this.region, this.size) : null;
+    this.writeUniform();
+    this.stats.swaps = (this.stats.swaps ?? 0) + 1;
   }
 
   /**
@@ -517,6 +701,7 @@ export class SunShadow {
 
   /** Redraws the dirty parts of the map (or all of it) before the scene pass. */
   encode(encoder: GPUCommandEncoder, chunks: ReadonlyMap<string, GpuMesh>, timer: PassTimer): void {
+    this.encodeSweep(encoder, chunks, timer);
     const f = this.frame;
     if (f && this.bench === "full") this.full = true;
     if (f && this.bench === "chunk" && this.region) {
@@ -575,6 +760,8 @@ export class SunShadow {
   }
 
   destroy(): void {
+    this.back?.destroy();
+    this.sweepUniform.destroy();
     this.texture.destroy();
     this.shipTexture.destroy();
     this.uniform.destroy();

@@ -10,6 +10,7 @@
 // scheme; the selected ones are highlighted.
 
 import { FitRing } from "./fitRing.ts";
+import { MoodBadge, PullIndicator } from "./worldHud.ts";
 import { emptyLoadout, type LoadoutState } from "../game/views.ts";
 import { chargeLabel, gadgetDetail, paintColorLabel, PAINT_COLORS, type ChargeMeter, type GadgetState } from "../game/mechanics.ts";
 
@@ -168,6 +169,9 @@ export class Hud {
   readonly root: HTMLElement;
   /** The fit ring around the crosshair (VQ1, ui/fitRing.ts); main.ts feeds it. */
   readonly fitRing: FitRing;
+  /** Gravity pull around the crosshair and the level's mood (M4 B5, ui/worldHud.ts); main.ts feeds them. */
+  readonly pull: PullIndicator;
+  readonly mood: MoodBadge;
   private values: HudValues = { ...DEFAULT_HUD, paint: [...DEFAULT_HUD.paint] };
   /** Last rendered representation per DOM slot, to skip redundant writes. */
   private readonly rendered = new Map<string, string>();
@@ -195,6 +199,8 @@ export class Hud {
     this.root = el("div", "hud hidden", parent);
     el("div", "hud-crosshair", this.root);
     this.fitRing = new FitRing(this.root);
+    this.pull = new PullIndicator(this.root);
+    this.mood = new MoodBadge(this.root);
 
     const left = el("div", "hud-panel hud-left", this.root);
     const meter = (name: string, cls: MeterName): Meter => {

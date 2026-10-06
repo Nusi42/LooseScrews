@@ -28,7 +28,7 @@ import { CUE, EffectsState, NO_SHIP, type Cue, type EffectsContext, type Flash }
 import { LightFx, sceneLights } from "../game/lightFx.ts";
 import { buildScene } from "../game/scene.ts";
 import type { PointLight } from "../renderer/lights.ts";
-import { parsePose, parseVisuals, type ProjectileState, type ShipState, type VisualDef } from "../game/views.ts";
+import { parsePose, parseVisuals, type EntityState, type ProjectileState, type ShipState, type VisualDef } from "../game/views.ts";
 import type { GpuTimings } from "../renderer/gpuTimer.ts";
 import { atmosphereFor } from "../renderer/atmosphere.ts";
 import { GRADE_PRESETS } from "../renderer/post.ts";
@@ -44,6 +44,7 @@ import { applyDecor, decorSpots, pickBorder, type DecorSpot } from "./decor.ts";
 import { explosionAt, simulateVfx } from "./vfxScenes.ts";
 import { pickShadePose, pickSunWallPose } from "./shadePose.ts";
 import { chargeAt, cloakAt, CLOAKED } from "./vqpScenes.ts";
+import { paperweightAt } from "./weaponScenes.ts";
 import { chargeLight } from "../game/chargeFx.ts";
 import { modeMoment, modeScene } from "./modeScenes.ts";
 import { colourMeterStyle, monochromeGrade } from "../game/modeVisuals.ts";
@@ -237,6 +238,7 @@ export function sceneContent(
     v3.add(cam.position, v3.add(v3.scale(f, fw), v3.add(v3.scale(r, rt), v3.scale(u, upw))));
   const ships: ShipState[] = [];
   const shots: ProjectileState[] = [];
+  const entities: EntityState[] = [];
   const time = scene.time;
   let gadgets = new Set<number>();
   let cloaked: ReadonlySet<number> = new Set<number>();
@@ -372,12 +374,17 @@ export function sceneContent(
   } else if (scene.content === "cloak") {
     ships.push(...cloakAt(cam));
     cloaked = CLOAKED;
+  } else if (scene.content === "paperweight" || scene.content === "paperweight-wall") {
+    const m = paperweightAt(cam, visuals, time, wallAhead, scene.content === "paperweight-wall", time);
+    ships.push(...m.ships);
+    shots.push(...m.shots);
+    entities.push(...m.entities);
   }
   const gadgetOf = (id: number): string => (gadgets.has(id) ? "shield" : cloaked.has(id) ? "cloak" : "");
-  sceneLights({ ships, shots, visuals, flashes, time, gadgetOf }, lights);
+  sceneLights({ ships, shots, entities, visuals, flashes, time, gadgetOf }, lights);
   lightFx.frame(time, lights);
   const teamOf = (id: number): number | undefined => (id === 0 ? 0 : ships.find((s) => s.id === id)?.team);
-  return buildScene(ships, shots, [], visuals, teamOf, time, {
+  return buildScene(ships, shots, entities, visuals, teamOf, time, {
     gadgetOf,
     flashes,
     vfx,
@@ -592,7 +599,7 @@ export async function runGallery(canvas: HTMLCanvasElement, ui: HTMLElement, loc
       const fallback = v3.addScaled(pose.position, impactDir, 16);
       const effectLights = scene.content === "explosion" || scene.content === "stress" ? new LightFx() : undefined;
       if (effectLights) effectLights.random = mulberry32(7);
-      simulateVfx(particles, scene, pose, visuals, impact ?? fallback, LINEUP_RADII, (id) => (scene.content === "fight" && id === 2 ? "shield" : scene.content === "cloak" && CLOAKED.has(id) ? "cloak" : ""), effectLights);
+      simulateVfx(particles, scene, pose, visuals, impact ?? fallback, LINEUP_RADII, (id) => (scene.content === "fight" && id === 2 ? "shield" : scene.content === "cloak" && CLOAKED.has(id) ? "cloak" : ""), effectLights, wallAhead);
       effectLights?.frame(scene.time, lights);
       status.particles = particles.liveCount();
     }

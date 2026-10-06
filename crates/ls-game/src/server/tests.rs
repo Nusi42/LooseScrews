@@ -1071,3 +1071,129 @@ fn architect_actions_are_queued_bounded_and_attributed() {
     );
     assert_eq!(r.stats().dropped_architect_actions, 10);
 }
+
+/// Lag compensation previews the target's movement with the gravity wells
+/// (M4; static and dynamic): a target hauled up by a well sits at its
+/// rewound position after the displaced step, as the plan promises.
+#[test]
+fn lag_compensation_previews_targets_in_gravity_wells() {
+    use super::lagcomp::{plan_compensation, ShipHistory};
+    use ls_math::terrain::TerrainQuery;
+    use ls_math::Quat;
+    use ls_sim::{Buttons, DynamicWell, ShipType};
+    use std::collections::BTreeMap;
+    const REWIND: u64 = 15;
+    let r = room();
+    let t = r.terrain().clone();
+    let b = t.bounds();
+    // Open space around the spot.
+    let c = (0..400)
+        .map(|i| {
+            let f = |k: u32| ((i * k) % 97) as f32 / 97.0;
+            b.min
+                + (b.max - b.min).mul_elem(Vec3::new(
+                    0.2 + 0.6 * f(13),
+                    0.3 + 0.4 * f(29),
+                    0.2 + 0.6 * f(53),
+                ))
+        })
+        .find(|&p| {
+            [
+                Vec3::ZERO,
+                Vec3::X * 6.0,
+                Vec3::X * -6.0,
+                Vec3::Y * 6.0,
+                Vec3::Y * -4.0,
+                Vec3::new(-3.0, -3.0, 0.0),
+                Vec3::new(3.0, 3.0, 0.0),
+            ]
+            .iter()
+            .all(|&o| t.sdf(p + o) > 2.5)
+                && t.raycast(p - Vec3::new(9.0, 3.0, 0.0), Vec3::X, 18.0)
+                    .is_none()
+                && t.raycast(p - Vec3::new(9.0, 0.0, 0.0), Vec3::X, 18.0)
+                    .is_none()
+        })
+        .expect("open space in the level");
+    let mut planned = 0;
+    let mut worst = 0.0f32;
+    // Aim at heights below the target: somewhere the shot misses the
+    // climbing target but hits where the shooter saw it.
+    for k in 0..12 {
+        let mut w = r.world().clone();
+        let mut t = t.clone();
+        let a = w.add_player(Some(0), ShipType::Tinker).unwrap();
+        let tg = w.add_player(Some(1), ShipType::Tinker).unwrap();
+        let place = |w: &mut World, id, pos: Vec3, dir: Vec3| {
+            let s = w.ship_mut(id).unwrap();
+            s.pos = pos;
+            s.vel = Vec3::ZERO;
+            s.orientation = Quat::from_rotation_arc(Vec3::NEG_Z, dir.normalize());
+        };
+        let target = c + Vec3::new(3.0, -2.0, 0.0);
+        place(&mut w, tg, target, Vec3::X);
+        let now = w.tick();
+        w.add_well(DynamicWell {
+            key: 1,
+            pos: target + Vec3::Y * 5.0,
+            peak_accel: 9.0,
+            range: 16.0,
+            start_tick: now + 1,
+            end_tick: now + 600,
+            owner: None,
+        });
+        let mut history = ShipHistory::new(REWIND);
+        let idle = |k: u64| -> BTreeMap<PlayerId, InputCmd> {
+            [(a, InputCmd::idle(k)), (tg, InputCmd::idle(k))].into()
+        };
+        // The target starts to climb; the shooter waits 8 ticks (the
+        // whole test stays below tick 30, see `cfg`).
+        for _ in 0..8 {
+            place(&mut w, a, target - Vec3::X * 6.0, Vec3::X);
+            let k = w.tick() + 1;
+            let inputs: Vec<_> = idle(k).into_iter().collect();
+            w.step(&mut t, &inputs);
+            history.record(k, &w);
+        }
+        // Fire a Scrap Laser bolt at a point below the target.
+        let aim_at = w.ship(tg).unwrap().pos - Vec3::Y * (0.25 * k as f32);
+        let from = aim_at - Vec3::X * 6.0;
+        place(&mut w, a, from, Vec3::X);
+        let k0 = w.tick() + 1;
+        let mut inputs = idle(k0);
+        inputs.insert(a, InputCmd::idle(k0).with_buttons(Buttons::FIRE_PRIMARY));
+        let ev = w.step(&mut t, &inputs.into_iter().collect::<Vec<_>>());
+        history.record(k0, &w);
+        let Some(pid) = ev.iter().find_map(|e| match e {
+            Event::Fired { projectile, .. } => Some(*projectile),
+            _ => None,
+        }) else {
+            panic!("fired");
+        };
+        let rewinds: BTreeMap<u32, u64> = [(pid, REWIND)].into();
+        while w.tick() < 29 {
+            let k = w.tick() + 1;
+            let inputs = idle(k);
+            let plan = plan_compensation(&w, &t, &inputs, &history, &rewinds);
+            for d in &plan {
+                // The displaced step leaves the target at its rewound spot.
+                let rewound = history.position(d.player, k - REWIND).unwrap();
+                let mut probe = w.clone();
+                probe.ship_mut(d.player).unwrap().pos += d.offset;
+                let list: Vec<_> = inputs.clone().into_iter().collect();
+                probe.step(&mut t.clone(), &list);
+                let err = probe.ship(d.player).unwrap().pos.distance(rewound);
+                worst = worst.max(err);
+                planned += 1;
+            }
+            let list: Vec<_> = inputs.into_iter().collect();
+            w.step(&mut t, &list);
+            history.record(k, &w);
+            if !w.projectiles().iter().any(|p| p.id == pid) {
+                break;
+            }
+        }
+    }
+    assert!(planned >= 1, "some shot needed compensation");
+    assert!(worst <= 1e-3, "target {worst} u off its rewound position");
+}

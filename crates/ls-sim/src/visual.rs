@@ -64,6 +64,9 @@ shapes! {
     Ghost,
     Dust,
     Duck,
+    // M4 (append only).
+    // The Paperweight's stone (B7): in flight and as a landed well.
+    Paperweight,
 }
 
 impl Shape {
@@ -222,7 +225,7 @@ mod tests {
         for (i, s) in Shape::ALL.iter().enumerate() {
             assert_eq!(s.index(), i);
         }
-        assert_eq!(Shape::ALL.len(), Shape::Duck.index() + 1);
+        assert_eq!(Shape::ALL.len(), Shape::Paperweight.index() + 1);
     }
 
     #[test]

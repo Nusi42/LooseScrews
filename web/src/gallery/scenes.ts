@@ -61,9 +61,12 @@ export type PoseKind = "closeup" | "tunnel" | "vista" | "border" | "sun" | "plan
  * fixed test shape (VQ1): a rock ball ahead with a dead-end tunnel of
  * FIT_TUNNEL_RADIUS bored along the view. `charge` (VQP) shows ships
  * charging the Fusion Charger (with `ship`: the own charge at the nose),
- * `cloak` cloaked ships bending the scene (vqpScenes.ts).
+ * `cloak` cloaked ships bending the scene (vqpScenes.ts), `paperweight` a
+ * landed Paperweight mid-air hauling debris and a ship in while the next
+ * one flies (weaponScenes.ts, M4 B7), `paperweight-wall` the same with the
+ * landed stone on the rock ahead.
  */
-export type SceneContent = "none" | "lineup" | "fight" | "lights" | "explosion" | "stress" | "fit" | "charge" | "cloak" | "mode" | "shadow";
+export type SceneContent = "none" | "lineup" | "fight" | "lights" | "explosion" | "stress" | "fit" | "charge" | "cloak" | "mode" | "shadow" | "paperweight" | "paperweight-wall";
 
 /** Radius of the `fit` scene's tunnel (u): 1.2 u across. */
 export const FIT_TUNNEL_RADIUS = 0.6;
@@ -378,6 +381,9 @@ export const SCENES: readonly GalleryScene[] = [
   { id: "charge-up", title: "Fusion Charger charge-up: full, 45 %, overcharge", covers: "effects", world: CAVES, pose: "tunnel", content: "charge", time: 3.0 },
   { id: "charge-cockpit", title: "Own Fusion Charger charging (75 %) from the cockpit", covers: "effects", world: CAVES, pose: "tunnel", content: "charge", time: 3.0, ship: 1 },
   { id: "cloak", title: "Cloaked ships bending the rock behind them", covers: "effects, ships", world: CAVES, pose: "tunnel", content: "cloak", time: 1.0 },
+  // M4 B7: the Paperweight, flying and landed (a gravity well).
+  { id: "paperweight", title: "Paperweight: one landed mid-air hauling debris and a Tinker in, the next one tumbling", covers: "weapons, effects", world: { seed: 7, enclosure: 20, density: 70 }, pose: "vista", content: "paperweight", time: 2.0 },
+  { id: "paperweight-wall", title: "Paperweight stuck on the rock ahead, a gravity well for 6 s", covers: "weapons, effects", world: CAVES, pose: "closeup", content: "paperweight-wall", time: 2.0 },
   // M3 C1 mode visuals.
   { id: "squeeze-warn", title: "The Squeeze: walls glowing before a close, next zone", covers: "modes, effects", world: { seed: 7, enclosure: 20, density: 70 }, pose: "vista", content: "mode", mode: "squeeze-warn", time: 4.0 },
   { id: "squeeze-close", title: "The Squeeze: walls grinding inward, a ship scraping", covers: "modes, effects", world: { seed: 7, enclosure: 20, density: 70 }, pose: "vista", content: "mode", mode: "squeeze-close", time: 4.0 },

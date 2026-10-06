@@ -110,6 +110,7 @@ pub fn shape_name(s: Shape) -> &'static str {
         Shape::Ghost => "ghost",
         Shape::Dust => "dust",
         Shape::Duck => "duck",
+        Shape::Paperweight => "paperweight",
     }
 }
 

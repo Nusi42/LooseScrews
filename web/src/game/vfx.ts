@@ -68,6 +68,9 @@ import {
 } from "./vfxLibrary.ts";
 import { PROJ_ARMED, PROJ_STUCK, projectilePaintColor, TINKER_RADIUS, type EntityState, type LocalPose, type ProjectileState, type ShipState, type VisualDef } from "./views.ts";
 
+/** Projectile state bit of a landed Paperweight (ls-sim `paperweight::LANDED`, custom bit A; scene.ts PAPERWEIGHT_LANDED). */
+const PAPERWEIGHT_LANDED_BIT = 1 << 6;
+
 /** Client-only cue kind for a hit on a ship (ls-wasm turns `NetEvent::Hit` / `Event::Damaged` into it): source attacker, target victim, position, value damage. */
 export const CUE_HIT = 250;
 
@@ -103,6 +106,8 @@ export const VFX_SHAPES: Readonly<Record<string, ShapeVfx>> = {
   paint: { core: { size: 0.5, length: 0.5, intensity: 2.5 }, trail: { kind: "sparkle", width: 0.2, life: 0.3, intensity: 1.5 }, muzzle: "lob", impact: "splat", hideMesh: true },
   // The Tectonic Charge's blast comes as a shockwave cue.
   charge: { muzzle: "lob", impact: "none" },
+  // M4 B7: the stone tumbles with a faint sparkle; it fuses into rock without a blast.
+  paperweight: { trail: { kind: "sparkle", width: 0.16, life: 0.35, intensity: 1.4 }, muzzle: "lob", impact: "thud" },
 };
 
 /** Effects of shapes this client does not know: an energy shot. */
@@ -774,6 +779,12 @@ export class Vfx {
     if (shape === "charge") {
       const pulse = 0.7 + 0.3 * Math.sin(f.time * 6);
       sink.immediate({ pos: p.position, life: 1, sprite: SPRITE.glow, color: scale3(c, 5 * pulse), size: 2.4 * scale });
+    }
+    if (shape === "paperweight" && p.state & PAPERWEIGHT_LANDED_BIT) {
+      // A landed Paperweight is a gravity well: a soft violet glow breathing around the stone.
+      const pulse = 0.75 + 0.25 * Math.sin(f.time * 3);
+      sink.immediate({ pos: p.position, life: 1, sprite: SPRITE.glow, color: scale3(c, 1.6 * pulse), size: 2.8 * scale });
+      sink.immediate({ pos: p.position, life: 1, sprite: SPRITE.glow, color: scale3(whiten(c, 0.5), 1.2 * pulse), size: 1.1 * scale });
     }
   }
 

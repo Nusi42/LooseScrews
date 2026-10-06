@@ -157,9 +157,10 @@ LS_BLESS_MODE_REPLAYS=1 cargo test -p ls-sim --lib golden
 
 The scripted match must keep exercising the systems: `replay_same_inputs_same_state_hash`
 asserts that it fires, damages, craters, kills, respawns, uses gadgets, takes pickups and
-switches paint colours. Its weapon selections are drawn from the weapon table's length, so
-adding a weapon changes the match; if a system drops out, adjust `scripted_inputs` or the
-seed, then re-bless.
+switches paint colours. Its weapon selections pick the M3 weapons by id
+(`golden::scripted_select`), so a weapon added later leaves the match as it was; the hash still
+changes, because the `WeaponId`s sorted after the new weapon's id shift (the Paperweight, M4
+B7: the replay played out identically, tick by tick, weapons compared by name).
 
 Sibling tests prove the replay is repeatable, that a cloned world continues identically, and
 that one changed input diverges the hash from that tick on.
@@ -206,10 +207,11 @@ What M4 changed deliberately (plan [§4](../milestone-4-plan.md#4-determinism-an
 | Item | Change | Why |
 | --- | --- | --- |
 | `SIM_BEHAVIOR_VERSION` | 5 -> 6 (wave A, assigned by A3) | the comedy director as the last stage of `World::step`, plus wave A's gravity, Instability cave-ins, pigment, radiation and dynamic wells |
-| `REPLAY_GOLDEN_HASH` and the nine mode replays | unchanged | the scripted replays run with `MatchSetup::absurdity` 0 (and Instability 0, no wells): the director stays off and its pristine state is not hashed (`director::tests::inert_director_leaves_the_hash_alone`) |
+| `REPLAY_GOLDEN_HASH` and the nine mode replays | unchanged through wave A; re-blessed by B7 (`0x6d20_19b0_f52b_3f3f`, the module goldens, `mode_replays.txt`, the `world/` lines) | wave A: the scripted replays run with `MatchSetup::absurdity` 0 (and Instability 0, no wells): the director stays off and its pristine state is not hashed (`director::tests::inert_director_leaves_the_hash_alone`). B7: the id `paperweight` shifts every `WeaponId` sorted after it (a relabel: the scripted match plays out identically), and `world/gravity` plays the sandbox, which now has Paperweight pickups. Every replay blessed before B7 is re-blessed once it merges |
+| Paperweight replay | new: `world/paperweight` in `mood_replays.txt` (B7) | the golden arena, sandbox rules with 3 Paperweights as the secondary loadout: landings on rock and mid-air, wells, 22 fused lumps; native = wasm32 |
 | Director state | hashed once it did anything (`DirectorState::is_pristine`) | mood, roll grid, gap, the running event's state and the forced schedule |
-| Data hash | `data/events/*.ron` (18 events and `director.ron`), built-in rule set Absurdity 20 -> 100 (duel 50), `pigment_pickup` lines | embedded files change the hash automatically |
-| Rule set codes | format 4 -> 5 (`LRA...`): event count in the header, pigment pickup, event bans | formats 2-4 decode against the M3 defaults (`rulecode::LEGACY_ABSURDITY` 20, no pigment, no bans); tested with M2 and M3 codes in Rust and the web editor (`legacyVectors` in the catalog) |
+| Data hash | `data/events/*.ron` (18 events and `director.ron`), built-in rule set Absurdity 20 -> 100 (duel 50), `pigment_pickup` lines; B7: `data/weapons/paperweight.ron` and its sandbox lines | embedded files change the hash automatically |
+| Rule set codes | format 4 -> 5 (`LRA...`): event count in the header, pigment pickup, event bans; B7: 28 weapons in the header (every code changed, now `LRAW-...`) | formats 2-4 decode against the M3 defaults (`rulecode::LEGACY_ABSURDITY` 20, no pigment, no bans); tested with M2 and M3 codes in Rust and the web editor (`legacyVectors` in the catalog); codes made before the Paperweight decode with it banned |
 
 ### Other pinned values
 
@@ -217,7 +219,7 @@ What M4 changed deliberately (plan [§4](../milestone-4-plan.md#4-determinism-an
 | --- | --- | --- |
 | `material_field_hash_is_pinned` constant | `cargo test -p ls-worldgen --lib material` | the rock material field changes |
 | `web/src/rules/catalog.ts` (generated) | `rulecode::tests::web_catalog_is_current` | weapon or gadget ids, names, slots, costs, levels, the registries or the default rule set change: `LS_BLESS_RULES_CATALOG=1 cargo test -p ls-sim --lib rulecode` |
-| Rule set codes quoted in docs and examples (the default is `LRAV-741Q-J900-01HQ-M`; the catalog holds the current one) | `rulecode::tests::web_catalog_is_current` | the code format, the default rule set, or the registries change: a new weapon or gadget changes every code, the default included (codes made by older builds still decode) |
+| Rule set codes quoted in docs and examples (the default is `LRAW-740M-8S00-01JD-4`; the catalog holds the current one) | `rulecode::tests::web_catalog_is_current` | the code format, the default rule set, or the registries change: a new weapon or gadget changes every code, the default included (codes made by older builds still decode) |
 
 ### Data hash and behaviour version
 

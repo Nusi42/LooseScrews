@@ -214,7 +214,7 @@ shutdown.
 ls-server --bind 0.0.0.0:7777 [--wt-bind <addr> | --no-webtransport] --code <share code> \
     --ruleset data/rulesets/paint_the_void.ron --max-players 8 --web-root web/dist \
     --stats-interval 10 --intermission 10 [--exit-when-empty]
-ls-server --ruleset LRAV-741Q-J900-01HQ-M --ban tectonic_charge --balance-list balance.ron
+ls-server --ruleset LRAW-740M-8S00-01JD-4 --ban tectonic_charge --balance-list balance.ron
 ls-server --playlist playlist.ron --warmup 30 --countdown 10 --intermission 10 --private-rooms 4
 ls-server --directory http://127.0.0.1:7780 --server-name "Den" --region eu \
     --public-address play.example.com:7777

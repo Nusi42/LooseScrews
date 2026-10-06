@@ -145,14 +145,14 @@ What you start with and what spawns at the level's pickup points. Weapon numbers
 
 | Rule set | Start with | Pickups | Friendly fire | Ship types |
 | --- | --- | --- | --- | --- |
-| **Paint the Void** | Scrap Laser, Paint Thrower, 3 Bolt Rockets, Shield | 25 of 27 weapons; Scrap Laser upgrades; Shield, Cloak, Decoy; scrap piles | 50% | Skitter, Tinker, Hauler, Tug |
-| **Team Brawl** | Scrap Laser, 3 Bolt Rockets, Shield | 25 of 27 weapons; Scrap Laser upgrades; Shield, Cloak, Decoy; scrap piles | 50% | Skitter, Tinker, Hauler, Tug |
-| **The Squeeze** | Scrap Laser, 3 Bolt Rockets, Shield | 25 of 27 weapons; Scrap Laser upgrades; Shield, Cloak, Decoy; scrap piles | 50% | Skitter, Tinker, Hauler, Tug |
-| **Heist** | Scrap Laser, 3 Bolt Rockets, Shield | 25 of 27 weapons; Scrap Laser upgrades; Shield, Cloak, Decoy; scrap piles | 50% | Skitter, Tinker, Hauler, Tug |
-| **Hot Reactor** | Scrap Laser, 3 Bolt Rockets, Shield | 25 of 27 weapons; Scrap Laser upgrades; Shield, Cloak, Decoy; scrap piles | off | Skitter, Tinker, Hauler, Tug |
-| **Last Color Standing** | Scrap Laser, 3 Bolt Rockets, Shield | 25 of 27 weapons; Scrap Laser upgrades; Shield, Cloak, Decoy; scrap piles | off | Skitter, Tinker, Hauler, Tug |
+| **Paint the Void** | Scrap Laser, Paint Thrower, 3 Bolt Rockets, Shield | 25 of 28 weapons; Scrap Laser upgrades; Shield, Cloak, Decoy; scrap piles | 50% | Skitter, Tinker, Hauler, Tug |
+| **Team Brawl** | Scrap Laser, 3 Bolt Rockets, Shield | 25 of 28 weapons; Scrap Laser upgrades; Shield, Cloak, Decoy; scrap piles | 50% | Skitter, Tinker, Hauler, Tug |
+| **The Squeeze** | Scrap Laser, 3 Bolt Rockets, Shield | 25 of 28 weapons; Scrap Laser upgrades; Shield, Cloak, Decoy; scrap piles | 50% | Skitter, Tinker, Hauler, Tug |
+| **Heist** | Scrap Laser, 3 Bolt Rockets, Shield | 25 of 28 weapons; Scrap Laser upgrades; Shield, Cloak, Decoy; scrap piles | 50% | Skitter, Tinker, Hauler, Tug |
+| **Hot Reactor** | Scrap Laser, 3 Bolt Rockets, Shield | 25 of 28 weapons; Scrap Laser upgrades; Shield, Cloak, Decoy; scrap piles | off | Skitter, Tinker, Hauler, Tug |
+| **Last Color Standing** | Scrap Laser, 3 Bolt Rockets, Shield | 25 of 28 weapons; Scrap Laser upgrades; Shield, Cloak, Decoy; scrap piles | off | Skitter, Tinker, Hauler, Tug |
 | **Instagib Brawl** | Railspike | none | 50% | Skitter, Tinker, Hauler, Tug |
-| **Duel** | Scrap Laser, 3 Bolt Rockets, Shield | 25 of 27 weapons; Scrap Laser upgrades; Shield, Cloak, Decoy; scrap piles | 50% | Skitter, Tinker, Hauler, Tug |
-| **Sandbox - all weapons** | Scrap Laser, Paint Thrower, 3 Bolt Rockets, Shield | 27 of 27 weapons; Scrap Laser upgrades; Shield, Cloak, Decoy; scrap piles | 50% | Skitter, Tinker, Hauler, Tug |
+| **Duel** | Scrap Laser, 3 Bolt Rockets, Shield | 25 of 28 weapons; Scrap Laser upgrades; Shield, Cloak, Decoy; scrap piles | 50% | Skitter, Tinker, Hauler, Tug |
+| **Sandbox - all weapons** | Scrap Laser, Paint Thrower, 3 Bolt Rockets, Shield | 28 of 28 weapons; Scrap Laser upgrades; Shield, Cloak, Decoy; scrap piles | 50% | Skitter, Tinker, Hauler, Tug |
 
 Friendly fire only matters in team modes (in free-for-all every other ship is an enemy).

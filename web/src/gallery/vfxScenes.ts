@@ -20,6 +20,7 @@ import { mulberry32 } from "../renderer/spriteAtlas.ts";
 import type { GalleryScene } from "./scenes.ts";
 import type { ChargeGlow } from "../game/chargeFx.ts";
 import { chargeAt, cloakAt } from "./vqpScenes.ts";
+import { paperweightAt } from "./weaponScenes.ts";
 
 /** Seconds of history simulated before the scene's time. */
 export const HISTORY_SECS = 2.5;
@@ -206,6 +207,7 @@ export function momentAt(
   impact: Vec3,
   radii: readonly number[],
   t: number,
+  wallAhead = 12,
 ): Moment | null {
   switch (scene.content) {
     case "lineup":
@@ -222,6 +224,11 @@ export function momentAt(
     }
     case "cloak":
       return { ships: cloakAt(cam), shots: [], cues: [] };
+    case "paperweight":
+    case "paperweight-wall": {
+      const m = paperweightAt(cam, visuals, t, wallAhead, scene.content === "paperweight-wall", scene.time);
+      return { ships: m.ships, shots: m.shots, cues: [] };
+    }
     default:
       return null;
   }
@@ -241,14 +248,15 @@ export function simulateVfx(
   radii: readonly number[],
   gadgetOf: (id: number) => string = () => "",
   lights: LightEmitter | null = null,
+  wallAhead = 12,
 ): Vfx | null {
-  if (momentAt(scene, cam, visuals, impact, radii, scene.time) === null) return null;
+  if (momentAt(scene, cam, visuals, impact, radii, scene.time, wallAhead) === null) return null;
   const vfx = new Vfx(sink, mulberry32(20261005));
   vfx.lightSink = lights;
   const steps = Math.round(HISTORY_SECS / STEP);
   for (let i = 0; i <= steps; i++) {
     const t = scene.time - HISTORY_SECS + i * STEP;
-    const m = momentAt(scene, cam, visuals, impact, radii, t)!;
+    const m = momentAt(scene, cam, visuals, impact, radii, t, wallAhead)!;
     const frame: VfxFrame = {
       time: t,
       dt: STEP,

@@ -310,6 +310,7 @@ const PARAM_NOTES = [
   [["rewind_secs", "offline_secs"], (p) => `rewinds you ${num(p.rewind_secs)} s; weapons offline ${num(p.offline_secs)} s`],
   [["cone_half_deg", "range"], (p) => `pulls things in a ${num(p.cone_half_deg * 2)}° cone within ${num(p.range)} u`],
   [["duck_chance"], (p) => `${num(p.duck_chance * 100, 1)}% chance of a giant rubber duck`],
+  [["well_secs", "well_range", "well_pull"], (p) => `stops where it lands; a gravity well for ${num(p.well_secs)} s pulls ships (yours too), debris and ordnance within ${num(p.well_range)} u at up to ${pct(p.well_pull)} of a Tinker's thrust, then fuses into a lump of weak rock`],
 ];
 
 /** Instant weapons (the Leech Arc) reach their `range` parameter at once, no projectile flies. */

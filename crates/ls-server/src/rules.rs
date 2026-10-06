@@ -186,7 +186,11 @@ mod tests {
         );
         assert_eq!(eff.tuning["railspike"].damage, 0.5);
         let line = describe(&eff, &weapons);
-        assert!(line.contains("bolt_rocket, tectonic_charge"), "{line}");
+        // (The Paperweight is banned in the default rules: M4, Belt Up and the sandbox only.)
+        assert!(
+            line.contains("bolt_rocket, paperweight, tectonic_charge"),
+            "{line}"
+        );
         assert!(line.contains(" LR"), "{line}");
 
         // The list is re-read: an edit shows up in the next effective rules.

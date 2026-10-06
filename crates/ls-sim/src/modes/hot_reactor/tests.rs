@@ -602,7 +602,7 @@ fn replay(seed: u64, ticks: u64) -> (Vec<u64>, Vec<Event>, u32) {
 /// Golden hash of the 60 s Hot Reactor replay; must match on native and
 /// wasm32. Changes with Hot Reactor behaviour, its rule set or general sim
 /// behaviour: update it in the same change and say so in the commit.
-const HOT_REACTOR_REPLAY_GOLDEN_HASH: u64 = 0xa94b_6f50_7b53_d4f3;
+const HOT_REACTOR_REPLAY_GOLDEN_HASH: u64 = 0x7bd7_5722_fc7f_5a7c;
 
 #[test]
 fn replay_is_deterministic_and_matches_the_golden_hash() {

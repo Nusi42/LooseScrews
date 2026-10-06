@@ -29,7 +29,8 @@ Every weapon already has a module file, a data file and a registry entry. A modu
 the **generic fallback**: all trait defaults, which together are the M1 weapon (straight
 projectile, or the data's `projectiles`/`spread_deg` pattern, direct damage, splash,
 knockback, the data's crater and paint, charge from the data's `charge`). Since wave B every
-one of the 27 weapon modules and the 3 gadget modules implements its design-doc behaviour and
+one of the weapon modules (the design doc's 27, and the Paperweight appended in M4) and the 3
+gadget modules implements its design-doc behaviour and
 reports `implemented() == true`; `weapons::tests::every_weapon_has_a_module_and_a_data_file`
 fails if a module falls back again. What each one does is in
 [The arsenal as built](#the-arsenal-as-built) below.
@@ -141,7 +142,9 @@ strength only: Tectonic cracks) / `crater_exact` (not scaled) / `grow` / `paint`
 pulled loose: Magnet Sneeze pulling mines in), `move_pickup` (moves a scrap pile, or a pickup's
 content off its spawn point, by a delta: Magnet Sneeze), `remove_projectile`, `drain_energy`, `blind`,
 `swap`, `rewind`, `disable_weapons`, `adjust_hull`, `add_well` / `remove_well` (M4 dynamic
-gravity wells: Paperweight, Architect strokes; see `contracts.md` "World physics"), `cue`,
+gravity wells: Paperweight, Architect strokes; see `contracts.md` "World physics"),
+`weak_rock` (M4: marks a sphere as weak rock, a rubble region like a cave-in's; grow the rock
+with an edit first: the Paperweight's lump), `cue`,
 `emit`, and `detonate` (the default impact).
 
 `ctx.later(delay, |ctx| ...)` defers the terrain edits the closure queues by `delay` ticks
@@ -343,7 +346,7 @@ mode's settings as its generic field list
 `to_code` prints) stores only the differences from the mode's default rule set
 (`RuleSet::default_for`: `data/rulesets/<mode>.ron`, or Paint the Void's rules with the
 mode's settings and without the Paint Thrower until the mode has its own file) plus a 16-bit
-fingerprint of that default: the default Paint the Void rules are `LRAV-741Q-J900-01HQ-M` (19
+fingerprint of that default: the default Paint the Void rules are `LRAW-740M-8S00-01JD-4` (19
 characters), a ban adds about 3 symbols. A diff code made against a different default is
 rejected ("ask for the full code"). The full form (`to_full_code`, about 270 characters)
 stores every setting; `to_code` uses it when it is shorter. The M3 format 4 and the M2
@@ -417,3 +420,4 @@ the Scrap Laser at level 6 (14 per 0.25 s, 1.75 s) is above that band by the pla
 | Magnet Sneeze | cone pull: debris, enemy ships, pickups and scrap piles (they jump up to 10 u towards you) | pulls every other projectile in too, stuck mines included | rips chunks off weak rock |
 | Polite Laser | 1.5 s charge, 75 damage; `PoliteWarning` cue to the target (repeated to a new target in the aim) | the target is warned | clean holes through thin walls |
 | Seed Grenade | grows a deterministic cluster of `AddSphere` cover (never inside a ship; floating cover in mid-air) | the cover blocks your shots too | lasting rock; 2% rubber duck |
+| Paperweight (M4) | lobbed at 25 u/s, passes ships and debris, no damage; stops where it hits rock (`HitResponse::Stick`) or after 1.2 s (its fuse) and is a dynamic gravity well for 6 s (key = projectile id, from the next tick; range 16 u, peak 30 % of the Tinker's per-axis thrust, both on the well wire grid); the landed stone is the projectile itself (stuck, replicated bit `CUSTOM_A` = landed), put back each tick if something pulls it loose | it pulls everyone, its thrower too | on expiry the debris within 4 u fuses with it into an `AddSphere` of weak rock (`Ctx::weak_rock`, radius `cbrt(1 + sum r^3)`, at most 2 u), left out (debris kept) next to a ship |

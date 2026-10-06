@@ -322,6 +322,13 @@ fn world() -> World {
     }
     let weapons = WeaponTable::new(defs).unwrap();
     let mut rules = RuleSet::paint_the_void();
+    // Every weapon is allowed (the Paperweight is not in the default set).
+    for (_, d) in builtin.iter() {
+        rules
+            .weapons
+            .entry(d.id.clone())
+            .or_insert(Availability::PickupOnly);
+    }
     for b in TEST_BEHAVIORS {
         rules
             .weapons
@@ -419,7 +426,7 @@ fn edits(ev: &[Event]) -> usize {
 #[test]
 fn every_weapon_has_a_module_and_a_data_file() {
     let t = WeaponTable::builtin();
-    assert_eq!(MODULES.len(), 27);
+    assert_eq!(MODULES.len(), 28);
     assert_eq!(t.len(), MODULES.len());
     for m in &MODULES {
         assert_eq!(m.behavior.id(), m.id);
@@ -440,6 +447,8 @@ fn every_weapon_has_a_module_and_a_data_file() {
         "unknown ids get the generic weapon"
     );
     assert_eq!(registry::index_of("seed_grenade"), Some(26));
+    // M4 appended the Paperweight (rule set codes keep the order).
+    assert_eq!(registry::index_of("paperweight"), Some(27));
 }
 
 /// Every weapon (implemented or fallback) fires, flies and ends without
@@ -496,7 +505,8 @@ fn every_weapon_fires_with_its_fallback() {
         assert!(
             w.projectiles()
                 .iter()
-                .all(|p| p.weapon != wid || def.lifetime_secs > 6.0),
+                // The Paperweight's stone stays 6 s after it lands.
+                .all(|p| p.weapon != wid || def.lifetime_secs > 6.0 || m.id == "paperweight"),
             "{} projectiles end",
             m.id
         );

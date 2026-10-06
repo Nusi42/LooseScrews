@@ -278,6 +278,10 @@ pub enum Command {
     AddWell(crate::gravity::DynamicWell),
     /// Removes the dynamic wells with this key.
     RemoveWell { key: u32 },
+    /// Marks a sphere of the level as weak rock (a rubble region, like a
+    /// cave-in's; the Paperweight's fused lump). Grow the rock with an
+    /// [`Command::Edit`] first.
+    WeakRock { center: Vec3, radius: f32 },
 }
 
 /// Read-only world view for hooks.
@@ -764,6 +768,11 @@ impl<'a> Ctx<'a> {
     /// Removes the dynamic wells with `key` (see [`Command::RemoveWell`]).
     pub fn remove_well(&mut self, key: u32) {
         self.push(Command::RemoveWell { key });
+    }
+
+    /// Marks a sphere as weak rock (see [`Command::WeakRock`]).
+    pub fn weak_rock(&mut self, center: Vec3, radius: f32) {
+        self.push(Command::WeakRock { center, radius });
     }
 
     pub fn cue(&mut self, cue: Cue) {

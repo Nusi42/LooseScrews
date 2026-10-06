@@ -18,6 +18,7 @@ import {
   dustDensityAt,
   dustFog,
   DUST_FOG_DENSITY,
+  PAPERWEIGHT_LANDED,
   scrapScale,
   SHAPE_STYLES,
   styleFor,
@@ -37,7 +38,7 @@ import {
 
 const KINDS = ["debris", "weaponPickup", "upgradePickup", "gadgetPickup", "scrapPile", "wreck", "decoy", "ghost", "dustCloud", "marker", "pigmentPickup"];
 const SHAPES = ["bolt", "pellet", "spike", "rocket", "missile", "mine", "orb", "blob", "arc", "grenade", "harpoon", "paint", "charge",
-  "debris", "scrap", "wreck", "crate", "upgrade", "gadget", "decoy", "ghost", "dust", "duck"];
+  "debris", "scrap", "wreck", "crate", "upgrade", "gadget", "decoy", "ghost", "dust", "duck", "paperweight"];
 
 const vis = (shape: string, color: [number, number, number] = [1, 0, 0], scale = 1): VisualDef => ({ shape, color, scale });
 
@@ -255,4 +256,27 @@ test("M2 key scheme: 1-0, X, G and the wheel", () => {
   assert.deepEqual(wheelStep(WHEEL_STEP * 3), [1, 0], "one step per frame, the rest dropped");
   assert.deepEqual(wheelStep(-WHEEL_STEP), [-1, 0]);
   assert.deepEqual(wheelStep(10), [0, 10], "small movements accumulate");
+});
+
+test("a Paperweight tumbles in flight and stands upright, glowing, once landed (M4 B7)", () => {
+  const visuals = [vis("paperweight", [0.6, 0.4, 1])];
+  const flying = buildScene([], [shot({ visual: 0 })], [], visuals, () => undefined, 0.5);
+  assert.equal(flying.opaque.paperweight?.length, 1);
+  assert.ok(!flying.translucent.sphere?.length, "no glow shell in flight");
+  const landed = shot({ visual: 0, velocity: { x: 0, y: 0, z: 0 }, state: 1 | PAPERWEIGHT_LANDED });
+  const a = buildScene([], [landed], [], visuals, () => undefined, 0.5);
+  const b = buildScene([], [landed], [], visuals, () => undefined, 1.3);
+  const stone = a.opaque.paperweight?.[0];
+  assert.ok(stone, "the stone");
+  // Upright: the model's +Y stays world up while it turns.
+  const up = q.rotate(stone.rotation, { x: 0, y: 1, z: 0 });
+  assert.ok(Math.abs(up.y - 1) < 1e-6, `upright: ${JSON.stringify(up)}`);
+  const glow = a.translucent.sphere ?? [];
+  assert.equal(glow.length, 1, "the well's glow shell");
+  assert.ok(glow[0]!.scale > stone.scale * 1.8, "a halo around the stone");
+  assert.notEqual(a.opaque.paperweight?.[0]?.emissive, b.opaque.paperweight?.[0]?.emissive, "it pulses");
+  // With particles the stone stays and vfx.ts draws the glow.
+  const v = buildScene([], [landed], [], visuals, () => undefined, 0.5, { vfx: true });
+  assert.equal(v.opaque.paperweight?.length, 1);
+  assert.ok(!v.translucent.sphere?.length);
 });

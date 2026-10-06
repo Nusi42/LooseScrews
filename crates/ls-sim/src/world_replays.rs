@@ -11,6 +11,7 @@
 //! | `world/cave_in` | a low arena (160 x 12 x 160 u, so every crater has a ceiling in reach), Instability 100, spawns on a 42 u ring | Team Brawl with 10 Bolt Rockets each |
 //! | `world/pigment` | the golden arena as a monochrome level, pickup points at the spawn points; odd players fly at the nearest pigment | Team Brawl |
 //! | `world/radiation` | a small belt (20-40 u, 6 u thick) with half the ships above it | Team Brawl |
+//! | `world/paperweight` | the golden arena, no static wells | Sandbox with 3 Paperweights as the secondary loadout (B7: landings on rock and mid-air, wells, fused lumps) |
 //!
 //! The hashes live in `crates/ls-sim/tests/fixtures/mood_replays.txt`
 //! (lines starting with `world/`; the file also holds the director's event
@@ -38,11 +39,12 @@ pub const WORLD_REPLAY_SHIPS: usize = 8;
 /// Seed of every replay.
 pub const WORLD_REPLAY_SEED: u64 = 2025;
 /// The replays, in fixture order.
-pub const WORLD_REPLAYS: [&str; 4] = [
+pub const WORLD_REPLAYS: [&str; 5] = [
     "world/gravity",
     "world/cave_in",
     "world/pigment",
     "world/radiation",
+    "world/paperweight",
 ];
 
 /// Outcome of one [`world_replay`].
@@ -149,6 +151,16 @@ fn level(name: &str) -> (RuleSet, MatchSetup, Arena) {
             let mut r = rules("team_brawl.ron");
             r.starting_loadout.secondaries = vec![("bolt_rocket".to_string(), 10)];
             (r, s, low_arena())
+        }
+        "world/paperweight" => {
+            // Every ship throws Paperweights (secondary fire).
+            let mut r = rules("sandbox_all_weapons.ron");
+            r.weapons.insert(
+                "paperweight".to_string(),
+                crate::Availability::LoadoutAndPickup,
+            );
+            r.starting_loadout.secondaries = vec![("paperweight".to_string(), 3)];
+            (r, s, arena())
         }
         "world/pigment" => {
             s.monochrome = true;
@@ -322,6 +334,8 @@ mod tests {
         assert!(by("world/cave_in").cave_ins >= 1 && by("world/cave_in").rubble >= 1);
         assert!(by("world/pigment").pigments >= 4);
         assert!(by("world/radiation").level_kills >= 1);
+        // Paperweights landed, pulled and fused into lumps.
+        assert!(by("world/paperweight").rubble >= 3);
         let got: Vec<String> = replays
             .iter()
             .map(|r| format!("{} {:#018x}", r.name, r.hash))

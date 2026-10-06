@@ -23,7 +23,7 @@ pub struct WeaponModule {
 }
 
 /// Every weapon of the design doc, in design-doc order.
-pub static MODULES: [WeaponModule; 27] = [
+pub static MODULES: [WeaponModule; 28] = [
     WeaponModule {
         id: "scrap_laser",
         family: WeaponFamily::Energy,
@@ -212,6 +212,14 @@ pub static MODULES: [WeaponModule; 27] = [
         behavior: &specials::seed_grenade::SeedGrenade,
         file: "weapons/seed_grenade.ron",
         data: include_str!("../../../../data/weapons/seed_grenade.ron"),
+    },
+    // M4 (append only).
+    WeaponModule {
+        id: "paperweight",
+        family: WeaponFamily::Special,
+        behavior: &specials::paperweight::Paperweight,
+        file: "weapons/paperweight.ron",
+        data: include_str!("../../../../data/weapons/paperweight.ron"),
     },
 ];
 

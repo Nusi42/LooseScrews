@@ -38,6 +38,7 @@ RuleSet(
         "magnet_sneeze": PickupOnly,
         "polite_laser": PickupOnly,
         "seed_grenade": PickupOnly,
+        "paperweight": PickupOnly,
     },
     gadgets: {
         "shield": LoadoutAndPickup,
@@ -77,6 +78,7 @@ RuleSet(
         "magnet_sneeze": (weight: 1.0, respawn_secs: 15.0, ammo: 2),
         "polite_laser": (weight: 1.0, respawn_secs: 15.0),
         "seed_grenade": (weight: 1.0, respawn_secs: 15.0, ammo: 2),
+        "paperweight": (weight: 1.0, respawn_secs: 15.0, ammo: 3),
     },
     upgrade_pickups: {
         "scrap_laser": (weight: 1.0, respawn_secs: 15.0),

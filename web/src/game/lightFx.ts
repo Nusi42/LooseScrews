@@ -27,7 +27,10 @@ import type { PointLight } from "../renderer/lights.ts";
 import type { Rgb } from "../renderer/renderer.ts";
 import type { Beam, Flash } from "./mechanics.ts";
 import { OBJECTIVE, type Objective } from "./modeState.ts";
-import { PROJ_ARMED, PROJ_STUCK, TINKER_RADIUS, type EntityState, type ProjectileState, type ShipState, type VisualDef } from "./views.ts";
+import { PROJ_ARMED, PROJ_CUSTOM_SHIFT, PROJ_STUCK, TINKER_RADIUS, type EntityState, type ProjectileState, type ShipState, type VisualDef } from "./views.ts";
+
+/** Projectile state bit of a landed Paperweight (game/scene.ts PAPERWEIGHT_LANDED). */
+const PROJ_PAPERWEIGHT_LANDED = 1 << PROJ_CUSTOM_SHIFT;
 
 /** A timed light: rises over `attack`, then decays to 0 at `duration` (s). */
 export interface LightPulse {
@@ -131,7 +134,12 @@ export const SHAPE_LIGHTS: Readonly<Record<string, ShapeLight>> = {
   harpoon: { intensity: 0, impact: null, muzzle: 0.6 },
   paint: { intensity: 4, range: 7, impact: "spark", tintImpact: true, muzzle: 0.6 },
   charge: { intensity: 14, range: 17, impact: "bigExplosion", muzzle: 1.2 },
+  // M4 B7: a faint glow in flight, a pulsing violet lamp once landed (sceneLights).
+  paperweight: { intensity: 2, range: 6, impact: null, muzzle: 0.4 },
 };
+
+/** A landed Paperweight (a gravity well) glows this bright, pulsing. */
+export const PAPERWEIGHT_GLOW = 6;
 
 /** Armed mines blink this bright (red-orange). */
 export const MINE_BLINK = 4;
@@ -349,6 +357,9 @@ export function sceneLights(input: SceneLightInput, out: PointLight[] = []): Poi
     if (visual.shape === "mine" && (p.state & PROJ_ARMED) !== 0) {
       intensity = Math.sin(t * 10) > 0 ? MINE_BLINK : 0;
       color = [1, 0.3, 0.1];
+    }
+    if (visual.shape === "paperweight" && (p.state & PROJ_PAPERWEIGHT_LANDED) !== 0) {
+      intensity = PAPERWEIGHT_GLOW * (0.75 + 0.25 * Math.sin(t * 3));
     }
     if (intensity <= 0) continue;
     let position = p.position;

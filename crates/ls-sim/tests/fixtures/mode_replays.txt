@@ -2,12 +2,12 @@
 # built-in rule set. Checked by `cargo test -p ls-sim --lib golden` (native and
 # wasm32) and by tools/determinism-check.mjs (the WASM build under Node).
 # Re-bless: LS_BLESS_MODE_REPLAYS=1 cargo test -p ls-sim --lib golden
-rulesets/paint_the_void.ron 0xf2b5f6731d87e870
-rulesets/sandbox_all_weapons.ron 0xca71c1f2ab47fb7e
-rulesets/team_brawl.ron 0x843b2464dac90cb9
-rulesets/instagib_brawl.ron 0x36fc7a16100a8397
-rulesets/duel.ron 0x0f26fa5bb887cf9e
-rulesets/hot_reactor.ron 0xc615541e095b8966
-rulesets/last_color_standing.ron 0x2a0a9d5371f2e972
-rulesets/heist.ron 0x9bf29897dfd856eb
-rulesets/squeeze.ron 0x65a96dbc63f30544
+rulesets/paint_the_void.ron 0xdfbcc540218e6f71
+rulesets/sandbox_all_weapons.ron 0x9d4262048bc8161f
+rulesets/team_brawl.ron 0x0fcccf5c072bbc90
+rulesets/instagib_brawl.ron 0x317905b59255e38e
+rulesets/duel.ron 0xa22cf8fc4ef81568
+rulesets/hot_reactor.ron 0x4af485d473cd1ba7
+rulesets/last_color_standing.ron 0x431a4174e20c0fb3
+rulesets/heist.ron 0x7b62b498a086f33e
+rulesets/squeeze.ron 0x40d82a62d4eb290b

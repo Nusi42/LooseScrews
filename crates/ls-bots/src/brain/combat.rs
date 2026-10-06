@@ -650,6 +650,7 @@ impl Brain {
                 Role::Seeker | Role::SwarmPod | Role::Eyeball => 0.5,
                 Role::SeedGrenade if recently_hit => 3.0,
                 Role::SeedGrenade => 0.5,
+                Role::Paperweight => 0.5,
                 Role::MagnetSneeze if close_primary => 2.0,
                 Role::MagnetSneeze => 0.4,
                 Role::SwapHarpoon => 0.7,

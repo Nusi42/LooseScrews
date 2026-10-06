@@ -230,10 +230,12 @@ fn bolts_and_kinetic_rounds_fly_straight_missiles_bend() {
     assert!(rocket > 0.02, "bolt rocket bends: {rocket}");
     let heavy = bend("heavy_rocket", 90);
     assert!(heavy > 0.02, "heavy rocket bends: {heavy}");
-    // Every weapon's flag: ordnance and the Seed Grenade, nothing else.
+    // Every weapon's flag: ordnance, the Seed Grenade and the Paperweight
+    // (thrown stones), nothing else.
     let table = WeaponTable::builtin();
     for (_, d) in table.iter() {
-        let expect = d.family == WeaponFamily::Ordnance || d.id == "seed_grenade";
+        let expect =
+            d.family == WeaponFamily::Ordnance || d.id == "seed_grenade" || d.id == "paperweight";
         assert_eq!(d.gravity, expect, "{}", d.id);
     }
 }

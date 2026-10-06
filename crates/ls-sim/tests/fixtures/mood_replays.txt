@@ -2,7 +2,8 @@
 # starting with "world/") and of the comedy director's events. Checked by
 # `cargo test -p ls-sim --lib` (native and wasm32) and by tools/determinism-check.mjs.
 # Re-bless the world lines: LS_BLESS_MOOD_REPLAYS=1 cargo test -p ls-sim --lib world_replays
-world/gravity 0x930876b7c1dfa16e
-world/cave_in 0xca8426a8a830b6bc
-world/pigment 0xc68e3c3054f034f6
-world/radiation 0x813873808786976f
+world/gravity 0x80cea8be620c3c95
+world/cave_in 0xa6a17f0fd26bbff4
+world/pigment 0xc85406f4941e608a
+world/radiation 0xa4b21ebe95f2c163
+world/paperweight 0x1e022c79ea0966a2

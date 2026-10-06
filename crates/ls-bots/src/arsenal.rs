@@ -37,6 +37,8 @@ pub enum Role {
     MagnetSneeze,
     PoliteLaser,
     SeedGrenade,
+    /// M4: the thrown gravity well.
+    Paperweight,
     /// A weapon the bots do not know (custom data): fired like a laser
     /// (primary) or a rocket (secondary).
     Other,
@@ -74,6 +76,7 @@ impl Role {
             "magnet_sneeze" => MagnetSneeze,
             "polite_laser" => PoliteLaser,
             "seed_grenade" => SeedGrenade,
+            "paperweight" => Paperweight,
             _ => Other,
         }
     }
@@ -274,6 +277,9 @@ pub fn secondary_band(g: &Gun) -> Option<(f32, f32)> {
         FlashPod => (18.0, 40.0),
         SwapHarpoon => (15.0, 70.0),
         SeedGrenade => (10.0, 40.0),
+        // Lands on rock or after 30 u: thrown at a rival 12-30 u away it
+        // becomes a well next to them (it pulls the thrower too).
+        Paperweight => (12.0, 30.0),
         MagnetSneeze => (8.0, 25.0),
         TectonicCharge => (35.0, 75.0),
         Other => (8.0, (g.range() * 0.7).max(10.0)),

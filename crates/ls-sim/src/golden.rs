@@ -128,6 +128,27 @@ fn replay_rules(name: &str, text: &str) -> RuleSet {
     r
 }
 
+/// Weapons in the registry of M3 builds (the design doc's 27).
+pub(crate) const M3_WEAPONS: usize = 27;
+
+/// The `weapon_select` of scripted inputs for a draw `n` in `0..=27`: 0
+/// keeps the selection, `n` selects the `n`-th of the M3 weapons sorted by
+/// id (their M3 `WeaponId + 1`). Weapons added later (the Paperweight)
+/// shift the ids of the table but not what scripted pilots select.
+pub(crate) fn scripted_select(w: &World, n: u32) -> u8 {
+    if n == 0 {
+        return 0;
+    }
+    let mut ids: Vec<&str> = crate::weapons::MODULES[..M3_WEAPONS]
+        .iter()
+        .map(|m| m.id)
+        .collect();
+    ids.sort_unstable();
+    ids.get(n as usize - 1)
+        .and_then(|id| w.weapons().find(id))
+        .map_or(n as u8, |id| id.0 + 1)
+}
+
 /// Scripted inputs: pseudo-random buttons and thrust, aiming at the nearest
 /// enemy. Depends only on the world state and the RNG.
 pub(crate) fn inputs(
@@ -163,7 +184,7 @@ pub(crate) fn inputs(
                     roll: rng.range_f32(-1.0, 1.0),
                     buttons,
                     weapon_select: if rng.chance(0.03) {
-                        rng.below(w.weapons().len() as u32 + 1) as u8
+                        scripted_select(w, rng.below(M3_WEAPONS as u32 + 1))
                     } else {
                         0
                     },

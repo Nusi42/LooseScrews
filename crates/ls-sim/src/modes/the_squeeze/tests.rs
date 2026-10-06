@@ -594,7 +594,7 @@ fn replay(seed: u64) -> (Vec<u64>, Vec<Event>) {
 /// Golden hash of the scripted Squeeze replay; identical on native and
 /// wasm32. Changing The Squeeze's behaviour changes it: update it in the
 /// same change.
-const SQUEEZE_REPLAY_GOLDEN_HASH: u64 = 0xb7d4_e8da_9cd6_639a;
+const SQUEEZE_REPLAY_GOLDEN_HASH: u64 = 0xe621_da2d_5ace_169b;
 
 #[test]
 fn replay_is_deterministic_and_matches_its_golden_hash() {

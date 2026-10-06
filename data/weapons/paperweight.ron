@@ -1,0 +1,39 @@
+// Paperweight: special secondary (M4, Belt Up). A lobbed stone that stops where it lands and is
+// a small gravity well for 6 s: bend rivals' racing lines, pull them out of the belt or into a
+// rock. Malus: it does not care who threw it (it pulls its owner too). Lasting effect: when it
+// expires, the debris it gathered fuses into a floating lump of weak rock.
+// Behaviour: crates/ls-sim/src/weapons/specials/paperweight.rs (implemented). Flies at `speed`
+// and stops where it hits rock or after `lifetime_secs` of flight ("paperweights stay where you
+// put them"); passes through ships and debris and does no damage. Then a dynamic gravity well
+// for `well_secs` s: range `well_range` u, peak pull `well_pull` x the Tinker's per-axis thrust
+// acceleration (the world's well field: ships, debris, unstuck mines and `gravity: true`
+// ordnance; bolts and kinetic rounds fly straight; the 40 % ship clamp holds for stacked
+// wells). At the end, debris within `gather_radius` u fuses with the stone into an AddSphere of
+// weak rock, radius cbrt(lump_min_radius^3 + debris volume), at most `lump_max_radius` u; left
+// out (and the debris kept) if it would overlap a ship. Numbers are tuning starting points.
+WeaponDef(
+    id: "paperweight",
+    name: "Paperweight",
+    family: Special,
+    slot: Secondary,
+    speed: 25.0,
+    lifetime_secs: 1.2,
+    damage: 0.0,
+    fire_interval_secs: 2.0,
+    cost: Count(1),
+    projectile_radius: 0.35,
+    knockback: 0.0,
+    shield: Blocked,
+    max_ammo: 3,
+    // Other wells bend it in flight (M4).
+    gravity: true,
+    visual: (shape: Paperweight, color: (150, 110, 255), scale: 1.0),
+    params: {
+        "well_secs": 6.0,
+        "well_range": 16.0,
+        "well_pull": 0.3,
+        "gather_radius": 4.0,
+        "lump_min_radius": 1.0,
+        "lump_max_radius": 2.0,
+    },
+)

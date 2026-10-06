@@ -117,7 +117,13 @@ mod tests {
         let files = builtin_files();
         assert_eq!(
             files.len(),
-            27 + 3 + 4 + crate::ruleset::BUILTIN_RULESETS.len() + 1 + 18 + WORLD_FILES.len()
+            crate::weapons::MODULES.len()
+                + 3
+                + 4
+                + crate::ruleset::BUILTIN_RULESETS.len()
+                + 1
+                + 18
+                + WORLD_FILES.len()
         );
         assert_eq!(
             data_hash(),

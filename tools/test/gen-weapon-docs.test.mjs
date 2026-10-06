@@ -30,7 +30,7 @@ test("every mode setting has a meaning (a new ModeRules field needs a text in MO
 
 test("every mode's allowed team counts come from the rules catalog", () => {
   const modes = catalogModes(readFileSync(join(root, "web/src/rules/catalog.ts"), "utf8"));
-  assert.deepEqual([...modes.keys()], ["PaintTheVoid", "TeamBrawl", "TheSqueeze", "Heist", "HotReactor", "LastColorStanding", "TheArchitect"]);
+  assert.deepEqual([...modes.keys()], ["PaintTheVoid", "TeamBrawl", "TheSqueeze", "Heist", "HotReactor", "LastColorStanding", "TheArchitect", "BeltUp"]);
   assert.deepEqual(modes.get("TeamBrawl").teams, [0, 2, 3, 4]);
   assert.ok(!generate()["modes.md"].includes("**Teams the mode allows:** –"));
 });

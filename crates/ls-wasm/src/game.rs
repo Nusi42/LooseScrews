@@ -2033,14 +2033,12 @@ impl GameCore {
         }
     }
 
-    /// Radiation dose rate (hull/s) at `p`: the world's (with the mode's
-    /// scale) in practice; online the unscaled law of the level's belt
-    /// (Belt Up's `radiation_scale` is 1 by default; B6 may pass its scale).
+    /// Radiation dose rate (hull/s) at `p` with the mode's scale (Belt Up:
+    /// its rule set's `radiation_scale` while racing, 0 in the start lights
+    /// and heat results): the world's in practice, the session's online.
     pub fn dose_rate_at(&self, p: Vec3) -> f32 {
         match &self.mode {
-            Mode::Online(o) => o.session.belt().map_or(0.0, |b| {
-                ls_sim::radiation::dose_rate(b, ls_sim::radiation::RadiationSettings::builtin(), p)
-            }),
+            Mode::Online(o) => o.session.dose_rate_at(p),
             Mode::Practice(pr) => pr.world.dose_rate(p),
         }
     }

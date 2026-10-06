@@ -31,7 +31,7 @@
 //!           + 1 bit moved [3 component diffs, 2-bit size class each]; new:
 //!           the full objective]
 //!         1 bit mood changed [mood]  (protocol 6)
-//!         1 bit race changed [race]  (protocol 6, B6)
+//!         1 bit race changed [1 bit "present" [race]]  (protocol 6, B6)
 //! ```
 //!
 //! # Mood (protocol 6)
@@ -48,21 +48,23 @@
 //!         (+Y) or 3 x f32 raw bits
 //! ```
 //!
-//! # Race (protocol 6; day-one layout note for B6, Belt Up)
+//! # Race (protocol 6, B6: Belt Up)
 //!
-//! `RaceView` goes into its own section after the mood; until B6 adds it
-//! the encoder writes 0 and the decoder rejects 1. B6 fills it in this
-//! layout (all of it sent again when anything in it changes; racers are
-//! few and it changes at gates):
+//! Belt Up's `ls_sim::modes::belt_up::RaceView` ([`NetRaceView`]) in its
+//! own section after the mood, absent in every other mode (one bit). All of
+//! it is sent again when anything in it changes (racers are few; it
+//! changes at gates, places and holds):
 //!
 //! ```text
-//! race    u8 heat (0-based), u8 heats, u8 heat_phase (start lights,
-//!         racing, results), varint heat_phase_end_tick, then u32 presence
-//!         mask of racers (wire ship ids), per racer in id order: u8
-//!         next_gate (gates passed, 8 = lap done), varint finish_tick (0 =
-//!         not finished), u8 place (0 = none), varint hold_end_tick (0 = not
-//!         held), u8 slot
+//! race    u8 heat (0-based), u8 heats, u8 heat_phase (race_phase: start
+//!         lights, racing, results, done), varint heat_phase_end_tick, then
+//!         u32 presence mask of racers (wire ship ids), per racer in id
+//!         order: u8 gates (gates passed, 8 = lap done), varint finish_tick
+//!         (0 = not finished), u8 place (0 = none), varint hold_end_tick (0
+//!         = not held), u8 slot
 //! ```
+//!
+//! About 4 bytes plus 7 per racer: 60 bytes for 8 racers, only on change.
 //!
 //! # Well entities (protocol 6; day-one layout note for B4 and B7)
 //!
@@ -110,6 +112,58 @@ pub mod mode_player_flags {
     /// Reached the goal (protocol 6; The Architect's exit): out of play
     /// until the next round, without a death.
     pub const FINISHED: u8 = 1 << 4;
+    /// Belt Up (protocol 6): held in place (start lights, a death hold at a
+    /// gate, heat results); the mode's movement limits stop the ship.
+    pub const HELD: u8 = 1 << 5;
+}
+
+/// [`NetRaceView::phase`] values (`ls_sim::modes::belt_up::heat_phase`).
+pub mod race_phase {
+    /// Start lights: racers held in their slots.
+    pub const LIGHTS: u8 = 0;
+    pub const RACING: u8 = 1;
+    /// Heat results: everyone held.
+    pub const RESULTS: u8 = 2;
+    /// The last heat is over.
+    pub const DONE: u8 = 3;
+}
+
+/// One racer of a [`NetRaceView`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct NetRacer {
+    /// Wire ship id.
+    pub id: u8,
+    /// Gates passed this heat (8 = lap done: the exit is open).
+    pub gates: u8,
+    /// Tick the racer reached the exit (0 = not finished).
+    pub finish_tick: u32,
+    /// Live place this heat (final after the heat; 0 = none).
+    pub place: u8,
+    /// Held at a gate until this tick (0 = not held).
+    pub hold_end_tick: u32,
+    /// Start slot this heat (its next gate is `(slot + 1 + gates) % 8`).
+    pub slot: u8,
+}
+
+/// Belt Up's race (protocol 6 race section; see the module docs).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct NetRaceView {
+    /// Current heat (0-based) and the number of heats.
+    pub heat: u8,
+    pub heats: u8,
+    /// [`race_phase`].
+    pub phase: u8,
+    /// Tick the current phase ends (start lights, heat limit, results).
+    pub phase_end_tick: u32,
+    /// Racers of this heat, sorted by wire id.
+    pub racers: Vec<NetRacer>,
+}
+
+impl NetRaceView {
+    /// The entry of ship `id`, if it races this heat.
+    pub fn racer(&self, id: u8) -> Option<&NetRacer> {
+        self.racers.iter().find(|r| r.id == id)
+    }
 }
 
 /// [`NetMoodView::phase`] values (`ls_sim::EventPhase::index`; meaningless
@@ -303,6 +357,8 @@ pub struct NetModeState {
     pub objectives: Vec<NetObjective>,
     /// The comedy director's state and the level's up (protocol 6).
     pub mood: NetMoodView,
+    /// Belt Up's race (protocol 6; `None` in other modes).
+    pub race: Option<NetRaceView>,
 }
 
 impl NetModeState {
@@ -334,6 +390,7 @@ pub struct PackedModeState {
     pub players: Vec<NetModePlayer>,
     pub objectives: Vec<PackedObjective>,
     pub mood: PackedMoodView,
+    pub race: Option<NetRaceView>,
 }
 
 impl PackedModeState {
@@ -388,6 +445,11 @@ impl Quantizer {
             players,
             objectives,
             mood: PackedMoodView::from(&m.mood),
+            race: m.race.as_ref().map(|r| {
+                let mut r = r.clone();
+                r.racers.sort_by_key(|x| x.id);
+                r
+            }),
         }
     }
 
@@ -420,6 +482,7 @@ impl Quantizer {
                 })
                 .collect(),
             mood: NetMoodView::from(&m.mood),
+            race: m.race.clone(),
         }
     }
 }
@@ -475,6 +538,17 @@ pub(crate) fn check_mode(m: &PackedModeState) -> Result<(), EncodeError> {
     if !m.mood.up.iter().all(|&b| f32::from_bits(b).is_finite()) {
         return Err(EncodeError::OutOfRange("mood up not finite"));
     }
+    if let Some(r) = &m.race {
+        let mut prev: Option<u8> = None;
+        for x in &r.racers {
+            if x.id >= MAX_SHIPS || prev.is_some_and(|q| q >= x.id) {
+                return Err(EncodeError::OutOfRange(
+                    "racers must be sorted by id and unique",
+                ));
+            }
+            prev = Some(x.id);
+        }
+    }
     Ok(())
 }
 
@@ -518,17 +592,54 @@ fn read_mood(r: &mut BitReader) -> Result<PackedMoodView, DecodeError> {
     Ok(m)
 }
 
-/// The race section (B6, Belt Up): not filled before B6, see the module
-/// docs for its day-one layout.
-fn write_race_absent(w: &mut BitWriter) {
-    w.write_bool(false);
+/// The race section (B6, Belt Up; see the module docs): a presence bit and
+/// the race.
+fn write_race(w: &mut BitWriter, race: &Option<NetRaceView>) {
+    w.write_bool(race.is_some());
+    let Some(r) = race else {
+        return;
+    };
+    w.write_u8(r.heat);
+    w.write_u8(r.heats);
+    w.write_u8(r.phase);
+    w.write_varint(r.phase_end_tick as u64);
+    let mask = r.racers.iter().fold(0u32, |acc, x| acc | (1 << x.id));
+    w.write_u32(mask);
+    for x in &r.racers {
+        w.write_u8(x.gates);
+        w.write_varint(x.finish_tick as u64);
+        w.write_u8(x.place);
+        w.write_varint(x.hold_end_tick as u64);
+        w.write_u8(x.slot);
+    }
 }
 
-fn read_race_absent(r: &mut BitReader) -> Result<(), DecodeError> {
-    if r.read_bool()? {
-        return Err(DecodeError::Invalid("race section not supported"));
+fn read_race(r: &mut BitReader) -> Result<Option<NetRaceView>, DecodeError> {
+    if !r.read_bool()? {
+        return Ok(None);
     }
-    Ok(())
+    let mut v = NetRaceView {
+        heat: r.read_u8()?,
+        heats: r.read_u8()?,
+        phase: r.read_u8()?,
+        phase_end_tick: r.read_varint_u32()?,
+        racers: Vec::new(),
+    };
+    let mask = r.read_u32()?;
+    for id in 0..MAX_SHIPS {
+        if mask & (1 << id) == 0 {
+            continue;
+        }
+        v.racers.push(NetRacer {
+            id,
+            gates: r.read_u8()?,
+            finish_tick: r.read_varint_u32()?,
+            place: r.read_u8()?,
+            hold_end_tick: r.read_varint_u32()?,
+            slot: r.read_u8()?,
+        });
+    }
+    Ok(Some(v))
 }
 
 fn write_header(w: &mut BitWriter, m: &PackedModeState) {
@@ -685,7 +796,7 @@ pub(crate) fn write_mode_full(w: &mut BitWriter, m: &PackedModeState) {
     if mood {
         write_mood(w, &m.mood);
     }
-    write_race_absent(w);
+    write_race(w, &m.race);
 }
 
 pub(crate) fn read_mode_full(r: &mut BitReader) -> Result<PackedModeState, DecodeError> {
@@ -719,7 +830,7 @@ pub(crate) fn read_mode_full(r: &mut BitReader) -> Result<PackedModeState, Decod
     if r.read_bool()? {
         m.mood = read_mood(r)?;
     }
-    read_race_absent(r)?;
+    m.race = read_race(r)?;
     Ok(m)
 }
 
@@ -787,7 +898,11 @@ pub(crate) fn write_mode_delta(w: &mut BitWriter, m: &PackedModeState, b: &Packe
     if mood {
         write_mood(w, &m.mood);
     }
-    write_race_absent(w);
+    let race = m.race != b.race;
+    w.write_bool(race);
+    if race {
+        write_race(w, &m.race);
+    }
 }
 
 pub(crate) fn read_mode_delta(
@@ -854,7 +969,9 @@ pub(crate) fn read_mode_delta(
     if r.read_bool()? {
         m.mood = read_mood(r)?;
     }
-    read_race_absent(r)?;
+    if r.read_bool()? {
+        m.race = read_race(r)?;
+    }
     Ok(m)
 }
 
@@ -1191,7 +1308,67 @@ mod tests {
                 },
             ],
             mood: PackedMoodView::default(),
+            race: None,
         }
+    }
+
+    fn sample_race() -> NetRaceView {
+        NetRaceView {
+            heat: 1,
+            heats: 3,
+            phase: race_phase::RACING,
+            phase_end_tick: 20_000,
+            racers: (0..8u8)
+                .map(|i| NetRacer {
+                    id: i * 3,
+                    gates: i,
+                    finish_tick: if i == 7 { 19_000 } else { 0 },
+                    place: 8 - i,
+                    hold_end_tick: if i == 2 { 18_500 } else { 0 },
+                    slot: (i + 1) % 8,
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn race_round_trips_in_full_and_delta_snapshots() {
+        let base = sample();
+        let mut m = sample();
+        m.race = Some(sample_race());
+        check_mode(&m).unwrap();
+        let with = full_round_trip(&m);
+        let without = full_round_trip(&base);
+        // 8 racers: about 60 bytes.
+        assert!(
+            with - without <= 8 * (8 + 24 + 8 + 24 + 8) + 24 + 24 + 32,
+            "{}",
+            with - without
+        );
+        let bits = delta_round_trip(&m, &base);
+        assert!(bits < with - without + 16, "{bits}");
+        delta_round_trip(&base, &m);
+        // A place changes: the race is sent again; unchanged: one bit for the
+        // whole mode section.
+        let mut moved = m.clone();
+        moved.race.as_mut().unwrap().racers[3].place = 1;
+        assert!(delta_round_trip(&moved, &m) > 100);
+        assert_eq!(delta_round_trip(&m, &m), 1);
+        // Pack and unpack keep the view (racers sorted by id).
+        let q = Quantizer::default();
+        let mut race = sample_race();
+        race.racers.reverse();
+        let net = NetModeState {
+            race: Some(race),
+            ..Default::default()
+        };
+        let back = q.unpack_mode(&q.pack_mode(&net));
+        assert_eq!(back.race, Some(sample_race()));
+        assert_eq!(back.race.unwrap().racer(6).unwrap().gates, 2);
+        // Unsorted racers are refused.
+        let mut bad = m.clone();
+        bad.race.as_mut().unwrap().racers.swap(0, 1);
+        assert!(check_mode(&bad).is_err());
     }
 
     fn sample_mood() -> PackedMoodView {
@@ -1244,16 +1421,16 @@ mod tests {
     }
 
     #[test]
-    fn mood_validation_and_reserved_race_section() {
+    fn mood_validation_and_race_section_bit() {
         let mut m = sample();
         m.mood.up[1] = f32::INFINITY.to_bits();
         assert!(check_mode(&m).is_err());
-        // A race section (B6) is rejected until it exists.
+        // Without a race the section is one 0 bit, the last one written; a
+        // race bit without its race is a decode error.
         let mut w = BitWriter::new();
         write_mode_full(&mut w, &sample());
         let len = w.bit_len();
         let mut bytes = w.finish();
-        // The race bit is the last bit written.
         let i = len - 1;
         bytes[i / 8] |= 1 << (i % 8);
         assert!(read_mode_full(&mut BitReader::new(&bytes)).is_err());

@@ -47,4 +47,6 @@ ShipTuning(
     // needs no number: no damping while touching it, and wall hits keep the speed.
     paint_bounce_restitution: 0.9,
     paint_sticky_speed: 0.4,
+    // Belt Up bumps (M4 plan §3.8): touching ships split the impulse by mass (Tinker 1).
+    mass: 0.7,
 )

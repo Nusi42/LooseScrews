@@ -30,3 +30,4 @@ event/duck_parade 0x70d4db60a6342f5d
 event/hat_rain 0xe077c3a81260bd87
 event/disco_inferno 0xebd4d46d366a0136
 mode/the_architect 0x18ae4636e93c18d6
+mode/belt_up 0x5348689f4f38cac5

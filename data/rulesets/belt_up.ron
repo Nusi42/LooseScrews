@@ -1,0 +1,101 @@
+// Default rule set for Belt Up (M4 plan section 3.8): a race of 2-8 ships around an asteroid
+// belt. Schema: `ls_sim::RuleSet` (rule set v2). Weapons and gadgets not listed are Banned.
+// Mode rules (`ls_sim::modes::belt_up`): 3 heats on the same belt level; each heat is 3 s of
+// start lights, one lap through the 8 gates in order and a dive to the EXIT at the centre,
+// until everyone finished, 30 s after the first finisher or 180 s; 8 s of heat results.
+// Points per heat 10, 8, 6, 5, 4, 3, 2, 1; kills score nothing. A destroyed ship respawns
+// at its last gate after a 4 s hold with the hull it had there (at least 30 %). Radiation
+// outside the belt burns hull (scaled by `radiation_scale`); bumps split by ship mass.
+// Loadout: Scrap Laser and 3 Bolt Rockets (the Skitter has one secondary slot, so the plan's
+// 2 Magnet Sneezes are the most common pickup instead); the same pickups in every wedge
+// (the belt's three pickup points per wedge share their rolls). Tectonic Charge banned (one
+// per map cannot be symmetric).
+RuleSet(
+    name: "Belt Up",
+    mode: BeltUp((
+        teams: 0,
+        match_secs: 900.0,
+        respawn_secs: 1.0,
+        heats: 3,
+        heat_limit_secs: 180.0,
+        finish_grace_secs: 30.0,
+        lights_secs: 3.0,
+        results_secs: 8.0,
+        hold_secs: 4.0,
+        hull_floor_percent: 30,
+        radiation_scale: 1.0,
+        points_1: 10,
+        points_2: 8,
+        points_3: 6,
+        points_4: 5,
+        points_5: 4,
+        points_6: 3,
+        points_7: 2,
+        points_8: 1,
+        bump_restitution: 1.2,
+        bump_max_speed: 10.0,
+        bump_cooldown_secs: 0.3,
+    )),
+    weapons: {
+        // Energy primaries.
+        "scrap_laser": LoadoutAndPickup,
+        "plasma_repeater": PickupOnly,
+        // Kinetic primaries.
+        "rivet_gun": PickupOnly,
+        // Ordnance.
+        "bolt_rocket": LoadoutAndPickup,
+        "seeker": PickupOnly,
+        "quicksilver": PickupOnly,
+        "prox_mine": PickupOnly,
+        "stalker_mine": PickupOnly,
+        "seed_grenade": PickupOnly,
+        // Specials: the path changers.
+        "magnet_sneeze": LoadoutAndPickup,
+        "swap_harpoon": PickupOnly,
+        "borrowed_time": PickupOnly,
+        "paint_thrower": PickupOnly,
+    },
+    gadgets: {
+        "shield": PickupOnly,
+        "cloak": PickupOnly,
+        "decoy": PickupOnly,
+    },
+    starting_loadout: (
+        primaries: ["scrap_laser"],
+        secondaries: [("bolt_rocket", 3)],
+        gadget: None,
+    ),
+    pickups: {
+        "plasma_repeater": (weight: 0.5, respawn_secs: 30.0),
+        "rivet_gun": (weight: 0.5, respawn_secs: 30.0),
+        "bolt_rocket": (weight: 1.0, respawn_secs: 20.0, ammo: 3),
+        "seeker": (weight: 1.0, respawn_secs: 25.0, ammo: 2),
+        "quicksilver": (weight: 1.0, respawn_secs: 25.0, ammo: 3),
+        "prox_mine": (weight: 1.0, respawn_secs: 25.0, ammo: 3),
+        "stalker_mine": (weight: 0.5, respawn_secs: 30.0, ammo: 2),
+        "seed_grenade": (weight: 0.5, respawn_secs: 30.0, ammo: 2),
+        "magnet_sneeze": (weight: 2.0, respawn_secs: 20.0, ammo: 2),
+        "swap_harpoon": (weight: 1.0, respawn_secs: 25.0, ammo: 2),
+        "borrowed_time": (weight: 0.5, respawn_secs: 30.0, ammo: 1),
+        "paint_thrower": (weight: 0.5, respawn_secs: 30.0),
+    },
+    upgrade_pickups: {
+        "scrap_laser": (weight: 1.0, respawn_secs: 25.0),
+    },
+    gadget_pickups: {
+        "shield": (weight: 0.5, respawn_secs: 30.0),
+        "cloak": (weight: 0.25, respawn_secs: 30.0),
+        "decoy": (weight: 0.25, respawn_secs: 30.0),
+    },
+    // Scrap: hull only repairs by scavenging (radiation and the dive cost hull).
+    scrap_pickup: Some((weight: 3.0, respawn_secs: 15.0, amount: 30.0)),
+    // Pigment pickups on monochrome belts (one per 4 players, at least 2).
+    pigment_pickup: Some((respawn_secs: 30, players_per_pickup: 4, min_on_map: 2)),
+    shield_overrides: {},
+    tuning: {},
+    // Free-for-all: no teammates.
+    friendly_fire_percent: 0,
+    allowed_ship_types: [Skitter, Tinker, Hauler, Tug],
+    // Comedy events: the director runs at min(world Absurdity slider, this cap): the world decides.
+    absurdity: 100,
+)

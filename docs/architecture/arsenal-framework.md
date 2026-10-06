@@ -367,7 +367,7 @@ twentieths, shield overrides that replace the rule set's), re-read before every 
 Built-in rule sets (`BUILTIN_RULESETS`): `paint_the_void.ron` (the default of rule set codes
 without a mode), `sandbox_all_weapons.ron` (every weapon and gadget as a pickup with even
 weights and short respawns, every ship type; the arsenal e2e run uses it), one default rule set
-per mode (`ModeKind::ruleset_file`: `team_brawl.ron`, `squeeze.ron`, `heist.ron`,
+per mode (`ModeKind::ruleset_file`: `team_brawl.ron`, `squeeze.ron`, `heist.ron`, `belt_up.ron`,
 `hot_reactor.ron`, `last_color_standing.ron`), `instagib_brawl.ron` and `duel.ron`; their
 numbers in [userDocs/reference/modes.md](../../userDocs/reference/modes.md).
 

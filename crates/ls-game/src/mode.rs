@@ -5,11 +5,12 @@
 //! generic view (`docs/milestone-3-plan.md` §3.1).
 
 use ls_net::mode::NONE;
-use ls_net::NetMoodView;
 use ls_net::{
     mode_phase, MatchResultsMsg, NetModePlayer, NetModeState, NetObjective, ResultRow, MAX_SHIPS,
 };
+use ls_net::{NetMoodView, NetRaceView, NetRacer};
 use ls_sim::mode::ObjectiveView;
+use ls_sim::modes::belt_up::{RaceView, RacerView};
 use ls_sim::modes::the_squeeze;
 use ls_sim::{
     EventKind, EventPhase, MatchPhase, MatchResults, ModeKind, ModeView, Mood, MoodView, PlayerId,
@@ -51,6 +52,58 @@ pub fn mood_from_net(n: &NetMoodView) -> MoodView {
         active_tick: n.active_tick as u64,
         target: (n.target != NONE).then_some(PlayerId(n.target as u16)),
         params: n.params,
+    }
+}
+
+/// The wire form of Belt Up's race (protocol 6 race section). Racers
+/// without a wire id (not connected) are left out.
+pub fn race_to_net(r: &RaceView, wire: impl Fn(PlayerId) -> Option<u8>) -> NetRaceView {
+    let mut racers: Vec<NetRacer> = r
+        .racers
+        .iter()
+        .filter_map(|x| {
+            let id = wire(x.player).filter(|&id| id < MAX_SHIPS)?;
+            Some(NetRacer {
+                id,
+                gates: x.gates,
+                finish_tick: tick32(x.finish_tick),
+                place: x.place,
+                hold_end_tick: tick32(x.hold_end_tick),
+                slot: x.slot,
+            })
+        })
+        .collect();
+    racers.sort_by_key(|x| x.id);
+    racers.dedup_by_key(|x| x.id);
+    NetRaceView {
+        heat: r.heat,
+        heats: r.heats,
+        phase: r.phase,
+        phase_end_tick: tick32(r.phase_end_tick),
+        racers,
+    }
+}
+
+/// The simulation's view of a replicated race (clients: HUD, bots); racers
+/// become `PlayerId(wire id)`.
+pub fn race_from_net(n: &NetRaceView) -> RaceView {
+    RaceView {
+        heat: n.heat,
+        heats: n.heats,
+        phase: n.phase,
+        phase_end_tick: n.phase_end_tick as u64,
+        racers: n
+            .racers
+            .iter()
+            .map(|x| RacerView {
+                player: PlayerId(x.id as u16),
+                gates: x.gates,
+                finish_tick: x.finish_tick as u64,
+                place: x.place,
+                hold_end_tick: x.hold_end_tick as u64,
+                slot: x.slot,
+            })
+            .collect(),
     }
 }
 
@@ -114,6 +167,7 @@ pub fn mode_view_to_net(view: &ModeView, wire: impl Fn(PlayerId) -> Option<u8>) 
             .copied()
             .collect(),
         mood: mood_to_net(&view.mood, ls_math::Vec3::Y, &wire),
+        race: view.race.as_ref().map(|r| race_to_net(r, &wire)),
         players,
         objectives,
     }
@@ -280,7 +334,55 @@ mod tests {
             }],
             flags: view_flags::LIVES,
             mood: Default::default(),
+            race: None,
         }
+    }
+
+    #[test]
+    fn race_maps_to_wire_ids_and_back() {
+        let race = RaceView {
+            heat: 1,
+            heats: 3,
+            phase: ls_sim::modes::belt_up::heat_phase::RACING,
+            phase_end_tick: 9000,
+            racers: [
+                (7, 2, 0, 1, 0, 3),
+                (3, 8, 8800, 2, 0, 5),
+                (9, 1, 0, 3, 8700, 0),
+            ]
+            .into_iter()
+            .map(|(p, gates, fin, place, hold, slot)| RacerView {
+                player: PlayerId(p),
+                gates,
+                finish_tick: fin,
+                place,
+                hold_end_tick: hold,
+                slot,
+            })
+            .collect(),
+        };
+        let mut v = view();
+        v.kind = ModeKind::BeltUp;
+        v.race = Some(race);
+        // Player 9 is not connected.
+        let wire = |p: PlayerId| match p.0 {
+            7 => Some(1),
+            3 => Some(0),
+            _ => None,
+        };
+        let net = mode_view_to_net(&v, wire);
+        let r = net.race.as_ref().unwrap();
+        assert_eq!(r.racers.len(), 2);
+        assert_eq!(r.racers[0].id, 0, "sorted by wire id");
+        assert_eq!((r.racers[0].gates, r.racers[0].finish_tick), (8, 8800));
+        assert_eq!(r.racer(1).unwrap().slot, 3);
+        let q = ls_net::Quantizer::default();
+        let back = q.unpack_mode(&q.pack_mode(&net));
+        assert_eq!(back.race, net.race);
+        let view = race_from_net(back.race.as_ref().unwrap());
+        assert_eq!(view.heat, 1);
+        assert_eq!(view.racer(PlayerId(1)).unwrap().next_gate(), Some(6));
+        assert_eq!(view.racer(PlayerId(0)).unwrap().next_gate(), None);
     }
 
     #[test]

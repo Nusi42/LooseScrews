@@ -70,6 +70,19 @@ test("mode state, lobby and results parse from ls-wasm JSON; broken input is saf
   assert.deepEqual(parseModeState("not json"), emptyModeState());
   assert.deepEqual(parseModeState(undefined), emptyModeState());
   assert.equal(parseModeState('{"players":[{"id":"x"}],"objectives":7}').players[0]!.id, 0);
+  assert.equal(m.race, null, "no race outside Belt Up");
+  // Belt Up's race (ls-wasm modes.rs race_json).
+  const race = parseModeState(
+    '{"kind":7,"mode":"belt_up","race":{"heat":1,"heats":3,"phase":1,"phaseId":"racing","phaseEndTick":9000,' +
+      '"racers":[{"id":2,"gates":3,"nextGate":2,"finishTick":0,"place":1,"holdEndTick":0,"slot":6},' +
+      '{"id":4,"gates":8,"nextGate":-1,"finishTick":8800,"place":2,"holdEndTick":8700,"slot":0}]}}',
+  ).race;
+  assert.ok(race);
+  assert.equal(race.phase, "racing");
+  assert.equal(race.heats, 3);
+  assert.deepEqual(race.racers[1], { id: 4, gates: 8, nextGate: -1, finishTick: 8800, place: 2, holdEndTick: 8700, slot: 0 });
+  assert.equal(parseModeState('{"race":7}').race, null);
+  assert.equal(modeInfo("belt_up").name, "Belt Up");
 
   const l = parseLobbyState(LOBBY_JSON);
   assert.ok(l);

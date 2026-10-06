@@ -442,8 +442,12 @@ fn derived_default_rule_sets_resolve_without_the_paint_thrower() {
         let r = RuleSet::default_for(kind);
         assert_eq!(r.mode.kind(), kind);
         r.resolve(&weapons).unwrap();
-        if kind != ModeKind::PaintTheVoid {
+        // Belt Up hands out the Paint Thrower on purpose (yellow paint slows
+        // the line, red bounces; M4 §3.8).
+        if kind != ModeKind::PaintTheVoid && kind != ModeKind::BeltUp {
             assert!(r.availability("paint_thrower").is_banned(), "{kind:?}");
+        }
+        if kind != ModeKind::PaintTheVoid {
             assert_eq!(r.name, kind.name());
         }
     }

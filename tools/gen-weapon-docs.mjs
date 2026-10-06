@@ -708,6 +708,13 @@ const MODES = [
     wins: (m) =>
       `most points after min(players, ${m.max_rounds}) rounds of ${duration(m.round_secs)}: 1 per runner through the exit, 1 to the architect per runner who misses (equal: draw)`,
   },
+  {
+    tag: "BeltUp",
+    name: "Belt Up",
+    anchor: "belt-up",
+    about: "A race on an asteroid belt level, in heats: one lap through the 8 gates in order, then a dive to the EXIT at the centre. The belt shields you from radiation but is full of rock and drifting boulders; open space is fast but burns hull. A destroyed ship goes back to its last gate with the hull it had there. Ships bump each other; kills don't score.",
+    wins: (m) => `most points over ${m.heats} heats (${[1, 2, 3, 4, 5, 6, 7, 8].map((p) => m[`points_${p}`]).join(", ")} per place), then more heat wins, the better last place, the lower total time`,
+  },
 ];
 
 /** What each mode setting means (`ModeRules` fields in `crates/ls-sim/src/ruleset.rs`) and how to print it. */
@@ -764,6 +771,25 @@ const MODE_FIELDS = {
   reshape_delta: ["Rock strokes reshape like the slider moved by", (v) => String(v)],
   well_secs: ["Gravity Chaos+ well lasts (s)", (v) => num(v)],
   palette_secs: ["Palette blackout lasts (s)", (v) => num(v)],
+  heats: ["Heats per match", (v) => String(v)],
+  heat_limit_secs: ["A heat ends after (from the start lights going out)", (v) => duration(v)],
+  finish_grace_secs: ["...or this long after the first racer finished (s)", (v) => num(v)],
+  lights_secs: ["Start lights (ships held in their slots, s)", (v) => num(v)],
+  results_secs: ["Heat results before the next heat (s)", (v) => num(v)],
+  hold_secs: ["A destroyed ship is held at its gate until this long after its death (s)", (v) => num(v)],
+  hull_floor_percent: ["Hull after a respawn: as at the last gate, at least", (v) => `${v}%`],
+  radiation_scale: ["Radiation dose (x the level's law)", (v) => `${num(v)}x`],
+  points_1: ["Points for 1st place", (v) => String(v)],
+  points_2: ["Points for 2nd place", (v) => String(v)],
+  points_3: ["Points for 3rd place", (v) => String(v)],
+  points_4: ["Points for 4th place", (v) => String(v)],
+  points_5: ["Points for 5th place", (v) => String(v)],
+  points_6: ["Points for 6th place", (v) => String(v)],
+  points_7: ["Points for 7th place", (v) => String(v)],
+  points_8: ["Points for 8th place", (v) => String(v)],
+  bump_restitution: ["Bumps: touching ships part at this times their approach speed", (v) => `${num(v)}x`],
+  bump_max_speed: ["Bumps: at most this speed change per ship (u/s)", (v) => num(v)],
+  bump_cooldown_secs: ["Bumps: once per pair in (s)", (v) => num(v)],
 };
 
 /** Mutators: name and what they change. */
@@ -773,7 +799,7 @@ const MUTATOR_TEXT = {
 };
 
 /** Rule set files in the order the reference lists them; others follow by name. */
-const RULESET_ORDER = ["paint_the_void", "team_brawl", "squeeze", "heist", "hot_reactor", "last_color_standing", "the_architect", "instagib_brawl", "duel", "sandbox_all_weapons"];
+const RULESET_ORDER = ["paint_the_void", "team_brawl", "squeeze", "heist", "hot_reactor", "last_color_standing", "the_architect", "belt_up", "instagib_brawl", "duel", "sandbox_all_weapons"];
 
 /** `300` -> "5 min", `90` -> "1 min 30 s", `45` -> "45 s". */
 export function duration(secs) {

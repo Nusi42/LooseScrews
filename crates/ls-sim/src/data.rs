@@ -57,7 +57,8 @@ pub fn builtin_files() -> Vec<(&'static str, &'static str)> {
 }
 
 /// The world physics files (`data/world/*.ron`, M4).
-pub const WORLD_FILES: [(&str, &str); 4] = [
+pub const WORLD_FILES: [(&str, &str); 5] = [
+    ("world/boulders.ron", crate::boulders::BOULDERS_RON),
     ("world/gravity.ron", crate::gravity::GRAVITY_RON),
     ("world/instability.ron", crate::instability::INSTABILITY_RON),
     ("world/pigment.ron", crate::pigment::PIGMENT_RON),

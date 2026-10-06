@@ -83,6 +83,10 @@ pub struct PredictEnv {
     /// running event's kinematic obstacles are pure functions of it and the
     /// mood view (Duck parade's route; `ls_sim::director::obstacles`).
     pub setup: std::sync::Arc<ls_sim::MatchSetup>,
+    /// The asteroid belt (belt levels): its drifting boulders push the ship
+    /// exactly as on the server (`ls_sim::boulders`; positions are a pure
+    /// function of the tick).
+    pub belt: Option<ls_math::level::BeltSite>,
 }
 
 impl Default for PredictEnv {
@@ -93,6 +97,7 @@ impl Default for PredictEnv {
             up: Vec3::Y,
             wells: WellField::default(),
             setup: std::sync::Arc::default(),
+            belt: None,
         }
     }
 }
@@ -221,6 +226,12 @@ impl Predictor {
             self.env.wells.dynamics = wells;
             self.wells_changed = true;
         }
+    }
+
+    /// The level's asteroid belt (set once per match): its drifting
+    /// boulders push the predicted ship as on the server.
+    pub fn set_belt(&mut self, belt: Option<ls_math::level::BeltSite>) {
+        self.env.belt = belt.filter(|b| !b.boulders.is_empty());
     }
 
     /// Mood, up and wells the prediction applies.
@@ -634,6 +645,18 @@ fn step_ship<T: TerrainQuery + ?Sized>(
                 &mut contacts,
             );
         }
+    }
+    // Drifting boulders (belt levels), as `World::step` pushes the ship
+    // after its movement.
+    if let Some(belt) = &env.belt {
+        ls_sim::boulders::push_sphere(
+            belt,
+            ls_sim::boulders::BoulderSettings::builtin(),
+            now,
+            &mut s.pos,
+            &mut s.vel,
+            tuning.radius,
+        );
     }
 }
 

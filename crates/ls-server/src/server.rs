@@ -192,12 +192,19 @@ pub fn match_config_with(
     code: Option<&str>,
     rules: &ServerRules,
 ) -> Result<MatchConfig, ServerError> {
+    let belt_up = crate::playlist::is_belt_up(rules);
     let code = match code {
         Some(text) => ShareCode::decode(text)?,
+        // Belt Up races on a random belt.
+        None if belt_up => WorldChoice::random_belt().share_code(),
         None => ShareCode::new(random_seed(), Sliders::default()),
     };
     let mut cfg = MatchConfig::paint_the_void(code);
     cfg.rules = rules.effective(&cfg.weapons, &cfg.gadgets)?;
+    if belt_up {
+        // A classic code plays as a belt on the same seed and sliders.
+        cfg.code = crate::playlist::belt_code(cfg.code);
+    }
     Ok(cfg)
 }
 

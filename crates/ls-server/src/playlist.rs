@@ -33,11 +33,20 @@
 //! range does not fit the current player count. If none fits it falls back
 //! to the first `team_brawl` entry, else to the next entry in order (see
 //! [`Rotation::pick`]).
+//!
+//! **Belt Up** entries (M4 §3.8) race on asteroid belts: `Random` (or a
+//! classic `RandomSliders` without its own ranges) becomes a random belt
+//! with [`SliderRanges::BELT`], a classic world (a fixed code, or random
+//! sliders the entry gave) is played as a belt on the same seed and
+//! sliders ([`belt_code`]; the lobby shows the rewritten code), and the
+//! entry takes at most [`BELT_UP_MAX_PLAYERS`] players. All heats are one
+//! match (no room transition between heats).
 
 use std::path::{Path, PathBuf};
 
 use ls_game::MatchConfig;
 use ls_sim::ruleset::BUILTIN_RULESETS;
+use ls_sim::ModeKind;
 use ls_worldgen::{Archetype, ShareCode, Sliders};
 use serde::Deserialize;
 
@@ -75,6 +84,24 @@ pub const FALLBACK_RULES: &str = "team_brawl";
 
 /// Largest player range an entry can name.
 pub const MAX_ENTRY_PLAYERS: u8 = 32;
+
+/// Most players of a Belt Up entry (one per start slot).
+pub const BELT_UP_MAX_PLAYERS: u8 = ls_sim::modes::belt_up::MAX_RACERS as u8;
+
+/// Whether `rules` are Belt Up's (they race on asteroid belts).
+pub fn is_belt_up(rules: &ServerRules) -> bool {
+    rules.base.mode.kind() == ModeKind::BeltUp
+}
+
+/// `code` as an asteroid belt: the same seed and sliders with the `Belt`
+/// archetype (Belt Up on a classic code; unchanged if it is a belt).
+pub fn belt_code(code: ShareCode) -> ShareCode {
+    if code.archetype == Archetype::Belt {
+        code
+    } else {
+        ShareCode::with_archetype(code.seed, code.sliders, Archetype::Belt)
+    }
+}
 
 /// Inclusive ranges for the seven world sliders of a random world, in
 /// share-code order.
@@ -225,7 +252,24 @@ impl PlaylistEntry {
         let mut cfg = template.clone();
         cfg.code = self.world.share_code();
         cfg.rules = self.rules.effective(&cfg.weapons, &cfg.gadgets)?;
+        if cfg.rules.mode.kind() == ModeKind::BeltUp {
+            cfg.code = belt_code(cfg.code);
+        }
         Ok(cfg)
+    }
+
+    /// Belt Up entries: a default random world becomes a random belt and
+    /// the player range is capped at [`BELT_UP_MAX_PLAYERS`] (see the module
+    /// docs); other entries are unchanged.
+    fn for_mode(mut self) -> Self {
+        if is_belt_up(&self.rules) {
+            if self.world == WorldChoice::random() {
+                self.world = WorldChoice::random_belt();
+            }
+            self.max_players = self.max_players.min(BELT_UP_MAX_PLAYERS);
+            self.min_players = self.min_players.min(self.max_players);
+        }
+        self
     }
 }
 
@@ -302,6 +346,8 @@ impl Playlist {
         if entries.is_empty() {
             return Err(invalid("the playlist has no entries"));
         }
+        let entries: Vec<PlaylistEntry> =
+            entries.into_iter().map(PlaylistEntry::for_mode).collect();
         for e in &entries {
             if e.min_players == 0 || e.min_players > e.max_players {
                 return Err(invalid(format!(
@@ -334,7 +380,8 @@ impl Playlist {
                 world,
                 min_players: 1,
                 max_players: MAX_ENTRY_PLAYERS,
-            }],
+            }
+            .for_mode()],
         }
     }
 
@@ -649,6 +696,52 @@ mod tests {
         let s = mc.code.sliders;
         assert!((10..=20).contains(&s.enclosure) && s.density == 30, "{s:?}");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn belt_up_entries_race_on_belts_with_eight_players() {
+        let text = r#"Playlist(entries: [
+            (rules: "belt_up"),
+            (rules: "belt_up", world: Code("CODE")),
+            (rules: "belt_up", world: RandomSliders(density: (70, 80)), max_players: 12),
+            (rules: "team_brawl"),
+        ])"#;
+        let classic = ShareCode::new(77, Sliders::new(30, 60));
+        let text = text.replace("CODE", &classic.to_string());
+        let p = Playlist::parse(&text, None, &[], None).unwrap();
+        let e = p.entries();
+        assert_eq!(e[0].world, WorldChoice::random_belt());
+        assert_eq!((e[0].min_players, e[0].max_players), (1, 8));
+        assert_eq!(e[2].max_players, 8);
+        assert_eq!(e[3].world, WorldChoice::random());
+        assert_eq!(e[3].max_players, MAX_ENTRY_PLAYERS);
+        let template = MatchConfig::paint_the_void(ShareCode::new(1, Sliders::default()));
+        // A classic code is played as a belt on the same seed and sliders.
+        let mc = e[1].match_config(&template).unwrap();
+        assert_eq!(mc.code.archetype, Archetype::Belt);
+        assert_eq!(
+            (mc.code.seed, mc.code.sliders),
+            (classic.seed, classic.sliders)
+        );
+        assert_eq!(mc.rules.mode.kind(), ModeKind::BeltUp);
+        // Random belts, also with classic slider ranges the entry gave.
+        for entry in [&e[0], &e[2]] {
+            let mc = entry.match_config(&template).unwrap();
+            assert_eq!(mc.code.archetype, Archetype::Belt);
+        }
+        assert!((70..=80).contains(&e[2].match_config(&template).unwrap().code.sliders.density));
+        // Other modes keep classic worlds; a single Belt Up entry (--ruleset,
+        // private rooms) gets the cap too.
+        assert_eq!(
+            e[3].match_config(&template).unwrap().code.archetype,
+            Archetype::Classic
+        );
+        let rules = ServerRules::new(Some("belt_up"), Vec::new(), None).unwrap();
+        let single = Playlist::single("belt_up", rules, WorldChoice::Fixed(classic));
+        assert_eq!(single.entries()[0].max_players, 8);
+        let mc = single.entries()[0].match_config(&template).unwrap();
+        assert_eq!(mc.code, belt_code(classic));
+        assert_eq!(belt_code(mc.code), mc.code);
     }
 
     #[test]

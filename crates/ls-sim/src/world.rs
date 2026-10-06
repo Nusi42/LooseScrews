@@ -9,8 +9,11 @@
 //!
 //! 1. respawns (with the ship type chosen for the next life);
 //! 2. per ship in id order: weapon selection, gadget key, movement (frozen
-//!    while the ship guides a projectile), scavenging (and Tug scrap passing),
-//!    gadget drain, then firing (primary, secondary);
+//!    while the ship guides a projectile; belt levels: drifting boulders
+//!    push it, [`crate::boulders`]), scavenging (and Tug scrap passing),
+//!    gadget drain, then firing (primary, secondary); then boulder contact
+//!    damage and touching ships (the mode's `ship_contact` hook, Belt Up's
+//!    bumps);
 //! 3. projectiles (fuse, lifetime, `update`, swept move and hit hooks);
 //! 4. entities (debris physics, decoys, entity hooks, expiry);
 //! 5. scrap piles and pickups;
@@ -1321,6 +1324,7 @@ impl World {
             .collect();
 
         // 2. Ships: selection, gadget, movement, scavenging, firing.
+        let mut boulder_hits: Vec<PlayerId> = Vec::new();
         for &id in &ids {
             let cmd = self
                 .inputs
@@ -1411,6 +1415,22 @@ impl World {
                     &mut contacts,
                 );
             }
+            // Drifting boulders push the ship aside (belt levels; the
+            // predictor applies the same push).
+            if let Some(belt) = cfg.setup.belt.as_ref().filter(|b| !b.boulders.is_empty()) {
+                let settings = crate::boulders::BoulderSettings::builtin();
+                let hit = crate::boulders::push_sphere(
+                    belt,
+                    settings,
+                    now,
+                    &mut ship.pos,
+                    &mut ship.vel,
+                    tuning.radius,
+                );
+                if hit > settings.damage_speed {
+                    boulder_hits.push(id);
+                }
+            }
             // Charged surfaces (Leech Arc) drain ships scraping them.
             if ship.in_contact
                 && cfg.charged_drain_per_sec > 0.0
@@ -1454,6 +1474,25 @@ impl World {
             if let Some(ship) = self.ships.get_mut(&id) {
                 ship.prev_buttons = cmd.buttons;
             }
+        }
+
+        // Fast boulder contacts hurt (no credit); touching ships (the mode's
+        // bumps).
+        for id in boulder_hits {
+            let dmg = crate::boulders::BoulderSettings::builtin().damage;
+            self.apply_damage(
+                &cfg,
+                now,
+                id,
+                dmg,
+                Vec3::ZERO,
+                crate::behavior::DamageSource::ENVIRONMENT,
+                false,
+                &mut events,
+            );
+        }
+        if cfg.mode_module.wants_ship_contact() {
+            self.ship_contacts(&cfg);
         }
 
         // 3. Projectiles.
@@ -2179,6 +2218,21 @@ impl World {
                     best = Some(Hit::Obstacle(t, i));
                 }
             }
+            // Drifting boulders absorb projectiles (belt levels).
+            if let Some(belt) = cfg.setup.belt.as_ref().filter(|b| !b.boulders.is_empty()) {
+                let limit = terrain_hit.map_or(remaining, |h| h.distance).min(best_t);
+                if let Some((t, _)) =
+                    crate::boulders::segment_hit(belt, self.tick, p.pos, dir, limit, p.radius)
+                {
+                    if t < best_t && terrain_hit.is_none_or(|h| t < h.distance) {
+                        let point = p.pos + dir * t;
+                        if let Some(cmd) = self.boulder_absorb(cfg, p, point, dir, events) {
+                            self.apply_commands(cfg, terrain, vec![cmd], events);
+                        }
+                        return false;
+                    }
+                }
+            }
             // Ships win ties with terrain (M1 rule).
             let hit = match (best, terrain_hit) {
                 (Some(h), None) => h,
@@ -2788,6 +2842,109 @@ impl World {
                         s.hats = hats;
                     }
                 }
+                Command::ResetRound => self.reset_round(events),
+            }
+        }
+    }
+
+    /// [`Command::ResetRound`]: projectiles and dynamic wells removed,
+    /// pickups rolled again, every ship in play respawned.
+    fn reset_round(&mut self, events: &mut Vec<Event>) {
+        self.projectiles.clear();
+        self.wells.dynamics.clear();
+        self.scrap.retain(|s| s.spawn.is_none());
+        for sp in &mut self.pickups {
+            sp.content = None;
+            sp.respawn_tick = 0;
+            sp.offset = Vec3::ZERO;
+        }
+        self.update_pickup_spawns(events);
+        let ids: Vec<PlayerId> = self.ships.keys().copied().collect();
+        for id in ids {
+            if self.mode.player(id).is_some_and(|p| p.is_out()) {
+                continue;
+            }
+            if let Some(pos) = self.respawn(id) {
+                events.push(Event::Respawned { player: id, pos });
+            }
+        }
+    }
+
+    /// A projectile reached a drifting boulder: it ends there (removed);
+    /// ordnance with splash detonates without a crater (the returned
+    /// command).
+    fn boulder_absorb(
+        &self,
+        cfg: &SimConfig,
+        p: &mut Projectile,
+        point: Vec3,
+        dir: Vec3,
+        events: &mut Vec<Event>,
+    ) -> Option<Command> {
+        p.pos = point;
+        p.remove();
+        events.push(Event::Impact {
+            projectile: p.id,
+            weapon: p.weapon,
+            point,
+            target: None,
+        });
+        let splash = cfg.weapons.get(p.weapon).splash?;
+        (p.splash_damage > 0.0 && splash.radius > 0.0).then(|| Command::Splash {
+            center: point,
+            radius: splash.radius,
+            damage: p.splash_damage,
+            knockback: p.knockback,
+            source: crate::behavior::DamageSource::projectile(p),
+            hits_owner: splash.hits_owner,
+            exclude: None,
+            dir,
+        })
+    }
+
+    /// Living ships whose hull spheres overlap, in id order, through the
+    /// mode's `ship_contact` hook (Belt Up's bumps).
+    fn ship_contacts(&mut self, cfg: &SimConfig) {
+        let alive: Vec<crate::modes::ContactShip> = self
+            .ships
+            .values()
+            .filter(|s| s.alive)
+            .map(|s| {
+                let t = cfg.tuning(s.ship_type);
+                crate::modes::ContactShip {
+                    player: s.player,
+                    pos: s.pos,
+                    vel: s.vel,
+                    radius: t.radius,
+                    mass: t.mass,
+                }
+            })
+            .collect();
+        let mut dv: Vec<(PlayerId, Vec3)> = Vec::new();
+        for (i, a) in alive.iter().enumerate() {
+            for b in &alive[i + 1..] {
+                let r = a.radius + b.radius;
+                if a.pos.distance_squared(b.pos) >= r * r {
+                    continue;
+                }
+                let mut m = ModeMut {
+                    state: &mut self.mode,
+                    rules: &cfg.rules.mode,
+                    mutators: &cfg.rules.mutators,
+                    ships: &self.ships,
+                    now: self.tick,
+                };
+                if let Some((da, db)) = cfg.mode_module.ship_contact(&mut m, a, b) {
+                    dv.push((a.player, da));
+                    dv.push((b.player, db));
+                }
+            }
+        }
+        for (id, v) in dv {
+            if let Some(s) = self.ships.get_mut(&id) {
+                if v.is_finite() {
+                    s.vel += v;
+                }
             }
         }
     }
@@ -3159,7 +3316,26 @@ impl World {
                     }
                 })
                 .collect();
-            let Some(entry) = self.rng.weighted_index(&weights) else {
+            // Grouped points (Belt Up: the same pickups in every wedge) roll
+            // from their group's key, without per-map caps.
+            let group = cfg.mode_module.pickup_group(&self.mode, &cfg.setup, i);
+            let rolled = match group {
+                Some(key) => {
+                    let allowed: Vec<f32> = table
+                        .iter()
+                        .map(|e| {
+                            if pickup_allowed(&cfg, e) {
+                                e.weight
+                            } else {
+                                0.0
+                            }
+                        })
+                        .collect();
+                    Pcg32::from_seed(cfg.seed ^ key, RNG_STREAM_PICKUPS).weighted_index(&allowed)
+                }
+                None => self.rng.weighted_index(&weights),
+            };
+            let Some(entry) = rolled else {
                 // Nothing can spawn here. If only per-map caps are in the way,
                 // retry later; otherwise never.
                 let capped_only = table.iter().any(|e| e.weight > 0.0 && e.max_on_map > 0);
@@ -3961,6 +4137,20 @@ fn hash_mode_extras(h: &mut StateHasher, m: &ModeState) {
     h.write_u16(m.flags);
     if let Some(a) = &m.architect {
         a.hash_into(h);
+    }
+    if let Some(r) = &m.race {
+        r.hash_into(h);
+    }
+}
+
+/// Whether the rule set allows pickup table entry `e` as a pickup.
+fn pickup_allowed(cfg: &SimConfig, e: &crate::ruleset::PickupEntry) -> bool {
+    match e.kind {
+        PickupKind::Weapon { weapon, .. } | PickupKind::Upgrade { weapon } => {
+            cfg.resolved.availability(weapon).as_pickup()
+        }
+        PickupKind::Gadget { gadget } => cfg.resolved.gadget_availability(gadget).as_pickup(),
+        PickupKind::Scrap { .. } => true,
     }
 }
 

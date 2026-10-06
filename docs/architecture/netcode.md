@@ -22,7 +22,7 @@ connection (`Welcome` with a match epoch, carried by `Input` and `Snapshot`), th
 results messages, room and party codes in `Hello` and weapon shot counts and state bytes in
 `Inventory` (see [Match transitions, lobby and mode state](#match-transitions-lobby-and-mode-state-protocol-5));
 6 (M4) the mood view, ship `ext` bits, the rubber-chicken projectile bit, `ArchitectAction`, new
-entity kinds and cues, and the reserved race section and well entity layout (see
+entity kinds and cues, Belt Up's race section and the well entity layout (see
 [Protocol 6](#protocol-6-moods-the-architect-belt-up)).
 This page describes version 6.
 
@@ -337,7 +337,7 @@ items inside version 6 against this layout. Codecs: `crates/ls-net/src/mode.rs` 
 | Hats (B3) | the ship `ext` hat bits carry `ShipState::hats` (Hat rain), saturating at 31 | as the ship `ext` |
 | Results awards (B3) | `MatchResultsMsg::awards` after the rows: varint count (at most 32), per award u8 `EventKind` index, u8 wire ship id, varint value (Hat Baron: hats worn) | 1 B without awards |
 | Well entities (kind 18) | every `ls_sim::gravity::DynamicWell` (Paperweight, Architect well) as an entity built by `ls_game::convert::well_entities`: id `0x8000 \|` key, position = centre, `state[0]` range in 0.25 u, `state[1]` peak pull in 0.125 u/s^2, `state[2..4]` low 16 bits of the end tick, `visual` low 16 bits of the start tick (both decoded nearest to the snapshot tick, so the entity never changes while the well lives; `ls_net::well_state`). The predictor rebuilds the wells: a telegraphed well starts on its tick, and a changed well list replays the stored inputs from the anchored state, so a well learned of late pulls from its exact start. Exact when the simulation creates wells on that grid (`well_state::quantize_range`, `quantize_peak`); clients draw wells from `Game.wells()`, not as entities | as any entity |
-| Race section (B6, Belt Up) | reserved: 1 bit after the mood (encoder writes 0, decoder rejects 1 until B6). Layout for B6: u8 heat, u8 heats, u8 heat phase, varint phase end tick, u32 racer mask, per racer: u8 next gate (8 = lap done), varint finish tick (0 none), u8 place (0 none), varint hold end tick (0 none), u8 slot; sent in full when anything changes | 1 bit |
+| Race section (B6, Belt Up; `ls_net::NetRaceView`, sim `ls_sim::modes::belt_up::RaceView`) | after the mood. Full: 1 bit present [race]; delta: 1 bit changed [1 bit present [race]]. Race: u8 heat (0-based), u8 heats, u8 heat phase (`ls_net::race_phase`: 0 lights, 1 racing, 2 results, 3 done), varint phase end tick, u32 racer mask (wire ids), per racer in id order: u8 gates passed (8 = lap done, the exit is open; next gate = `(slot + 1 + gates) % 8`), varint finish tick (0 none), u8 live place (0 none), varint hold end tick (0 none), u8 slot. Sent in full whenever anything in it changes (gates, places, holds, phases). `mode_player_flags::HELD` (bit 5, value 32; bit 4 is The Architect's `FINISHED`) marks a held ship (start lights, death hold, results); `ls_sim::modes::module(BeltUp).move_limits` stops it, so the predictor holds it too | 1 bit outside Belt Up; about 4 B + 7 B per racer (60 B for 8) on change |
 
 ## Terrain edit replication
 

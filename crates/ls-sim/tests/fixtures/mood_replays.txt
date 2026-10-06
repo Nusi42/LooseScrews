@@ -12,7 +12,7 @@
 world/gravity 0x80cea8be620c3c95
 world/cave_in 0xa6a17f0fd26bbff4
 world/pigment 0xc85406f4941e608a
-world/radiation 0xa4b21ebe95f2c163
+world/radiation 0x3b3c88a33eedf5f7
 world/paperweight 0x1e022c79ea0966a2
 event/bored_level 0xf260c8a2007e92ea
 event/gravity_coffee_break 0x87ce34315d4c1cb1
@@ -33,4 +33,4 @@ event/duck_parade 0xc44e4328bf6519e2
 event/hat_rain 0xf14f20a77b66c09e
 event/disco_inferno 0x352668e2313e195d
 mode/the_architect 0x70547b6b3626e613
-mode/belt_up 0x0c37e23d3167be3f
+mode/belt_up 0xa80e8abe8a55efac

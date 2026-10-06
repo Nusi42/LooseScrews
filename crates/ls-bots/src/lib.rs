@@ -33,6 +33,7 @@ pub mod brain;
 pub mod nav;
 pub mod nav_cache;
 pub mod net;
+pub mod race_line;
 pub mod social;
 pub mod stats;
 pub mod steering;
@@ -40,7 +41,7 @@ pub mod transport;
 
 pub use arsenal::{Arsenal, Gun, Role};
 pub use bot::{bot_hello, BotCore, BotError, Flow};
-pub use brain::{Brain, BrainConfig, Perception};
+pub use brain::{Brain, BrainConfig, Perception, RaceLineChoice, RacePersonality};
 pub use net::{run_bot, run_bot_blocking, BotConfig, StopSignal};
 pub use stats::{exit_code, summary, BotStats, DisconnectPolicy, WeaponUse};
 pub use transport::TransportKind;

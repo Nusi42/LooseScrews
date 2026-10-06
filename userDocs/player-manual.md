@@ -25,7 +25,7 @@ the game's data files, so those pages always match the build.
 - [Pickups and wrecks](#pickups-and-wrecks)
 - [Game modes](#game-modes): [Paint the Void](#paint-the-void), [Team Brawl](#team-brawl),
   [The Squeeze](#the-squeeze), [Heist](#heist), [Hot Reactor](#hot-reactor),
-  [Last Color Standing](#last-color-standing), [The Architect](#the-architect),
+  [Last Color Standing](#last-color-standing), [The Architect](#the-architect), [Belt Up](#belt-up),
   [Instagib](#instagib), [duels](#duels)
 - [Between matches: the lobby](#between-matches-the-lobby)
 - [Share codes, rule set codes and the rule set editor](#share-codes-rule-set-codes-and-the-rule-set-editor)
@@ -848,6 +848,31 @@ moves on every round in the order the pilots joined.
   if at least half of them got out.
 - After the last round, the pilot with the **most points** (as runner and as architect) wins;
   equal points are a draw.
+- Bots play both roles: a bot architect places strokes in front of the runner closest to the
+  exit, bot runners fly around glowing strokes and blast their way through new rock.
+
+### Belt Up
+
+A race of 2 to 8 ships around an asteroid belt, in **three heats**: one lap through the 8 gates
+in order, then the dive to the **EXIT** at the centre. Points per heat 10, 8, 6, 5, 4, 3, 2, 1;
+kills score nothing. A destroyed ship goes back to its last gate after a 4 s hold, with the hull
+it had there (at least 30 %).
+
+**Radiation** burns your hull outside the belt (shields don't help, nobody gets the kill):
+
+| Where | Hull per second |
+| --- | --- |
+| 4 u or deeper inside the belt (or in the dust round the EXIT) | 0 |
+| at the belt's surface | 0.8 |
+| skimming 4 u off the surface | 1.6 (a Tinker skimming a whole lap loses about one hull) |
+| open space 6 u out | 2.8, then 0.6 more per u, at most 7 (13 u out) |
+
+The belt is slow (rock and drifting boulders), open space is fast but hot: flying the whole lap
+in open space costs several deaths and is slower than the belt; the fastest line is the belt with
+skimming dashes where it is densest, as much as your hull allows. Keep about 20 hull and some
+boost for the dive (it costs a Tinker about 20 hull at full boost). Hull never regenerates:
+scavenge scrap (wrecks, scrap pickups) before the dive if you are short. Bots race too, each with
+a line its hull can afford: belt huggers, skimmers and daredevils.
 
 ### Instagib
 

@@ -51,6 +51,13 @@ fn perception(pos: Vec3) -> Perception {
         pickups: Vec::new(),
         scrap_sources: Vec::new(),
         mode: ModeSense::default(),
+        race: None,
+        mood: MoodSense::default(),
+        props: Vec::new(),
+        well_pull: Vec3::ZERO,
+        dose_rate: 0.0,
+        monochrome: false,
+        pigmented: false,
     }
 }
 
@@ -1080,4 +1087,186 @@ fn last_color_standing_hunts_the_most_colourful() {
     let mut c = BrainCounters::default();
     b.think(&p, &t, &mut c);
     assert_eq!(b.target(), Some(4), "the colourful one, though further");
+}
+
+// ----- M4: moods, events, The Architect (package C5) -------------------------
+
+fn prop(kind: ReplicatedKind, pos: Vec3, state: [u8; 4]) -> PropSeen {
+    PropSeen {
+        id: 900,
+        kind,
+        pos,
+        vel: Vec3::ZERO,
+        owner: 255,
+        state,
+    }
+}
+
+#[test]
+fn an_idle_axis_counters_a_well() {
+    let t = room();
+    let b = brain(&t, Vec::new());
+    let mut p = perception(Vec3::ZERO);
+    let mut c = BrainCounters::default();
+    // Pulled toward -X (local -X with the identity orientation).
+    p.well_pull = Vec3::new(-6.0, 0.0, 0.0);
+    let mut cmd = InputCmd::idle(p.tick);
+    b.counter_wells(&p, &mut cmd, &mut c);
+    assert!(
+        cmd.thrust.x > 0.0 && cmd.thrust.x < 0.05,
+        "{:?}",
+        cmd.thrust
+    );
+    assert_eq!((cmd.thrust.y, cmd.thrust.z), (0.0, 0.0));
+    assert_eq!(c.moods.well_ticks, 1);
+    // An axis with input keeps it (thrust beats the clamped pull).
+    let mut cmd = InputCmd::idle(p.tick).with_thrust(Vec3::new(-1.0, 0.0, 0.0));
+    b.counter_wells(&p, &mut cmd, &mut c);
+    assert_eq!(cmd.thrust.x, -1.0);
+    // Outside wells nothing changes.
+    p.well_pull = Vec3::ZERO;
+    let mut cmd = InputCmd::idle(p.tick);
+    b.counter_wells(&p, &mut cmd, &mut c);
+    assert_eq!(cmd.thrust, Vec3::ZERO);
+}
+
+#[test]
+fn dodges_a_duck_in_the_way() {
+    let t = room();
+    let mut b = brain(&t, Vec::new());
+    let mut p = perception(Vec3::ZERO);
+    p.props.push(prop(
+        ReplicatedKind::Duck,
+        Vec3::new(0.0, 0.0, -5.0),
+        [0; 4],
+    ));
+    let mut plan = Plan::new();
+    plan.desired_vel = Vec3::new(0.0, 0.0, -10.0);
+    let mut c = BrainCounters::default();
+    b.dodge_props(&p, &mut plan, &mut c);
+    // Pushed back from the duck ahead.
+    assert!(plan.desired_vel.z > -10.0, "{:?}", plan.desired_vel);
+    assert_eq!(c.moods.duck_dodge_ticks, 1);
+}
+
+#[test]
+fn shoots_a_tax_drone_but_not_its_own_pizza() {
+    let t = room();
+    let b = brain(&t, Vec::new());
+    let mut p = perception(Vec3::ZERO);
+    p.props.push(prop(
+        ReplicatedKind::Drone,
+        Vec3::new(0.0, 0.0, -20.0),
+        [moods::drone_role::TAX, 0, 0, 0],
+    ));
+    let target = b.prop_target(&p, &t).expect("the tax drone");
+    assert_eq!(target.pos, Vec3::new(0.0, 0.0, -20.0));
+    // The pizza drone bringing this bot its pizza is left alone.
+    p.props[0].state[0] = moods::drone_role::PIZZA;
+    p.mood = MoodSense {
+        event: Some(ls_game::ls_sim::EventKind::PizzaDelivery),
+        phase: ls_game::ls_net::mood_phase::ACTIVE,
+        target: Some(p.id),
+        phase_end_tick: p.tick + 600,
+    };
+    assert_eq!(b.prop_target(&p, &t), None);
+    // A mimic is fair game.
+    p.props.push(prop(
+        ReplicatedKind::Mimic,
+        Vec3::new(10.0, 0.0, 0.0),
+        [0; 4],
+    ));
+    assert!(b.prop_target(&p, &t).is_some());
+}
+
+#[test]
+fn holds_still_for_its_pizza_when_hurt() {
+    let t = room();
+    let mut b = brain(&t, Vec::new());
+    let mut p = perception(Vec3::ZERO);
+    p.mood = MoodSense {
+        event: Some(ls_game::ls_sim::EventKind::PizzaDelivery),
+        phase: ls_game::ls_net::mood_phase::ACTIVE,
+        target: Some(p.id),
+        phase_end_tick: p.tick + 600,
+    };
+    let mut c = BrainCounters::default();
+    p.hull = 40.0;
+    let cmd = b.think(&p, &t, &mut c);
+    assert_eq!(cmd.thrust, Vec3::ZERO, "holds still");
+    assert!(c.moods.pizza_hold_ticks > 0);
+    // At full hull the pizza is not worth waiting for.
+    p.hull = 100.0;
+    let mut c = BrainCounters::default();
+    b.think(&p, &t, &mut c);
+    assert_eq!(c.moods.pizza_hold_ticks, 0);
+}
+
+#[test]
+fn flees_the_cat_paw_and_goes_for_hats() {
+    let t = room();
+    let mut b = brain(&t, Vec::new());
+    let mut p = perception(Vec3::ZERO);
+    p.mood = MoodSense {
+        event: Some(ls_game::ls_sim::EventKind::CatPaw),
+        phase: ls_game::ls_net::mood_phase::ANNOUNCE,
+        target: None,
+        phase_end_tick: p.tick + 180,
+    };
+    p.props.push(prop(
+        ReplicatedKind::CatPaw,
+        Vec3::new(10.0, 0.0, 0.0),
+        [0; 4],
+    ));
+    let mut c = BrainCounters::default();
+    b.think(&p, &t, &mut c);
+    assert_eq!(b.mode(), Mode::Flee);
+    assert!(c.moods.paw_flee_ticks > 0);
+    // A hat in reach, nothing else to do: fetch it.
+    let mut b = brain(&t, Vec::new());
+    let mut p = perception(Vec3::ZERO);
+    p.props.push(prop(
+        ReplicatedKind::Hat,
+        Vec3::new(0.0, 0.0, -15.0),
+        [0; 4],
+    ));
+    let mut c = BrainCounters::default();
+    b.think(&p, &t, &mut c);
+    assert_eq!(b.mode(), Mode::Collect);
+    assert!(c.moods.hat_ticks > 0);
+}
+
+#[test]
+fn takes_pigment_only_when_strong() {
+    let t = room();
+    let mut b = brain(&t, Vec::new());
+    let mut p = perception(Vec3::ZERO);
+    p.monochrome = true;
+    p.props.push(prop(
+        ReplicatedKind::PigmentPickup,
+        Vec3::new(0.0, 0.0, -20.0),
+        [0; 4],
+    ));
+    let mut c = BrainCounters::default();
+    b.think(&p, &t, &mut c);
+    assert!(c.moods.pigment_ticks > 0, "strong: takes it");
+    // Hurt and hunted: leaves it (pigment shows it to everyone).
+    let mut b = brain(&t, Vec::new());
+    p.hull = 40.0;
+    b.on_damaged(None, p.tick);
+    let mut c = BrainCounters::default();
+    b.think(&p, &t, &mut c);
+    assert_eq!(c.moods.pigment_ticks, 0);
+}
+
+#[test]
+fn a_cave_in_warning_is_a_zone_to_leave() {
+    let t = room();
+    let mut b = brain(&t, Vec::new());
+    let p = perception(Vec3::new(2.0, 0.0, 0.0));
+    b.on_cue(CueKind::CaveInWarning, Vec3::ZERO, 0, p.tick);
+    let mut c = BrainCounters::default();
+    b.think(&p, &t, &mut c);
+    assert_eq!(b.mode(), Mode::Flee);
+    assert!(c.moods.cave_in_flee_ticks > 0);
 }

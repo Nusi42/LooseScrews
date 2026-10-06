@@ -15,10 +15,13 @@ use ls_game::ls_worldgen::ShareCode;
 use ls_game::{match_setup, GameError, GameTerrain};
 use thiserror::Error;
 
-use crate::brain::{Arsenal, Brain, BrainConfig, Perception};
+use crate::brain::{Arsenal, Brain, BrainConfig, Perception, RaceKit, RacePersonality};
 use crate::nav::Navigator;
 use crate::nav_cache;
+use crate::race_line;
 use crate::stats::BotStats;
+use ls_game::ls_sim::ModeRules;
+use ls_game::ls_worldgen::Generator;
 
 /// Server ticks around an own death or respawn event in which a
 /// prediction snap is expected.
@@ -86,11 +89,12 @@ pub struct BotCore {
     /// Server tick of the newest own teleport cue (Swap Harpoon swap,
     /// Borrowed Time rewind).
     last_teleport: Option<u64>,
-    /// Corrections (server tick, error) larger than the bot's largest so
-    /// far, waiting [`TELEPORT_GRACE`] for a teleport cue: a short rewind or
-    /// swap moves the ship less than the snap distance, so the prediction
-    /// smooths it like a correction, but it is no misprediction.
-    pending_corrections: Vec<(u64, f32)>,
+    /// Corrections (server tick, error, near a well or duck) larger than
+    /// the bot's largest so far, waiting [`TELEPORT_GRACE`] for a teleport
+    /// cue: a short rewind or swap moves the ship less than the snap
+    /// distance, so the prediction smooths it like a correction, but it is
+    /// no misprediction.
+    pending_corrections: Vec<(u64, f32, bool)>,
     prev_starved: u64,
     last_starved_tick: Option<u64>,
     /// Terrain edits already passed to the brain's navigation grid.
@@ -189,6 +193,31 @@ impl BotCore {
             }
         }
         brain.set_navigator(nav);
+        // M4: Belt Up's racing lines, The Architect's stroke rules.
+        match &session.rules().mode {
+            ModeRules::BeltUp(r) => {
+                if let (Some(belt), Ok(generator)) = (session.belt(), Generator::from_code(&code)) {
+                    let corridor = generator
+                        .belt_field()
+                        .map(|b| b.corridor().to_vec())
+                        .unwrap_or_default();
+                    let lattice =
+                        race_line::for_world(&code.to_string(), belt, session.terrain(), &corridor);
+                    let personality = cfg
+                        .race_personality
+                        .unwrap_or_else(|| RacePersonality::for_seed(seed));
+                    brain.set_race(RaceKit::new(
+                        belt.clone(),
+                        lattice,
+                        r.radiation_scale,
+                        personality,
+                        cfg.race_line,
+                    ));
+                }
+            }
+            ModeRules::TheArchitect(r) => brain.set_architect_rules(*r),
+            _ => {}
+        }
         // A random allowed ship type: the one asked for in the `Hello` if
         // the rule set allows it, else another allowed one.
         let allowed = &session.rules().allowed_ship_types;
@@ -239,6 +268,9 @@ impl BotCore {
             _ => InputCmd::idle(0).with_buttons(Buttons::HORIZON_ASSIST),
         };
         let mut msgs = Vec::new();
+        if let Some((stroke, centre, radius)) = self.brain.take_architect_action() {
+            msgs.push(self.session.architect_action(stroke, centre, radius));
+        }
         if let Some(t) = self.pending_ship.take() {
             msgs.push(self.session.select_ship(t));
         }
@@ -343,8 +375,8 @@ impl BotCore {
         if let Some((tick, error)) = self.pending_snap.take() {
             self.judge_snap(tick, error, stats);
         }
-        for (tick, error) in std::mem::take(&mut self.pending_corrections) {
-            self.judge_correction(tick, error, stats);
+        for (tick, error, near) in std::mem::take(&mut self.pending_corrections) {
+            self.judge_correction(tick, error, near, stats);
         }
         match BotCore::brain_for(&self.session, self.seed, self.cfg) {
             Ok((brain, pending_ship)) => {
@@ -376,8 +408,8 @@ impl BotCore {
         if let Some((tick, error)) = self.pending_snap {
             self.judge_snap(tick, error, stats);
         }
-        for &(tick, error) in &self.pending_corrections {
-            self.judge_correction(tick, error, stats);
+        for &(tick, error, near) in &self.pending_corrections {
+            self.judge_correction(tick, error, near, stats);
         }
         let s = self.session.stats();
         stats.full_snapshots += s.full_snapshots;
@@ -403,10 +435,10 @@ impl BotCore {
             }
         }
         let mut pending = std::mem::take(&mut self.pending_corrections);
-        pending.retain(|&(t, e)| {
+        pending.retain(|&(t, e, near)| {
             let due = tick > t + TELEPORT_GRACE;
             if due {
-                self.judge_correction(t, e, stats);
+                self.judge_correction(t, e, near, stats);
             }
             !due
         });
@@ -428,12 +460,16 @@ impl BotCore {
             Some(Reconcile::Accepted) => stats.accepted += 1,
             Some(Reconcile::Corrected { error }) => {
                 stats.corrections += 1;
+                let near = self.brain.near_moods();
+                if near {
+                    stats.mood_corrections += 1;
+                }
                 let pending_max = self
                     .pending_corrections
                     .iter()
-                    .fold(stats.max_reconcile_error, |m, &(_, e)| m.max(e));
-                if error > pending_max {
-                    self.pending_corrections.push((tick, error));
+                    .fold(stats.max_reconcile_error, |m, &(_, e, _)| m.max(e));
+                if error > pending_max || (near && error > stats.max_reconcile_error_moods) {
+                    self.pending_corrections.push((tick, error, near));
                 }
             }
             Some(Reconcile::Snapped) => {
@@ -492,7 +528,7 @@ impl BotCore {
 
     /// A correction by `error` u at server tick `tick`: counts toward the
     /// largest reconciliation error unless an own teleport cue explains it.
-    fn judge_correction(&self, tick: u64, error: f32, stats: &mut BotStats) {
+    fn judge_correction(&self, tick: u64, error: f32, near: bool, stats: &mut BotStats) {
         if self
             .last_teleport
             .is_some_and(|t| tick.abs_diff(t) <= TELEPORT_GRACE)
@@ -501,6 +537,9 @@ impl BotCore {
             return;
         }
         stats.max_reconcile_error = stats.max_reconcile_error.max(error);
+        if near {
+            stats.max_reconcile_error_moods = stats.max_reconcile_error_moods.max(error);
+        }
     }
 
     /// Data id of weapon `w`, if it is one.

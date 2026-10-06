@@ -641,6 +641,18 @@ ship and everyone else keeps away from the holder and never shoots it; in Last C
 they go for the most colourful players first. An eliminated bot spectates until the next match.
 In the lobby the bots press Ready, so with only bots on the server the countdown starts at once.
 
+Bots also play the moods of the level: they thrust against gravity wells and keep off
+Paperweight stones, leave a tunnel when a cave-in rumbles, take pigment on black-and-white
+levels when they are healthy (and leave it when they are being hunted), shoot Tax drones, mimics
+and other people's pizza drones, hold still for their own pizza when they need hull, dodge the
+Duck parade and the Cat paw, and collect falling hats. In The Architect the bot whose turn it is
+plays the architect (strokes in front of the runner closest to the exit, within its budget) and
+the others run for the exit, around telegraphed strokes and through rubble with rockets. In
+Belt Up the bots race: each plans a racing line through the belt that its hull can afford
+(radiation outside the belt burns hull), with three personalities spread over the field (belt
+huggers, skimmers and daredevils), keeps boost for the dive to the EXIT, scavenges before the
+dive when its hull is short, shoots and sneezes at the racer ahead and drops mines when chased.
+
 ```sh
 # 7 bots on a local server until Ctrl+C
 ls-bots

@@ -60,6 +60,11 @@ pub struct BotStats {
     pub teleport_corrections: u64,
     /// Largest position error (u) of a correction or unexplained snap.
     pub max_reconcile_error: f32,
+    /// Largest correction (u) while the bot was in a gravity well's pull or
+    /// within 15 u of a duck (M4: prediction near wells and ducks).
+    pub max_reconcile_error_moods: f32,
+    /// Corrections counted in `max_reconcile_error_moods`.
+    pub mood_corrections: u64,
 
     pub kills: u32,
     pub deaths: u32,
@@ -207,6 +212,10 @@ pub fn summary(stats: &[BotStats], elapsed_secs: f64, policy: DisconnectPolicy) 
         total.lag_snaps += s.lag_snaps;
         total.teleport_corrections += s.teleport_corrections;
         total.max_reconcile_error = total.max_reconcile_error.max(s.max_reconcile_error);
+        total.max_reconcile_error_moods = total
+            .max_reconcile_error_moods
+            .max(s.max_reconcile_error_moods);
+        total.mood_corrections += s.mood_corrections;
         total.kills += s.kills;
         total.deaths += s.deaths;
         total.hits_dealt += s.hits_dealt;

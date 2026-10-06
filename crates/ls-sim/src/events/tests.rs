@@ -143,6 +143,12 @@ const BUILT: &[EventKind] = &[
     EventKind::CustomerSurvey,
     EventKind::MimicPickups,
     EventKind::GossipWall,
+    // B3: spectacles.
+    EventKind::CatPaw,
+    EventKind::TiredAnnouncer,
+    EventKind::DuckParade,
+    EventKind::HatRain,
+    EventKind::DiscoInferno,
 ];
 
 #[test]

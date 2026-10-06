@@ -288,13 +288,14 @@ const BUTTON_MAP: [(Buttons, u16); 8] = [
 
 /// The protocol 6 `ext` bits of a ship at tick `now` (`ls_net::ship_ext`):
 /// pigmented (monochrome levels) and the number of hats worn (Hat rain,
-/// saturating; B3 adds the count with its ship state).
+/// `ShipState::hats`, saturating at `ls_net::ship_ext::MAX_HATS`).
 pub fn ship_ext(ship: &ShipState, now: u64) -> u8 {
-    if ship.pigmented(now) {
+    let pigment = if ship.pigmented(now) {
         ls_net::ship_ext::PIGMENTED
     } else {
         0
-    }
+    };
+    ls_net::ship_ext::with_hats(pigment, ship.hats as u32)
 }
 
 /// First wire id of the well entities (apart from the simulation's 15-bit
@@ -948,6 +949,16 @@ mod tests {
         s.pigment_until = 200;
         assert_eq!(ship_ext(&s, 100), ls_net::ship_ext::PIGMENTED);
         assert_eq!(ship_ext(&s, 200), 0);
+        // Hats (B3): the count rides along, saturating at 31.
+        s.hats = 5;
+        assert_eq!(ls_net::ship_ext::hats(ship_ext(&s, 200)), 5);
+        assert_eq!(
+            ship_ext(&s, 100),
+            ls_net::ship_ext::with_hats(ls_net::ship_ext::PIGMENTED, 5)
+        );
+        s.hats = 200;
+        assert_eq!(ls_net::ship_ext::hats(ship_ext(&s, 200)), 31);
+        s.hats = 0;
         assert_eq!(
             c.ship_to_net_at(1, &s, false, 150).ext,
             ls_net::ship_ext::PIGMENTED

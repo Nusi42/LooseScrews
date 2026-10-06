@@ -179,12 +179,12 @@ fn cadence_rules_hold() {
                     let (k, at) = running.take().unwrap();
                     assert_eq!(k, kind);
                     let def = table.get(kind);
-                    if *t < end {
-                        assert_eq!(
-                            *t,
-                            at + d.announce_ticks() + def.active_ticks() + def.ending_ticks(),
-                            "{kind:?} runs for its duration"
-                        );
+                    let full = at + d.announce_ticks() + def.active_ticks() + def.ending_ticks();
+                    if kind == EventKind::DuckParade {
+                        // Over once the last duck left its route (B3).
+                        assert!(*t <= full, "{kind:?} at most its duration");
+                    } else if *t < end {
+                        assert_eq!(*t, full, "{kind:?} runs for its duration");
                     }
                     last_end = Some(*t);
                 }
@@ -413,7 +413,7 @@ fn leader_events_name_the_leader_and_pizza_a_damaged_player() {
 #[test]
 fn forced_events_run_whatever_the_absurdity() {
     let mut w = world(9, 0, rules(ModeKind::PaintTheVoid, 0), 2);
-    w.schedule_event(100, EventKind::DuckParade);
+    w.schedule_event(100, EventKind::DiscoInferno);
     w.schedule_event(110, EventKind::HatRain);
     let mut t = terrain();
     let mut seen = Vec::new();
@@ -425,9 +425,9 @@ fn forced_events_run_whatever_the_absurdity() {
         }
     }
     let ann = announced(&seen);
-    assert_eq!(ann[0], (100, EventKind::DuckParade));
+    assert_eq!(ann[0], (100, EventKind::DiscoInferno));
     // The second waits until the first ended (no gap for forced events).
-    let parade = EventKind::DuckParade.def();
+    let parade = EventKind::DiscoInferno.def();
     let end = 100 + 180 + parade.active_ticks();
     assert_eq!(ann[1], (end + 1, EventKind::HatRain));
     assert_eq!(ann.len(), 2);

@@ -2,7 +2,10 @@
 # starting with "world/") and of the comedy director's events. Checked by
 # `cargo test -p ls-sim --lib` (native and wasm32) and by tools/determinism-check.mjs.
 # Re-bless the world lines: LS_BLESS_MOOD_REPLAYS=1 cargo test -p ls-sim --lib world_replays
-# Event lines ("event/<id>", ls_sim::events::replays, one per built event): LS_BLESS_MOOD_REPLAYS=1 cargo test -p ls-sim --lib events::replays
+# Event lines ("event/<id>", one per built event) have three owners that each rewrite only their own
+# lines: ls_sim::event_replays (B3's spectacles), ls_sim::events::visitor_replays (B2's visitors) and
+# ls_sim::events::replays (every other built event). Re-bless all of them:
+# LS_BLESS_MOOD_REPLAYS=1 cargo test -p ls-sim --lib replays -- --test-threads=1
 world/gravity 0x930876b7c1dfa16e
 world/cave_in 0xca8426a8a830b6bc
 world/pigment 0xc68e3c3054f034f6
@@ -20,3 +23,8 @@ event/gossip_wall 0xac32eabe4cada0df
 event/pizza_delivery 0x4db68013e4c146b8
 event/customer_survey 0x3b0828700bce12a3
 event/mimic_pickups 0x2e842bed3bff7cad
+event/cat_paw 0xbf65e4e26ebc55c3
+event/tired_announcer 0x87aefee006453832
+event/duck_parade 0x70d4db60a6342f5d
+event/hat_rain 0xe077c3a81260bd87
+event/disco_inferno 0xebd4d46d366a0136

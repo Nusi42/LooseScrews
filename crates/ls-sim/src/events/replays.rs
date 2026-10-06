@@ -143,9 +143,11 @@ pub fn event_replay(kind: EventKind) -> EventReplay {
 }
 
 /// Events whose package recorded its own scenario replay (B2's visitors in
-/// [`crate::events::visitor_replays`]); this generic replay skips them.
+/// [`crate::events::visitor_replays`], B3's spectacles in
+/// [`crate::event_replays`]); this generic replay skips them.
 pub fn has_own_replay(kind: EventKind) -> bool {
     crate::events::visitor_replays::VISITOR_EVENTS.contains(&kind)
+        || crate::event_replays::SPECTACLE_EVENTS.contains(&kind)
 }
 
 /// The events with a built module and no replay of their own, in
@@ -166,6 +168,7 @@ pub fn event_replay_hashes() -> Vec<String> {
         .map(|k| event_replay(k).line())
         .collect();
     lines.extend(crate::events::visitor_replays::visitor_replay_hashes());
+    lines.extend(crate::event_replays::spectacle_replay_hashes());
     lines
 }
 

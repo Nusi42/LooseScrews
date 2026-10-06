@@ -122,6 +122,16 @@ pub enum CueKind {
     /// player who caused it (the shooter), `target` = the player it
     /// concerns, `pos` = where.
     EventOutcome = 18,
+    /// Tired announcer: a kill-cam for everyone (protocol 6, B3): `source`
+    /// = the killer (none: the level), `target` = the victim, `pos` = where
+    /// the victim died, `value` = ticks until this kill-cam starts (kill-cams
+    /// play one after another), or `u16::MAX`: narrated only (the queue is
+    /// full).
+    KillCam = 19,
+    /// A comedy event's prop was hit (protocol 6, B3): `pos` = the point,
+    /// `value` = the prop's `ReplicatedKind` (a duck absorbing a shot
+    /// squeaks).
+    EventHit = 20,
     /// Free for modules; `value` is module-defined.
     Custom = 255,
 }
@@ -149,6 +159,8 @@ impl CueKind {
             16 => EventAnnounce,
             17 => StrokeTelegraph,
             18 => EventOutcome,
+            19 => KillCam,
+            20 => EventHit,
             _ => Custom,
         }
     }
@@ -302,6 +314,18 @@ pub enum Command {
     },
     /// A scrap pile of `amount` at `pos` (a drone bursting; M4 B2).
     SpawnScrap { pos: Vec3, amount: f32 },
+    /// Sets an entity's pose and velocity (comedy event props, which their
+    /// event moves along exact paths) and its replicated state bytes (B3's
+    /// props; B2's keep their module vars with `SetEntity`).
+    PoseEntity {
+        id: u32,
+        pos: Vec3,
+        vel: Vec3,
+        rot: ls_math::Quat,
+        state: [u8; 4],
+    },
+    /// Sets the number of hats a ship wears (Hat rain; `ShipState::hats`).
+    SetHats { target: PlayerId, hats: u8 },
 }
 
 /// Read-only world view for hooks.
@@ -318,7 +342,8 @@ pub struct View<'a> {
     pub instability: u8,
     /// The running comedy event's effects this tick (crater scale, ...).
     pub effects: crate::director::EventEffects,
-    /// The level's up (`World::up`; Bored level turns it).
+    /// The level's up (`World::up`; Bored level turns it, Hat rain's hats
+    /// fall against it).
     pub up: Vec3,
     pub ships: &'a BTreeMap<PlayerId, ShipState>,
     /// Projectiles in flight. While projectiles are being stepped this holds

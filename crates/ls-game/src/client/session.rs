@@ -197,6 +197,7 @@ impl ClientSession {
         let mut predictor = Predictor::new(ships.get(ship_type).clone(), config);
         predictor.set_ship_type(ship_type, ships.get(ship_type).clone());
         predictor.set_seed(crate::setup::match_seed(&code));
+        predictor.set_setup(std::sync::Arc::new(setup.clone()));
         // The level's static wells, as `World::new` builds them.
         predictor.set_wells(ls_sim::WellField::new(
             &setup.wells,

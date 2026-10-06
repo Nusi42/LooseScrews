@@ -40,6 +40,10 @@
 //! 7. Asteroid belt levels (`Generator::belt`) take their spawn points from
 //!    the belt's 8 start slots and their pickup points from the belt
 //!    ([`belt_setup`]); `MatchSetup::belt` carries the site.
+//! 8. `MatchSetup::routes` (Duck parade, M4 B3): the network's shortest
+//!    centre-line routes from each low-x hub to each high-x hub through the
+//!    hub-to-hub tunnels ([`network_routes`]); none on belt levels (the
+//!    parade circles the ring there).
 //!
 //! Every slider combination gets a valid setup (see the sweep test).
 
@@ -315,7 +319,101 @@ pub fn match_setup(
         // M4 world physics (A4); A1 fills the generator's wells and belt.
         gravity_chaos: code.sliders.gravity_chaos,
         monochrome: code.sliders.palette >= ls_sim::pigment::MONOCHROME_PALETTE,
+        routes: network_routes(gen.network()),
     })
+}
+
+/// Most routes [`network_routes`] returns.
+pub const MAX_ROUTES: usize = 4;
+
+/// Centre-line routes from one end of the level to the other (Duck
+/// parade): for each low-x hub and each high-x hub (in hub order), the
+/// shortest chain of hub-to-hub tunnels between them (Dijkstra over the
+/// tunnel polylines whose ends are hub centres; ties to the lower hub
+/// index), as one polyline from hub centre to hub centre. Duplicates are
+/// dropped; at most [`MAX_ROUTES`]. Empty for levels without a network.
+pub fn network_routes(net: &ls_worldgen::Network) -> Vec<Vec<Vec3>> {
+    let hubs = net.hubs();
+    let hub_of = |p: Vec3| hubs.iter().position(|h| h.distance_squared(p) < 1e-6);
+    // Edges: (from hub, to hub, polyline from -> to, length).
+    let mut edges: Vec<(usize, usize, &[Vec3], f32)> = Vec::new();
+    for path in net.tunnel_paths() {
+        let (Some(&a), Some(&b)) = (path.first(), path.last()) else {
+            continue;
+        };
+        let (Some(i), Some(j)) = (hub_of(a), hub_of(b)) else {
+            continue;
+        };
+        if i == j {
+            continue;
+        }
+        let len: f32 = path.windows(2).map(|w| w[0].distance(w[1])).sum();
+        edges.push((i, j, path, len));
+    }
+    let index_of = |set: &[Vec3]| -> Vec<usize> { set.iter().filter_map(|p| hub_of(*p)).collect() };
+    let starts = index_of(net.low_x_hubs());
+    let ends = index_of(net.high_x_hubs());
+    let mut routes: Vec<Vec<Vec3>> = Vec::new();
+    for &s in &starts {
+        // Dijkstra from `s` (O(n^2); a dozen hubs).
+        let n = hubs.len();
+        let mut dist = vec![f32::INFINITY; n];
+        let mut prev: Vec<Option<(usize, usize)>> = vec![None; n]; // (hub, edge)
+        let mut done = vec![false; n];
+        dist[s] = 0.0;
+        loop {
+            let mut u = None;
+            for v in 0..n {
+                if !done[v] && dist[v].is_finite() && u.is_none_or(|w: usize| dist[v] < dist[w]) {
+                    u = Some(v);
+                }
+            }
+            let Some(u) = u else {
+                break;
+            };
+            done[u] = true;
+            for (k, &(a, b, _, len)) in edges.iter().enumerate() {
+                let v = if a == u {
+                    b
+                } else if b == u {
+                    a
+                } else {
+                    continue;
+                };
+                if dist[u] + len < dist[v] {
+                    dist[v] = dist[u] + len;
+                    prev[v] = Some((u, k));
+                }
+            }
+        }
+        for &e in &ends {
+            if !dist[e].is_finite() {
+                continue;
+            }
+            // Walk back, then lay the tunnels out from `s` to `e`.
+            let mut chain = Vec::new();
+            let mut v = e;
+            while let Some((u, k)) = prev[v] {
+                chain.push((u, k));
+                v = u;
+            }
+            chain.reverse();
+            let mut route: Vec<Vec3> = vec![hubs[s]];
+            for (u, k) in chain {
+                let (a, _, path, _) = edges[k];
+                let pts: Vec<Vec3> = if a == u {
+                    path.to_vec()
+                } else {
+                    path.iter().rev().copied().collect()
+                };
+                route.extend(pts.into_iter().skip(1));
+            }
+            if route.len() >= 2 && !routes.contains(&route) && routes.len() < MAX_ROUTES {
+                routes.push(route);
+            }
+        }
+    }
+    routes
 }
 
 /// The setup of an asteroid belt level: one spawn point per start slot
@@ -343,6 +441,8 @@ pub fn belt_setup(code: &ShareCode, teams: u8, gen: &Generator, belt: &BeltSite)
         absurdity: code.sliders.absurdity,
         gravity_chaos: code.sliders.gravity_chaos,
         monochrome: code.sliders.palette >= ls_sim::pigment::MONOCHROME_PALETTE,
+        // The parade circles the ring on belts (`duck_parade::route`).
+        routes: Vec::new(),
     }
 }
 
@@ -752,6 +852,46 @@ mod tests {
                 assert_eq!(world.tick(), 0);
             }
         }
+    }
+
+    /// M4 B3: every classic level has Duck parade routes from the low-x
+    /// end to the high-x end along the network's centre lines (mostly open
+    /// space: the parade ignores rock, but should be seen); belts have none.
+    #[test]
+    fn every_level_has_parade_routes() {
+        let mixes = if cfg!(debug_assertions) { 4 } else { 25 };
+        for i in 0..mixes {
+            let s = sweep_sliders(i);
+            let c = ShareCode::new(0xd0c4 + i as u64, s);
+            let terrain = GameTerrain::from_code(&c).unwrap();
+            let setup = match_setup(&c, &RuleSet::paint_the_void(), &terrain).unwrap();
+            assert!(!setup.routes.is_empty(), "{c}: no route");
+            assert!(setup.routes.len() <= MAX_ROUTES);
+            let room = terrain.generator().room();
+            let gen = terrain.generator();
+            for r in &setup.routes {
+                let (a, b) = (r[0], *r.last().unwrap());
+                assert!(b.x - a.x > room.size().x * 0.4, "{c}: {a:?} -> {b:?}");
+                let mut open = 0;
+                let mut total = 0;
+                for w in r.windows(2) {
+                    let n = (w[0].distance(w[1]) / 2.0).ceil().max(1.0) as usize;
+                    for k in 0..n {
+                        let p = w[0].lerp(w[1], k as f32 / n as f32);
+                        total += 1;
+                        open += (gen.sample(p) > 1.0) as usize;
+                    }
+                }
+                assert!(open * 10 >= total * 9, "{c}: {open} of {total} open");
+            }
+            // Same routes from the same code (clients build them too).
+            let again = match_setup(&c, &RuleSet::paint_the_void(), &terrain).unwrap();
+            assert_eq!(again.routes, setup.routes);
+        }
+        let belt = ShareCode::with_archetype(0xbe17, Sliders::new(50, 50), Archetype::Belt);
+        let terrain = GameTerrain::from_code(&belt).unwrap();
+        let setup = match_setup(&belt, &RuleSet::paint_the_void(), &terrain).unwrap();
+        assert!(setup.routes.is_empty() && setup.belt.is_some());
     }
 
     /// M3 leftover (D3): a 4-team match spawns each team in its own zone

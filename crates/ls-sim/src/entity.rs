@@ -57,6 +57,10 @@ pub enum EntityKind {
     DustCloud,
     /// Anything else a module wants to show (grab points, warnings).
     Marker,
+    /// A comedy event's prop (M4: ducks, hats, the cat paw, the disco
+    /// ball, ...), replicated as its own [`ReplicatedKind`]. No physics
+    /// besides `vel` (props are kinematic: their event poses them).
+    Prop(ReplicatedKind),
     /// Comedy event drone (Tax drone, Pizza delivery, Customer survey; M4
     /// B2). Moved by its event only; blocks projectiles while `hp > 0`.
     Drone,
@@ -158,6 +162,7 @@ impl From<EntityKind> for ReplicatedKind {
             EntityKind::Drone => ReplicatedKind::Drone,
             EntityKind::Mimic => ReplicatedKind::Mimic,
             EntityKind::GossipFace => ReplicatedKind::GossipFace,
+            EntityKind::Prop(k) => k,
         }
     }
 }
@@ -299,6 +304,18 @@ impl EntitySpawn {
             team,
             lifetime_ticks: Some(ticks),
             radius: 0.5,
+            ..EntitySpawn::marker(pos)
+        }
+    }
+
+    /// A comedy event's prop of `kind` (kinematic, no lifetime; the event
+    /// poses and removes it).
+    pub fn prop(kind: ReplicatedKind, pos: Vec3, rot: Quat, radius: f32) -> EntitySpawn {
+        EntitySpawn {
+            kind: EntityKind::Prop(kind),
+            rot,
+            radius,
+            kinematic: true,
             ..EntitySpawn::marker(pos)
         }
     }

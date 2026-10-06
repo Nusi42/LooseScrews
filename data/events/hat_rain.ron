@@ -1,6 +1,6 @@
-// Hat rain: For 25 s, 24 + 2 per player hats drift down along `up` at 3 u/s and rest on rock;
-// touch to wear one; 3 or more hats reveal the wearer; hats scatter on death; the results name
-// the Hat Baron.
+// Hat rain: For 25 s, 24 + 2 per player hats drift down along `up` at 3 u/s from the upper third
+// of the level and rest on rock; touch to wear one; 3 or more hats reveal the wearer while the
+// event runs; hats scatter on death (pickups for 10 s); the results name the Hat Baron.
 // Behaviour: crates/ls-sim/src/events/hat_rain.rs (B3). Schema: `ls_sim::events::EventDef`.
 EventDef(
     id: "hat_rain",
@@ -15,5 +15,11 @@ EventDef(
         "fall_speed": 3.0,
         "reveal_hats": 3.0,
         "drop_secs": 10.0,
+        // Hat sphere (u): touching distance is the ship radius plus this.
+        "hat_radius": 0.8,
+        // The hats appear one after another over this many seconds.
+        "spawn_secs": 8.0,
+        // Speed of hats flying out of a wreck (u/s, for 0.5 s).
+        "scatter_speed": 4.0,
     },
 )

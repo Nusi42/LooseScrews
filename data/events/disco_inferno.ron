@@ -8,5 +8,17 @@ EventDef(
     weight: 1.0,
     active_secs: 20.0,
     moods: [Giddy],
-    params: { "light_level": 0.08 },
+    params: {
+        // Sun and ambient light while it runs (client).
+        "light_level": 0.08,
+        // The mirror ball: radius, height over the centroid (closer under a ceiling), how far
+        // above that it starts, how long it takes to come down, how fast it follows the
+        // centroid (u/s) and its spin (rad/s).
+        "ball_radius": 1.5,
+        "hang": 10.0,
+        "drop": 15.0,
+        "descend_secs": 3.0,
+        "follow_speed": 3.0,
+        "spin": 1.2,
+    },
 )

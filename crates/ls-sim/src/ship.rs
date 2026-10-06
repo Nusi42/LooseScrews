@@ -116,6 +116,10 @@ pub struct ShipState {
     /// drawn in colour; 0 = grey. See `crate::pigment`.
     #[serde(default)]
     pub pigment_until: u64,
+    /// Hats worn (Hat rain, M4 B3): 3 or more reveal the ship while the
+    /// event runs; lost on death, reset at respawn.
+    #[serde(default)]
+    pub hats: u8,
 }
 
 impl ShipState {
@@ -164,6 +168,7 @@ impl ShipState {
             next_ship_type: None,
             weapon_state: BTreeMap::new(),
             pigment_until: 0,
+            hats: 0,
         }
     }
 

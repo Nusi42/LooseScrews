@@ -10,10 +10,11 @@
 import type { GalleryScene } from "../gallery/scenes.ts";
 import type { GalleryStatus } from "../gallery/gallery.ts";
 import { parseShipChoices } from "../game/mechanics.ts";
-import type { LobbyState } from "../game/modeState.ts";
+import type { LobbyState, MatchResults, ResultRow } from "../game/modeState.ts";
 import { Renderer } from "../renderer/renderer.ts";
 import type { GpuTimings } from "../renderer/gpuTimer.ts";
 import { LobbyOverlay, lobbyModel } from "../ui/lobby.ts";
+import { ResultsScreen, resultsModel } from "../ui/results.ts";
 import { ShipPanel, shipPanelModel } from "../ui/shipSelect.ts";
 import { setStartWorld, showStartScreen } from "../ui/startScreen.ts";
 import { draftKind, showWorkshop, slidersFrom, wasmCodec } from "../ui/workshop.ts";
@@ -59,6 +60,33 @@ export function sampleLobby(code: string): { lobby: LobbyState; names: Map<numbe
     ],
   };
   return { lobby, names };
+}
+
+/**
+ * A finished match for the "results" pages (M4 B3): free-for-all Hot
+ * Reactor or Team Brawl with six pilots; with `awards`, Hat rain's Hat Baron.
+ */
+export function sampleResults(awards: boolean, teams: boolean): MatchResults {
+  const names = ["Scrapling", "Rivet", "Torque", "Sprocket", "Gasket", "Ratchet"];
+  const scores = teams ? [9, 7, 6, 4, 3, 1] : [5, 4, 3, 2, 1, 0];
+  const rows: ResultRow[] = names.map((name, id) => ({
+    id,
+    side: teams ? id % 2 : id,
+    kills: [9, 7, 6, 4, 3, 1][id]!,
+    deaths: [2, 3, 5, 4, 6, 7][id]!,
+    score: scores[id]!,
+    name,
+  }));
+  return {
+    tick: 18_000,
+    kind: teams ? 1 : 4,
+    mode: teams ? "team_brawl" : "hot_reactor",
+    teams: teams ? 2 : 0,
+    winner: teams ? 0 : 0,
+    teamScores: teams ? [21, 12] : [],
+    rows,
+    awards: awards ? [{ event: "hat_rain", player: teams ? 0 : 3, value: 7 }] : [],
+  };
 }
 
 /** Adds the hull view's passes to the scene's timings as one "bay" pass. */
@@ -135,6 +163,23 @@ export async function runPageScene(canvas: HTMLCanvasElement, ui: HTMLElement, s
     const { lobby, names } = sampleLobby(status.shareCode);
     lobbyCard.update(lobbyModel(lobby, 0, names, 42));
     lobbyCard.show(true);
+  } else if (scene.page === "results") {
+    const screen = new ResultsScreen(ui);
+    const teams = scene.results?.teams === true;
+    const results = sampleResults(scene.results?.awards === true, teams);
+    screen.update(
+      resultsModel({
+        results,
+        own: 0,
+        ownSide: 0,
+        online: true,
+        modeFlags: 0,
+        scoreTotal: 0,
+        lobby: null,
+        secsLeft: 12,
+      }),
+    );
+    screen.show(true);
   } else if (scene.page === "bay") {
     const panel = new ShipPanel(ui);
     const bay = new PanelBay(panel.root, renderer.device, 0, "medium");

@@ -1203,7 +1203,25 @@ mod tests {
                     name: format!("pilot {id}"),
                 })
                 .collect(),
+            // Protocol 6 (B3): event awards (Hat Baron).
+            awards: vec![
+                crate::mode::NetAward {
+                    event: 11,
+                    player: 3,
+                    value: 7,
+                },
+                crate::mode::NetAward {
+                    event: 12,
+                    player: 0,
+                    value: 100_000,
+                },
+            ],
         })));
+        let too_many = MatchResultsMsg {
+            awards: vec![crate::mode::NetAward::default(); crate::mode::MAX_AWARDS + 1],
+            ..Default::default()
+        };
+        assert!(Message::MatchResults(Box::new(too_many)).encode().is_err());
         round_trip(&Message::MatchResults(Box::default()));
         for ready in [false, true] {
             round_trip(&Message::Ready { ready });

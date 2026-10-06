@@ -112,6 +112,16 @@ export interface ResultRow {
   name: string;
 }
 
+/** A title a comedy event gave a player (M4 B3: Hat rain's Hat Baron). */
+export interface ResultAward {
+  /** Event id (`data/events/<id>.ron`), e.g. "hat_rain". */
+  event: string;
+  /** Player id. */
+  player: number;
+  /** Event-defined value (hats worn). */
+  value: number;
+}
+
 export interface MatchResults {
   tick: number;
   kind: number;
@@ -122,6 +132,8 @@ export interface MatchResults {
   teamScores: number[];
   /** Best first. */
   rows: ResultRow[];
+  /** Titles from comedy events, in award order (empty in older servers' results). */
+  awards: ResultAward[];
 }
 
 /** Display data per mode id. */
@@ -324,6 +336,10 @@ export function parseResults(text: string | undefined | null): MatchResults | nu
         score: num(r["score"]),
         name: str(r["name"]),
       };
+    }),
+    awards: list(j["awards"]).map((v) => {
+      const a = obj(v);
+      return { event: str(a["event"]), player: num(a["player"]), value: num(a["value"]) };
     }),
   };
 }

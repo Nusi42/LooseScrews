@@ -465,6 +465,9 @@ pub struct MatchResults {
     /// One per team (empty in free-for-all).
     pub team_scores: Vec<i64>,
     pub rows: Vec<ResultRow>,
+    /// Titles comedy events gave this match (Hat rain's Hat Baron, ...),
+    /// in award order (M4 B3).
+    pub awards: Vec<crate::events::Award>,
 }
 
 #[cfg(test)]

@@ -82,6 +82,9 @@ test("mode state, lobby and results parse from ls-wasm JSON; broken input is saf
   assert.ok(r);
   assert.equal(r.winner, 1);
   assert.equal(r.rows[0]!.name, "Rita");
+  assert.deepEqual(r.awards, [], "results without awards (older servers)");
+  const withAward = parseResults(RESULTS_JSON.replace(/}$/, ',"awards":[{"event":"hat_rain","player":2,"value":5}]}'));
+  assert.deepEqual(withAward?.awards, [{ event: "hat_rain", player: 2, value: 5 }]);
   assert.equal(parseResults("[1,2]"), null);
 
   assert.equal(modeInfo("the_squeeze").stageLabel, "Phase");
@@ -228,6 +231,7 @@ test("results model: team victory, defeat, free-for-all podium, paint shares, pr
       { id: 3, side: 3, kills: 1, deaths: 1, score: 1, name: "" },
       { id: 7, side: 7, kills: 0, deaths: 1, score: 0, name: "Di" },
     ],
+    awards: [],
   };
   m = resultsModel({ results: ffa, ...base, own: 1, ownSide: 1 });
   assert.equal(m.title, "Defeat");
@@ -238,6 +242,28 @@ test("results model: team victory, defeat, free-for-all podium, paint shares, pr
   m = resultsModel({ results: ffa, ...base, own: 5, ownSide: 5 });
   assert.equal(m.title, "Victory");
   assert.match(m.subtitle, /You win with 4/);
+  assert.deepEqual(m.titles, [], "no event titles");
+
+  // M4 B3: titles from comedy events (the Hat Baron), named and coloured
+  // like the pilot's row; unknown events read as their id.
+  const awarded: MatchResults = {
+    ...ffa,
+    awards: [
+      { event: "hat_rain", player: 3, value: 7 },
+      { event: "customer_survey", player: 1, value: 1 },
+    ],
+  };
+  m = resultsModel({ results: awarded, ...base, own: 1, ownSide: 1 });
+  assert.equal(m.titles.length, 2);
+  assert.deepEqual(
+    { ...m.titles[0]!, color: "" },
+    { event: "hat_rain", label: "Hat Baron", name: "Pilot 4", detail: "7 hats", color: "", you: false },
+  );
+  assert.equal(m.titles[0]!.color, m.rows.find((x) => x.name === "Pilot 4")!.color);
+  assert.equal(m.titles[1]!.label, "Customer Survey");
+  assert.equal(m.titles[1]!.you, true);
+  m = resultsModel({ results: { ...awarded, awards: [{ event: "hat_rain", player: 5, value: 1 }] }, ...base });
+  assert.equal(m.titles[0]!.detail, "1 hat");
 
   // Practice: from the local mode state and the kill tally.
   const pm = mode({ mode: "team_brawl", teams: 2, running: false, winner: 0, teamScores: [5, 2], players: [{ id: 0, side: 0, score: 5, lives: -1, meter: 0, flags: 0 }] });

@@ -55,6 +55,7 @@ use crate::mode::{
 };
 use crate::modes::{Kill, ModeCtx, ModeHit, ModeModule, ModeMut, ModeRef};
 use crate::mutators::MutatorModule;
+use crate::obstacle::Obstacle;
 use crate::pigment::{PigmentPickup, PigmentPickupRule, PigmentSettings, PigmentState};
 use crate::ruleset::{PickupKind, ResolvedRules};
 use crate::ship::{
@@ -129,6 +130,14 @@ pub struct MatchSetup {
     /// ([`crate::pigment`]). Last Color Standing is monochrome anyway. M4.
     #[serde(default)]
     pub monochrome: bool,
+    /// Centre lines of the level's network routes from one end to the
+    /// other (`ls_game::setup`: hub to hub through the tunnels, low x to
+    /// high x), each a polyline of at least two points. Duck parade drifts
+    /// along one ([`crate::events::duck_parade`]); belt levels use the
+    /// ring instead. Empty in test rooms (the parade then crosses between
+    /// the two spawn points farthest apart). M4 B3.
+    #[serde(default)]
+    pub routes: Vec<Vec<Vec3>>,
 }
 
 /// Everything needed to start a match.
@@ -523,6 +532,12 @@ pub struct World {
     /// The level's flight network for event drones (M4 B2; static, not
     /// hashed; [`World::set_nav_graph`]).
     nav: Arc<crate::events::drone::NavGraph>,
+    /// The running event's kinematic obstacles this tick (Duck parade;
+    /// derived from the director at the start of each tick, not hashed).
+    obstacles: Vec<Obstacle>,
+    /// Kills while an event runs, not yet seen by it (the director takes
+    /// them every step; kills of its own stage wait for the next one).
+    kill_notes: Vec<crate::events::KillNote>,
 }
 
 impl World {
@@ -670,6 +685,8 @@ impl World {
             pigment: PigmentState::default(),
             no_strain: false,
             nav: Arc::new(crate::events::drone::NavGraph::default()),
+            obstacles: Vec::new(),
+            kill_notes: Vec::new(),
         };
         let mut events = Vec::new();
         world.update_pickup_spawns(&mut events);
@@ -869,6 +886,7 @@ impl World {
             winner,
             team_scores: view.team_scores,
             rows,
+            awards: self.director.awards.clone(),
         }
     }
 
@@ -1252,6 +1270,13 @@ impl World {
         if let Some(u) = self.effects.up {
             self.up = u;
         }
+        // The running event's kinematic obstacles (Duck parade).
+        if self.director.current.is_some() {
+            let view = self.director.view();
+            crate::director::obstacles(&view, cfg.seed, now, &cfg.setup, &mut self.obstacles);
+        } else {
+            self.obstacles.clear();
+        }
 
         let mut cmds: BTreeMap<PlayerId, InputCmd> = BTreeMap::new();
         for (p, c) in inputs {
@@ -1369,6 +1394,18 @@ impl World {
             }
             if !fx.is_none() {
                 crate::director::apply_move_effects_after(ship, &fx, pos_before);
+            }
+            // Kinematic obstacles push the ship aside (Duck parade).
+            if !self.obstacles.is_empty() {
+                let mut contacts = Vec::new();
+                crate::obstacle::push_sphere(
+                    &*terrain,
+                    &mut ship.pos,
+                    &mut ship.vel,
+                    tuning.radius,
+                    &self.obstacles,
+                    &mut contacts,
+                );
             }
             // Charged surfaces (Leech Arc) drain ships scraping them.
             if ship.in_contact
@@ -1498,6 +1535,7 @@ impl World {
                 mode_ref: self.mode_ref(&cfg),
                 mutators: &cfg.mutator_modules,
                 setup: &cfg.setup,
+                kills: &[],
             };
             d.candidates(ctx, &inp)
         });
@@ -1515,6 +1553,9 @@ impl World {
     ) {
         let mut director = std::mem::take(&mut self.director);
         let mut out = Vec::new();
+        // Kills since the last director step, for the running event
+        // (kill-cams, hats).
+        let kills = std::mem::take(&mut self.kill_notes);
         let ((), cmds) = self.collect_hook(cfg, &*terrain, |ctx| {
             let inp = DirectorInput {
                 def: DirectorDef::builtin(),
@@ -1526,6 +1567,7 @@ impl World {
                 mode_ref: self.mode_ref(cfg),
                 mutators: &cfg.mutator_modules,
                 setup: &cfg.setup,
+                kills: &kills,
             };
             director.step(ctx, &inp, ended, &mut out);
         });
@@ -2081,6 +2123,7 @@ impl World {
             enum Hit {
                 Ship(f32, PlayerId, Vec3),
                 Entity(f32, u32, EntityKind, Vec3),
+                Obstacle(f32, usize),
                 Terrain(RayHit),
             }
             let terrain_hit = terrain.raycast(p.pos, dir, remaining);
@@ -2121,6 +2164,15 @@ impl World {
                         best_t = t;
                         best = Some(Hit::Entity(t, e.id, e.kind, e.pos));
                     }
+                }
+            }
+            // Kinematic obstacles (ducks) absorb projectiles.
+            if let Some((t, i)) =
+                crate::obstacle::segment_hit(p.pos, dir, remaining, p.radius, &self.obstacles)
+            {
+                if t < best_t {
+                    best_t = t;
+                    best = Some(Hit::Obstacle(t, i));
                 }
             }
             // Ships win ties with terrain (M1 rule).
@@ -2176,6 +2228,30 @@ impl World {
                         p.passed = Some((1, id));
                     }
                     (t, point, normal, resp)
+                }
+                Hit::Obstacle(t, i) => {
+                    // Absorbed: gone without its hit hooks (no damage, no
+                    // crater, no explosion).
+                    let point = p.pos + dir * t;
+                    let kind = match self.obstacles[i].kind {
+                        crate::obstacle::ObstacleKind::Duck => ReplicatedKind::Duck,
+                    };
+                    events.push(Event::Impact {
+                        projectile: p.id,
+                        weapon: p.weapon,
+                        point,
+                        target: None,
+                    });
+                    events.push(Event::Cue(Cue {
+                        kind: CueKind::EventHit,
+                        source: Some(p.owner),
+                        target: None,
+                        pos: point,
+                        value: kind as u16,
+                    }));
+                    p.pos = point;
+                    p.remove();
+                    return false;
                 }
                 Hit::Terrain(h) => {
                     let resp =
@@ -2689,6 +2765,25 @@ impl World {
                 Command::EditLater { tick, edit } => self.deferred_edits.push((tick, edit)),
                 Command::AddWell(w) => self.add_well(w),
                 Command::RemoveWell { key } => self.remove_well(key),
+                Command::PoseEntity {
+                    id,
+                    pos,
+                    vel,
+                    rot,
+                    state,
+                } => {
+                    if let Some(e) = self.entities.iter_mut().find(|e| e.id == id) {
+                        e.pos = pos;
+                        e.vel = vel;
+                        e.rot = rot;
+                        e.state = state;
+                    }
+                }
+                Command::SetHats { target, hats } => {
+                    if let Some(s) = self.ships.get_mut(&target) {
+                        s.hats = hats;
+                    }
+                }
             }
         }
     }
@@ -2859,6 +2954,14 @@ impl World {
             killer,
             weapon,
         });
+        if self.director.current.is_some() {
+            self.kill_notes.push(crate::events::KillNote {
+                victim,
+                killer,
+                weapon,
+                pos: wreck_pos,
+            });
+        }
         let kill = Kill {
             victim,
             victim_side: team,
@@ -3399,6 +3502,15 @@ impl World {
         hash_mode_extras(&mut h, &self.mode);
         // The director only once it did anything (Absurdity 0 keeps the
         // M3 hashes).
+        if !self.kill_notes.is_empty() {
+            h.write_u8(0xb3);
+            h.write_u32(self.kill_notes.len() as u32);
+            for k in &self.kill_notes {
+                h.write_u16(k.victim.0);
+                h.write_u16(k.killer.map_or(u16::MAX, |p| p.0));
+                h.write_vec3(k.pos);
+            }
+        }
         if !self.director.is_pristine() {
             self.director.hash(&mut h);
         }
@@ -3936,6 +4048,10 @@ fn hash_ship(h: &mut StateHasher, s: &ShipState) {
     if s.pigment_until != 0 {
         h.write_u8(0x91);
         h.write_u64(s.pigment_until);
+    }
+    if s.hats != 0 {
+        h.write_u8(0x92);
+        h.write_u8(s.hats);
     }
 }
 

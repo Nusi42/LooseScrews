@@ -383,6 +383,19 @@ state, so pre-M4 replays keep their hashes.
 | `gravity_chaos: u8` | Gravity Chaos slider; 0 turns the static wells off |
 | `monochrome: bool` | Palette >= `pigment::MONOCHROME_PALETTE` (80): pigment pickups. Last Color Standing is monochrome anyway |
 | `instability: u8` | (M3) Instability slider: crater scale, strain, cave-ins; Tectonic crack reach |
+| `routes: Vec<Vec<Vec3>>` | (M4 B3) Duck parade routes: the network's shortest hub-to-hub centre-line polylines from each low-x hub to each high-x hub (`ls_game::setup::network_routes`, at most 4, duplicates dropped); empty on belt levels (the parade circles the ring) and in test rooms (it then crosses between the two spawn points farthest apart). Clients build the same setup from the share code, so event obstacles are predicted exactly |
+
+### Kinematic obstacles (`ls_sim::obstacle`, M4 B3)
+
+Spheres moved by a pure function of the tick and replicated state (Duck parade's ducks;
+Belt Up's boulders reuse the code). The running event's `EventModule::obstacles` lists them
+(`director::obstacles(view, seed, tick, setup)`); `World::step` collects them at the start of
+each tick and the client predictor computes the same list. They ignore rock, **push ships**
+(`obstacle::push_sphere`, after the ship's movement: out along the centre line unless that puts
+the ship deeper into rock, and the velocity toward the obstacle becomes the obstacle's; a
+`Contact` per overlap with the closing speed) and **absorb projectiles** (the swept path entering
+one removes the projectile without its hit hooks: no damage, crater or explosion; an `Impact`
+event and a `CueKind::EventHit` cue). `ObstacleKind` ids: Duck 0 (append only).
 
 ### Gravity wells (`ls_sim::gravity`, `data/world/gravity.ron`)
 
@@ -487,9 +500,10 @@ sure it is the same data); details in [arsenal-framework.md](arsenal-framework.m
 | `ShipType::index` | Skitter 0, Tinker 1, Hauler 2, Tug 3 (wire, rule set codes) |
 | `VisualId` | Index in `VisualTable::new(weapons, gadgets)`: 8 built-ins, then 2 per weapon (projectile, pickup), then 1 per gadget |
 | Entity wire id | `entity id & 0x7fff`, unique among live entities (the allocator skips ids in use) |
-| `ReplicatedKind` | Entity `kind` byte: Debris 0, WeaponPickup 1, UpgradePickup 2, GadgetPickup 3, ScrapPile 4, Wreck 5, Decoy 6, Ghost 7, DustCloud 8, Marker 9, PigmentPickup 10 (M4; state `[splash 0/1, side of a splash, 0, 0]`) |
-| `CueKind` | Cue `kind` byte (`ls_sim::behavior::CueKind`); M4 appends `CaveInWarning` 14 (`pos`, `value` = ticks until the rock comes down), `Pigment` 15 (`source` took a pigment pickup at `pos`, `value` 1 for a splash), `EventAnnounce` 16, `StrokeTelegraph` 17 and `EventOutcome` 18 (B2: `value` = `EventKind` index << 8 \| outcome byte, see [netcode.md](netcode.md#protocol-6-moods-the-architect-belt-up)) |
-| `EntityKind` (sim only) | Debris, Decoy, Ghost, DustCloud, Marker; M4 B2 adds the event props Drone, Mimic and GossipFace (`EntityKind::is_event_prop`: the world never moves them, keeps them at `hp <= 0` for their event and records the destroying shot in `Entity::last_hit`; set with `Command::SetEntity`) |
+| `ReplicatedKind` | Entity `kind` byte: Debris 0, WeaponPickup 1, UpgradePickup 2, GadgetPickup 3, ScrapPile 4, Wreck 5, Decoy 6, Ghost 7, DustCloud 8, Marker 9, PigmentPickup 10 (M4; state `[splash 0/1, side of a splash, 0, 0]`), then the event props of protocol 6 (Drone 11 ... Well 18, [netcode.md](netcode.md)). B3's props (`EntityKind::Prop(kind)`, kinematic, posed by their event every tick): Duck 12 `[index, clearance in 0.1 u, 0, 0]`, Hat 13 `[style 0-7, phase (0 falling, 1 resting, 2 scattered, 3 scattered and resting), 0, 0]`, CatPaw 14 `[phase (0 tell, 1 reach, 2 sweep, 3 withdraw), progress 0-255, face code, claw mode]`, DiscoBall 16 `[light percent, descent 0-255, 0, 0]` |
+| `CueKind` | Cue `kind` byte (`ls_sim::behavior::CueKind`); M4 appends `CaveInWarning` 14 (`pos`, `value` = ticks until the rock comes down), `Pigment` 15 (`source` took a pigment pickup at `pos`, `value` 1 for a splash), `EventAnnounce` 16, `StrokeTelegraph` 17, `EventOutcome` 18 (B2: `value` = `EventKind` index << 8 \| outcome byte, see [netcode.md](netcode.md#protocol-6-moods-the-architect-belt-up)), `KillCam` 19 (B3, Tired announcer: `source` killer, `target` victim, `pos` where it died, `value` ticks until the kill-cam starts or 65535 = narrated only) and `EventHit` 20 (B3: an event prop absorbed a shot at `pos`, `value` = its `ReplicatedKind`) |
+| `EntityKind` (sim only) | Debris, Decoy, Ghost, DustCloud, Marker; M4 B2 adds the event props Drone, Mimic and GossipFace (`EntityKind::is_event_prop`: the world never moves them, keeps them at `hp <= 0` for their event and records the destroying shot in `Entity::last_hit`; set with `Command::SetEntity`); B3 adds `Prop(ReplicatedKind)` for its kinematic props (ducks, hats, cat paw, disco ball; posed with `Command::PoseEntity`) |
+| Event awards | `events::Award { kind, player, value }` in `DirectorState::awards` and `MatchResults::awards` (B3: Hat rain's Hat Baron, `value` = hats); on the wire `ls_net::NetAward` in `MatchResultsMsg::awards` |
 | Data hash | `ls_sim::data_hash()`: FNV-1a over all embedded `data/` files sorted by path (path, 0, length, bytes without CR), plus `SIM_BEHAVIOR_VERSION` |
 | `ModeKind` index | Paint the Void 0, Team Brawl 1, The Squeeze 2, Heist 3, Hot Reactor 4, Last Color Standing 5 (append only): rule set code mode index, wire mode kind, `LobbyState::next_mode`; `ModeKind::id` is the module and directory mode id (`the_squeeze`; its rule set file is `squeeze.ron`) |
 | `Mutator` index | Instagib 0 (`Mutator::ALL` order, append only; rule set codes) |

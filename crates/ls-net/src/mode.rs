@@ -1039,6 +1039,23 @@ pub struct MatchResultsMsg {
     pub team_scores: Vec<i64>,
     /// Rows best first (the mode's order).
     pub rows: Vec<ResultRow>,
+    /// Titles comedy events gave (protocol 6, M4 B3: Hat rain's Hat
+    /// Baron), in award order; at most [`MAX_AWARDS`].
+    pub awards: Vec<NetAward>,
+}
+
+/// Most awards a results message carries.
+pub const MAX_AWARDS: usize = 32;
+
+/// One title a comedy event gave a player (`ls_sim::events::Award`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct NetAward {
+    /// `ls_sim::EventKind` index.
+    pub event: u8,
+    /// Wire ship id.
+    pub player: u8,
+    /// Event-defined value (hats worn, stars).
+    pub value: u32,
 }
 
 pub(crate) fn write_results(w: &mut BitWriter, m: &MatchResultsMsg) -> Result<(), EncodeError> {
@@ -1065,6 +1082,15 @@ pub(crate) fn write_results(w: &mut BitWriter, m: &MatchResultsMsg) -> Result<()
         w.write_varint(zz32(row.score));
         w.write_str(&row.name);
     }
+    if m.awards.len() > MAX_AWARDS {
+        return Err(EncodeError::OutOfRange("too many awards"));
+    }
+    w.write_varint(m.awards.len() as u64);
+    for a in &m.awards {
+        w.write_u8(a.event);
+        w.write_u8(a.player);
+        w.write_varint(a.value as u64);
+    }
     Ok(())
 }
 
@@ -1086,6 +1112,15 @@ pub(crate) fn read_results(r: &mut BitReader) -> Result<MatchResultsMsg, DecodeE
             name: r.read_string(MAX_PLAYER_NAME)?,
         });
     }
+    let n = r.read_len(MAX_AWARDS, 24)?;
+    let mut awards = Vec::with_capacity(n);
+    for _ in 0..n {
+        awards.push(NetAward {
+            event: r.read_u8()?,
+            player: r.read_u8()?,
+            value: r.read_varint_u32()?,
+        });
+    }
     Ok(MatchResultsMsg {
         tick,
         kind,
@@ -1093,6 +1128,7 @@ pub(crate) fn read_results(r: &mut BitReader) -> Result<MatchResultsMsg, DecodeE
         winner,
         team_scores,
         rows,
+        awards,
     })
 }
 

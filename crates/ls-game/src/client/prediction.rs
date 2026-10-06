@@ -79,6 +79,10 @@ pub struct PredictEnv {
     /// The level's static wells (from the match setup) and the dynamic
     /// wells of the newest snapshot (`World::well_field`).
     pub wells: WellField,
+    /// The match setup (built from the share code like the server's): the
+    /// running event's kinematic obstacles are pure functions of it and the
+    /// mood view (Duck parade's route; `ls_sim::director::obstacles`).
+    pub setup: std::sync::Arc<ls_sim::MatchSetup>,
 }
 
 impl Default for PredictEnv {
@@ -88,6 +92,7 @@ impl Default for PredictEnv {
             mood: None,
             up: Vec3::Y,
             wells: WellField::default(),
+            setup: std::sync::Arc::default(),
         }
     }
 }
@@ -191,6 +196,12 @@ impl Predictor {
         } else {
             Vec3::Y
         };
+    }
+
+    /// The match setup the event obstacles are derived from (set once per
+    /// match; M4 B3).
+    pub fn set_setup(&mut self, setup: std::sync::Arc<ls_sim::MatchSetup>) {
+        self.env.setup = setup;
     }
 
     /// The level's well field: static wells from the match setup (set once
@@ -606,6 +617,23 @@ fn step_ship<T: TerrainQuery + ?Sized>(
     }
     if !fx.is_none() {
         ls_sim::director::apply_move_effects_after(s, &fx, pos_before);
+    }
+    // Kinematic obstacles (Duck parade's ducks) push the ship aside, as in
+    // `World::step`.
+    if let Some(m) = env.mood.as_ref() {
+        let mut obstacles = Vec::new();
+        ls_sim::director::obstacles(m, env.seed, now, &env.setup, &mut obstacles);
+        if !obstacles.is_empty() {
+            let mut contacts = Vec::new();
+            ls_sim::obstacle::push_sphere(
+                terrain,
+                &mut s.pos,
+                &mut s.vel,
+                tuning.radius,
+                &obstacles,
+                &mut contacts,
+            );
+        }
     }
 }
 

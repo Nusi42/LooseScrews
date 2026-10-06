@@ -27,6 +27,7 @@ import { LightSystem, lightBindLayoutEntries, type PointLight } from "./lights.t
 import { HullFrame } from "./hullFrame.ts";
 import { InkPass, needsLinePass, NO_INK } from "./ink.ts";
 import { ModeFxPass, type ModeVolume } from "./modeFx.ts";
+import { WellsPass, type WorldVolume } from "./wells.ts";
 import { GpuMesh, type MeshData } from "./mesh.ts";
 import { LEGACY_MESH_BUILDERS, MESH_BUILDERS, MESH_KINDS, SHIP_MESH_KINDS, WRECK_MESH_KINDS, type MeshKind } from "./models/index.ts";
 import { ParticleSystem } from "./particles.ts";
@@ -40,6 +41,7 @@ import { SunShadow, sunShadowBindLayoutEntries } from "./sunShadow.ts";
 import { VOLUMETRIC_LOOKS, VolumetricShafts, volumetricLook } from "./volumetric.ts";
 import { INSTANCED_WGSL, TRANSLUCENT_WGSL } from "./shaders/objects.ts";
 import { TERRAIN_WGSL } from "./shaders/terrain.ts";
+import { packTurn, turnAngle, turnFromUp } from "./turn.ts";
 
 export type Rgb = readonly [number, number, number];
 
@@ -324,6 +326,9 @@ export class Renderer {
   /** Mode effects (M3 C1, modeFx.ts): this frame's volumes from `setModeVolumes`. */
   private readonly modeFx: ModeFxPass;
   private modeVolumes: readonly ModeVolume[] = [];
+  /** World effects (M4 B5, wells.ts): gravity wells, cave-in cracks and rubble from `setWorldVolumes`. */
+  private readonly wells: WellsPass;
+  private worldVolumes: readonly WorldVolume[] = [];
   private depthTexture: GPUTexture | null = null;
   private msaaTexture: GPUTexture | null = null;
   private startTime = performance.now();
@@ -347,6 +352,14 @@ export class Renderer {
   private ownsDevice = true;
   /** The own ship's cockpit frame (VQ1), drawn last in the scene pass; set its `state` per frame. */
   readonly hullFrame: HullFrame;
+  /** The level's turn (M4 B5, turn.ts: Bored level), about the level centre `turnCenter`. */
+  private turn: Quat = q.identity();
+  private turnCenter: Vec3 = { x: 0, y: 0, z: 0 };
+  /** The turn changed in the last half second: the sun shadow follows in spread redraws. */
+  private turning = false;
+  private turnSettle = 0;
+  /** Direction toward the sun the scene is lit from this frame (the shadow map's while it lags a turn). */
+  private lightSun: Vec3 = DEFAULT_SETTINGS.sunDirection;
 
   /**
    * Creates the renderer; throws GpuUnavailableError when WebGPU cannot be
@@ -441,6 +454,7 @@ export class Renderer {
     this.post = new PostChain(device, gpu.format);
     this.particles = particles ? new ParticleSystem(device, this.frameBuffer, this.qualityLevel.particles) : null;
     this.modeFx = new ModeFxPass(device);
+    this.wells = new WellsPass(device);
     this.ink = new InkPass(device);
 
     this.timer = GpuTimer.create(device);
@@ -569,6 +583,31 @@ export class Renderer {
     this.settings = { ...s, fogColor: a.fogColor, fogDensity: a.fogDensity, sunDirection: a.sunDirection, heightFog: a.heightFog, skyHaze: 1, post: { ...s.post, grade: a.grade, ink: a.ink } };
   }
 
+  /**
+   * The level's up (M4 B5; ls-wasm `Game.up()`, +Y unless Bored level turned
+   * it) and the level centre the turn is about (`boundsCenter`). The sky,
+   * the sun with its shadows and the height fog turn with it. Small changes
+   * frame to frame (the 5 s turn) redraw the sun shadow map spread over
+   * frames; a jump (a new match) redraws it at once.
+   */
+  setWorldUp(up: Vec3, center: Vec3): void {
+    const next = turnFromUp(up);
+    const angle = turnAngle(next, this.turn);
+    this.turnCenter = center;
+    if (angle < 1e-5) {
+      if (this.turnSettle > 0 && --this.turnSettle === 0) this.turning = false;
+      return;
+    }
+    this.turning = angle < 0.2;
+    this.turnSettle = this.turning ? 30 : 0;
+    this.turn = next;
+  }
+
+  /** The level's turn (identity while up is +Y). */
+  get worldTurn(): Quat {
+    return this.turn;
+  }
+
   /** The active atmosphere, or null. */
   get atmosphere(): Atmosphere | null {
     return this.sky.atmosphere;
@@ -646,6 +685,19 @@ export class Renderer {
     this.sunShadow.setShell(wall?.center ?? null, wall?.radius ?? 0);
   }
 
+  /**
+   * This frame's world effect volumes (M4 B5: gravity wells, cave-in
+   * warnings, rubble; game/worldFx.ts builds them). Kept until the next call.
+   */
+  setWorldVolumes(volumes: readonly WorldVolume[]): void {
+    this.worldVolumes = volumes;
+  }
+
+  /** Screen rectangle the world effects pass drew in the last frame (null: skipped). */
+  get worldFxRect(): readonly [number, number, number, number] | null {
+    return this.wells.lastRect;
+  }
+
   /** Lights uploaded in the last frame and the candidates they were chosen from. */
   get lightStats(): { lights: number; candidates: number } {
     return { lights: this.lightSystem.lastCount, candidates: this.lightSystem.lastCandidates };
@@ -656,6 +708,7 @@ export class Renderer {
     this.setScene(emptyScene());
     this.lights = [];
     this.modeVolumes = [];
+    this.worldVolumes = [];
   }
 
   /** View-projection matrix of `camera` at the current canvas aspect (screen-space labels). */
@@ -676,6 +729,12 @@ export class Renderer {
     const viewProj = mat4.multiply(mat4.perspective(camera.fovY, this.sizer.aspect, camera.near, camera.far), view);
     this.frustum.setFromViewProj(viewProj);
     const time = this.timeOverride ?? (performance.now() - this.startTime) / 1000;
+    // The sun turns with the level's up (M4 B5); while it keeps turning the
+    // shadow map follows in spread redraws and the light uses the map's sun.
+    const turnedSun = q.rotate(this.turn, this.settings.sunDirection);
+    this.sunShadow.setSun(turnedSun, this.turning);
+    this.lightSun = this.sunShadow.active ? this.sunShadow.sunDirection : turnedSun;
+    this.sky.turn = this.turn;
     this.writeFrameUniforms(viewProj, camera.position, time);
     const tanY = Math.tan(camera.fovY / 2);
     const lightView = { view, tanX: tanY * this.sizer.aspect, tanY, forward: q.forward(camera.orientation) };
@@ -686,7 +745,6 @@ export class Renderer {
     const timer = this.timer;
     timer?.beginFrame();
     this.lightSystem.encode(encoder, timer);
-    this.sunShadow.setSun(this.settings.sunDirection);
     this.sunShadow.encode(encoder, this.chunks, timer);
     // Ships and wrecks cast sun shadows too (D5; the ship map around the camera).
     const casters: InstanceBatch[] = [];
@@ -721,7 +779,7 @@ export class Renderer {
           depthClearValue: 1,
           depthLoadOp: first ? "clear" : "load",
           // The particle pass (soft particles), the volumetric shafts, the mode effects and the cloak pass read the depth after the scene.
-          depthStoreOp: last && !this.particles && quality.volumetric.divisor === 0 && refracted === 0 && this.modeVolumes.length === 0 && !needsLinePass(this.settings.post.ink) ? "discard" : "store",
+          depthStoreOp: last && !this.particles && quality.volumetric.divisor === 0 && refracted === 0 && this.modeVolumes.length === 0 && this.worldVolumes.length === 0 && !needsLinePass(this.settings.post.ink) ? "discard" : "store",
         },
       });
       pass.setBindGroup(0, this.bindGroup);
@@ -770,6 +828,8 @@ export class Renderer {
     // Mode effects (walls, zones, beams) over the backdrop, under the particles.
     const size = { width: this.canvas.width, height: this.canvas.height };
     this.modeFx.encode(encoder, sceneView, this.depthTexture!, camera, size, this.modeVolumes, time, this.settings.fogDensity, timer);
+    // M4 B5: wells bend and light what lies behind them; cave-in cracks and rubble on the rock.
+    this.wells.encode(encoder, this.post.sceneHdr, this.depthTexture!, camera, viewProj, this.worldVolumes, time, this.settings.fogDensity, timer);
     // Cloaked ships bend the finished backdrop (VQP); particles draw over them.
     this.cloak.encode(encoder, this.post.sceneHdr, this.depthTexture!, this.bindGroup, camera.orientation, refracted, (p) => {
       for (const batch of this.batches.refract.values()) {
@@ -808,6 +868,7 @@ export class Renderer {
     this.volumetric.destroy();
     this.particles?.destroy();
     this.modeFx.destroy();
+    this.wells.destroy();
     this.ink.destroy();
     this.sky.destroy();
     this.timer?.destroy();
@@ -865,7 +926,7 @@ export class Renderer {
     const s = this.settings;
     d.set(viewProj, 0);
     d.set([cameraPos.x, cameraPos.y, cameraPos.z, time], 16);
-    const sun = s.sunDirection;
+    const sun = this.lightSun;
     const len = Math.hypot(sun.x, sun.y, sun.z) || 1;
     d.set([sun.x / len, sun.y / len, sun.z / len, s.headlight], 20);
     // Colours are authored as display values; the scene lights in linear.
@@ -883,6 +944,8 @@ export class Renderer {
     const room = this.sky.visible && this.roomFade ? this.sky.atmosphere?.room : null;
     d.set(room ? [room.min.x, room.min.y, room.min.z, ROOM_FADE] : [0, 0, 0, 0], 52);
     d.set(room ? [room.max.x, room.max.y, room.max.z, 0] : [0, 0, 0, 0], 56);
+    // The level's turned up (M4 B5, turn.ts): height fog along it, the sky's haze turned with it.
+    packTurn(this.turn, this.turnCenter, d, 60);
     this.device.queue.writeBuffer(this.frameBuffer, 0, d);
   }
 }

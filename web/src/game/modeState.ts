@@ -57,6 +57,51 @@ export interface Objective {
   pos: Vec3;
 }
 
+/** Mood ids by index (ls_sim moods, ls-wasm MOOD_IDS). */
+export const MOOD_IDS = ["calm", "bored", "grumpy", "giddy"] as const;
+export type MoodId = (typeof MOOD_IDS)[number];
+
+/**
+ * The comedy director's state and the level's up (protocol 6 `MoodView`,
+ * ls-wasm modes.rs `mood_json`).
+ */
+export interface MoodState {
+  mood: MoodId;
+  /** Running event id (`data/events/<id>.ron`), "" for none. */
+  eventId: string;
+  /** "announce" | "active" | "ending" | "" without an event. */
+  phase: string;
+  /** Player the event names, -1 = none. */
+  target: number;
+  activeTick: number;
+  phaseEndTick: number;
+  params: number[];
+  /** The level's up (unit; +Y unless Bored level turned it). */
+  up: Vec3;
+}
+
+export function emptyMood(): MoodState {
+  return { mood: "calm", eventId: "", phase: "", target: -1, activeTick: 0, phaseEndTick: 0, params: [], up: { x: 0, y: 1, z: 0 } };
+}
+
+/** Parses the `mood` object of the mode state (missing or broken: calm, no event, up +Y). */
+export function parseMood(v: unknown): MoodState {
+  const m = obj(v);
+  const id = MOOD_IDS.find((x) => x === m["moodId"]) ?? MOOD_IDS[num(m["mood"])] ?? "calm";
+  const up = list(m["up"]).map((x) => num(x));
+  const len = Math.hypot(up[0] ?? 0, up[1] ?? 0, up[2] ?? 0);
+  return {
+    mood: id,
+    eventId: str(m["eventId"]),
+    phase: str(m["phaseId"]),
+    target: num(m["target"], -1),
+    activeTick: num(m["activeTick"]),
+    phaseEndTick: num(m["phaseEndTick"]),
+    params: list(m["params"]).map((x) => num(x)),
+    up: len > 0.5 ? { x: (up[0] ?? 0) / len, y: (up[1] ?? 0) / len, z: (up[2] ?? 0) / len } : { x: 0, y: 1, z: 0 },
+  };
+}
+
 export interface ModeState {
   kind: number;
   /** Mode id (`team_brawl`, ...); "" when unknown. */
@@ -76,6 +121,8 @@ export interface ModeState {
   /** Best first. */
   players: ModePlayer[];
   objectives: Objective[];
+  /** Mood and comedy event (protocol 6; calm and no event from older cores). */
+  mood: MoodState;
 }
 
 export type LobbyPhase = "lobby" | "countdown" | "match" | "results";
@@ -229,6 +276,7 @@ export function emptyModeState(): ModeState {
     teamScores: [],
     players: [],
     objectives: [],
+    mood: emptyMood(),
   };
 }
 
@@ -274,6 +322,7 @@ export function parseModeState(text: string | undefined | null): ModeState {
         pos: { x: num(pos[0]), y: num(pos[1]), z: num(pos[2]) },
       };
     }),
+    mood: parseMood(j["mood"]),
   };
 }
 

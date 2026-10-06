@@ -10,7 +10,7 @@ cosmetic: nothing here is hashed or replicated.
 | --- | --- |
 | `audio/dsp.ts` | Synthesis: a `SynthDef` is a list of layers (sine, triangle, saw and square with polyBLEP, white, pink and brown noise, crackle, Karplus-Strong pluck, modal metal), each with pitch sweep, vibrato, FM, envelope, two filters (RBJ biquads, swept), tremolo, drive and repeats; seeded RNG per variant; seamless loops by crossfade; the reverb's impulse response |
 | `audio/library.ts` | `SoundDef` (synth plus mix: bus, gain, priority, instance limit, minimum gap, distance, reverb send, pitch jitter, loop) and the registry (`registerSounds`, `soundDef`, `allSounds`) |
-| `audio/sounds/*.ts` | The sound set, one file per group (`weapons.ts`, `impacts.ts`, `mechanics.ts`, `announcer.ts`), listed in `sounds/index.ts` |
+| `audio/sounds/*.ts` | The sound set, one file per group (`weapons.ts`, `impacts.ts`, `mechanics.ts`, `announcer.ts`, `world.ts`: M4 B5's mood drones, well hum, cave-in and pigment), listed in `sounds/index.ts` |
 | `audio/engine.ts` | `AudioEngine`: gesture unlock, buses and mixer, voice cap, positional voices, loops, background pre-rendering, listener, settings, stats |
 | `audio/settings.ts` | Volumes (master, effects, music, announcer, 0-100) and mute in `localStorage` `ls.audio`; the start screen's Sound fieldset |
 | `audio/game.ts` | `GameAudio`: turns each frame (projectiles, ships, cues, pickups, boost) into sounds and kills into announcer triggers |
@@ -61,6 +61,13 @@ cosmetic: nothing here is hashed or replicated.
 | Another ship starts boosting | `boost.start` at the ship |
 | A pickup vanishes within 5 u of your ship | `pickup` |
 | Cues | Polite warning `polite.chime` (louder when aimed at you), Tectonic launch `tectonic.launch`, armed `tectonic.rumble` loop swelling until the blast (`tectonic.blast` on its shockwave), other shockwaves `explosion.big`, Railspike muzzle flash `fire.spike`, charge start `charge.start`, overcharge `overcharge`, Leech Arc beam `beam.leech`, swap `swap`, rewind `rewind`, Flash Pod `flash.bang` (+ `flash.ring` when you are blinded), gadget on `gadget.shield` / `gadget.cloak` / `gadget.generic`, decoy return `decoy.return`, paint colour `paint.select` |
+
+World sounds (M4 B5, `game/worldFx.ts` `WorldAudio`, `game/moodFx.ts`): `cavein.warning` at the
+cracking ceiling and `cavein.crash` when it comes down (plus the announcer's `caveIn` within 40 u
+of your ship), `pigment.splash` where pigment is taken, the nearest gravity well's `well.hum`
+loop within 16 u (swelling closer), and one ambient drone per mood (`mood.calm`, `mood.bored`,
+`mood.grumpy`, `mood.giddy`, music bus) crossfaded over the mood's 6 s ease and faded out on the
+results screen and in the lobby.
 
 Nothing farther than 240 u from the camera plays. At the results screen the effects stop.
 

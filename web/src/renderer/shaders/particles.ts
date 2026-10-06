@@ -44,7 +44,7 @@ export const ORIENT = {
 } as const;
 
 /** f32 in the particle uniform block (PU). */
-export const PARTICLE_UNIFORM_FLOATS = 28;
+export const PARTICLE_UNIFORM_FLOATS = 32;
 
 /** PU.pass_info.x: which particles a draw takes (half-resolution split, particles.ts). */
 export const PASS_KIND = { all: 0, big: 1, small: 2 } as const;
@@ -74,6 +74,9 @@ struct PU {
   // x PASS_KIND (0 all, 1 only sprites at least y px wide, 2 only smaller ones),
   // y size threshold (px), z scene-depth texel per target pixel, w focal length (px)
   pass_info: vec4f,
+  // Dust mote colour (M4 B5, the level's mood): rgb tint (radiance per unit brightness),
+  // w how much of a pastel rainbow the motes take (giddy; a hue per mote).
+  mote_color: vec4f,
 };
 
 @group(0) @binding(1) var<uniform> pu: PU;
@@ -263,7 +266,11 @@ fn vs_mote(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> 
   // A streak spreads the same light over a longer sprite.
   let spread = size / max(size, speed * pu.mote.w);
   let fog = fog_amount(pos);
-  let col = vec3f(0.85, 0.78, 0.66) * (pu.mote.z * twinkle * fade * spread * (1.0 - fog));
+  // The mood's tint, or a pastel hue per mote (giddy).
+  let hue = h.x * 6.2831853;
+  let rainbow = vec3f(0.62) + 0.38 * cos(vec3f(hue, hue - 2.094, hue + 2.094));
+  let tint = mix(pu.mote_color.rgb, rainbow * 1.15, pu.mote_color.w);
+  let col = tint * (pu.mote.z * twinkle * fade * spread * (1.0 - fog));
   var o: VsOut;
   o.clip = frame.view_proj * vec4f(world, 1.0);
   o.uv = corner * 0.5 + 0.5;

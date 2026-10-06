@@ -12,6 +12,22 @@ import { sideCss } from "../game/sides.ts";
 export const NAME_TAG_RANGE = 90;
 /** Enemies further than this are not labelled (teammates always are, in range). */
 export const ENEMY_TAG_RANGE = 45;
+/** Monochrome levels (M4 B5, milestone-4-plan.md §3.4): grey enemies are labelled only this close, and only in sight. */
+export const GREY_TAG_RANGE = 20;
+/** Pigmented ships are shown to everyone to this distance, through walls. */
+export const PIGMENT_TAG_RANGE = 160;
+
+/**
+ * Tag rules of a monochrome level: pigmented ships are marked for everyone
+ * through walls; grey (unpigmented) enemies get a tag only within
+ * GREY_TAG_RANGE with a clear line of sight (no through-wall indicator);
+ * teammates keep their tags.
+ */
+export interface PigmentTagRules {
+  pigmented: ReadonlySet<number>;
+  /** True when nothing blocks the view from the camera to the point (ls-wasm raycast). */
+  inSight: (p: Vec3) => boolean;
+}
 
 export interface ScreenPoint {
   /** CSS pixels from the left / top of the canvas. */
@@ -39,6 +55,9 @@ export interface NameTag {
   /** 0..1 */
   opacity: number;
   teammate: boolean;
+  /** Monochrome levels: the ship is pigmented (a coloured marker for everyone) or grey. */
+  pigment?: boolean;
+  grey?: boolean;
 }
 
 /**
@@ -53,18 +72,23 @@ export function nameTagModel(
   width: number,
   height: number,
   ownTeam: number,
+  pigment: PigmentTagRules | null = null,
 ): NameTag[] {
   const out: Array<NameTag & { dist: number }> = [];
   for (const s of ships) {
     if (!s.alive) continue;
     const dist = Math.hypot(s.position.x - camera.x, s.position.y - camera.y, s.position.z - camera.z);
     const teammate = s.team === ownTeam;
-    if (dist > (teammate ? NAME_TAG_RANGE : ENEMY_TAG_RANGE)) continue;
+    const pigmented = pigment?.pigmented.has(s.id) ?? false;
+    let range = teammate ? NAME_TAG_RANGE : ENEMY_TAG_RANGE;
+    if (pigment && pigmented) range = PIGMENT_TAG_RANGE;
+    else if (pigment && !teammate) range = GREY_TAG_RANGE;
+    if (dist > range) continue;
+    if (pigment && !pigmented && !teammate && !pigment.inSight(s.position)) continue;
     const above = { x: s.position.x, y: s.position.y + s.radius * 1.8 + 0.3, z: s.position.z };
     const p = projectToScreen(viewProj, above, width, height);
     if (!p) continue;
     const player = players.find((pl) => pl.id === s.id);
-    const range = teammate ? NAME_TAG_RANGE : ENEMY_TAG_RANGE;
     out.push({
       id: s.id,
       name: player?.name ?? `Player ${s.id + 1}`,
@@ -73,6 +97,7 @@ export function nameTagModel(
       y: p.y,
       opacity: Math.max(0.25, Math.min(1, 1.4 - dist / range)),
       teammate,
+      ...(pigment ? { pigment: pigmented, grey: !pigmented } : {}),
       dist,
     });
   }
@@ -107,7 +132,7 @@ export class NameTags {
       }
       el.style.display = "";
       if (el.textContent !== t.name) el.textContent = t.name;
-      el.className = `name-tag team-${t.team}${t.teammate ? " mate" : ""}`;
+      el.className = `name-tag team-${t.team}${t.teammate ? " mate" : ""}${t.pigment ? " pigment" : ""}${t.grey && !t.teammate ? " grey" : ""}`;
       el.style.setProperty("--side", sideCss(t.team, teams));
       el.style.transform = `translate(${t.x.toFixed(1)}px, ${t.y.toFixed(1)}px) translate(-50%, -100%)`;
       el.style.opacity = t.opacity.toFixed(2);

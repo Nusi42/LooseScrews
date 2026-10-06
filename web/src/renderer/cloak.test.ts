@@ -45,6 +45,7 @@ test("cloaked ships go to the refraction pass when asked, else the old transluce
 test("the frame uniform carries the room box for the fade at hidden walls", () => {
   assert.ok(FRAME_WGSL.includes("room_min: vec4f") && FRAME_WGSL.includes("room_max: vec4f"));
   assert.ok(FRAME_WGSL.includes("fn room_fade"));
-  assert.equal(FRAME_UNIFORM_FLOATS, 60);
+  // 60 floats plus M4 B5's up and sky turn (two vec4).
+  assert.equal(FRAME_UNIFORM_FLOATS, 68);
   assert.ok(ROOM_FADE > 0 && ROOM_FADE < 10);
 });

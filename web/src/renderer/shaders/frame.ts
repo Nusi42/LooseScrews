@@ -11,8 +11,8 @@
 /** Number of paint team colour slots, indexed by team id; ids >= TEAM_SLOTS (NO_TEAM = 255) are unpainted. */
 export const TEAM_SLOTS = 4;
 
-/** Size of the Frame uniform struct in f32 units (240 bytes). */
-export const FRAME_UNIFORM_FLOATS = 60;
+/** Size of the Frame uniform struct in f32 units (272 bytes). */
+export const FRAME_UNIFORM_FLOATS = 68;
 
 /**
  * Open levels (VQ7 hides the sealing walls): rock fades into the sky over
@@ -56,6 +56,12 @@ struct Frame {
   fog_height: vec4f,   // height fog: x density at z (world y), y falloff per u upwards; w = weight of the sky's haze (0 = flat fog_color)
   room_min: vec4f,     // open levels: the room box's inner faces (hidden walls); w = fade width (u), 0 = no fade
   room_max: vec4f,
+  // M4 B5 (Bored level turns the level's up): xyz the level's up (unit), w the
+  // height offset, so height(p) = dot(p, up) + w (= p.y while up is +Y).
+  up: vec4f,
+  // Unit quaternion (xyz, w) from world directions to the sky's own frame: the
+  // environment cube is looked up with sky_dir(d) (identity while up is +Y).
+  sky_turn: vec4f,
 };
 @group(0) @binding(0) var<uniform> frame: Frame;
 // The world's environment cube (renderer/sky.ts, VQ7): the fog takes its colour from it.
@@ -84,6 +90,12 @@ fn room_fade(world_pos: vec3f) -> f32 {
   return mix(1.0, fade, far) * step(${ROOM_CLIP}, d);
 }
 
+// World direction to the sky's frame (the environment cube was baked with +Y up).
+fn sky_dir(d: vec3f) -> vec3f {
+  let q = frame.sky_turn;
+  return d + 2.0 * cross(q.xyz, cross(q.xyz, d) + q.w * d);
+}
+
 // exp2-squared distance fog plus an exponential height fog (integrated
 // along the view ray), coloured by the sky's haze in the view direction
 // (tinted toward the sun and the nebula) or by the flat fog colour.
@@ -94,12 +106,14 @@ fn apply_fog(color: vec3f, world_pos: vec3f) -> vec3f {
   var trans = exp2(-fd * fd);
   let h = frame.fog_height;
   if (h.x > 0.0) {
-    let k = max(h.y * v.y, -60.0);
+    // Heights along the level's up (M4 B5; p.y while up is +Y).
+    let k = max(h.y * dot(v, frame.up.xyz), -60.0);
     let ratio = select((1.0 - exp(-k)) / k, 1.0, abs(k) < 1e-3);
-    trans *= exp(-h.x * d * exp(-h.y * (frame.camera_pos.y - h.z)) * ratio);
+    let cam_h = dot(frame.camera_pos.xyz, frame.up.xyz) + frame.up.w;
+    trans *= exp(-h.x * d * exp(-h.y * (cam_h - h.z)) * ratio);
   }
   let dir = v / max(d, 1e-4);
-  let haze = mix(frame.fog_color.rgb, textureSampleLevel(env_cube, env_samp, dir, ${FOG_ENV_LOD}.0).rgb, h.w);
+  let haze = mix(frame.fog_color.rgb, textureSampleLevel(env_cube, env_samp, sky_dir(dir), ${FOG_ENV_LOD}.0).rgb, h.w);
   return mix(color, haze, clamp(1.0 - trans, 0.0, 1.0));
 }
 `;

@@ -75,6 +75,9 @@ export interface ParticleSpec {
   hot?: boolean;
 }
 
+/** The dust motes' warm grey (linear tint) before a mood colours them (M4 B5). */
+export const DEFAULT_MOTE_COLOR: readonly [number, number, number] = [0.85, 0.78, 0.66];
+
 /** Slots for immediate (per-frame) sprites after the ring. */
 export const IMMEDIATE_MAX = 4096;
 
@@ -329,6 +332,9 @@ export class ParticleSystem {
   moteSize = 0.045;
   moteBrightness = 0.55;
   moteStreak = 0.035;
+  /** Mote colour (M4 B5 mood presentation): linear tint per unit brightness, and the pastel rainbow share (0..1). */
+  moteColor: readonly [number, number, number] = DEFAULT_MOTE_COLOR;
+  moteRainbow = 0;
 
   constructor(device: GPUDevice, frameBuffer: GPUBuffer, quality: ParticleQuality) {
     this.device = device;
@@ -641,6 +647,7 @@ export class ParticleSystem {
     u.set([this.motes, this.moteSize, this.moteBrightness, this.moteStreak], 20);
     const focal = size.height / 2 / Math.tan(camera.fovY / 2);
     u.set([kind, this.halfResPx, depthScale, focal], 24);
+    u.set([this.moteColor[0], this.moteColor[1], this.moteColor[2], this.moteRainbow], 28);
     this.device.queue.writeBuffer(buffer, 0, u);
   }
 

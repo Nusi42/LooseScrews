@@ -16,6 +16,7 @@ Wave D of M3 extends it into the full renderer reference.
 | Sky (open levels only): drawn *under* the resolved scene, `out = scene + sky x (1 - alpha)` (geometry writes alpha 1, the clear is transparent black) | the HDR scene texture, single-sampled | `sky.ts`, `shaders/sky.ts` `SKY_WGSL` |
 | Light shafts ("high", open levels, sun on or near the screen): sky mask (scene alpha 0) at quarter resolution, radial blur toward the sun, added onto the scene | the HDR scene texture | `sky.ts` `encodeShafts`, `SHAFT_*_WGSL` |
 | Mode effects (M3 C1; skipped without volumes): one fullscreen triangle, additive, reading the scene depth: The Squeeze's glowing walls and next zone, zones, beams and halos | the resolved HDR scene texture | `modeFx.ts`, `shaders/modeFx.ts` |
+| World effects (M4 B5; only while a well, a cave-in warning or rubble is on screen): a copy of the screen rectangle the volumes cover, then one scissored fullscreen triangle that bends, recolours and lights it: gravity wells (lensing, glow, the core stone), cave-in cracks, rubble dust, see "World effects" | the resolved HDR scene texture (needs `COPY_SRC`) | `wells.ts`, `shaders/wells.ts` |
 | Cloak refraction (only while a cloaked ship is in view): a copy of the scene, then the cloaked hulls drawn into the scene sampling the copy through their surface (no depth attachment; each fragment reads the scene depth) | the HDR scene texture (needs `COPY_SRC`) | `cloak.ts`, `shaders/cloak.ts` |
 | Particles: sprites at least `halfResPx` wide into a half-resolution `rgba16float` target, composited onto the resolved scene; then dust motes and the smaller sprites at full resolution. No depth attachment: each fragment reads the scene depth (soft particles, occlusion) | the resolved HDR scene texture | `particles.ts`, `shaders/particles.ts`, `spriteAtlas.ts` |
 | Ink lines (M4 A7; only from Palette 50, `needsLinePass`): outlines from the scene depth and world-space hatching from the scene's tone, see "Ink look" | `rgba8unorm` full resolution (r outline, g hatch, b fog fade, a sky) | `ink.ts`, `shaders/ink.ts` |
@@ -25,7 +26,7 @@ Wave D of M3 extends it into the full renderer reference.
 
 With `timestamp-query` every pass writes timestamps (`gpuTimer.ts`), labelled `terrain` and
 `objects` (or `scene` when `Renderer.detailedTiming` is off), `lights`, `shadow` (map updates),
-`volumetric`, `sky` (the sky and the screen-space shafts), `mode`, `particles`, `ink` and `post`. Budgets per label are in `web/src/gallery/scenes.ts`
+`volumetric`, `sky` (the sky and the screen-space shafts), `mode`, `wells` (M4 B5), `particles`, `ink` and `post`. Budgets per label are in `web/src/gallery/scenes.ts`
 (`PASS_BUDGETS_MS`); the F3 overlay and the visual gallery show the times
 ([dev-guide.md](../dev-guide.md#visual-gallery-and-gpu-budget)).
 
@@ -332,6 +333,40 @@ Gallery scenes: `palette-{0,40,65,85,100}` (caves with the four hulls), `palette
 `palette-<p>-sky`, `palette-100-paint` (paint keeps its colour), `palette-100-pigment` (two hulls
 with `keepColor`), `palette-85-fight`; any scene takes `--query palette=<0..100>` (`?palette=`,
 render only: the share code keeps its own value).
+
+## World effects (M4 B5)
+
+What the sliders put into the level and the level's mood, drawn on the client
+(milestone-4-plan.md §3.1, §3.3, §3.4). The game side is `game/worldFx.ts`
+(`WorldVisuals`: one call per frame from `main.ts`) and `game/moodFx.ts`; the
+gallery scenes are `gallery/moodScenes.ts` (data) and `gallery/worldScenes.ts`
+(set-up); `?worldfx=off` draws everything without B5 (before shots).
+
+| Piece | Look | Code |
+| --- | --- | --- |
+| Gravity well (static sites, shepherd moons, dynamic wells: Paperweight, Architect stroke) | Lensing: everything behind the well's centre slides toward it by E^2 / b (b the ray's impact parameter, E the lens radius, held finite near the centre), so a magnified ring of rock or sky forms around the core and the far side shows inverted inside it; samples in front of the well keep the unbent pixel (a soft depth test). A photon ring at E; a violet Gaussian glow integrated along the ray up to the scene depth (rock in front hides it); the core stone darkened to polished black with thin pulsing violet veins (ridges of two noise octaves, turning slowly) and a violet rim. An accretion swirl: about 120 glowing motes spiralling inward (Keplerian speed), 16 rock chips and a faint haze as immediate particles; a violet point light. Dynamic wells grow in and out over 0.5 s; the Gravity coffee break dims glow, lens and swirl to 8 % over 1 s | `wells.ts` `WellVolume`, `worldFx.ts` `wellLook`, `swirl` |
+| Pull indicator | A violet arc and chevron on a ring around the crosshair toward the pull, width and opacity by its strength (share of the 40 % clamp), "PULL n%" (of the ship's thrust); a dot (ahead) or a broken ring (behind) when the pull runs along the view. The force law mirrors `ls_sim::gravity` (tests read `data/world/gravity.ron` and `data/ships`) | `ui/worldHud.ts` `PullIndicator`, `worldFx.ts` `shipPull` |
+| Cave-in warning (`CueKind::CaveInWarning`) | The ceiling above the spot (first rock along the level's up, `Game.raycast`) cracks: polygonal cell-border cracks, only some of them, kinked by a warp, spreading from the spot, widening and heating up through the 1.5 s, finer cracks opening after a third; dust and pebbles trickle (40-200 per second), an orange light grows, the view shakes within 45 u; then a dust burst and chips, `cavein.warning` / `cavein.crash`, the announcer's `caveIn` line within 40 u | `wells.ts` `CrackVolume`, `worldFx.ts` |
+| Rubble | Rock within 7 u of a fallen cave-in gets a pale broken-stone dust coat (more on faces turned up, grit specks), fresh for about 25 s, then a lasting light coat (the last 16 cave-ins of a match) | `wells.ts` `RubbleVolume` |
+| Pigment pickups (monochrome levels) | Three drops of paint in the primaries (`models/worldProps.ts` `pigmentDropModel`, mesh kind `pigment`) circling a glowing core on a tilted ring; a death's splash is one big drop in the side's colour with two droplets. Kept in colour through the ink (`keepColor` 1); a light cycling the primaries. The scene builder leaves `pigmentPickup` entities to the world visuals (`SceneExtras.skipKinds`) | `worldFx.ts` `addToScene` |
+| Pigmented and grey ships (Palette 80+, not Last Color Standing) | Pigmented ships (`Game.shipExt`) fly in their side's colour through the ink and drip paint (opaque kept-colour drops, 9 a second); grey teammates keep 60 % of their team colour, other grey ships are ink grey; the own cockpit frame follows the same rule. Name tags: pigmented ships to 160 u through walls with a drop marker, grey enemies only within 20 u and in sight | `worldFx.ts` `pigmentStyle`, `ui/nameTags.ts` `PigmentTagRules` |
+| Moods | A slow (6 s) grade tint over the world's grade (calm cool and clear, bored washed out and flat, grumpy dark, warm and hard, giddy warm and saturated), the dust motes' colour (`ParticleSystem.moteColor`, `moteRainbow`: calm pale blue, bored grey and dim, grumpy ember, giddy a pastel hue per mote), the HUD badge (a face, the mood's name, its line for 4.5 s after a change), an ambient drone per mood crossfaded on the music bus | `moodFx.ts`, `ui/worldHud.ts` `MoodBadge` |
+| Bored level (the level's up turns) | `Renderer.setWorldUp(up, centre)` (`turn.ts`): the shortest rotation from +Y to the up turns the sky pass (`Sky.turn`, the sky uniform's `turn`), the fog's haze lookup (`Frame.sky_turn`, `sky_dir`), the height fog (heights along `Frame.up`) and the sun (light and shadows). While the up keeps changing (small steps per frame) the sun shadow map is redrawn spread over frames: the map for the new direction is drawn into a second map in 8 bands of rows, one per frame, then copied over the current one (`SunSweep`, `SPREAD_SLICES`); the scene is lit from the map's sun meanwhile, so light and shadows agree (they lag the sky by about 3 degrees at the turn's speed). A jump (a new match) redraws at once. `WorldFx` smooths the replicated up | `turn.ts`, `sunShadow.ts`, `sky.ts` |
+
+**Pass** (`WellsPass`, timed as `wells`): the volumes come nearest first, at
+most `WELLS_MAX_VOLUMES` (12) and the nearest three wells within 80 u (farther
+wells keep their light and swirl). The CPU projects each volume's bounding box
+(`sphereRect`); the pass copies and draws only the union rectangle
+(scissored). Pipeline variants by the kinds present (override constants
+`HAS_WELLS`, `HAS_SURFACE`) compile the unused branches away. Alpha is copied
+through, so the sky mask and the colour keep mask stay.
+
+**Cost** (gallery, RTX 5080, 1920x1080, "high"): `wells` 0.04-0.05 ms in every
+B5 scene (a well filling the screen from inside its hollow, wells in open sky,
+a cave-in warning, rubble); the copy and an empty pass alone 0.02 ms. Mood
+presentation adds nothing measurable (grade uniforms, mote colour). At the VQ
+plans' factor of 8-10 that is 0.3-0.5 ms on the reference mid GPU against the
+0.4 ms wells share (estimated, not measured). `PASS_BUDGETS_MS.wells` = 0.4 ms.
 
 ## Mode effects (M3 C1)
 

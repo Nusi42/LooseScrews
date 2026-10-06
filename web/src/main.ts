@@ -90,7 +90,9 @@ import { addModeProps, easeMonochrome, isMonochrome, modeLights, ModeVfx, modeVo
 import { NEUTRAL_GRADE } from "./renderer/post.ts";
 import { parseInvite } from "./rules/model.ts";
 import type { WasmApi } from "./wasm/api.ts";
-import { MatchAudio } from "./audio/index.ts";
+import { audioEngine, MatchAudio } from "./audio/index.ts";
+import { wantsWorldFx, WorldVisuals } from "./game/worldFx.ts";
+import type { PointLight } from "./renderer/lights.ts";
 import { showAudioDemo, wantsAudioDemo } from "./audio/demo.ts";
 
 /** Largest frame time passed to the simulation; longer stalls (tab switch) are clamped. */
@@ -319,6 +321,9 @@ function runGame(
     if (modeVfx) modeVfx.lightSink = lightFx;
     // Sound and the announcer (M4 A6; silent until the first user gesture).
     const audio = new MatchAudio(ui, game.shareCode);
+    // World visuals (M4 B5): gravity wells, cave-ins, pigment, the level's mood; `?worldfx=off` skips them.
+    const world = new WorldVisuals(particles, wantsWorldFx(location), audioEngine());
+    let worldShake = 0;
     let mono = 0;
     let shipBayOpen = false;
     let shipError = "";
@@ -378,6 +383,7 @@ function runGame(
       results.dispose();
       lobby.dispose();
       audio.dispose();
+      world.dispose();
       delete ui.dataset["stage"];
       delete ui.dataset["matches"];
       overlay.dispose();
@@ -454,6 +460,7 @@ function runGame(
         vfx?.reset();
         charging.forget();
         modeVfx?.reset();
+        world.reset();
         audio.newMatch(game.shareCode);
         mono = 0;
         particles?.clear();
@@ -510,7 +517,7 @@ function runGame(
         boosting: state.boost && (r.hud.boost ?? 0) > 0,
       };
       camera.params.fovY = cine ? cinematic.fovY(renderer.aspect) : cues.fovY(cueFrame);
-      const shake = Math.max(fx.shake, vfx?.shake(time) ?? 0);
+      const shake = Math.max(fx.shake, vfx?.shake(time) ?? 0, worldShake);
       const view = camera.update(r.pose, spectator ? spectator.view : (cine ?? ride), shakeOffset(shake, time));
       chunkStats = chunks.update(game, view.position, initialLoad ? LOADING_BUDGET : PLAY_BUDGET);
       if (initialLoad && chunkStats.pending === 0) initialLoad = false;
@@ -572,6 +579,33 @@ function runGame(
         warmup: flow.stage === "warmup" || flow.stage === "countdown",
       };
       modeVfx?.update({ ...modeInput, dt });
+      // M4 B5 (after the effect library, which starts each frame's immediate sprites).
+      const ownAlive = r.pose && r.pose.alive && !flow.spectating ? r.pose : null;
+      const wf = world.update(
+        {
+          time,
+          dt,
+          nowTick: game.nowTick?.() ?? 0,
+          camera: view.position,
+          orientation: view.orientation,
+          wells: game.wells?.(),
+          up: game.up?.(),
+          shipExt: game.shipExt?.(),
+          monochrome: game.monochrome ?? false,
+          modeStyles: isMonochrome(r.mode),
+          cues: r.cues,
+          mood: r.mode.mood,
+          own: ownAlive ? { id: game.player, team: game.team, position: ownAlive.position, shipType: own?.shipType ?? 1 } : null,
+          ownTeam: game.team,
+          ships: r.ships,
+          entities: r.entities,
+          teams: r.mode.teams,
+          raycast: game.raycast ? (o, d, max) => game.raycast?.(o.x, o.y, o.z, d.x, d.y, d.z, max) ?? -1 : undefined,
+          quiet: flow.showResults || flow.showLobby,
+        },
+        (trigger) => audio.announcer.say(trigger),
+      );
+      worldShake = wf.shake;
       audio.update({ time, dt, player: game.player, online: session.isOnline, stage: flow.stage, camera: view, pose: r.pose, ships: r.ships, projectiles: r.projectiles, entities: r.entities, cues: r.cues, visuals: session.visuals, boosting: cueFrame.boosting, gadgetOf, gadgetIds: session.gadgetIds, names });
       // The cinematic camera sees the own ship too.
       const shownShips = cine && r.pose && own ? [...r.ships, cinematic.ownShip(game.player, game.team, r.pose, own.shipType, game.shipRadius ?? TINKER_RADIUS)] : r.ships;
@@ -586,11 +620,16 @@ function runGame(
           teams: r.mode.teams,
           vfx: vfx !== null,
           refractCloak: true,
-          shipStyle: shipStyleFor(r.mode, r.mode.teams),
+          shipStyle: shipStyleFor(r.mode, r.mode.teams) ?? wf.shipStyle,
+          skipKinds: world.skipKinds,
         });
       addModeProps(scene, modeInput);
+      const worldLights: PointLight[] = [...wf.lights];
+      world.addToScene(scene, r.entities, time, r.mode.teams, worldLights);
       renderer.setScene(scene);
       renderer.setModeVolumes(modeVolumes(modeInput));
+      renderer.setWorldVolumes(wf.volumes);
+      renderer.setWorldUp(wf.up, boundsCenter(game.bounds()));
       // Without VQ5 effects the light pulses come from watching projectiles and ships.
       if (!vfx) {
         lightFx.observe(r.projectiles, session.visuals, time);
@@ -610,10 +649,15 @@ function runGame(
       });
       for (const g of charges) lights.push(chargeLight(g));
       modeLights(modeInput, lights);
+      lights.push(...worldLights);
       renderer.setLights(lightFx.frame(time, lights));
       // Last Color Standing: the world fades to monochrome; ships keep their meter's colour.
       mono = easeMonochrome(mono, isMonochrome(r.mode) && !modeInput.warmup && !flow.showResults ? 1 : 0, dt);
-      renderer.settings.post.grade = monochromeGrade(renderer.atmosphere?.grade ?? NEUTRAL_GRADE, mono);
+      renderer.settings.post.grade = monochromeGrade(world.grade(renderer.atmosphere?.grade ?? NEUTRAL_GRADE), mono);
+      if (particles) {
+        particles.moteColor = wf.motes.color;
+        particles.moteRainbow = wf.motes.rainbow;
+      }
       // Inside a dust cloud the fog closes in (visibility is cut).
       const atmo = renderer.atmosphere ?? DEFAULT_SETTINGS;
       const dust = dustDensityAt(view.position, r.entities, session.visuals);
@@ -624,7 +668,7 @@ function runGame(
       // Inside dust the flat dust colour replaces the sky's haze.
       renderer.settings.skyHaze = renderer.atmosphere ? 1 - Math.min(1, dust) : 0;
       // Last Color Standing: the own cockpit frame keeps its meter's colour like the other hulls (D5).
-      const ownStyle = playerStyleFor(r.mode, r.mode.teams)?.(game.player, game.team);
+      const ownStyle = playerStyleFor(r.mode, r.mode.teams)?.(game.player, game.team) ?? wf.ownStyle ?? undefined;
       const frameState = cues.hullFrame(cueFrame, own?.shipType ?? 1, game.shipRadius ?? TINKER_RADIUS, ownStyle?.color ?? teamHull(game.team, r.mode.teams));
       renderer.hullFrame.state = frameState && ownStyle ? { ...frameState, keepColor: ownStyle.keepColor } : frameState;
       hud.fitRing.update(cues.fitRing(cueFrame, game, r.pose?.position ?? view.position, view.orientation, view.fovY));
@@ -640,9 +684,23 @@ function runGame(
           canvas.clientWidth,
           canvas.clientHeight,
           game.team,
+          game.monochrome && wf.shipStyle
+            ? {
+                pigmented: wf.pigmented,
+                inSight: (p) => {
+                  const d = { x: p.x - view.position.x, y: p.y - view.position.y, z: p.z - view.position.z };
+                  const len = Math.hypot(d.x, d.y, d.z);
+                  if (len < 1e-3 || !game.raycast) return true;
+                  const hit = game.raycast(view.position.x, view.position.y, view.position.z, d.x / len, d.y / len, d.z / len, len);
+                  return hit < 0 || hit > len - 1;
+                },
+              }
+            : null,
         ),
         r.mode.teams,
       );
+      hud.pull.update(flow.showResults || flow.spectating ? null : wf.pull);
+      hud.mood.update(flow.showResults ? null : wf.mood);
 
       // Mode HUD, objective markers, lobby card, results and the Tab scoreboard.
       const ownSide = game.team;

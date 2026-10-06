@@ -94,6 +94,7 @@ export function packSkyUniforms(
   height: number,
   time: number,
   out = new Float32Array(SKY_UNIFORM_FLOATS),
+  turn: Quat = q.identity(),
 ): Float32Array {
   const tanY = Math.tan(cam.fovY / 2);
   const tanX = tanY * (width / Math.max(height, 1));
@@ -125,6 +126,8 @@ export function packSkyUniforms(
   out.set([width, height, 0, 0], 56);
   const b = a.nebula.band;
   out.set([b.x, b.y, b.z, BAND_WIDTH], 60);
+  // World to sky frame (the inverse of the level's turn, M4 B5).
+  out.set([-turn.x, -turn.y, -turn.z, turn.w], 64);
   return out;
 }
 
@@ -159,6 +162,8 @@ export class Sky {
   private readonly shaftData = new Float32Array(SHAFT_UNIFORM_FLOATS);
   private shaftTargets: ShaftTargets | null = null;
   private atmosphereValue: Atmosphere | null = null;
+  /** The level's turn (M4 B5, turn.ts): the sky, its sun and the shafts turn with it. */
+  turn: Quat = q.identity();
 
   /** The environment cube (sampled by the fog of every scene shader). */
   readonly envView: GPUTextureView;
@@ -357,7 +362,7 @@ export class Sky {
   composite(encoder: GPUCommandEncoder, scene: GPUTexture, cam: SkyCamera, time: number, timer: GpuTimer | null): void {
     const a = this.atmosphereValue;
     if (!a || a.open <= 0) return;
-    this.device.queue.writeBuffer(this.skyBuffer, 0, packSkyUniforms(a, cam, scene.width, scene.height, time, this.skyData));
+    this.device.queue.writeBuffer(this.skyBuffer, 0, packSkyUniforms(a, cam, scene.width, scene.height, time, this.skyData, this.turn));
     const timestampWrites = timer?.pass("sky");
     const pass = encoder.beginRenderPass({
       label: "sky",
@@ -378,7 +383,7 @@ export class Sky {
   encodeShafts(encoder: GPUCommandEncoder, scene: GPUTexture, viewProj: ArrayLike<number>, timer: GpuTimer | null): void {
     const a = this.atmosphereValue;
     if (!a || a.open <= 0 || a.shafts <= 0) return;
-    const ndc = sunScreen(viewProj, a.sunDirection);
+    const ndc = sunScreen(viewProj, q.rotate(this.turn, a.sunDirection));
     const fade = shaftFade(ndc) * a.shafts;
     if (!ndc || fade <= 0.001) return;
     const width = Math.max(1, Math.ceil(scene.width / 4));

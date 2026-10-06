@@ -26,6 +26,19 @@ import { coreModel, reactorModel } from "./modeProps.ts";
 import { pigmentDropModel } from "./worldProps.ts";
 import { balloonFaceModel, balloonModel, boxFlapModel, cardboardBoxModel, coffeeMugModel, giantEggModel, pupilModel, rubberChickenModel, tapeStripModel } from "./eventProps.ts";
 import { VISITOR_MESH_KINDS, visitorModel, type VisitorMeshKind } from "./visitors.ts";
+import {
+  catPawModel,
+  catPawUpModel,
+  discoBallModel,
+  discoChainModel,
+  duckShadesModel,
+  HAT_MODELS,
+  hatPropellerModel,
+  lightTrailModel,
+  pawArmModel,
+  pawClawModel,
+  rubberDuckModel,
+} from "./spectacleProps.ts";
 import { hullOf } from "./ships.ts";
 import { wreckModel } from "./wrecks.ts";
 
@@ -69,7 +82,57 @@ export type MeshKind =
   | "balloon_face"
   | "pupil"
   | "coffee_mug"
-  | VisitorMeshKind;
+  | VisitorMeshKind
+  | SpectacleMeshKind;
+
+/** Mesh kinds of M4 C3's spectacle events (spectacleProps.ts). */
+export const SPECTACLE_MESH_KINDS = [
+  "rubber_duck",
+  "duck_shades",
+  "hat_0",
+  "hat_1",
+  "hat_2",
+  "hat_3",
+  "hat_4",
+  "hat_5",
+  "hat_6",
+  "hat_7",
+  "hat_prop",
+  "cat_paw",
+  "cat_paw_up",
+  "paw_arm",
+  "paw_claw",
+  "disco_ball",
+  "disco_chain",
+  "light_trail",
+] as const;
+export type SpectacleMeshKind = (typeof SPECTACLE_MESH_KINDS)[number];
+
+/** Hat mesh of a style 0-7 (`ReplicatedKind::Hat` state[0]; out of range wraps). */
+export function hatMeshKind(style: number): SpectacleMeshKind {
+  return `hat_${(((Math.floor(style) % 8) + 8) % 8)}` as SpectacleMeshKind;
+}
+
+const SPECTACLE_BUILDERS: Readonly<Record<SpectacleMeshKind, () => MeshData>> = {
+  rubber_duck: buildProp(rubberDuckModel),
+  duck_shades: buildProp(duckShadesModel),
+  hat_0: buildProp(HAT_MODELS[0]!),
+  hat_1: buildProp(HAT_MODELS[1]!),
+  hat_2: buildProp(HAT_MODELS[2]!),
+  hat_3: buildProp(HAT_MODELS[3]!),
+  hat_4: buildProp(HAT_MODELS[4]!),
+  hat_5: buildProp(HAT_MODELS[5]!),
+  hat_6: buildProp(HAT_MODELS[6]!),
+  hat_7: buildProp(HAT_MODELS[7]!),
+  hat_prop: buildProp(hatPropellerModel),
+  cat_paw: buildProp(catPawModel),
+  cat_paw_up: buildProp(catPawUpModel),
+  paw_arm: buildProp(pawArmModel),
+  paw_claw: buildProp(pawClawModel),
+  disco_ball: buildProp(discoBallModel),
+  disco_chain: buildProp(discoChainModel),
+  light_trail: buildProp(lightTrailModel),
+};
 
 /** Hull mesh of a ship type (unknown types: the Tinker's). */
 export function shipMeshKind(shipType: number): ShipMeshKind {
@@ -127,6 +190,8 @@ export const MESH_BUILDERS: Readonly<Record<MeshKind, () => MeshData>> = {
   coffee_mug: buildProp(coffeeMugModel),
   // M4 C2: the event visitors (visitors.ts).
   ...visitorBuilders((k) => () => visitorModel(k).build()),
+  // M4 C3: spectacle event props.
+  ...SPECTACLE_BUILDERS,
 };
 
 /** The pre-VQ4 primitives for every kind (one dart for all hulls, one wreck). */
@@ -167,6 +232,8 @@ export const LEGACY_MESH_BUILDERS: Readonly<Record<MeshKind, () => MeshData>> = 
   pupil: () => sphereMesh(1),
   coffee_mug: () => sphereMesh(1),
   ...visitorBuilders(() => () => sphereMesh(1)),
+  // M4 C3: the old duck primitive for the duck, plain spheres for the rest.
+  ...(Object.fromEntries(SPECTACLE_MESH_KINDS.map((k) => [k, k === "rubber_duck" ? duckMesh : () => sphereMesh(1)])) as Record<SpectacleMeshKind, () => MeshData>),
 };
 
 function visitorBuilders(f: (k: VisitorMeshKind) => () => MeshData): Record<VisitorMeshKind, () => MeshData> {

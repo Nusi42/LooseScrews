@@ -821,6 +821,23 @@ impl GameCore {
         }
     }
 
+    /// Practice only: forces the comedy event `event` (`ls_sim::EventKind`
+    /// index) `delay` ticks from now (its 3 s announcement starts then).
+    /// False online or for an unknown index.
+    pub fn practice_force_event(&mut self, event: u8, delay: u32) -> bool {
+        let Some(kind) = ls_sim::EventKind::from_index(event) else {
+            return false;
+        };
+        match &mut self.mode {
+            Mode::Online(_) => false,
+            Mode::Practice(p) => {
+                let at = p.world.tick() + u64::from(delay);
+                p.world.schedule_event(at, kind);
+                true
+            }
+        }
+    }
+
     // ----- network -------------------------------------------------------------
 
     /// Handles one packet from the server. Returns the reason if the server

@@ -100,6 +100,8 @@ import type { PointLight } from "./renderer/lights.ts";
 import { showAudioDemo, wantsAudioDemo } from "./audio/demo.ts";
 import { emptyOutput, EventVisuals, fxFromMood, parseEventFx, wantsEventFx, wellPoints } from "./game/events/index.ts";
 import { EventHud } from "./ui/eventBanner.ts";
+import { SpectacleVisuals } from "./game/events/spectacles.ts";
+import { forcedEvent } from "./game/events/forceEvent.ts";
 
 /** Largest frame time passed to the simulation; longer stalls (tab switch) are clamped. */
 const MAX_FRAME_DT = 0.1;
@@ -336,6 +338,12 @@ function runGame(
     const eventHud = new EventHud(ui);
     const events = new EventVisuals({ particles, sound: audioEngine(), hud: eventHud, announcer: audio.announcer, enabled: wantsEventFx(location) });
     let eventShake = 0;
+    // M4 C3: Duck parade, Hat rain, Cat paw, Disco inferno, the Tired announcer's kill-cams.
+    const spectacles = new SpectacleVisuals(ui, particles, wantsWorldFx(location), audioEngine(), (t, v) => audio.announcer.say(t, v));
+    let spectacleShake = 0;
+    // Practice: `?event=<id>` forces a comedy event a few seconds in (C3; tests and review).
+    const forced = session.isOnline ? null : forcedEvent(location);
+    if (forced !== null) game.practiceEvent?.(forced, 300);
     let mono = 0;
     let shipBayOpen = false;
     let shipError = "";
@@ -400,6 +408,7 @@ function runGame(
       eventHud.dispose();
       if (!renderer.isLost) events.apply(renderer, emptyOutput());
       visitors.dispose();
+      spectacles.dispose();
       delete ui.dataset["stage"];
       delete ui.dataset["matches"];
       overlay.dispose();
@@ -479,6 +488,7 @@ function runGame(
         world.reset();
         events.reset();
         visitors.reset();
+        spectacles.reset();
         audio.newMatch(game.shareCode);
         mono = 0;
         particles?.clear();
@@ -535,7 +545,7 @@ function runGame(
         boosting: state.boost && (r.hud.boost ?? 0) > 0,
       };
       camera.params.fovY = cine ? cinematic.fovY(renderer.aspect) : cues.fovY(cueFrame);
-      const shake = Math.max(fx.shake, vfx?.shake(time) ?? 0, worldShake, eventShake);
+      const shake = Math.max(fx.shake, vfx?.shake(time) ?? 0, worldShake, eventShake, spectacleShake);
       const camView = camera.update(r.pose, spectator ? spectator.view : (cine ?? ride), shakeOffset(shake, time));
       // Comedy events (M4 C1): what the running event does, its banner and visuals; the side view and the hiccup bump move the camera.
       const evTick = game.nowTick?.() ?? 0;
@@ -673,13 +683,34 @@ function runGame(
         pickupPoints: game.pickupPoints?.(),
         quiet: flow.showResults || flow.showLobby,
       });
+      const sf = spectacles.update({
+        time,
+        dt,
+        nowTick: game.nowTick?.() ?? 0,
+        camera: view.position,
+        orientation: view.orientation,
+        mood: r.mode.mood,
+        cues: r.cues,
+        ships: r.ships,
+        own: ownAlive ? { id: game.player, team: game.team, position: ownAlive.position, orientation: ownAlive.orientation, shipType: own?.shipType ?? 1, radius: game.shipRadius ?? TINKER_RADIUS } : null,
+        entities: r.entities,
+        shots: r.projectiles,
+        shipExt: game.shipExt?.(),
+        colorOf: (id) => teamHull(id === game.player ? game.team : (teamOfShip(id) ?? 0), r.mode.teams),
+        nameOf: (id) => names.get(id) ?? "",
+        up: wf.up,
+        raycast: game.raycast ? (o, d, max) => game.raycast?.(o.x, o.y, o.z, d.x, d.y, d.z, max) ?? -1 : undefined,
+        quiet: flow.showResults || flow.showLobby,
+      });
+      spectacleShake = sf.shake;
       audio.update({ time, dt, player: game.player, online: session.isOnline, stage: flow.stage, camera: view, pose: r.pose, ships: r.ships, projectiles: r.projectiles, entities: r.entities, cues: r.cues, visuals: session.visuals, boosting: cueFrame.boosting, gadgetOf, gadgetIds: session.gadgetIds, names });
       // The cinematic camera sees the own ship too.
       // ...and so does an event's side view (M4 C1).
       const shownShips = (cine || ev.thirdPerson) && r.pose && own ? [...drawnShips, cinematic.ownShip(game.player, game.team, r.pose, own.shipType, game.shipRadius ?? TINKER_RADIUS)] : drawnShips;
       // Event pickups hidden by C1 (Moving day) and C2 (real pickups under their mimics).
       const shownEntities = ev.hideEntities.size > 0 || vf.hidden.size > 0 ? r.entities.filter((e) => !ev.hideEntities.has(e.id) && !vf.hidden.has(e.id)) : r.entities;
-      const skipKinds = world.skipKinds && visitors.skipKinds ? new Set([...world.skipKinds, ...visitors.skipKinds]) : (world.skipKinds ?? visitors.skipKinds);
+      // Entity kinds whose looks the world, visitor and spectacle modules draw themselves.
+      const skipKinds = new Set([...(world.skipKinds ?? []), ...(visitors.skipKinds ?? []), ...spectacles.skipKinds]);
       const scene = buildScene(shownShips, drawnShots, shownEntities, session.visuals, session.teamOf(r.ships), time, {
           gadgetOf,
           beams: fx.beams,
@@ -700,9 +731,13 @@ function runGame(
       events.addToScene(scene, worldLights, ev);
       visitors.addToScene(scene);
       worldLights.push(...vf.lights);
+      spectacles.addToScene(scene);
+      worldLights.push(...sf.lights);
+      renderer.settings.lightLevel = sf.lightLevel;
+      renderer.settings.headlight = DEFAULT_SETTINGS.headlight * sf.headlight;
       renderer.setScene(scene);
       renderer.setModeVolumes(modeVolumes(modeInput));
-      renderer.setWorldVolumes(wf.volumes);
+      renderer.setWorldVolumes(sf.volumes.length > 0 ? [...sf.volumes, ...wf.volumes] : wf.volumes);
       renderer.setWorldUp(wf.up, boundsCenter(game.bounds()));
       // Without VQ5 effects the light pulses come from watching projectiles and ships.
       if (!vfx) {
@@ -750,6 +785,12 @@ function runGame(
       // Per-pass GPU timing (separate terrain/objects passes) while the overlay shows.
       renderer.detailedTiming = overlay.visible;
       frameStats = renderer.render(view);
+      spectacles.renderKillCam(renderer, {
+        visuals: session.visuals,
+        teamOf: (id) => (id === game.player ? game.team : teamOfShip(id)),
+        teams: r.mode.teams,
+        create: (c, device) => Renderer.create(c, { device, quality: "low", particles: false, shadows: false }),
+      });
       nameTags.update(
         nameTagModel(
           r.ships,

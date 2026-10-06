@@ -51,7 +51,7 @@ struct Frame {
   camera_pos: vec4f,   // xyz camera position, w = time in seconds
   light_dir: vec4f,    // xyz unit vector towards the sun, w = headlight strength
   fog_color: vec4f,    // rgb fog colour (linear), w = exp2 fog density
-  rock_color: vec4f,   // rgb unpainted surface colour (linear)
+  rock_color: vec4f,   // rgb unpainted surface colour (linear), w = the level's light (sun and ambient factor, 1 = full; M4 C3)
   team_colors: array<vec4f, ${TEAM_SLOTS}>, // linear
   fog_height: vec4f,   // height fog: x density at z (world y), y falloff per u upwards; w = weight of the sky's haze (0 = flat fog_color)
   room_min: vec4f,     // open levels: the room box's inner faces (hidden walls); w = fade width (u), 0 = no fade
@@ -113,7 +113,8 @@ fn apply_fog(color: vec3f, world_pos: vec3f) -> vec3f {
     trans *= exp(-h.x * d * exp(-h.y * (cam_h - h.z)) * ratio);
   }
   let dir = v / max(d, 1e-4);
-  let haze = mix(frame.fog_color.rgb, textureSampleLevel(env_cube, env_samp, sky_dir(dir), ${FOG_ENV_LOD}.0).rgb, h.w);
+  // The haze dims with the level's light (rock_color.w, M4 C3 Disco inferno).
+  let haze = mix(frame.fog_color.rgb, textureSampleLevel(env_cube, env_samp, sky_dir(dir), ${FOG_ENV_LOD}.0).rgb, h.w) * frame.rock_color.w;
   return mix(color, haze, clamp(1.0 - trans, 0.0, 1.0));
 }
 `;

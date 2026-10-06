@@ -30,6 +30,7 @@ import {
 } from "./kit.ts";
 import { srgbToLinear } from "../shaders/frame.ts";
 import { TOY_WGSL } from "./toyPalette.ts";
+import { SPECTACLE_SHADING_WGSL } from "./spectacleShading.ts";
 
 /** Engine glow at rest and at full boost (multiplies the engine colour). */
 export const ENGINE_IDLE = 2.6;
@@ -123,6 +124,8 @@ fn nav_blink(t: f32, phase: f32, strobe: bool) -> f32 {
 }
 
 ${TOY_WGSL}
+// M4 C3: rubber, fur, felt, mirror tiles, gold (spectacleShading.ts).
+${SPECTACLE_SHADING_WGSL}
 
 // Material of a model vertex. color: instance rgb + emissive amount (a);
 // glow: engine strength (0 idle .. 1 full boost); blink: nav light phase (s).
@@ -133,6 +136,7 @@ fn shade_model(part: u32, n: vec3f, world_pos: vec3f, lp: vec3f, ln: vec3f, colo
   if (part >= TOY_PART_BASE && part < TOY_PART_BASE + TOY_COUNT) {
     return mix(shade_toy(part - TOY_PART_BASE, n, world_pos, lp, color), emissive_glow(color.rgb, color.a), color.a);
   }
+  if (part >= SPECTACLE_PART_MIN && part <= SPECTACLE_PART_MAX) { return shade_spectacle(part, n, world_pos, lp, ln, color); }
   // PART_PLAIN and unknown parts: the pre-VQ4 instance look (lit once, below).
   if (part > PART_LAMP && (part < PART_STONE || part > PART_FLESH)) { return shade(color.rgb, color.a, n, world_pos); }
   // Dynamic lights (VQ6) also leave a highlight; each material scales it.

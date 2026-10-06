@@ -1,0 +1,240 @@
+/* M4 C3's spectacle UI (game/events/spectacles.ts, game/killcam.ts): the
+   Tired announcer's kill-cam window (a little broadcast monitor under the
+   announcer's caption at the top left) and the own hat count chip. Imported
+   by style.css. */
+
+.killcam {
+  position: absolute;
+  top: clamp(104px, 9.5vw, 126px);
+  left: 18px;
+  z-index: 5;
+  width: clamp(260px, 25vw, 480px);
+  box-sizing: border-box;
+  padding: 7px 7px 8px;
+  border: 1px solid var(--glass-edge);
+  border-left: 3px solid #ff5a4f;
+  border-radius: 12px;
+  background: var(--glass-strong);
+  box-shadow: var(--glass-shadow), 0 0 30px -12px #ff5a4f;
+  pointer-events: none;
+  opacity: 0;
+  transform: translateX(-30px) scale(0.96);
+  transform-origin: left top;
+  transition: opacity 0.2s ease, transform 0.3s cubic-bezier(0.2, 1.3, 0.4, 1);
+}
+
+.killcam.shown {
+  opacity: 1;
+  transform: none;
+}
+
+.killcam-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 4px 6px;
+  font: 600 12px/1.2 var(--display, system-ui), sans-serif;
+  letter-spacing: 0.06em;
+  color: #f4f1ea;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.killcam-rec {
+  flex: none;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #ff3b30;
+  box-shadow: 0 0 8px #ff3b30;
+  animation: killcam-blink 1s steps(2, start) infinite;
+}
+
+.killcam-label {
+  flex: none;
+  text-transform: uppercase;
+  color: #ff8a80;
+}
+
+.killcam-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.killcam-screen {
+  position: relative;
+  overflow: hidden;
+  border-radius: 8px;
+  aspect-ratio: 16 / 9;
+  background: #05060a;
+}
+
+.killcam-screen canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  filter: saturate(0.82) contrast(1.06) sepia(0.12);
+}
+
+/* Old-TV replay look: scanlines, a soft vignette and a rolling bright band. */
+.killcam-scan {
+  position: absolute;
+  inset: 0;
+  background:
+    repeating-linear-gradient(0deg, rgba(0, 0, 0, 0.22) 0 1px, transparent 1px 3px),
+    radial-gradient(ellipse at center, transparent 55%, rgba(0, 0, 0, 0.55) 100%);
+  mix-blend-mode: multiply;
+}
+
+.killcam-scan::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 22%;
+  background: linear-gradient(180deg, transparent, rgba(255, 255, 255, 0.07), transparent);
+  animation: killcam-roll 2.6s linear infinite;
+  mix-blend-mode: screen;
+}
+
+.killcam.standby .killcam-screen canvas {
+  visibility: hidden;
+}
+
+/* Standby: TV static rolling behind the stamp. */
+.killcam.standby .killcam-screen {
+  background:
+    repeating-radial-gradient(circle at 37% 41%, rgba(255, 255, 255, 0.16) 0 1px, transparent 1px 3px),
+    repeating-radial-gradient(circle at 71% 63%, rgba(255, 255, 255, 0.12) 0 1px, transparent 1px 2px),
+    linear-gradient(180deg, #23252c, #121318);
+  animation: killcam-static 0.18s steps(3) infinite;
+}
+
+.killcam.standby .killcam-stamp {
+  border-color: #9fb2ff;
+  color: #9fb2ff;
+  transform: rotate(-6deg) scale(1);
+  opacity: 1;
+  animation: killcam-doze 2.4s ease-in-out infinite;
+}
+
+@keyframes killcam-static {
+  to {
+    background-position: 3px 2px, -2px 3px, 0 0;
+  }
+}
+
+@keyframes killcam-doze {
+  50% {
+    transform: rotate(-3deg) translateY(-6px) scale(1.06);
+  }
+}
+
+.killcam-stamp {
+  position: absolute;
+  right: 6%;
+  bottom: 10%;
+  padding: 2px 10px;
+  border: 3px solid #ffd23f;
+  border-radius: 6px;
+  font: 900 clamp(20px, 2.4vw, 38px)/1 var(--display, system-ui), sans-serif;
+  letter-spacing: 0.08em;
+  color: #ffd23f;
+  text-shadow: 0 2px 0 rgba(0, 0, 0, 0.6);
+  transform: rotate(-9deg) scale(2);
+  opacity: 0;
+  transition: none;
+}
+
+.killcam-stamp.on {
+  opacity: 1;
+  transform: rotate(-9deg) scale(1);
+  transition: transform 0.18s cubic-bezier(0.3, 1.6, 0.5, 1), opacity 0.1s;
+}
+
+.killcam-time {
+  height: 3px;
+  margin: 7px 3px 0;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.12);
+  overflow: hidden;
+}
+
+.killcam-bar {
+  height: 100%;
+  background: linear-gradient(90deg, #ff5a4f, #ffb347);
+  transform-origin: left center;
+  transform: scaleX(0);
+}
+
+@keyframes killcam-blink {
+  to {
+    opacity: 0.15;
+  }
+}
+
+@keyframes killcam-roll {
+  from {
+    top: -25%;
+  }
+  to {
+    top: 105%;
+  }
+}
+
+/* The own hats: a chip above the hull bars; red-rimmed when the stack gives you away. */
+.hat-chip {
+  position: absolute;
+  left: 50%;
+  bottom: clamp(108px, 12vh, 140px);
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 12px 5px 8px;
+  border: 1px solid var(--glass-edge);
+  border-radius: 999px;
+  background: var(--glass-strong);
+  box-shadow: var(--glass-shadow);
+  font: 700 14px/1 var(--display, system-ui), sans-serif;
+  color: #f4f1ea;
+  pointer-events: none;
+  opacity: 0;
+  transform: translate(-50%, 8px);
+  transition: opacity 0.2s, transform 0.25s cubic-bezier(0.2, 1.4, 0.4, 1);
+}
+
+.hat-chip.shown {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
+.hat-chip svg {
+  width: 22px;
+  height: 22px;
+  color: #f4f1ea;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.6));
+}
+
+.hat-chip.revealed {
+  border-color: #ffd23f;
+  box-shadow: var(--glass-shadow), 0 0 18px -4px #ffd23f;
+}
+
+.hat-reveal {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: #ffd23f;
+  text-transform: uppercase;
+}
+
+@media (max-width: 640px) {
+  .killcam {
+    top: auto;
+    bottom: 150px;
+    width: min(62vw, 300px);
+  }
+}

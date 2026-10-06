@@ -73,10 +73,11 @@ fn dynamic_lights(n: vec3f, world_pos: vec3f, v: vec3f, power: f32, spec: ptr<fu
 // Sun (blocked by rock: the VQ9 shadow map), ambient and the headlight (no dynamic lights).
 fn static_light(n: vec3f, world_pos: vec3f) -> vec3f {
   // Rock blocks the sun (VQ9).
-  sun_vis_last = sun_visibility(world_pos, n);
+  // frame.rock_color.w: the level's light (1; M4 C3 Disco inferno dims sun and ambient to 8 %).
+  sun_vis_last = sun_visibility(world_pos, n) * frame.rock_color.w;
   let sun = max(dot(n, frame.light_dir.xyz), 0.0) * vec3f(1.0, 0.93, 0.8) * sun_vis_last;
   // Hemisphere ambient: cool sky light from above, dim bounce from below.
-  let ambient = mix(vec3f(0.035, 0.035, 0.05), vec3f(0.11, 0.12, 0.16), n.y * 0.5 + 0.5);
+  let ambient = mix(vec3f(0.035, 0.035, 0.05), vec3f(0.11, 0.12, 0.16), n.y * 0.5 + 0.5) * frame.rock_color.w;
   // Headlight so tunnels stay readable: a soft spot light along the view
   // (a dimmer fill outside the cone), falling off with distance.
   let to_cam = frame.camera_pos.xyz - world_pos;

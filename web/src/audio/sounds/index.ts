@@ -9,5 +9,6 @@ import { MECHANICS_SOUNDS } from "./mechanics.ts";
 import { WEAPON_SOUNDS } from "./weapons.ts";
 import { VISITOR_SOUNDS } from "./visitors.ts";
 import { WORLD_SOUNDS } from "./world.ts";
+import { SPECTACLE_SOUNDS } from "./spectacles.ts";
 
-export const BUILTIN_SOUNDS: readonly SoundDef[] = [...WEAPON_SOUNDS, ...IMPACT_SOUNDS, ...MECHANICS_SOUNDS, ...ANNOUNCER_SOUNDS, ...WORLD_SOUNDS, ...EVENT_SOUNDS, ...VISITOR_SOUNDS];
+export const BUILTIN_SOUNDS: readonly SoundDef[] = [...WEAPON_SOUNDS, ...IMPACT_SOUNDS, ...MECHANICS_SOUNDS, ...ANNOUNCER_SOUNDS, ...WORLD_SOUNDS, ...EVENT_SOUNDS, ...VISITOR_SOUNDS, ...SPECTACLE_SOUNDS];

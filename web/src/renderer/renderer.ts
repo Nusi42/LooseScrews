@@ -88,6 +88,12 @@ export interface RenderSettings {
   skyHaze: number;
   /** Exposure, bloom, vignette, grain, AgX look and colour grade (post.ts). */
   post: PostSettings;
+  /**
+   * The level's light: a factor on the sun (with its shafts), the ambient
+   * light and the sky, 0..1 (default 1). The headlight and the dynamic lights
+   * keep their strength (M4 C3: Disco inferno turns the lights down to 8 %).
+   */
+  lightLevel?: number;
 }
 
 export const DEFAULT_SETTINGS: RenderSettings = {
@@ -322,7 +328,9 @@ export class Renderer {
   readonly sunShadow: SunShadow;
   /** Volumetric sun shafts through the shadow map (VQ9). */
   readonly volumetric: VolumetricShafts;
-  private readonly chunks = new Map<string, GpuMesh>();
+  private chunks = new Map<string, GpuMesh>();
+  /** The chunks are another renderer's (`shareTerrain`): never destroyed here. */
+  private chunksBorrowed = false;
   /** Instanced meshes, built on first use (the models take ~0.1 s of CPU; FI keeps it off the start screen). */
   private readonly meshes: Partial<Record<MeshKind, GpuMesh>> = {};
   private readonly meshBuilders: Readonly<Record<MeshKind, () => MeshData>>;
@@ -639,6 +647,7 @@ export class Renderer {
 
   /** Adds or replaces the terrain chunk `key`; `null` or an empty mesh removes it. */
   setChunk(key: string, mesh: MeshData | null): void {
+    if (this.chunksBorrowed) return;
     const old = this.chunks.get(key);
     const before = old?.aabb ?? null;
     old?.destroy();
@@ -653,7 +662,25 @@ export class Renderer {
     this.sunShadow.chunkChanged(before, this.chunks.get(key)?.aabb ?? null);
   }
 
+  /**
+   * Draws `from`'s terrain chunks (a renderer on the same device, M4 C3's
+   * kill-cam window): no second copy of the meshes; they stay `from`'s to
+   * update and destroy. `setChunk` on this renderer is ignored afterwards.
+   */
+  shareTerrain(from: Renderer): void {
+    if (from.device !== this.device) throw new Error("shareTerrain needs renderers on one device");
+    if (!this.chunksBorrowed) for (const mesh of this.chunks.values()) mesh.destroy();
+    this.chunks = from.chunks;
+    this.chunksBorrowed = true;
+  }
+
   clearChunks(): void {
+    if (this.chunksBorrowed) {
+      this.chunks = new Map();
+      this.chunksBorrowed = false;
+      this.sunShadow.clear();
+      return;
+    }
     this.lightSystem.clearChunks();
     for (const mesh of this.chunks.values()) mesh.destroy();
     this.chunks.clear();
@@ -759,6 +786,9 @@ export class Renderer {
     this.sunShadow.setSun(turnedSun, this.turning);
     this.lightSun = this.sunShadow.active ? this.sunShadow.sunDirection : turnedSun;
     this.sky.turn = this.turn;
+    const level = Math.min(1, Math.max(0, this.settings.lightLevel ?? 1));
+    this.sky.level = level;
+    this.volumetric.level = level;
     this.writeFrameUniforms(viewProj, camera.position, time);
     const tanY = Math.tan(camera.fovY / 2);
     const lightView = { view, tanX: tanY * this.sizer.aspect, tanY, forward: q.forward(camera.orientation) };
@@ -956,7 +986,8 @@ export class Renderer {
     // Colours are authored as display values; the scene lights in linear.
     const lin = (c: Rgb): number[] => [srgbToLinear(c[0]), srgbToLinear(c[1]), srgbToLinear(c[2])];
     d.set([...lin(s.fogColor), s.fogDensity], 24);
-    d.set([...lin(s.rockColor), 1], 28);
+    // w: the level's light (sun and ambient; M4 C3 Disco inferno).
+    d.set([...lin(s.rockColor), s.lightLevel ?? 1], 28);
     this.terrainMaterial.setSeed(s.terrainSeed ?? 0);
     this.terrainMaterial.setCake(packCake(s.cake));
     for (let i = 0; i < TEAM_SLOTS; i++) {

@@ -74,6 +74,8 @@ export class VolumetricShafts {
   private marchBind: { bind: GPUBindGroup; depth: GPUTexture; target: GPUTexture } | null = null;
   private compositeBind: { bind: GPUBindGroup; target: GPUTexture } | null = null;
   look: VolumetricLook = VOLUMETRIC_LOOKS.cave;
+  /** The level's light (RenderSettings.lightLevel, M4 C3): scales the sunlit air. */
+  level = 1;
 
   constructor(device: GPUDevice, shadow: SunShadow) {
     this.device = device;
@@ -227,7 +229,7 @@ export class VolumetricShafts {
     const tanY = Math.tan(camera.fovY / 2);
     const tanX = tanY * aspect;
     const sun = this.shadow.sunDirection;
-    const s = this.look.strength;
+    const s = this.look.strength * this.level;
     d.set([camera.position.x, camera.position.y, camera.position.z, camera.near], 0);
     d.set([f.x, f.y, f.z, camera.far], 4);
     d.set([r.x * tanX, r.y * tanX, r.z * tanX, 0], 8);

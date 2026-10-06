@@ -17,8 +17,10 @@ Wave D of M3 extends it into the full renderer reference.
 | Light shafts ("high", open levels, sun on or near the screen): sky mask (scene alpha 0) at quarter resolution, radial blur toward the sun, added onto the scene | the HDR scene texture | `sky.ts` `encodeShafts`, `SHAFT_*_WGSL` |
 | Mode effects (M3 C1; skipped without volumes): one fullscreen triangle, additive, reading the scene depth: The Squeeze's glowing walls and next zone, zones, beams and halos | the resolved HDR scene texture | `modeFx.ts`, `shaders/modeFx.ts` |
 | World effects (M4 B5; only while a well, a cave-in warning or rubble is on screen): a copy of the screen rectangle the volumes cover, then one scissored fullscreen triangle that bends, recolours and lights it: gravity wells (lensing, glow, the core stone), cave-in cracks, rubble dust, see "World effects" | the resolved HDR scene texture (needs `COPY_SRC`) | `wells.ts`, `shaders/wells.ts` |
+| Belt Up's look (M4 C7; only on belt levels, `Renderer.setBelt`): the dust band, aurora and the exit cocoon marched at a quarter of the resolution per axis into their own target, then one fullscreen pass at full resolution that adds them (a tent of four bilinear taps), the 8 gates, the exit portal and the sign's glow, and ice glints; then the EXIT sign as an opaque quad. See "Belt Up (M4 C7)" | a `rgba16float` quarter-resolution target, then the resolved HDR scene texture | `belt.ts`, `shaders/belt.ts` |
 | Cloak refraction (only while a cloaked ship is in view): a copy of the scene, then the cloaked hulls drawn into the scene sampling the copy through their surface (no depth attachment; each fragment reads the scene depth) | the HDR scene texture (needs `COPY_SRC`) | `cloak.ts`, `shaders/cloak.ts` |
 | Particles: sprites at least `halfResPx` wide into a half-resolution `rgba16float` target, composited onto the resolved scene; then dust motes and the smaller sprites at full resolution. No depth attachment: each fragment reads the scene depth (soft particles, occlusion) | the resolved HDR scene texture | `particles.ts`, `shaders/particles.ts`, `spriteAtlas.ts` |
+| Screen-edge radiation (M4 C7; only while the own ship takes a dose): a copy of the scene, then a fullscreen pass pulling red and blue apart toward the edges and laying green static over them | the HDR scene texture (needs `COPY_SRC`) | `belt.ts` `encodeRadiation`, `shaders/belt.ts` `RADIATION_WGSL` |
 | Ink lines (M4 A7; only from Palette 50, `needsLinePass`): outlines from the scene depth and world-space hatching from the scene's tone, see "Ink look" | `rgba8unorm` full resolution (r outline, g hatch, b fog fade, a sky) | `ink.ts`, `shaders/ink.ts` |
 | Bloom down: 13-tap filter, the first step with a Karis average and a soft-knee threshold | up to 6 half-size `rgba16float` mips | `post.ts`, `shaders/post.ts` `BLOOM_DOWN_WGSL` |
 | Bloom up: 3x3 tent, added onto the next larger mip | the same mips | `BLOOM_UP_WGSL` |
@@ -26,7 +28,7 @@ Wave D of M3 extends it into the full renderer reference.
 
 With `timestamp-query` every pass writes timestamps (`gpuTimer.ts`), labelled `terrain` and
 `objects` (or `scene` when `Renderer.detailedTiming` is off), `lights`, `shadow` (map updates),
-`volumetric`, `sky` (the sky and the screen-space shafts), `mode`, `wells` (M4 B5), `particles`, `ink` and `post`. Budgets per label are in `web/src/gallery/scenes.ts`
+`volumetric`, `sky` (the sky and the screen-space shafts), `mode`, `wells` (M4 B5), `belt` (M4 C7: the volume, surface and radiation passes together), `particles`, `ink` and `post`. Budgets per label are in `web/src/gallery/scenes.ts`
 (`PASS_BUDGETS_MS`); the F3 overlay and the visual gallery show the times
 ([dev-guide.md](../dev-guide.md#visual-gallery-and-gpu-budget)).
 
@@ -535,6 +537,52 @@ and the kill-cam window 0.04-0.05 ms in every strip. Whole frames are 0.27-0.60 
 budget. At the VQ plans' factor of 8-10 that is about 0.3-0.9 ms for the event visuals on the
 reference mid GPU, against the 1.0 ms share (estimated, not measured).
 
+## Belt Up (M4 C7)
+
+What a belt level shows besides its rock (milestone-4-plan.md §3.8 "Visuals" and "HUD"). The
+game side is `game/race/` (`RaceClient` in `index.ts`: one object `main.ts` calls once a frame;
+`raceFx.ts` the visuals, sounds and particles; `course.ts` the course maths), the HUD is
+`ui/raceHud.ts` (+ `raceHud.css`), the gallery scenes `gallery/raceScenes.ts` (data) and
+`gallery/raceSceneRun.ts` (set-up); `?racefx=off` draws a belt scene without them.
+
+| Piece | Look | Code |
+| --- | --- | --- |
+| Dust band | A warm haze in the belt's annulus slab, lit by the sun (Henyey-Greenstein, forward scattering capped), densest in the belt plane, wispy (two octaves of value noise in a frame turning slowly with the belt), marched in 8 jittered steps up to the rock; its optical depth saturates, so it is thin seen from above and a glowing band along the ring, never a wall | `shaders/belt.ts` `dust_density`, `beltVolumeWgsl` |
+| Aurora (the radiation) | Three wavy curtains on each side of the belt (mirrored), from 2 to 60 u off its surface: a sharp foot that waves, vertical rays shimmering along the curtain, green at the foot and violet higher up, brighter the farther out (12 steps per side) | `aurora_at` |
+| Gates | Each gate is the vertical half plane at 45 degrees x k from the axis: an arch (a rectangle with 10 u rounded corners from the gate's inner to its outer radius, 9 u above and below the belt) with a glowing core line and a soft halo, a thin glow inside the frame, and a number plate on the top bar (seven-segment digits). Numbers follow the own lap order (your start gate is 8 and wears a chequered band); the next gate is bright cyan, breathes and runs dashes along its frame and a sweep across; later gates are faint; passed gates dim to the own colour. Close by (under 14 u) and edge-on the gate fades, so it never fogs the view | `gate_look`, `raceFx.ts` `gateLooks` |
+| Exit portal and cocoon | A swirling green disc facing the viewer at the centre (two counter-rotating log spirals, a white core, a bright rim at 1.25 x the exit radius, a halo), faster and brighter once the own lap is done; the 30 u dust cocoon a faint green haze; motes spiralling in (immediate particles); a green point light and a hum (`race.portal`) | `beltWgsl`, `raceFx.ts` `portalMotes` |
+| EXIT sign | A 46 x 13.8 u emergency-exit light box over the portal (`drawExitSign`: a green panel, the running man through a door, "EXIT", an arrow down; painted into an `rgba8unorm-srgb` texture once), turned toward the viewer (upright, tilting halfway toward a viewer above or below), drawn opaque over the scene with a hand depth test, a soft green glow around it, the odd flicker; readable from every start slot | `SIGN_WGSL` (`signWgsl`), `belt.ts` `signCorners` |
+| Ice glints | Sparse sparkles on sunlit rock in the belt within 120 u: one candidate per 0.55 u cell, a facet near the surface normal that flashes when it mirrors the sun into the eye, at least a pixel wide | `beltWgsl` |
+| Keep mask | Gates, the portal and the sign raise the scene alpha to the colour keep mask (alpha blended with `max`), so they stay in colour in ink levels (Palette 80+) like paint | `beltWgsl`, `signWgsl` |
+| Screen-edge radiation | With the own dose (eased, from 0.25 at a dose of 0.25 hull/s to full at 7.5): red and blue pulled apart toward the screen edges, green snow that changes every frame and torn lines, a sickly tint; nothing in the middle of the view | `RADIATION_WGSL` |
+| Rock | Belt levels use a sooty rock colour (`BELT_ROCK`, the terrain's base albedo) | `game/race/index.ts` |
+| Boulders, pebbles, start lights | Drifting boulders from ls-wasm `boulderPoses` (the simulation's orbit functions, tumbling), mesh kind `boulder` (a lumpy, cratered rock); 9000 client-only pebbles (mesh kind `pebble`, faceted chips 0.1-0.9 u) denser toward the inner edge and the belt plane, drifting and tumbling, the nearest 2600 within 70 u drawn (none closer than 3.5 u); over every racer's slot during the start lights a gantry (mesh kind `gantry`) with five lamps (glowing `orb` instances) coming on one by one and flashing green at the go, with red point lights | `models/raceProps.ts`, `raceFx.ts` |
+| Irradiated hulls | A crackling green glow and sparks off every ship taking a dose (more with the dose) | `raceFx.ts` `sizzleShips` |
+
+**Pass** (`BeltPass`, timed as `belt`): the volume pass draws a fullscreen triangle into a
+target of `BELT_VOLUME_DIVISOR` (4) times smaller per axis, each pixel taking the nearest scene
+depth of its footprint's corners and centre (fog never leaks in front of rock) and white-noise jitter; the
+surface pass composites it with a tent of four bilinear taps, adds the gates, portal, sign glow
+and glints (additive, alpha by `max`) and draws the sign quad. Uniform layout in
+`shaders/belt.ts` `BELT_SLOT` (`packBelt`, unit tested).
+
+**Cost** (gallery, RTX 5080, 1920x1080, "high", the nine `belt-*` scenes): volume 0.04-0.06 ms,
+surface and sign 0.06-0.08 ms, the radiation pass +0.02-0.04 ms while irradiated: `belt`
+0.10-0.18 ms in total. At the VQ plans' factor of 8-10 for the reference mid GPU that is
+0.8-1.8 ms against the plan's 0.8 ms share for the belt and radiation looks (estimated, not
+measured; see the milestone plan's C7 note). `PASS_BUDGETS_MS.belt` = 0.8 ms.
+
+**HUD** (`ui/raceHud.ts`, a pure model and a DOM class that writes only changes): start lights
+(five lamps, "BELT UP!" at the go), the position card (place of the field, heat and points, the
+race clock, the gaps to the racers ahead and behind in seconds: their course difference over the
+own average speed, `course.ts` `gapSecs`), the distance to the EXIT along the course, a marker on
+the next gate or the EXIT (clamped to the screen edge with an arrow), the ring minimap, WRONG WAY,
+the radiation meter (dose rate, "hull lasts n s", in Instagib the dose left), the finish banner
+and the heat results table. The course maths mirror `ls_sim::modes::belt_up::progress`
+(`course.ts` `raceProgress`, checked against the Rust fixture
+`crates/ls-sim/tests/fixtures/race_progress.txt`); distances are measured on the belt's middle
+line, so they fall with the simulation's progress and the gaps agree with the places.
+
 ## Mode effects (M3 C1)
 
 `modeFx.ts` `ModeFxPass` draws the mode visuals that are not meshes or particles, analytically
@@ -768,7 +816,7 @@ ALU; `fwidth` is taken before the branch). Specular from VQ6's dynamic lights is
 attribute bit layout, sRGB helpers), `shaders/lighting.ts`, `shaders/terrain.ts`,
 `shaders/objects.ts` (instanced and translucent), `shaders/lights.ts` (the light froxel
 builder), `shaders/shadow.ts` (VQ9: the SunShadow struct and `sun_visibility`, included by
-`lighting.ts`; the caster pass), `shaders/volumetric.ts` (VQ9: the shaft march and composite), `shaders/ink.ts` (M4 A7: the ink lines), `shaders/modeFx.ts` (M3 C1's mode effects), `shaders/particles.ts` (particles, motes, half-resolution composite), `shaders/cloak.ts` (VQP: the cloak refraction), `shaders/cake.ts` and `shaders/cutaway.ts` (M4 C1, included by the terrain shader), `shaders/post.ts` (with `pixelPost.ts`'s pixel look), `shaders/sky.ts` (VQ7: the
+`lighting.ts`; the caster pass), `shaders/volumetric.ts` (VQ9: the shaft march and composite), `shaders/ink.ts` (M4 A7: the ink lines), `shaders/modeFx.ts` (M3 C1's mode effects), `shaders/belt.ts` (M4 C7: Belt Up's volume, surface, sign and radiation passes), `shaders/particles.ts` (particles, motes, half-resolution composite), `shaders/cloak.ts` (VQP: the cloak refraction), `shaders/cake.ts` and `shaders/cutaway.ts` (M4 C1, included by the terrain shader), `shaders/post.ts` (with `pixelPost.ts`'s pixel look), `shaders/sky.ts` (VQ7: the
 environment and planet bakes, the sky pass, the shafts, gradient noise). Each package edits its
 own file (VQ3b terrain, VQ5 particles, VQ6 lighting, VQ7 sky); keep `FRAME_UNIFORM_FLOATS` and
 `Renderer.writeFrameUniforms` in sync with the `Frame` struct (`sky.test.ts` checks the sizes of

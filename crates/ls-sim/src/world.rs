@@ -1420,8 +1420,8 @@ impl World {
             // Drifting boulders push the ship aside (belt levels; the
             // predictor applies the same push).
             if let Some(belt) = cfg.setup.belt.as_ref().filter(|b| !b.boulders.is_empty()) {
-                let settings = crate::boulders::BoulderSettings::builtin();
-                let hit = crate::boulders::push_sphere(
+                let settings = crate::obstacle::BoulderSettings::builtin();
+                let hit = crate::obstacle::push_boulders(
                     belt,
                     settings,
                     now,
@@ -1481,7 +1481,7 @@ impl World {
         // Fast boulder contacts hurt (no credit); touching ships (the mode's
         // bumps).
         for id in boulder_hits {
-            let dmg = crate::boulders::BoulderSettings::builtin().damage;
+            let dmg = crate::obstacle::BoulderSettings::builtin().damage;
             self.apply_damage(
                 &cfg,
                 now,
@@ -2226,7 +2226,7 @@ impl World {
             if let Some(belt) = cfg.setup.belt.as_ref().filter(|b| !b.boulders.is_empty()) {
                 let limit = terrain_hit.map_or(remaining, |h| h.distance).min(best_t);
                 if let Some((t, _)) =
-                    crate::boulders::segment_hit(belt, self.tick, p.pos, dir, limit, p.radius)
+                    crate::obstacle::boulder_hit(belt, self.tick, p.pos, dir, limit, p.radius)
                 {
                     if t < best_t && terrain_hit.is_none_or(|h| t < h.distance) {
                         let point = p.pos + dir * t;

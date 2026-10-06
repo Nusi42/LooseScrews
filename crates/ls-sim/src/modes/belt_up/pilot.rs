@@ -184,7 +184,7 @@ fn avoid_boulders(b: &BeltSite, pos: Vec3, target: Vec3, tick: u64) -> Vec3 {
         return target;
     };
     let mut out = target;
-    for (c, size) in crate::boulders::poses(b, tick) {
+    for (c, size) in crate::obstacle::boulder_poses(b, tick) {
         let d = c - pos;
         let ahead = d.dot(dir);
         if !(0.0..20.0).contains(&ahead) {

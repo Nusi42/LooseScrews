@@ -8,6 +8,7 @@
 @import "./ui/visitorHud.css";
 @import "./ui/spectacles.css";
 @import "./ui/architect.css";
+@import "./ui/raceHud.css";
 
 :root {
   --bg: #0b0d12;

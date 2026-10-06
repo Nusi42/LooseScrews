@@ -36,8 +36,8 @@
 use std::sync::Arc;
 
 use ls_game::ls_math::level::BeltSite;
-use ls_game::ls_sim::boulders;
 use ls_game::ls_sim::modes::belt_up::{heat_phase, RacerView, LAP_GATES};
+use ls_game::ls_sim::obstacle::boulder_poses;
 use ls_game::ls_sim::PlayerId;
 
 use super::*;
@@ -626,7 +626,7 @@ fn dodge_boulders(belt: &BeltSite, pos: Vec3, target: Vec3, tick: u64) -> Vec3 {
         return target;
     };
     let mut out = target;
-    for (c, size) in boulders::poses(belt, tick + 20) {
+    for (c, size) in boulder_poses(belt, tick + 20) {
         let d = c - pos;
         let ahead = d.dot(dir);
         if !(0.0..16.0).contains(&ahead) {

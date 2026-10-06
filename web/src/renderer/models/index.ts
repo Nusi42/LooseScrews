@@ -39,6 +39,7 @@ import {
   pawClawModel,
   rubberDuckModel,
 } from "./spectacleProps.ts";
+import { boulderMesh, gantryMesh, pebbleMesh } from "./raceProps.ts";
 import { hullOf } from "./ships.ts";
 import { wreckModel } from "./wrecks.ts";
 
@@ -83,7 +84,10 @@ export type MeshKind =
   | "pupil"
   | "coffee_mug"
   | VisitorMeshKind
-  | SpectacleMeshKind;
+  | SpectacleMeshKind
+  | "boulder"
+  | "pebble"
+  | "gantry";
 
 /** Mesh kinds of M4 C3's spectacle events (spectacleProps.ts). */
 export const SPECTACLE_MESH_KINDS = [
@@ -192,6 +196,10 @@ export const MESH_BUILDERS: Readonly<Record<MeshKind, () => MeshData>> = {
   ...visitorBuilders((k) => () => visitorModel(k).build()),
   // M4 C3: spectacle event props.
   ...SPECTACLE_BUILDERS,
+  // M4 C7: Belt Up's drifting boulders, the belt's pebbles and the start-light gantry (raceProps.ts).
+  boulder: boulderMesh,
+  pebble: pebbleMesh,
+  gantry: gantryMesh,
 };
 
 /** The pre-VQ4 primitives for every kind (one dart for all hulls, one wreck). */
@@ -234,6 +242,9 @@ export const LEGACY_MESH_BUILDERS: Readonly<Record<MeshKind, () => MeshData>> = 
   ...visitorBuilders(() => () => sphereMesh(1)),
   // M4 C3: the old duck primitive for the duck, plain spheres for the rest.
   ...(Object.fromEntries(SPECTACLE_MESH_KINDS.map((k) => [k, k === "rubber_duck" ? duckMesh : () => sphereMesh(1)])) as Record<SpectacleMeshKind, () => MeshData>),
+  boulder: debrisMesh,
+  pebble: debrisMesh,
+  gantry: crateMesh,
 };
 
 function visitorBuilders(f: (k: VisitorMeshKind) => () => MeshData): Record<VisitorMeshKind, () => MeshData> {

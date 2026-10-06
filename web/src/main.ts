@@ -103,6 +103,7 @@ import { EventHud } from "./ui/eventBanner.ts";
 import { SpectacleVisuals } from "./game/events/spectacles.ts";
 import { forcedEvent } from "./game/events/forceEvent.ts";
 import { ArchitectClient } from "./game/architect/index.ts";
+import { RaceClient } from "./game/race/index.ts";
 
 /** Largest frame time passed to the simulation; longer stalls (tab switch) are clamped. */
 const MAX_FRAME_DT = 0.1;
@@ -334,6 +335,8 @@ function runGame(
     const world = new WorldVisuals(particles, wantsWorldFx(location), audioEngine());
     // Visitor events (M4 C2): drones, mimics, the gossip face, their HUD; `?visitors=off` skips them.
     const visitors = new VisitorVisuals(particles, wantsVisitors(location), audioEngine(), ui);
+    // Belt Up (M4 C7): the belt's look on belt levels, the race HUD in Belt Up.
+    const race = new RaceClient(ui, particles, audioEngine());
     let worldShake = 0;
     // Comedy event visuals (M4 C1; `?eventfx=off` keeps only the banner and the announcer).
     const eventHud = new EventHud(ui);
@@ -414,6 +417,7 @@ function runGame(
       spectacles.dispose();
       architect.dispose();
       renderer.cutaway = null;
+      race.dispose();
       delete ui.dataset["stage"];
       delete ui.dataset["matches"];
       overlay.dispose();
@@ -495,6 +499,7 @@ function runGame(
         visitors.reset();
         spectacles.reset();
         architect.reset();
+        race.reset();
         audio.newMatch(game.shareCode);
         mono = 0;
         particles?.clear();
@@ -558,6 +563,9 @@ function runGame(
         spectator ??= new SpectatorCamera(camera.current);
         const s = session.controls.settings;
         spectator.update(dt, state, r.ships, s.lookSensitivity, game.bounds(), s.invertY);
+        // Belt Up: a finished racer watches the leader (until they take the camera over).
+        const lead = race.followTarget(r.mode, r.ships, spectator.following, state.fireSecondary);
+        if (lead !== null) spectator.mode = { kind: "follow", id: lead };
       } else {
         spectator = null;
       }
@@ -758,6 +766,29 @@ function runGame(
       spectacles.addToScene(scene);
       worldLights.push(...sf.lights);
       renderer.settings.lightLevel = sf.lightLevel;
+      race.frame(
+        {
+          game,
+          time,
+          dt,
+          view,
+          mode: r.mode,
+          pose: r.pose,
+          ships: r.ships,
+          names,
+          ownColor: playerStyleFor(r.mode, r.mode.teams)?.(game.player, game.team)?.color ?? teamHull(game.team, r.mode.teams),
+          hull: r.hud.hull ?? 0,
+          hullMax: r.hud.hullMax ?? 100,
+          spectating: flow.spectating,
+          quiet: flow.showResults || flow.showLobby,
+          width: canvas.clientWidth,
+          height: canvas.clientHeight,
+          say: (t) => audio.announcer.say(t),
+        },
+        renderer,
+        scene,
+        worldLights,
+      );
       renderer.setScene(scene);
       renderer.setModeVolumes([...arch.volumes, ...modeVolumes(modeInput)]);
       renderer.setWorldVolumes(sf.volumes.length > 0 ? [...sf.volumes, ...wf.volumes] : wf.volumes);

@@ -900,9 +900,50 @@ moves on every round in the order the pilots joined.
   architect**. The round ends early once no runner is left flying. The runners win the round
   if at least half of them got out.
 - After the last round, the pilot with the **most points** (as runner and as architect) wins;
-  equal points are a draw.
+  equal points are a draw. The results list every round (who built, how many got out, who took
+  it) and split each pilot's points into **Built** (as architect) and **Ran** (as runner).
 - Bots play both roles: a bot architect places strokes in front of the runner closest to the
   exit, bot runners fly around glowing strokes and blast their way through new rock.
+
+**Playing the architect.** A banner says "You are the architect" and you start in the **map
+view**: high above the runners' start, looking down the level, with the rock above a cut taken
+away so the tunnels below read like a floor plan. Your HUD is a drafting table:
+
+| Key | What it does |
+| --- | --- |
+| 1-8 | pick a stroke (the cards along the bottom, in the order of the table above) |
+| hold R | the stroke wheel: move the mouse toward a stroke, let go of R to pick it |
+| mouse wheel | the stroke's size (12-24 u) |
+| left click | place the stroke where the crosshair points |
+| right click | put the stroke down (nothing picked) |
+| V | switch between the map view and free flight |
+| map view: WASD, Space/C, Q/E, mouse | pan over the level, move the cut up and down, turn, tilt |
+| free flight: WASD, Space/C, Q/E, mouse, Shift | fly anywhere, through rock, fast with Shift |
+
+- The picked stroke shows as a **wire sphere** where it would land: in its colour when it can
+  go there, **red** when it cannot, with the reason under the crosshair (too close to the exit
+  or the runners' start, not enough budget, recharging between strokes, four strokes already in
+  flight, Verticality used, an event already running). A stroke the server still refuses (most
+  often: Enclosure+ aimed where there is nothing to grow, Enclosure- where there is no rock to
+  open) is named in a short note.
+- The **budget bar** shows your points and, striped, what the picked stroke would cost; a card
+  you cannot afford or use right now is dimmed with the reason.
+- With the mouse free (Esc), the world's **sliders** appear on the right: nudge one to pick its
+  stroke (Enclosure up or down, Density, Gravity Chaos, Instability, Absurdity, Palette,
+  Verticality), then click the view to aim.
+- You see every runner **through rock**: a marker with their name, distance and lives, and a
+  thin pillar of light above their ship.
+
+**Playing a runner.** The plate on the left names the architect and shows how much they have to
+spend. Every stroke **glows** for 2 seconds as a sphere in its colour before it acts: its ring
+fills up, it pulses faster, a beam of light stands over it so you can find it from far away,
+sparks are drawn into it and you hear a rising whistle. A marker counts down to it, and when
+your ship is inside or close to one the HUD warns you ("Enclosure+ in 1.2 s: rock grows here,
+get out"). Then it acts: rock grows in a burst of dust, a gravity well opens, the ceiling comes
+down, a comedy event pops in confetti, or the region fills with **squid ink** (and something in
+it looks back). The **exit** is a green glowing gate with a beam over it and a marker that
+always points to it. Through the exit, you watch the rest of the round with the spectator
+camera; banners say who takes each round.
 
 ### Belt Up
 
@@ -1264,9 +1305,6 @@ Advanced page options, added to the address (combine them with `&`):
 These are part of the game design but aren't in the Milestone 3 build:
 
 - **Co-op modes** (Deep Dig, Tethered, Escort the Intern).
-- **The Architect's controls in the browser:** the mode's rules, rounds and strokes are in, but
-  the architect's camera, stroke menu and budget bar come with a later build; until then the
-  architect watches with the spectator camera.
 - **Pigment pickups** that give colour back in Last Color Standing, and black-and-white levels
   as a general feature (the Palette slider only drains the colour of the picture).
 - **World sliders:** Absurdity's events are only partly drawn (see Comedy events),

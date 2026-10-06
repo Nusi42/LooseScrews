@@ -13,6 +13,10 @@ export const OBJECTIVE = {
   core: 2,
   extraction: 3,
   reactor: 4,
+  /** The Architect: the exit gate (holder = the round's architect; state per `ARCHITECT_EXIT`, game/architect/model.ts). */
+  exit: 5,
+  /** The Architect: one stroke (state = stroke kind | phase << 4; holder = the architect). */
+  stroke: 6,
 } as const;
 
 /** `ls_sim::mode::player_flags`. */
@@ -479,9 +483,12 @@ export function ownModePlayer(m: ModeState, own: number): ModePlayer | undefined
   return m.players.find((p) => p.id === own);
 }
 
-/** Out of the match (eliminated or spectating): the ship does not respawn. */
+/**
+ * Out of play (eliminated, spectating, The Architect's architect without a
+ * ship or a runner through the exit): no own ship to fly; the camera is free.
+ */
 export function isOut(p: ModePlayer | undefined): boolean {
-  return p !== undefined && (p.flags & (PLAYER_FLAG.eliminated | PLAYER_FLAG.spectator)) !== 0;
+  return p !== undefined && (p.flags & (PLAYER_FLAG.eliminated | PLAYER_FLAG.spectator | PLAYER_FLAG.architect | PLAYER_FLAG.finished)) !== 0;
 }
 
 /** Seconds from `nowTick` to `tick` at `hz` (0 when the tick is 0 or past). */

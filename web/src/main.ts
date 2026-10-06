@@ -102,6 +102,7 @@ import { emptyOutput, EventVisuals, fxFromMood, parseEventFx, wantsEventFx, well
 import { EventHud } from "./ui/eventBanner.ts";
 import { SpectacleVisuals } from "./game/events/spectacles.ts";
 import { forcedEvent } from "./game/events/forceEvent.ts";
+import { ArchitectClient } from "./game/architect/index.ts";
 
 /** Largest frame time passed to the simulation; longer stalls (tab switch) are clamped. */
 const MAX_FRAME_DT = 0.1;
@@ -344,6 +345,8 @@ function runGame(
     // Practice: `?event=<id>` forces a comedy event a few seconds in (C3; tests and review).
     const forced = session.isOnline ? null : forcedEvent(location);
     if (forced !== null) game.practiceEvent?.(forced, 300);
+    // The Architect (M4 C4): the architect's god camera and strokes, the exit and stroke looks, its HUD.
+    const architect = new ArchitectClient(ui, game, (p) => (session.link?.isOpen ? (session.link.send(p, false), true) : false), particles, audioEngine());
     let mono = 0;
     let shipBayOpen = false;
     let shipError = "";
@@ -409,6 +412,8 @@ function runGame(
       if (!renderer.isLost) events.apply(renderer, emptyOutput());
       visitors.dispose();
       spectacles.dispose();
+      architect.dispose();
+      renderer.cutaway = null;
       delete ui.dataset["stage"];
       delete ui.dataset["matches"];
       overlay.dispose();
@@ -489,6 +494,7 @@ function runGame(
         events.reset();
         visitors.reset();
         spectacles.reset();
+        architect.reset();
         audio.newMatch(game.shareCode);
         mono = 0;
         particles?.clear();
@@ -530,7 +536,25 @@ function runGame(
       const shipUp = r.pose ? q.up(r.pose.orientation) : q.up(camera.current.orientation);
       const ride = guided ? eyeballPose(guided, shipUp) : null;
       const cine = cinematic.update(dt, game, flow.showLobby && !state.pointerLocked && !flow.spectating && !guided, camera.current, renderer.aspect);
-      if (flow.spectating) {
+      const s0 = session.controls.settings;
+      const arch = architect.update({
+        dt,
+        time,
+        nowTick: game.nowTick?.() ?? 0,
+        input: state,
+        mode: r.mode,
+        own: game.player,
+        names,
+        bounds: game.bounds(),
+        ships: r.ships,
+        lookScale: s0.lookSensitivity,
+        invertY: s0.invertY,
+        start: camera.current,
+        shareCode: game.shareCode,
+        quiet: flow.showResults || flow.showLobby,
+      });
+      renderer.cutaway = arch.cutaway;
+      if (flow.spectating && !arch.amArchitect) {
         spectator ??= new SpectatorCamera(camera.current);
         const s = session.controls.settings;
         spectator.update(dt, state, r.ships, s.lookSensitivity, game.bounds(), s.invertY);
@@ -546,7 +570,7 @@ function runGame(
       };
       camera.params.fovY = cine ? cinematic.fovY(renderer.aspect) : cues.fovY(cueFrame);
       const shake = Math.max(fx.shake, vfx?.shake(time) ?? 0, worldShake, eventShake, spectacleShake);
-      const camView = camera.update(r.pose, spectator ? spectator.view : (cine ?? ride), shakeOffset(shake, time));
+      const camView = camera.update(r.pose, arch.pose ?? (spectator ? spectator.view : (cine ?? ride)), shakeOffset(shake, time));
       // Comedy events (M4 C1): what the running event does, its banner and visuals; the side view and the hiccup bump move the camera.
       const evTick = game.nowTick?.() ?? 0;
       const evUp = game.up?.();
@@ -734,9 +758,8 @@ function runGame(
       spectacles.addToScene(scene);
       worldLights.push(...sf.lights);
       renderer.settings.lightLevel = sf.lightLevel;
-      renderer.settings.headlight = DEFAULT_SETTINGS.headlight * sf.headlight;
       renderer.setScene(scene);
-      renderer.setModeVolumes(modeVolumes(modeInput));
+      renderer.setModeVolumes([...arch.volumes, ...modeVolumes(modeInput)]);
       renderer.setWorldVolumes(sf.volumes.length > 0 ? [...sf.volumes, ...wf.volumes] : wf.volumes);
       renderer.setWorldUp(wf.up, boundsCenter(game.bounds()));
       // Without VQ5 effects the light pulses come from watching projectiles and ships.
@@ -758,7 +781,7 @@ function runGame(
       });
       for (const g of charges) lights.push(chargeLight(g));
       modeLights(modeInput, lights);
-      lights.push(...worldLights);
+      lights.push(...worldLights, ...arch.lights);
       renderer.setLights(lightFx.frame(time, lights));
       // Last Color Standing: the world fades to monochrome; ships keep their meter's colour.
       mono = easeMonochrome(mono, isMonochrome(r.mode) && !modeInput.warmup && !flow.showResults ? 1 : 0, dt);
@@ -771,7 +794,9 @@ function runGame(
       const atmo = renderer.atmosphere ?? DEFAULT_SETTINGS;
       const dust = dustDensityAt(view.position, r.entities, session.visuals);
       const fog = dustFog(atmo, dust);
-      renderer.settings.fogDensity = fog.fogDensity;
+      renderer.settings.fogDensity = fog.fogDensity * arch.fogScale;
+      // Disco inferno dims the headlight with the light (M4 C3); the architect's view has its own (C4).
+      renderer.settings.headlight = DEFAULT_SETTINGS.headlight * sf.headlight * arch.headlightScale;
       renderer.settings.fogColor = fog.fogColor;
       renderer.settings.terrainSeed = hashSeed(session.game.shareCode); // per-world rock look (VQ3b)
       // Inside dust the flat dust colour replaces the sky's haze.
@@ -842,17 +867,20 @@ function runGame(
       modeHud.updateMarkers(
         flow.showResults || flow.showLobby
           ? []
-          : objectiveMarkers(
-              r.mode,
-              game.player,
-              names,
-              nowTick,
-              renderer.viewProjection(view),
-              view.position,
-              canvas.clientWidth,
-              canvas.clientHeight,
-              ownSide,
-            ),
+          : [
+              ...objectiveMarkers(
+                r.mode,
+                game.player,
+                names,
+                nowTick,
+                renderer.viewProjection(view),
+                view.position,
+                canvas.clientWidth,
+                canvas.clientHeight,
+                ownSide,
+              ),
+              ...architect.runnerMarkers(architect.view, game.player, r.ships, names, renderer.viewProjection(view), view.position, canvas.clientWidth, canvas.clientHeight),
+            ],
       );
       hud.setInstagib(hudModel.instagib);
       hud.setSpectating(flow.spectating);
@@ -872,6 +900,7 @@ function runGame(
             lobby: r.lobby,
             secsLeft: lobbySecs,
             names,
+            architect: { rounds: architect.rounds, mode: r.mode },
           }),
         );
       }

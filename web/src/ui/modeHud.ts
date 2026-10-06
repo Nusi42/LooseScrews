@@ -25,6 +25,7 @@ import { CORE_STATE, REACTOR_STATE, squeezeView } from "../game/modeVisuals.ts";
 import { sideCss, teamName } from "../game/sides.ts";
 import { formatTimer } from "./hud.ts";
 import { iconSvg, type ModeIcon } from "./modeIcons.ts";
+import { architectView, secsTo as strokeSecs, strokeCss, strokeDef } from "../game/architect/model.ts";
 
 export interface ScoreChip {
   side: number;
@@ -156,7 +157,8 @@ export function modeHudModel(i: ModeHudInput): ModeHudModel {
     if (rank >= 0 && own) ownLine = `You · ${ordinal(rank + 1)} of ${ranked.length} · ${own.score}`;
   }
 
-  const target = warmup ? "" : modeTarget(m);
+  let target = warmup ? "" : modeTarget(m);
+  if (!warmup && m.mode === "the_architect") target = own !== undefined && (own.flags & PLAYER_FLAG.architect) !== 0 ? "Keep the runners in" : "Reach the exit";
 
   let stage = "";
   const sq = squeezeView(m, i.nowTick);
@@ -169,29 +171,40 @@ export function modeHudModel(i: ModeHudInput): ModeHudModel {
     }
   }
   if (!warmup && m.mode === "last_color_standing" && m.stage > 0) stage = "Stalemate · every pilot's colour drains";
+  const arch = warmup ? null : architectView(m);
+  if (arch && m.running) {
+    // The Architect: rounds are 0-based on the wire; while a round's results show, the next one's start.
+    const left = secsUntil(arch.phaseEndTick, i.nowTick);
+    stage = arch.roundOver
+      ? `Round ${arch.round + 1} of ${arch.rounds} · ${arch.runnersWon ? "to the runners" : "to the architect"}${left > 0 && arch.round + 1 < arch.rounds ? ` · next in ${Math.ceil(left)} s` : ""}`
+      : `Round ${arch.round + 1} of ${arch.rounds}${left > 0 ? ` · ${formatTimer(left)}` : ""}`;
+  }
 
   // Objectives that concern the own ship.
   if (!warmup && m.running && !i.spectating) alerts.push(...objectiveAlerts(i, sq));
-  if (i.spectating && !warmup) {
+  const architect = own !== undefined && (own.flags & PLAYER_FLAG.architect) !== 0;
+  const escaped = own !== undefined && (own.flags & PLAYER_FLAG.finished) !== 0;
+  if (i.spectating && !warmup && !architect) {
     const out = own && (own.flags & PLAYER_FLAG.eliminated) !== 0;
     const who = i.following !== null ? `Following ${nameOf(i.names, i.following)}` : "Free camera";
     alerts.push({
-      text: `${out ? "You are out · " : "Spectating · "}${who} · left click: next ship · right click: free camera`,
+      text: `${escaped ? "You escaped! · " : out ? "You are out · " : "Spectating · "}${who} · left click: next ship · right click: free camera`,
       level: "info",
     });
   }
 
-  const showLives = !warmup && (m.flags & VIEW_FLAG.lives) !== 0 && own !== undefined && own.lives >= 0;
+  const showLives = !warmup && (m.flags & VIEW_FLAG.lives) !== 0 && own !== undefined && own.lives >= 0 && !architect && !escaped;
   const showMeter = !warmup && (m.flags & VIEW_FLAG.meter) !== 0 && own !== undefined && !isOut(own);
   const timerSecs = Math.max(0, i.timeLeft);
   return {
     title: warmup ? "Warm-up" : instagib ? `${info.name} · Instagib` : info.name,
     timer: warmup || !m.running ? "" : formatTimer(timerSecs),
     timerUrgent: !warmup && m.running && timerSecs > 0 && timerSecs <= 30,
-    target,
+    // The Architect: the round line says it all (its plate and banners say who builds and what to do).
+    target: arch ? "" : target,
     stage,
     chips,
-    ownLine,
+    ownLine: arch ? "" : ownLine,
     lives: showLives ? own.lives : -1,
     meter: showMeter ? Math.max(0, Math.min(100, own.meter)) : -1,
     alerts,
@@ -273,12 +286,36 @@ function objectiveAlerts(i: ModeHudInput, sq: ReturnType<typeof squeezeView>): M
       }
     }
   }
+  // The Architect: a stroke telegraphed around the own ship.
+  const arch = architectView(m);
+  if (arch && i.ownPos && arch.architect !== i.own) {
+    for (const s of arch.strokes) {
+      if (s.phase !== "telegraph" || s.def.levelWide) continue;
+      const d = dist(i.ownPos, s.pos);
+      if (d > s.radius + 10) continue;
+      const secs = strokeSecs(s.timerEnd, i.nowTick).toFixed(1);
+      const what = STROKE_WARNINGS[s.def.index] ?? "something changes here";
+      out.push({ text: `${s.def.name} in ${secs} s: ${what}`, level: d <= s.radius ? "danger" : "warning", icon: "stroke" });
+    }
+  }
   const own = ownModePlayer(m, i.own);
   if ((m.flags & VIEW_FLAG.meter) !== 0 && own && !isOut(own) && own.meter > 0 && own.meter <= 34) {
     out.push({ text: "Last of your colour: one more death and you are out", level: "danger", icon: "colour" });
   }
   return out;
 }
+
+/** What a runner inside a telegraphed stroke should know, by stroke index. */
+const STROKE_WARNINGS: readonly string[] = [
+  "rock grows here, get out",
+  "the rock here opens up",
+  "pillars sprout here, get out",
+  "a gravity well opens here",
+  "the ceiling comes down, move",
+  "the level is about to play a joke",
+  "ink blackout here",
+  "the world tips over",
+];
 
 // ---- Objective markers ----------------------------------------------------
 
@@ -383,6 +420,21 @@ function markerStyle(
       if (o.state !== REACTOR_STATE.held && o.holder < 0) return null;
       const fuse = secsUntil(o.timerEnd, nowTick);
       return { label: `Reactor${fuse > 0 ? ` ${fuse.toFixed(1)} s` : ""}${holder ? ` · ${holder}` : ""}`, color: "rgb(255, 90, 70)", icon: "reactor" };
+    }
+    case OBJECTIVE.exit: {
+      const arch = architectView(m);
+      if (arch?.roundOver) return null;
+      const mine = arch?.architect === own && own >= 0;
+      return { label: mine ? "Exit · keep them out" : "Exit", color: "rgb(110, 255, 150)", icon: "exit" };
+    }
+    case OBJECTIVE.stroke: {
+      const def = strokeDef(o.state & 15);
+      if (!def) return null;
+      const telegraph = o.state >> 4 === 0;
+      // Acting strokes show in the world (the well, the ink, the new rock); markers are for the warning.
+      if (!telegraph) return null;
+      const left = strokeSecs(o.timerEnd, nowTick);
+      return { label: `${def.name} · ${left.toFixed(1)} s`, color: strokeCss(def), icon: "stroke" };
     }
     default:
       return null;

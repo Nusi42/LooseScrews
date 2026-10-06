@@ -56,7 +56,9 @@
 // cap under a 64-sound burst and speaks an announcer line; the world workshop (workshop.mjs,
 // M4 A8): Make a world, two sliders and the seed changed, the preview
 // regenerates, Save copies a code that decodes to them, Fly it practises on it
-// (and once more as an asteroid belt when the build has belts). Fails on console errors, page
+// (and once more as an asteroid belt when the build has belts); The Architect (architect.mjs, M4 C4): an
+// architect page and a runner page on a server with the_architect.ron, a stroke placed, telegraphed
+// on the runner's page, acting, the budget spent, the map view. Fails on console errors, page
 // errors, WebGPU validation or uncaptured errors, error screens, blank frames,
 // no confirmed shots online, or server errors. Screenshots go to --out-dir.
 // Exit codes: 0 passed (or skipped: no browser), 1 failed, 2 usage error,
@@ -71,6 +73,7 @@ import { fakePointerLock } from "./fake-pointer-lock.mjs";
 import { audioProbe } from "./audio-probe.mjs";
 import { socialPhase } from "./social.mjs";
 import { workshopPhase } from "./workshop.mjs";
+import { architectPhase } from "./architect.mjs";
 
 import { assertWorkFolder } from "../lib/work-folder.mjs";
 
@@ -944,6 +947,32 @@ async function main() {
     phase = "workshop";
     await workshopPhase({ opts, base, query, newPage: newGamePage, check, note, sleep, shot, gpuReport, sceneCheck, waitLoaded, overlayText });
     consoleCheck("workshop", "workshop");
+    // --- 10: The Architect (M4 C4): an architect page and a runner page ---
+    phase = "architect";
+    await architectPhase({
+      opts,
+      query,
+      newPage: newGamePage,
+      startGame,
+      check,
+      note,
+      sleep,
+      shot,
+      gpuReport,
+      waitLoaded,
+      lockPointer,
+      startServer: async (args, logName) => {
+        const port = await freePort();
+        const sargs = ["--bind", `127.0.0.1:${port}`, "--web-root", opts.webRoot, ...args];
+        if (opts.transport === "ws") sargs.push("--no-webtransport");
+        const proc = run(opts.serverBin, sargs, join(opts.outDir, logName));
+        if (await waitForLine(proc, /listening \(http \+ websocket/, 60_000)) return { base: `http://127.0.0.1:${port}`, proc };
+        await stop(proc);
+        return null;
+      },
+      stopServer: stop,
+    });
+    consoleCheck("architect", "architect");
 
     // Server health over the whole run.
     const serverText = server.text;

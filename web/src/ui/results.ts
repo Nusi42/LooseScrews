@@ -8,6 +8,7 @@
 // are pure for Node tests; the class only writes the DOM on change.
 
 import { modeInfo, VIEW_FLAG, type LobbyState, type MatchResults, type ModeState } from "../game/modeState.ts";
+import type { RoundRecord } from "../game/architect/model.ts";
 import { sideCss, teamName } from "../game/sides.ts";
 import type { ScoreRow } from "../game/stats.ts";
 
@@ -33,6 +34,20 @@ export interface ResultLine {
   deaths: number;
   you: boolean;
   winner: boolean;
+  /** The Architect: points as the architect and as a runner (absent in other modes). */
+  architectPoints?: number;
+  runnerPoints?: number;
+}
+
+/** The Architect: one line per round played (who built, how many got out). */
+export interface ResultRound {
+  /** "Round 1". */
+  label: string;
+  /** "Ana built · 2 of 3 escaped". */
+  text: string;
+  /** Who took the round. */
+  winner: "runners" | "architect";
+  you: boolean;
 }
 
 /** A title a comedy event gave (Hat Baron), as the results screen shows it. */
@@ -81,6 +96,10 @@ export interface ResultsModel {
   titles: ResultTitle[];
   scoreLabel: string;
   rows: ResultLine[];
+  /** The Architect: the rounds (empty in other modes). */
+  rounds: ResultRound[];
+  /** The Architect: the table splits the points (architect, runner) instead of kills. */
+  architectColumns: boolean;
   footer: string;
 }
 
@@ -98,6 +117,11 @@ export interface ResultsInput {
   secsLeft: number;
   /** Names for rows without one (practice). */
   names?: ReadonlyMap<number, string>;
+  /**
+   * The Architect (M4 C4): the rounds the client saw, and the finished
+   * match's mode state (each player's `meter` is their architect points).
+   */
+  architect?: { rounds: readonly RoundRecord[]; mode: ModeState } | null;
 }
 
 /** Results of a finished practice match from the local mode state and kill tally. */
@@ -173,17 +197,35 @@ export function resultsModel(i: ResultsInput): ResultsModel {
       }))
     : [];
 
-  const rows: ResultLine[] = r.rows.map((x, n) => ({
-    place: n + 1,
-    name: nameOf(x.id, x.name),
-    team: teamsMode ? teamName(x.side) : "",
-    color: sideCss(x.side, r.teams),
-    score: x.score,
-    kills: x.kills,
-    deaths: x.deaths,
-    you: x.id === i.own,
-    winner: !draw && x.side === r.winner,
-  }));
+  const arch = r.mode === "the_architect" ? (i.architect ?? { rounds: [], mode: null }) : undefined;
+  const rows: ResultLine[] = r.rows.map((x, n) => {
+    const line: ResultLine = {
+      place: n + 1,
+      name: nameOf(x.id, x.name),
+      team: teamsMode ? teamName(x.side) : "",
+      color: sideCss(x.side, r.teams),
+      score: x.score,
+      kills: x.kills,
+      deaths: x.deaths,
+      you: x.id === i.own,
+      winner: !draw && x.side === r.winner,
+    };
+    if (arch) {
+      const built = Math.min(x.score, Math.max(0, arch.mode?.players.find((p) => p.id === x.id)?.meter ?? 0));
+      line.architectPoints = built;
+      line.runnerPoints = x.score - built;
+    }
+    return line;
+  });
+  const rounds: ResultRound[] = (arch?.rounds ?? []).map((rd) => {
+    const who = rd.architect >= 0 ? nameOf(rd.architect, r.rows.find((x) => x.id === rd.architect)?.name ?? "") : "Nobody";
+    return {
+      label: `Round ${rd.round + 1}`,
+      text: `${rd.architect === i.own ? "You" : who} built · ${rd.escaped} of ${rd.runners} escaped`,
+      winner: rd.runnersWon ? "runners" : "architect",
+      you: rd.architect === i.own ? !rd.runnersWon : rd.runnersWon,
+    };
+  });
 
   const titles: ResultTitle[] = (r.awards ?? []).map((a) => {
     const row = r.rows.find((x) => x.id === a.player);
@@ -219,6 +261,8 @@ export function resultsModel(i: ResultsInput): ResultsModel {
     titles,
     scoreLabel: info.scoreLabel,
     rows,
+    rounds,
+    architectColumns: arch !== undefined,
     footer,
   };
 }
@@ -266,6 +310,7 @@ export class ResultsScreen {
   private readonly titles: HTMLElement;
   private readonly teams: HTMLElement;
   private readonly podium: HTMLElement;
+  private readonly rounds: HTMLElement;
   private readonly table: HTMLTableElement;
   private readonly footer: HTMLElement;
   private last = "";
@@ -279,6 +324,7 @@ export class ResultsScreen {
     this.titles = el("div", "results-titles", this.card);
     this.teams = el("div", "results-teams", this.card);
     this.podium = el("div", "results-podium", this.card);
+    this.rounds = el("div", "results-rounds", this.card);
     this.table = el("table", "results-table", this.card);
     this.footer = el("div", "results-footer", this.card);
   }
@@ -339,9 +385,20 @@ export class ResultsScreen {
       }),
     );
     this.podium.classList.toggle("hidden", model.podium.length === 0);
+    this.rounds.replaceChildren(
+      ...model.rounds.map((rd) => {
+        const row = el("div", `results-round ${rd.winner}${rd.you ? " you" : ""}`);
+        el("span", "results-round-label", row).textContent = rd.label;
+        el("span", "results-round-text", row).textContent = rd.text;
+        el("span", "results-round-winner", row).textContent = rd.winner === "runners" ? "Runners" : "Architect";
+        return row;
+      }),
+    );
+    this.rounds.classList.toggle("hidden", model.rounds.length === 0);
     const head = el("thead", "");
     const hr = el("tr", "", head);
-    for (const h of ["#", "Pilot", model.scoreLabel, "Kills", "Deaths"]) el("th", "", hr).textContent = h;
+    const cols = model.architectColumns ? ["#", "Pilot", model.scoreLabel, "Built", "Ran", "Deaths"] : ["#", "Pilot", model.scoreLabel, "Kills", "Deaths"];
+    for (const h of cols) el("th", "", hr).textContent = h;
     const body = el("tbody", "");
     for (const r of model.rows) {
       const tr = el("tr", `${r.you ? "you" : ""}${r.winner ? " winner" : ""}`, body);
@@ -352,12 +409,17 @@ export class ResultsScreen {
       el("span", "", name).textContent = r.you ? `${r.name} (you)` : r.name;
       if (r.team) el("span", "results-team-tag", name).textContent = r.team;
       el("td", "results-num", tr).textContent = String(r.score);
-      el("td", "results-num", tr).textContent = String(r.kills);
+      if (model.architectColumns) {
+        el("td", "results-num", tr).textContent = String(r.architectPoints ?? 0);
+        el("td", "results-num", tr).textContent = String(r.runnerPoints ?? r.score);
+      } else {
+        el("td", "results-num", tr).textContent = String(r.kills);
+      }
       el("td", "results-num", tr).textContent = String(r.deaths);
     }
     if (model.rows.length === 0) {
       const td = el("td", "results-empty", el("tr", "", body));
-      td.colSpan = 5;
+      td.colSpan = model.architectColumns ? 6 : 5;
       td.textContent = "No pilots";
     }
     this.table.replaceChildren(head, body);

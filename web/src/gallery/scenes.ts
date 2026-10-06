@@ -11,6 +11,7 @@ import { EVENT_SCENES, type EventSceneSpec } from "./eventScenes.ts";
 import type { ModeSceneKind } from "./modeScenes.ts";
 import { VISITOR_SCENES, type VisitorSceneKind } from "./visitorScenes.ts";
 import { SPECTACLE_SCENES, type SpectacleSceneKind } from "./spectacleScenes.ts";
+import { ARCHITECT_SCENES, type ArchitectSceneKind } from "./architectSceneList.ts";
 
 /**
  * World of a scene: the share code is `randomShareCode(seed, 0, enclosure,
@@ -70,7 +71,7 @@ export type PoseKind = "closeup" | "tunnel" | "vista" | "border" | "sun" | "plan
  * one flies (weaponScenes.ts, M4 B7), `paperweight-wall` the same with the
  * landed stone on the rock ahead.
  */
-export type SceneContent = "none" | "lineup" | "fight" | "lights" | "explosion" | "stress" | "fit" | "charge" | "cloak" | "mode" | "shadow" | "paperweight" | "paperweight-wall" | "world" | "event" | "visitor";
+export type SceneContent = "none" | "lineup" | "fight" | "lights" | "explosion" | "stress" | "fit" | "charge" | "cloak" | "mode" | "shadow" | "paperweight" | "paperweight-wall" | "world" | "event" | "visitor" | "architect";
 
 /** Radius of the `fit` scene's tunnel (u): 1.2 u across. */
 export const FIT_TUNNEL_RADIUS = 0.6;
@@ -98,7 +99,7 @@ export interface GalleryScene {
   /** "workshop" page: the world in the workshop (and behind it). */
   workshop?: WorkshopScene;
   /** "results" page: the sample match's results, with the comedy events' titles (M4 B3: the Hat Baron) or without. */
-  results?: { awards: boolean; teams?: boolean; survey?: boolean };
+  results?: { awards: boolean; teams?: boolean; survey?: boolean; architect?: boolean };
   /**
    * Own ship type (ls-sim ShipType index) whose cockpit frame and fit ring
    * show (VQ1); absent = no cockpit, the plain camera.
@@ -110,6 +111,8 @@ export interface GalleryScene {
   belowCeiling?: number;
   /** "mode" content: which mode's visuals (M3 C1, modeScenes.ts). */
   mode?: ModeSceneKind;
+  /** "architect" content: which Architect view (M4 C4, architectSceneList.ts / architectScenes.ts). */
+  architect?: ArchitectSceneKind;
   /** "world" content: which world visual (M4 B5, moodScenes.ts / worldScenes.ts). */
   worldFx?: WorldSceneKind;
   /** "event" content: a comedy event's frame (M4 C1, eventScenes.ts / eventScenesRun.ts). */
@@ -423,6 +426,8 @@ export const SCENES: readonly GalleryScene[] = [
   ...VISITOR_SCENES,
   // M4 C3: the spectacle events' strips (announce, peak, aftermath) and the hat sheet.
   ...SPECTACLE_SCENES,
+  // M4 C4: The Architect (map view, strokes, exit, results).
+  ...ARCHITECT_SCENES,
   // World workshop (M4 A8): the workshop page over the preview of the world it makes.
   { id: "workshop", title: "World workshop over its preview", covers: "world workshop", world: BACKDROP, pose: "tunnel", content: "none", time: 8.0, page: "workshop", workshop: { seed: "6", sliders: [38, 60, 50, 30, 0, 40, 30], archetype: "classic" } },
   { id: "workshop-tall", title: "World workshop: a tall world (Verticality 90)", covers: "world workshop", world: BACKDROP, pose: "tunnel", content: "none", time: 8.0, page: "workshop", workshop: { seed: "5150", sliders: [55, 45, 90, 0, 20, 60, 50], archetype: "classic" } },
@@ -431,6 +436,7 @@ export const SCENES: readonly GalleryScene[] = [
   { id: "results-hat-baron", title: "Results: the Hat Baron (Hat rain)", covers: "results, Hat rain, M4 B3", world: BACKDROP, pose: "tunnel", content: "none", time: 12.0, page: "results", results: { awards: true } },
   { id: "results-survey", title: "Results: the Hat Baron and the leader's Customer rating (two stars)", covers: "results, Customer survey, M4 C2", world: BACKDROP, pose: "tunnel", content: "none", time: 12.0, page: "results", results: { awards: true, survey: true } },
   { id: "results-hat-baron-teams", title: "Results: the Hat Baron in a team match, the own pilot", covers: "results, Hat rain, M4 B3", world: BACKDROP, pose: "tunnel", content: "none", time: 12.0, page: "results", results: { awards: true, teams: true } },
+  { id: "results-architect", title: "Results: The Architect, points as architect and as runner, the three rounds", covers: "results, The Architect, M4 C4", world: BACKDROP, pose: "tunnel", content: "none", time: 12.0, page: "results", results: { awards: false, architect: true } },
   { id: "workshop-belt", title: "World workshop: an asteroid belt, hosting as Belt Up", covers: "world workshop, Belt Up", world: BACKDROP, pose: "tunnel", content: "none", time: 8.0, page: "workshop", workshop: { seed: "77", sliders: [50, 60, 50, 30, 0, 30, 20], archetype: "belt", host: true } },
 ];
 

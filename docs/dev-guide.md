@@ -975,6 +975,12 @@ The wrappers take the server from `$CARGO_TARGET_DIR/release` and install puppet
    `?workshop=<code>`), Fly it starts practice on that world (the F3 overlay shows the code).
    Once more as an asteroid belt when the build generates belts (generator version 4); without
    one the belt pass is noted and skipped.
+9. **The Architect** (`architect.mjs`, M4 C4): a server with `data/rulesets/the_architect.ron`
+   and two pages (each brought to the front while it is checked: only the front page gets
+   animation frames); the first pilot becomes the architect (`.arch-hud[data-role]`) and starts
+   in the map view, the second a runner; key 4 and a click place a Gravity+ stroke, which the
+   runner's page shows telegraphed and then acting (`data-telegraphs`, `data-acting`), the
+   architect's `data-budget` drops by its cost, V switches to free flight.
 
 Every phase fails on console or page errors, WebGPU validation or uncaptured errors, a lost
 device, error screens, and server errors or panics. Screenshots, the browser console and the

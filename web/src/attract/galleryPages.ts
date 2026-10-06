@@ -15,6 +15,7 @@ import { Renderer } from "../renderer/renderer.ts";
 import type { GpuTimings } from "../renderer/gpuTimer.ts";
 import { LobbyOverlay, lobbyModel } from "../ui/lobby.ts";
 import { ResultsScreen, resultsModel } from "../ui/results.ts";
+import { sampleArchitectResults } from "../gallery/architectScenes.ts";
 import { ShipPanel, shipPanelModel } from "../ui/shipSelect.ts";
 import { setStartWorld, showStartScreen } from "../ui/startScreen.ts";
 import { draftKind, showWorkshop, slidersFrom, wasmCodec } from "../ui/workshop.ts";
@@ -166,10 +167,12 @@ export async function runPageScene(canvas: HTMLCanvasElement, ui: HTMLElement, s
   } else if (scene.page === "results") {
     const screen = new ResultsScreen(ui);
     const teams = scene.results?.teams === true;
-    const results = sampleResults(scene.results?.awards === true, teams, scene.results?.survey === true);
+    const arch = scene.results?.architect === true ? sampleArchitectResults() : null;
+    const results = arch?.results ?? sampleResults(scene.results?.awards === true, teams, scene.results?.survey === true);
     screen.update(
       resultsModel({
         results,
+        architect: arch?.architect ?? null,
         own: 0,
         ownSide: 0,
         online: true,

@@ -363,8 +363,22 @@ pub fn heist_level(gen: &Generator) -> Option<HeistLevel> {
 pub fn build_match(cfg: &MatchConfig) -> Result<(World, GameTerrain), GameError> {
     let terrain = GameTerrain::from_code(&cfg.code)?;
     let setup = match_setup(&cfg.code, &cfg.rules, &terrain)?;
-    let world = World::new(cfg.world_config(setup))?;
+    let mut world = World::new(cfg.world_config(setup))?;
+    world.set_nav_graph(nav_graph(&terrain.generator()));
     Ok((world, terrain))
+}
+
+/// The comedy event drones' flight network for a level
+/// (`World::set_nav_graph`, `ls_sim::events::drone`): the connection
+/// network's hub caverns and tunnel centre lines, entered from the team
+/// spawn caverns at the level's ends. Empty on levels without a network
+/// (asteroid belts): the drones fly straight with local avoidance.
+pub fn nav_graph(gen: &Generator) -> ls_sim::events::drone::NavGraph {
+    let net = gen.network();
+    let entries: Vec<Vec3> = (0..4u8)
+        .flat_map(|team| net.team_hubs(team).iter().copied())
+        .collect();
+    ls_sim::events::drone::NavGraph::from_network(net.hubs(), net.tunnel_paths(), &entries)
 }
 
 /// Whether `p` reaches the connection network in a straight line keeping

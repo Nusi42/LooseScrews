@@ -57,6 +57,27 @@ pub enum EntityKind {
     DustCloud,
     /// Anything else a module wants to show (grab points, warnings).
     Marker,
+    /// Comedy event drone (Tax drone, Pizza delivery, Customer survey; M4
+    /// B2). Moved by its event only; blocks projectiles while `hp > 0`.
+    Drone,
+    /// Mimic pickup (M4 B2). Moved by its event only; blocks projectiles
+    /// while `hp > 0`.
+    Mimic,
+    /// Gossip wall face (M4 B2). Placed by its event; no collisions.
+    GossipFace,
+}
+
+impl EntityKind {
+    /// Kinds that a comedy event owns: the world never moves them (the
+    /// event sets their pose, `Command::SetEntity`), does not remove them
+    /// at `hp <= 0` (the event handles their destruction) and records the
+    /// point of the shot that destroyed them ([`Entity::last_hit`]).
+    pub fn is_event_prop(self) -> bool {
+        matches!(
+            self,
+            EntityKind::Drone | EntityKind::Mimic | EntityKind::GossipFace
+        )
+    }
 }
 
 /// Every kind of replicated non-ship, non-projectile thing (wire `kind` byte).
@@ -134,6 +155,9 @@ impl From<EntityKind> for ReplicatedKind {
             EntityKind::Ghost => ReplicatedKind::Ghost,
             EntityKind::DustCloud => ReplicatedKind::DustCloud,
             EntityKind::Marker => ReplicatedKind::Marker,
+            EntityKind::Drone => ReplicatedKind::Drone,
+            EntityKind::Mimic => ReplicatedKind::Mimic,
+            EntityKind::GossipFace => ReplicatedKind::GossipFace,
         }
     }
 }
@@ -179,12 +203,22 @@ pub struct Entity {
     pub vars: [f32; 4],
     /// Module-defined state replicated to clients (e.g. a warning phase).
     pub state: [u8; 4],
+    /// Event props ([`EntityKind::is_event_prop`]): where the projectile
+    /// that brought `hp` to 0 hit it, and its owner (Customer survey's
+    /// star). `None` for every other entity.
+    #[serde(default)]
+    pub last_hit: Option<(Vec3, PlayerId)>,
 }
 
 impl Entity {
-    /// Whether projectiles collide with it.
+    /// Whether projectiles collide with it (event drones and mimics only
+    /// while they have integrity left).
     pub fn blocks_projectiles(&self) -> bool {
-        matches!(self.kind, EntityKind::Debris | EntityKind::Decoy)
+        match self.kind {
+            EntityKind::Debris | EntityKind::Decoy => true,
+            EntityKind::Drone | EntityKind::Mimic => self.hp > 0.0,
+            _ => false,
+        }
     }
 
     /// Wire id (`id & WIRE_ID_MASK`).
@@ -409,6 +443,7 @@ mod tests {
             kinematic: false,
             vars: [0.0; 4],
             state: [0; 4],
+            last_hit: None,
         }
     }
 

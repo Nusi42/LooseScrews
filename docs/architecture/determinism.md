@@ -186,6 +186,24 @@ monochrome level, no belt, world +Y up) and the state hash then skips its state,
 whose rule set now has pigment pickups (its mode replay and `LCS_REPLAY_GOLDEN_HASH`
 re-blessed in A4).
 
+### Visitor event replay hashes (M4 B2)
+
+`ls_sim::events::visitor_replays` plays one 23 s replay per visitor event (Tax drone, Gossip
+wall, Pizza delivery, Customer survey, Mimic pickups): the golden arena, 8 ships on the scripted
+inputs, Team Brawl, player 0 leading and player 3 damaged, the event forced at tick 60 (its 3 s
+announcement, then 20 s). Their hashes are the `event/<id>` lines of these five events in
+`crates/ls-sim/tests/fixtures/mood_replays.txt`, checked on native and wasm32 by
+`visitor_replays::tests::visitor_replays_match_the_fixture`, which also asserts the drones and
+mimics acted. Re-bless only these lines:
+
+```sh
+LS_BLESS_MOOD_REPLAYS=1 cargo test -p ls-sim --lib visitor_replays
+```
+
+The event props (`EntityKind::Drone`, `Mimic`, `GossipFace`) hash like every entity; their
+`Entity::last_hit` is hashed only when set (never for other entities), so older replays keep
+their hashes.
+
 ### Milestone 3 record
 
 What M3 changed deliberately (plan [§4](../milestone-3-plan.md#4-determinism-and-handshake-impacts)):

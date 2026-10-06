@@ -125,11 +125,21 @@ fn bad_data_is_rejected() {
     ));
 }
 
+/// Events built so far (wave B replaces the stubs); the rest stay
+/// announce-only.
+const BUILT: &[EventKind] = &[
+    // B2: visitors.
+    EventKind::TaxDrone,
+    EventKind::PizzaDelivery,
+    EventKind::CustomerSurvey,
+    EventKind::MimicPickups,
+    EventKind::GossipWall,
+];
+
 #[test]
 fn stubs_are_announce_only() {
     for m in &MODULES {
-        // Wave B replaces the stubs; this test then lists the built ones.
-        assert!(!m.module.implemented(), "{}", m.id);
+        assert_eq!(m.module.implemented(), BUILT.contains(&m.kind), "{}", m.id);
     }
 }
 

@@ -516,6 +516,9 @@ pub struct World {
     pigment: PigmentState,
     /// Set while a cave-in applies its own edits (they add no strain).
     no_strain: bool,
+    /// The level's flight network for event drones (M4 B2; static, not
+    /// hashed; [`World::set_nav_graph`]).
+    nav: Arc<crate::events::drone::NavGraph>,
 }
 
 impl World {
@@ -662,6 +665,7 @@ impl World {
             instability: InstabilityState::default(),
             pigment: PigmentState::default(),
             no_strain: false,
+            nav: Arc::new(crate::events::drone::NavGraph::default()),
         };
         let mut events = Vec::new();
         world.update_pickup_spawns(&mut events);
@@ -800,6 +804,19 @@ impl World {
         self.director.schedule(tick, kind);
     }
 
+    /// Gives the event drones the level's flight network (built from the
+    /// generator's connection network by `ls_game::setup`; without one they
+    /// fly straight at their goal with local avoidance). Static level data:
+    /// set it before the match starts.
+    pub fn set_nav_graph(&mut self, nav: crate::events::drone::NavGraph) {
+        self.nav = Arc::new(nav);
+    }
+
+    /// The event drones' flight network ([`World::set_nav_graph`]).
+    pub fn nav_graph(&self) -> &crate::events::drone::NavGraph {
+        &self.nav
+    }
+
     /// The level placement this match runs on (spawns, pickup points, sliders).
     pub fn setup(&self) -> &MatchSetup {
         &self.config.setup
@@ -903,6 +920,11 @@ impl World {
             ships: &self.ships,
             now: self.tick,
         }
+    }
+
+    /// Integrity of entity `id` (`None` if it does not exist).
+    fn entity_hp(&self, id: u32) -> Option<f32> {
+        self.entities.iter().find(|e| e.id == id).map(|e| e.hp)
     }
 
     /// Adds a scrap pile (level junk placed by the generator, tests).
@@ -1600,6 +1622,7 @@ impl World {
             terrain: &tref,
             layers: &tref,
             inputs: &self.inputs,
+            nav: &self.nav,
             trails: &self.trails,
         };
         let mut ctx = Ctx::new(view);
@@ -2043,7 +2066,11 @@ impl World {
                 if !e.blocks_projectiles() || skip_entities.contains(&e.id) {
                     continue;
                 }
-                if e.kind == EntityKind::Decoy && e.owner == Some(p.owner) {
+                // A decoy ignores its owner's shots, a pizza drone its
+                // recipient's (the drone's owner).
+                if matches!(e.kind, EntityKind::Decoy | EntityKind::Drone)
+                    && e.owner == Some(p.owner)
+                {
                     continue;
                 }
                 let r = e.radius + p.radius;
@@ -2090,8 +2117,18 @@ impl World {
                         point,
                         normal,
                     };
+                    let hp_before = self.entity_hp(id);
                     let resp =
                         self.run_hook(cfg, terrain, events, |ctx| beh.on_entity_hit(ctx, p, &h));
+                    // An event prop remembers the shot that destroyed it.
+                    if let Some(e) = self.entities.iter_mut().find(|e| e.id == id) {
+                        if e.kind.is_event_prop()
+                            && hp_before.is_some_and(|hp| hp > 0.0)
+                            && e.hp <= 0.0
+                        {
+                            e.last_hit = Some((point, p.owner));
+                        }
+                    }
                     if resp == HitResponse::Continue {
                         skip_entities.push(id);
                         p.passed = Some((1, id));
@@ -2162,6 +2199,10 @@ impl World {
         for e in &mut self.entities {
             if now >= e.expires_tick {
                 expired.push(e.id);
+                continue;
+            }
+            if e.kind.is_event_prop() {
+                // Comedy event props: their event sets the pose.
                 continue;
             }
             if e.kinematic {
@@ -2428,12 +2469,34 @@ impl World {
                 Command::DamageEntity { id, amount, .. } => {
                     if let Some(i) = self.entities.iter().position(|e| e.id == id) {
                         self.entities[i].hp -= amount;
-                        if self.entities[i].hp <= 0.0 {
+                        // Event props stay until their event handles it.
+                        if self.entities[i].hp <= 0.0 && !self.entities[i].kind.is_event_prop() {
                             self.entities.remove(i);
                         }
                     }
                 }
                 Command::RemoveEntity { id } => self.entities.retain(|e| e.id != id),
+                Command::SetEntity {
+                    id,
+                    pos,
+                    vel,
+                    rot,
+                    vars,
+                    state,
+                } => {
+                    if let Some(e) = self.entities.iter_mut().find(|e| e.id == id) {
+                        e.pos = pos;
+                        e.vel = vel;
+                        e.rot = rot;
+                        e.vars = vars;
+                        e.state = state;
+                    }
+                }
+                Command::SpawnScrap { pos, amount } => {
+                    if amount.is_finite() && amount > 0.0 {
+                        self.add_scrap_pile(pos, amount);
+                    }
+                }
                 Command::ImpulseProjectile { id, dv } => {
                     if let Some(p) = self
                         .projectiles
@@ -3055,6 +3118,7 @@ impl World {
             kinematic: s.kinematic,
             vars: s.vars,
             state: s.state,
+            last_hit: None,
         });
         id
     }
@@ -3874,6 +3938,11 @@ fn hash_entity(h: &mut StateHasher, e: &Entity) {
         h.write_f32(v);
     }
     h.write_bytes(&e.state);
+    // Only event props ever have one (older replays keep their hashes).
+    if let Some((point, owner)) = e.last_hit {
+        h.write_vec3(point);
+        h.write_u16(owner.0);
+    }
 }
 
 /// Applies a weapon selection from input (`0` = keep).

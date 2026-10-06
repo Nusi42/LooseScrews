@@ -6,3 +6,8 @@ world/gravity 0x930876b7c1dfa16e
 world/cave_in 0xca8426a8a830b6bc
 world/pigment 0xc68e3c3054f034f6
 world/radiation 0x813873808786976f
+event/tax_drone 0x7f04130bda7cf2ff
+event/gossip_wall 0xac32eabe4cada0df
+event/pizza_delivery 0x4db68013e4c146b8
+event/customer_survey 0x3b0828700bce12a3
+event/mimic_pickups 0x2e842bed3bff7cad

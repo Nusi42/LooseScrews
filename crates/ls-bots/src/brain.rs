@@ -39,8 +39,11 @@
 //! through [`avoid_walls`], so bots stay clear of rock whatever the plan
 //! says; in narrow passages the route lowers the wall clearance and speed.
 
+mod architect;
 mod combat;
+mod moods;
 mod objective;
+mod race;
 
 use ls_game::client::{ClientSession, GUIDED_STATE_BIT};
 use ls_game::ls_math::terrain::{TerrainEdit, TerrainQuery};
@@ -59,8 +62,12 @@ use crate::steering::{
     thrust_for_velocity, SteerConfig,
 };
 
+pub use self::architect::{ArchitectSense, StrokeSense};
 use self::combat::{Danger, EyeballGuide, SecondaryIntent};
+pub use self::moods::{MoodSense, PropSeen};
 pub use self::objective::{CoreSense, ExtractionSense, ModeSense, ReactorSense, ZoneSense};
+pub use self::race::{RaceKit, RaceLineChoice, RacePersonality};
+use ls_game::ls_sim::modes::belt_up::RaceView;
 
 /// Another ship the bot can see (alive only).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -163,6 +170,22 @@ pub struct Perception {
     /// The mode's objectives as far as the bot cares (see
     /// [`objective`](self::objective)).
     pub mode: ModeSense,
+    /// Belt Up's race (heat, phase, racers by wire id); `None` in other
+    /// modes (see [`race`](self::race)).
+    pub race: Option<RaceView>,
+    /// The comedy director's event (see [`moods`](self::moods)).
+    pub mood: MoodSense,
+    /// Event props, dynamic wells and pigment pickups in the level.
+    pub props: Vec<PropSeen>,
+    /// Pull of the gravity wells on this ship now (u/s^2, clamped like the
+    /// simulation's).
+    pub well_pull: Vec3,
+    /// Radiation dose rate at the ship (hull/s; 0 outside belt levels).
+    pub dose_rate: f32,
+    /// The level is monochrome (pigment pickups).
+    pub monochrome: bool,
+    /// This ship carries pigment.
+    pub pigmented: bool,
 }
 
 impl Perception {
@@ -276,6 +299,18 @@ impl Perception {
             pickups,
             scrap_sources,
             mode: ModeSense::from_mode(s.mode(), s.player()),
+            race: s.race(),
+            mood: MoodSense::from_net(s.mood()),
+            props: PropSeen::from_entities(&s.entities()),
+            well_pull: s.wells().ship_accel_scaled(
+                ship.pos,
+                s.next_input_tick(),
+                s.conv().tuning_for(ship_type).thrust_accel,
+                1.0,
+            ),
+            dose_rate: s.dose_rate_at(ship.pos),
+            monochrome: s.monochrome(),
+            pigmented: own.is_some_and(|n| n.ext & ls_game::ls_net::ship_ext::PIGMENTED != 0),
         })
     }
 
@@ -333,6 +368,10 @@ pub struct BrainConfig {
     /// Play the mode's objectives (see [`objective`](self::objective));
     /// false plays every mode like a deathmatch (for comparisons).
     pub objectives: bool,
+    /// Belt Up: the racing personality (`None`: by the bot seed).
+    pub race_personality: Option<RacePersonality>,
+    /// Belt Up: which line to fly (time trials pin one).
+    pub race_line: RaceLineChoice,
 }
 
 /// The Paint Thrower colour cycle button (M2 plan: the V key cycles red
@@ -363,6 +402,8 @@ impl Default for BrainConfig {
             collect_secs: 15.0,
             paint_colour_button: PAINT_COLOUR_BUTTON,
             objectives: true,
+            race_personality: None,
+            race_line: RaceLineChoice::Auto,
         }
     }
 }
@@ -390,6 +431,8 @@ pub enum Mode {
     /// Out of the match (eliminated or a late joiner): no ship, waits for
     /// the next match.
     Spectate,
+    /// Racing in Belt Up (see [`race`](self::race)).
+    Race,
 }
 
 /// Highest weapon id the per-weapon counters track.
@@ -430,6 +473,86 @@ pub struct BrainCounters {
     pub colour_presses: u64,
     /// Ticks the scavenge button was held.
     pub scavenge_holds: u64,
+    /// Belt Up racing.
+    pub race: RaceCounters,
+    /// World physics, events and The Architect.
+    pub moods: MoodCounters,
+}
+
+/// Racing counters (ticks unless noted).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct RaceCounters {
+    /// Racing (not held).
+    pub race_ticks: u64,
+    /// Held in the start lights or after a death.
+    pub held_ticks: u64,
+    /// Scavenging for the hull the rest of the course needs.
+    pub scavenge_ticks: u64,
+    /// After the lap, on the way down to the exit.
+    pub dive_ticks: u64,
+    /// No progress: on a navigation route back to the line.
+    pub stuck_ticks: u64,
+    /// The racer ahead engaged.
+    pub engage_ticks: u64,
+    /// Leaning into a rival alongside.
+    pub bump_ticks: u64,
+}
+
+impl RaceCounters {
+    fn add(&mut self, o: &RaceCounters) {
+        self.race_ticks += o.race_ticks;
+        self.held_ticks += o.held_ticks;
+        self.scavenge_ticks += o.scavenge_ticks;
+        self.dive_ticks += o.dive_ticks;
+        self.stuck_ticks += o.stuck_ticks;
+        self.engage_ticks += o.engage_ticks;
+        self.bump_ticks += o.bump_ticks;
+    }
+}
+
+/// Counters of the reactions to world physics, events and The Architect
+/// (ticks unless noted).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct MoodCounters {
+    /// In a well's pull (counter-thrust on idle axes).
+    pub well_ticks: u64,
+    /// Trigger ticks at event drones and mimics.
+    pub prop_shots: u64,
+    /// Pushed off a duck of the parade.
+    pub duck_dodge_ticks: u64,
+    /// Fleeing the Cat paw.
+    pub paw_flee_ticks: u64,
+    /// Fleeing a cave-in warning.
+    pub cave_in_flee_ticks: u64,
+    /// Holding still for the own pizza.
+    pub pizza_hold_ticks: u64,
+    /// Flying to a hat.
+    pub hat_ticks: u64,
+    /// Flying to a pigment pickup.
+    pub pigment_ticks: u64,
+    /// The Architect: ticks as the architect, strokes asked for.
+    pub architect_ticks: u64,
+    pub architect_strokes: u64,
+    /// The Architect: ticks running for the exit, digging shots.
+    pub runner_ticks: u64,
+    pub runner_dig_shots: u64,
+}
+
+impl MoodCounters {
+    fn add(&mut self, o: &MoodCounters) {
+        self.well_ticks += o.well_ticks;
+        self.prop_shots += o.prop_shots;
+        self.duck_dodge_ticks += o.duck_dodge_ticks;
+        self.paw_flee_ticks += o.paw_flee_ticks;
+        self.cave_in_flee_ticks += o.cave_in_flee_ticks;
+        self.pizza_hold_ticks += o.pizza_hold_ticks;
+        self.hat_ticks += o.hat_ticks;
+        self.pigment_ticks += o.pigment_ticks;
+        self.architect_ticks += o.architect_ticks;
+        self.architect_strokes += o.architect_strokes;
+        self.runner_ticks += o.runner_ticks;
+        self.runner_dig_shots += o.runner_dig_shots;
+    }
 }
 
 impl Default for BrainCounters {
@@ -456,6 +579,8 @@ impl Default for BrainCounters {
             gadget_presses: 0,
             colour_presses: 0,
             scavenge_holds: 0,
+            race: RaceCounters::default(),
+            moods: MoodCounters::default(),
         }
     }
 }
@@ -485,6 +610,8 @@ impl BrainCounters {
         self.gadget_presses += o.gadget_presses;
         self.colour_presses += o.colour_presses;
         self.scavenge_holds += o.scavenge_holds;
+        self.race.add(&o.race);
+        self.moods.add(&o.moods);
     }
 
     fn trigger(&mut self, w: WeaponId) {
@@ -609,6 +736,17 @@ pub struct Brain {
     digging: bool,
     /// Heads for the Heist core even under fire (about half the bots).
     miner: bool,
+
+    // ----- M4 (see `race`, `moods`, `architect`) -----
+    /// Belt Up: the course and the racing lines.
+    race: Option<RaceKit>,
+    /// The Architect: the architect bot's and the runner's state.
+    architect: architect::ArchitectBrain,
+    /// Shoots the Customer survey drone in front of the leader (rates it).
+    rates_surveys: bool,
+    /// Near a gravity well or a duck in the last tick (reconciliation
+    /// statistics).
+    near_moods: bool,
 }
 
 const TICKS_PER_SEC: f32 = TICK_HZ as f32;
@@ -739,7 +877,16 @@ impl Brain {
             next_dig: 0,
             digging: false,
             miner,
+            race: None,
+            architect: architect::ArchitectBrain::default(),
+            rates_surveys: seed.is_multiple_of(2),
+            near_moods: false,
         }
+    }
+
+    /// Whether the bot was near a gravity well or a duck in its last tick.
+    pub fn near_moods(&self) -> bool {
+        self.near_moods
     }
 
     pub fn mode(&self) -> Mode {
@@ -833,6 +980,17 @@ impl Brain {
         cmd.buttons = Buttons::HORIZON_ASSIST;
         // The grid builds (and follows edits) in the background, dead or alive.
         self.nav.update(terrain);
+        self.near_moods = p.alive
+            && (p.well_pull.length() > 0.25
+                || p.props
+                    .iter()
+                    .any(|q| q.kind == ReplicatedKind::Duck && q.pos.distance(p.pos) < 15.0));
+        // The architect has no ship.
+        if self.plan_architect(p, counters) {
+            self.on_death();
+            self.mode = Mode::Objective;
+            return cmd;
+        }
         if p.mode.out && !p.alive {
             // Eliminated (or a late joiner): spectating until the next match.
             self.on_death();
@@ -851,6 +1009,7 @@ impl Brain {
         self.was_alive = true;
         self.expire(p);
         self.observe_threats(p);
+        self.observe_moods(p);
 
         // An Eyeball in flight takes the look input; the ship only drifts.
         if self.guide_eyeball(p, &mut cmd) {
@@ -861,7 +1020,26 @@ impl Brain {
 
         let mut plan = Plan::new();
         self.digging = false;
-        let target = self.update_target(p, terrain);
+        // Belt Up: racing replaces the rest.
+        if p.race.is_some()
+            && self.race.is_some()
+            && self.plan_race(p, terrain, &mut plan, counters)
+        {
+            self.mode = Mode::Race;
+            self.dodge_props(p, &mut plan, counters);
+            self.write_command(p, terrain, &plan, &mut cmd, counters);
+            self.counter_wells(p, &mut cmd, counters);
+            return cmd;
+        }
+        // Runners of The Architect cannot hurt each other: no ship targets.
+        let ships = if p.mode.architect.is_some() {
+            self.target = None;
+            None
+        } else {
+            self.update_target(p, terrain)
+        };
+        // Event drones and mimics when no ship is in sight.
+        let target = ships.or_else(|| self.prop_target(p, terrain));
         let hull_frac = p.hull / self.tuning.hull_max.max(1.0);
         let wants_scrap = if self.scavenge.is_some() {
             hull_frac < self.cfg.healed_hull
@@ -882,11 +1060,21 @@ impl Brain {
         if target.is_some() {
             self.hunt_since = None;
         }
+        let paw = p.mood.is(ls_game::ls_sim::EventKind::CatPaw);
         self.mode = if self.plan_flee(p, terrain, &mut plan) {
+            if paw {
+                counters.moods.paw_flee_ticks += 1;
+            } else if self.danger.is_some_and(|d| d.radius < 10.0) {
+                counters.moods.cave_in_flee_ticks += 1;
+            }
             Mode::Flee
-        } else if self.plan_zone(p, terrain, &mut plan) || self.plan_reactor(p, terrain, &mut plan)
+        } else if self.plan_zone(p, terrain, &mut plan)
+            || self.plan_reactor(p, terrain, &mut plan)
+            || self.plan_runner(p, terrain, &mut plan, counters)
         {
             Mode::Objective
+        } else if self.plan_pizza(p, &mut plan, counters) {
+            Mode::Scavenge
         } else if p.mode.carrier
             && self.plan_heist(p, terrain, target.as_ref(), &mut plan, counters)
         {
@@ -908,7 +1096,9 @@ impl Brain {
                 self.plan_orbit(p, terrain, &t, &mut plan);
                 Mode::Combat
             }
-        } else if self.plan_collect(p, terrain, &mut plan, self.cfg.collect_range) {
+        } else if self.plan_mood_collect(p, terrain, &mut plan, counters)
+            || self.plan_collect(p, terrain, &mut plan, self.cfg.collect_range)
+        {
             Mode::Collect
         } else if self.plan_hunt(p, terrain, &mut plan) {
             Mode::Hunt
@@ -923,6 +1113,9 @@ impl Brain {
 
         if let Some(t) = target.filter(|_| !self.digging) {
             self.plan_fire(p, &t, terrain, &mut plan);
+            if t.id == u8::MAX && plan.fire_primary {
+                counters.moods.prop_shots += 1;
+            }
             self.paint = None;
         } else {
             self.charge_started = None;
@@ -933,11 +1126,13 @@ impl Brain {
                 }
             }
         }
-        // Digging at the Heist core picks its own secondary.
+        // Digging at the Heist core picks its own secondary; props get
+        // only the primary.
         if !self.digging {
-            self.plan_secondary(p, target.as_ref(), terrain, &mut plan);
+            self.plan_secondary(p, ships.as_ref(), terrain, &mut plan);
         }
-        self.plan_gadget(p, target.as_ref(), &mut plan);
+        self.plan_gadget(p, ships.as_ref(), &mut plan);
+        self.dodge_props(p, &mut plan, counters);
 
         match self.mode {
             Mode::Wander => counters.wander_ticks += 1,
@@ -951,9 +1146,11 @@ impl Brain {
             Mode::Objective => counters.objective_ticks += 1,
             Mode::Spectate => counters.spectate_ticks += 1,
             Mode::Dead => counters.dead_ticks += 1,
+            Mode::Race => counters.race.race_ticks += 1,
         }
 
         self.write_command(p, terrain, &plan, &mut cmd, counters);
+        self.counter_wells(p, &mut cmd, counters);
         cmd
     }
 

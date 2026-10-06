@@ -806,7 +806,7 @@ fn radiation_burns_only_while_racing() {
     w.step(&mut t, &[]);
     assert_eq!(w.dose_rate(high), 0.0, "start lights");
     lights_out(&mut w, &mut t);
-    assert!(w.dose_rate(high) >= 10.0);
+    assert!(w.dose_rate(high) >= 6.0);
     let r = rules(&w.rules().mode);
     assert_eq!(radiation_scale_in(&r, heat_phase::RACING), 1.0);
     assert_eq!(radiation_scale_in(&r, heat_phase::RESULTS), 0.0);
@@ -814,7 +814,7 @@ fn radiation_burns_only_while_racing() {
     s.pos = high;
     s.vel = Vec3::ZERO;
     step(&mut w, &mut t, 60);
-    assert!(w.ship(id).unwrap().hull < 90.0);
+    assert!(w.ship(id).unwrap().hull < 95.0);
 }
 
 #[test]

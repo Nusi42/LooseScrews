@@ -91,6 +91,7 @@ impl Brain {
                 // Its projectile takes over once it shows up.
                 self.set_danger(pos, 0.7 * TECTONIC_FLIGHT_ZONE, now + 45);
             }
+            CueKind::CaveInWarning => self.on_cave_in_warning(pos, now),
             _ => {}
         }
     }

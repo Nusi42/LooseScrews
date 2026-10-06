@@ -461,6 +461,61 @@ off and only prints the measurements. `tests/social.rs` runs bots against a real
 starts the countdown long before a 10-minute warm-up ends, `--directory` bots find their server,
 and an `--accept-duels` bot plays a challenger's duel and comes back.
 
+### Bots in moods (M4 package C5)
+
+The perception carries the comedy director's state (`MoodSense`: event, phase, target), the
+event props, dynamic wells and pigment pickups (`PropSeen`), the clamped well pull on the ship,
+the radiation dose rate, the monochrome flag and the own pigment bit, Belt Up's `RaceView`, and
+The Architect's exit, strokes, role and budget (`ArchitectSense` in `ModeSense`).
+
+- **World physics** (`brain/moods.rs`): axes without input get a one-step counter-thrust against
+  the well pull (idle dampers would drift toward the well); ducks and dynamic well stones push the
+  plan away; a `CaveInWarning` cue is a danger zone (as the Tectonic Charge's); pigment pickups
+  are fetched above 60 % hull when not recently hit. Static well cores are rock (wall avoidance).
+- **Events**: Tax drones, mimics and other players' pizza drones are targets when no ship is
+  (a contact with id 255 through the usual fire logic, primaries only); bots on even seeds also
+  rate the Customer survey (the column a shot passes from where they are is the star; the leader's
+  own shots go through the middle); the Cat paw prop is a 40 u danger zone during the tell and
+  the sweep; the pizza recipient holds still below 90 % hull; hats in 35 u are collected.
+- **The Architect** (`brain/architect.rs`): the architect (no ship, so before the alive check)
+  sends an `ArchitectAction` every 2.3-3.3 s when the budget allows: weighted among the strokes
+  it can pay (Enclosure+ most), centred where the runner nearest the exit will be when the
+  telegraph ends (rock strokes half a radius further toward the exit, kept clear of it); the
+  server validates (refusals only cost the cooldown). Runners take a navigation route to the exit,
+  treat telegraphed rock and well strokes as danger zones, never target ships, and blast rock
+  toward the exit when the distance stops shrinking for 5 s.
+- **Belt Up racing** (`race_line.rs`, `brain/race.rs`): a lattice over slot 0's course (a station
+  every 1.5 degrees of azimuth; per station 21 radii from 76 to 156 u by 21 heights of +-30 u,
+  plus the generator's clear corridor and the slot; nodes keep 1.6 u from rock, links 1.2 u; at
+  and within 6 degrees of a gate only points inside the gate), built once per world per process
+  from the pristine level and shared. A line is the cheapest path by dynamic programming for
+  `time + weight x dose` (time from a speed that falls in squeezes, dose from the dose law at the
+  edge's middle), the straight dive to the exit added at the last station; lines for other slots
+  are rotated by whole wedges. Racers plan from where they are: the hugger with a fixed weight 4
+  (the belt line), the skimmer and the daredevil with the lowest weight (bisected) whose dose to
+  the finish fits 60 % or 100 % of their hull above a reserve (6 + 10 % of full hull); they plan
+  again at a heat start, after a respawn and when the hull strays 8 hp from the plan. Flying: a
+  point 5-10 u ahead on the line, the planned speed, over or under boulders, boost on clear
+  straights above 70 % (the rest is kept for the dive), the dive once the way to the exit is
+  clear, a navigation route back to the line after 4 s without progress. Racers scavenge scrap in
+  40 u when even the belt line's dose would not leave the reserve (late in the lap, or below 35 %
+  hull), hold still for their pizza in the back half of the field, steer through wanted pickups
+  in 14 u ahead, lean into a rival alongside (not the hugger), and fight the nearest racer ahead
+  in the running order within 60 u and 46 degrees of the flight direction (primaries, the usual
+  secondaries: Seekers, Magnet Sneeze, Swap Harpoon, Paperweights, mines when chased).
+
+Tests (release only): `tests/race_match.rs`: `race_full_match` (8 racers of all three
+personalities play the built-in Belt Up rule set to a result: 3 heats, every bot finishes at
+least 2 of them, 0 desyncs), `time_trials` (8 belt seeds, a Tinker alone per line: the mixed
+line is fastest, the open line without scavenging is not faster than the belt line, every line
+inside the 180 s limit; `LS_TIME_TRIAL_SEEDS=n`, `LS_TIME_TRIAL_ONLY=i`, `LS_TRIAL_TRACE=1` and
+`LS_BELT_UP_<FIELD>=<value>` help tuning), `skim_lap_and_dive_doses` (the dose law against its
+targets); `tests/mood_matches.rs`: `absurdity_rotation` (Team Brawl on a monochrome level,
+Heist and Paint the Void at Absurdity 100 with wells and cave-ins, six forced events each so all
+18 run, 8 bots: results, 0 desyncs, reactions counted, reconciliation error near wells and ducks
+at most 0.1 u, `BotStats::max_reconcile_error_moods`) and `architect_match` (6 bots, 3 rounds, a
+bot architect per round). The harness is shared (`tests/support/mod.rs`).
+
 Tests: `tests/nav_sweep.rs` (release only, about 20 s): three bots on the soak world
 `LS0G-2TNV-VD0V-ZFQY-JC58-T2XM-57QY` and nine random worlds must hit each other within 60 s,
 and a 5-minute match on the soak world must still see hits in its last minute. `LS_NAV_TRACE=1`

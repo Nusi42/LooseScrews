@@ -914,10 +914,10 @@ fn radiation_burns_hull_outside_the_belt_only_on_belt_levels() {
     let (ha, hb) = (w.ship(a).unwrap().hull, w.ship(b).unwrap().hull);
     run(&mut w, &mut t, &[], 60);
     assert_eq!(w.ship(a).unwrap().hull, ha, "deep in the belt");
-    // 10 u above the surface: 2 + 0.4 * 10 = 6 hull/s.
+    // 10 u above the surface: 0.8 + 0.2 * 4 + 0.6 * 6 = 5.2 hull/s.
     let lost = hb - w.ship(b).unwrap().hull;
-    assert!((lost - 6.0).abs() < 0.01, "{lost}");
-    assert!((w.dose_rate(w.ship(b).unwrap().pos) - 6.0).abs() < 1e-3);
+    assert!((lost - 5.2).abs() < 0.01, "{lost}");
+    assert!((w.dose_rate(w.ship(b).unwrap().pos) - 5.2).abs() < 1e-3);
     // A classic level has no radiation.
     let mut w = world(MatchSetup {
         spawns: spawns(),
@@ -947,7 +947,7 @@ fn radiation_passes_a_raised_shield_and_credits_nobody() {
     run(&mut w, &mut t, &press, 60);
     let lost = h0 - w.ship(a).unwrap().hull;
     assert!(
-        (lost - 16.0).abs() < 0.01,
+        (lost - 7.0).abs() < 0.01,
         "the cap, through the shield: {lost}"
     );
     // b damaged a last; radiation kills a and credits nobody.

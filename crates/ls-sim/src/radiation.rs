@@ -9,8 +9,20 @@
 //! | Where | Rate (hull/s) |
 //! | --- | --- |
 //! | deeper than `deep` (4 u) inside | 0 |
-//! | `-deep < d < 0` | rising linearly to `surface_rate` (2) |
-//! | outside (`d >= 0`) | `surface_rate + slope * d` (0.4 per u), at most `cap` (16, 35 u out) |
+//! | `-deep < d < 0` | rising linearly to `surface_rate` (0.8) |
+//! | `0 <= d <= knee` (4 u) | `surface_rate + slope * d` (0.2 per u: skimming is affordable) |
+//! | `d > knee` | `+ far_slope` per u beyond the knee (0.6), at most `cap` (7, 13 u out) |
+//!
+//! Tuning (package C5, by the Belt Up time trials in `ls-bots`
+//! `tests/race_match.rs`): a Tinker skimming 4 u above the belt for a lap
+//! at cruise speed takes about one hull (1.6 hp/s for 63 s); the open line
+//! (6 u or more off the belt) costs 2.8 hp/s and more, several deaths a
+//! lap, so it is slower than the belt line; a mixed line (the belt with
+//! skimming dashes) is fastest. The dive from the belt to the cocoon costs
+//! about 20 hp at full boost and less than the 30 % respawn hull from a
+//! respawn at the own gate (so a racer who dies in the dive can still
+//! finish). The knee separates skimming from open flight (one slope cannot
+//! make the first affordable and the second deadly).
 //!
 //! The world applies it every tick to living ships as hull loss that
 //! bypasses shields and gadgets (like The Squeeze's crushing) and credits
@@ -35,8 +47,12 @@ pub struct RadiationSettings {
     pub deep: f32,
     /// Rate at the shelter's surface (hull/s).
     pub surface_rate: f32,
-    /// Extra rate per u outside (hull/s per u).
+    /// Extra rate per u outside, up to `knee` (hull/s per u).
     pub slope: f32,
+    /// Distance outside (u) from which `far_slope` applies.
+    pub knee: f32,
+    /// Extra rate per u beyond the knee (hull/s per u).
+    pub far_slope: f32,
     /// Highest rate (hull/s).
     pub cap: f32,
 }
@@ -57,7 +73,9 @@ impl RadiationSettings {
         } else if d < 0.0 {
             self.surface_rate * (1.0 + d / self.deep)
         } else {
-            (self.surface_rate + self.slope * d).min(self.cap)
+            let near = self.slope * d.min(self.knee);
+            let far = self.far_slope * (d - self.knee).max(0.0);
+            (self.surface_rate + near + far).min(self.cap)
         }
     }
 }
@@ -118,19 +136,26 @@ pub(crate) mod tests {
             *s,
             RadiationSettings {
                 deep: 4.0,
-                surface_rate: 2.0,
-                slope: 0.4,
-                cap: 16.0
+                surface_rate: 0.8,
+                slope: 0.2,
+                knee: 4.0,
+                far_slope: 0.6,
+                cap: 7.0
             }
         );
         assert_eq!(s.rate_at_distance(-10.0), 0.0, "deep inside");
         assert_eq!(s.rate_at_distance(-4.0), 0.0);
-        assert_eq!(s.rate_at_distance(-2.0), 1.0, "half way in");
-        assert_eq!(s.rate_at_distance(0.0), 2.0, "surface");
-        assert!((s.rate_at_distance(10.0) - 6.0).abs() < 1e-5, "slope");
-        assert!((s.rate_at_distance(34.0) - 15.6).abs() < 1e-4);
-        assert_eq!(s.rate_at_distance(35.0), 16.0, "cap at 35 u");
-        assert_eq!(s.rate_at_distance(200.0), 16.0);
+        assert!((s.rate_at_distance(-2.0) - 0.4).abs() < 1e-6, "half way in");
+        assert_eq!(s.rate_at_distance(0.0), 0.8, "surface");
+        assert!(
+            (s.rate_at_distance(4.0) - 1.6).abs() < 1e-5,
+            "skimming, the knee"
+        );
+        assert!((s.rate_at_distance(6.0) - 2.8).abs() < 1e-5, "open line");
+        assert!((s.rate_at_distance(10.0) - 5.2).abs() < 1e-4, "far slope");
+        assert!((s.rate_at_distance(12.9) - 6.94).abs() < 1e-4);
+        assert_eq!(s.rate_at_distance(13.0), 7.0, "cap at 13 u");
+        assert_eq!(s.rate_at_distance(200.0), 7.0);
         assert_eq!(s.rate_at_distance(f32::NAN), 0.0);
         // Monotone.
         let mut last = 0.0;
@@ -149,20 +174,23 @@ pub(crate) mod tests {
         assert_eq!(dose_rate(&b, s, belt_point(&b, 0.7, 120.0, 0.0)), 0.0);
         assert_eq!(dose_rate(&b, s, b.center), 0.0);
         assert_eq!(dose_rate(&b, s, b.center + Vec3::new(0.0, 20.0, 0.0)), 0.0);
-        // At the belt surface: 2 hp/s; 4 u above it (the skimming line): 3.6.
-        assert_eq!(dose_rate(&b, s, belt_point(&b, 0.7, 120.0, 12.0)), 2.0);
-        assert!((dose_rate(&b, s, belt_point(&b, 0.7, 120.0, 16.0)) - 3.6).abs() < 1e-4);
+        // At the belt surface: 0.8 hp/s; 4 u above it (the skimming line): 1.6.
+        assert_eq!(dose_rate(&b, s, belt_point(&b, 0.7, 120.0, 12.0)), 0.8);
+        assert!((dose_rate(&b, s, belt_point(&b, 0.7, 120.0, 16.0)) - 1.6).abs() < 1e-4);
         // Far above: the cap.
-        assert_eq!(dose_rate(&b, s, belt_point(&b, 0.7, 120.0, 60.0)), 16.0);
+        assert_eq!(dose_rate(&b, s, belt_point(&b, 0.7, 120.0, 60.0)), 7.0);
         // The dive from the inner edge to the cocoon in the belt plane:
         // hottest half way (32.5 u from both).
         let mid = dose_rate(&b, s, belt_point(&b, 0.7, 62.5, 0.0));
-        assert!((mid - 15.0).abs() < 1e-3, "{mid}");
+        assert_eq!(mid, 7.0, "{mid}");
     }
 
-    /// §3.8 tuning targets, integrated along straight lines at the given
-    /// speeds: the dive at full straight boost costs a Tinker about 35 hp;
-    /// skimming 4 u above the belt for a whole middle lap at cruise kills a
+    /// Tuning targets (§3.8 as tuned by C5's time trials), integrated along
+    /// straight lines at the given speeds: the dive at full straight boost
+    /// costs a Tinker about 20 hp (§3.8 started from 35; C5 lowered it so a
+    /// racer respawning at its own gate with the 30 % hull floor can still
+    /// dive); skimming 4 u above the belt for a whole middle lap at cruise
+    /// speed (12 u/s; boost does not last a lap in open space) kills a
     /// Tinker (100 hull) about once.
     #[test]
     fn tuning_targets() {
@@ -175,13 +203,13 @@ pub(crate) mod tests {
             hp += dose_rate(&b, s, belt_point(&b, 0.3, r, 0.0)) * dt;
             r -= 16.5 * dt;
         }
-        assert!((25.0..45.0).contains(&hp), "dive costs {hp} hp");
-        // Skim: 4 u above the belt's middle, one lap (754 u) at 16.5 u/s.
+        assert!((15.0..28.0).contains(&hp), "dive costs {hp} hp");
+        // Skim: 4 u above the belt's middle, one lap (754 u) at 12 u/s.
         let lap = std::f32::consts::TAU * 120.0;
-        let secs = lap / 16.5;
+        let secs = lap / 12.0;
         let skim = dose_rate(&b, s, belt_point(&b, 0.3, 120.0, 16.0)) * secs;
         assert!(
-            (100.0..200.0).contains(&skim),
+            (80.0..130.0).contains(&skim),
             "skimming lap costs {skim} hp"
         );
     }

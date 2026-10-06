@@ -117,6 +117,8 @@ pub struct ModeSense {
     pub reactor: Option<ReactorSense>,
     /// Colour meters (wire id, meter) in Last Color Standing.
     pub meters: Vec<(u8, u8)>,
+    /// The Architect's exit, strokes and roles.
+    pub architect: Option<ArchitectSense>,
 }
 
 impl ModeSense {
@@ -184,6 +186,9 @@ impl ModeSense {
             }
             Some(ModeKind::LastColorStanding) => {
                 s.meters = m.players.iter().map(|q| (q.id, q.meter)).collect();
+            }
+            Some(ModeKind::TheArchitect) => {
+                s.architect = Some(ArchitectSense::from_mode(m, me));
             }
             _ => {}
         }

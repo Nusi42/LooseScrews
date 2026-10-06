@@ -504,7 +504,10 @@ and Hat rain follow it; cave-in rubble hangs from the first rock along it.
 
 On levels with a belt only. Signed distance `d` to the shelter: the belt (an annulus of
 rectangular cross-section) or the cocoon sphere, `BeltSite::shelter_distance` (see "Levels"). Rate (hull/s): 0
-for `d <= -4`, `2 x (1 + d / 4)` inside, `min(2 + 0.4 d, 16)` outside; times the mode's
+for `d <= -deep`, `surface_rate x (1 + d / deep)` inside, `min(surface_rate + slope x min(d, knee)
++ far_slope x max(d - knee, 0), cap)` outside (`data/world/radiation.ron`, tuned by C5's Belt
+Up time trials: `deep` 4, `surface_rate` 0.8, `slope` 0.2, `knee` 4, `far_slope` 0.6, `cap` 7,
+so skimming 4 u off the belt costs 1.6 hp/s and open space 6 u out 2.8 hp/s); times the mode's
 `radiation_scale` (default 1). Applied to living ships every tick as hull loss past shields and
 gadgets; at 0 hull the ship dies without a killer (`Killed { killer: None }`). No `Damaged`
 events (the HUD reads hull and `ls_sim::radiation::dose_rate`). Belt Up scales it by its rule

@@ -54,6 +54,8 @@ export interface ProjectileState {
 export const PROJ_STUCK = 1 << 0;
 export const PROJ_ARMED = 1 << 1;
 export const PROJ_RETURNING = 1 << 4;
+/** Drawn as a rubber chicken (Rubber chickens event; ls-wasm adds 256 to the state, M4 C1). */
+export const PROJ_CHICKEN = 1 << 8;
 /** Module-defined bits (ls-sim `proj_flags::CUSTOM_A/B`); the Paint Thrower keeps its colour id there. */
 export const PROJ_CUSTOM_SHIFT = 6;
 

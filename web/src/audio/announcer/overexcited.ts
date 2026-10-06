@@ -50,7 +50,7 @@ export const OVEREXCITED: VoicePack = {
     "event.customer_survey": ["SURVEY TIME! {target}, how are we DOING?"],
     "event.disco_inferno": ["DISCO INFERNO! Lights DOWN, trails ON!"],
     "event.big_head_day": ["BIG HEAD DAY! Huge heads! Huge targets!"],
-    "event.moving_day": ["MOVING DAY! The pickups are on the MOVE!"],
+    "event.moving_day": ["MOVING DAY! The pickups are on the MOVE!", "MOVING DAY! Sorry about the MESS, folks! Boxes INCOMING!"],
     "event.mimic_pickups": ["MIMICS! The pickups have TEETH!"],
     "event.level_hiccups": ["HICCUPS! Hic! Everything bounces!"],
   },

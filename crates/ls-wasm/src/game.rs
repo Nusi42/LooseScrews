@@ -130,6 +130,8 @@ pub struct ProjectileView {
     pub visual: u16,
     /// Replicated `ls_sim::proj_flags` low byte (stuck, armed, ...).
     pub state: u8,
+    /// Drawn as a rubber chicken (Rubber chickens event, protocol 6).
+    pub chicken: bool,
 }
 
 /// Values for the HUD.
@@ -400,6 +402,15 @@ impl Online {
         let server_dt = ((s.clock().server_time() - snap.tick as f64).clamp(0.0, 8.0)
             + alpha as f64)
             / HZ as f64;
+        // Own shots not confirmed yet are chickens while the event flags new shots.
+        let own_chicken = {
+            let now = s.clock().server_time().max(0.0) as u64;
+            let seed = ls_game::setup::match_seed(&s.terrain().share_code());
+            let m = ls_game::mode::mood_from_net(s.mood()).advanced(now);
+            ls_sim::director::event_effects(&m, seed, now).projectile_flags
+                & ls_sim::proj_flags::CHICKEN
+                != 0
+        };
         let mut out = Vec::with_capacity(snap.projectiles.len() + self.shots.pending().len());
         for p in &snap.projectiles {
             match local_t {
@@ -417,6 +428,7 @@ impl Online {
                         vel: p.vel,
                         visual: 0,
                         state: p.state,
+                        chicken: p.chicken,
                     });
                 }
                 _ => out.push(ProjectileView {
@@ -426,6 +438,7 @@ impl Online {
                     vel: p.vel,
                     visual: 0,
                     state: p.state,
+                    chicken: p.chicken,
                 }),
             }
         }
@@ -442,6 +455,7 @@ impl Online {
                         vel: shot.vel,
                         visual: 0,
                         state: 0,
+                        chicken: own_chicken,
                     }),
             );
         }
@@ -1122,6 +1136,7 @@ impl GameCore {
                     vel: pr.vel,
                     visual: 0,
                     state: (pr.flags & 0xff) as u8,
+                    chicken: pr.flags & ls_sim::proj_flags::CHICKEN != 0,
                 })
                 .collect(),
         };
@@ -2023,6 +2038,18 @@ impl GameCore {
             Mode::Online(o) => o.session.mood().up,
             Mode::Practice(p) => p.world.up(),
         }
+    }
+
+    /// What the running comedy event does at `tick` as JSON
+    /// (`events::event_fx_json`; M4 C1's event visuals).
+    pub fn event_fx(&self, tick: f64) -> String {
+        let now = tick.max(0.0) as u64;
+        let seed = ls_game::setup::match_seed(&self.terrain().share_code());
+        let view = match &self.mode {
+            Mode::Online(o) => ls_game::mode::mood_from_net(o.session.mood()),
+            Mode::Practice(p) => p.world.mode_view().mood,
+        };
+        crate::events::event_fx_json(&view, seed, now)
     }
 
     /// Monochrome level (M4).

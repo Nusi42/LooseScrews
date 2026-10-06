@@ -20,6 +20,8 @@
 import { FRAME_WGSL, PAINT_COLOR_SHIFT, TEAM_SLOTS } from "./frame.ts";
 import { LIGHTING_WGSL } from "./lighting.ts";
 import { KEEP_ALPHA } from "./post.ts";
+import { CAKE_WGSL } from "./cake.ts";
+import { CUT_WGSL } from "./cutaway.ts";
 
 /** World units per texture repeat of the rock layer (detail normals, cracks). */
 export const ROCK_SCALE_U = 9;
@@ -38,12 +40,17 @@ struct TerrainParams {
   strata: vec4f,  // xyz unit strata normal, w bands per u
   offset: vec4f,  // texture offsets per world
   look: vec4f,    // x strata contrast, y vein amount
+  cake: vec4f,    // Everything is cake (M4 C1, shaders/cake.ts): xyz the wave's origin, w its radius (u)
+  cake_up: vec4f, // xyz the level's up, w the cake amount (0 = off)
 };
 @group(1) @binding(0) var rock_tex: texture_2d_array<f32>;
 @group(1) @binding(1) var rock_samp: sampler;
 @group(1) @binding(2) var<uniform> tp: TerrainParams;
 
 override DETAIL: bool = true;
+
+${CAKE_WGSL}
+${CUT_WGSL}
 
 const PI: f32 = 3.14159265;
 
@@ -182,7 +189,7 @@ fn ggx(n: vec3f, v: vec3f, l: vec3f, rough: f32, f0: f32) -> f32 {
 }
 
 @fragment
-fn fs_main(in: VsOut) -> @location(0) vec4f {
+fn fs_main(in: VsOut, @builtin(front_facing) front: bool) -> @location(0) vec4f {
   let p = in.world_pos;
   let n0 = normalize(in.normal);
   let t = frame.camera_pos.w;
@@ -240,6 +247,16 @@ fn fs_main(in: VsOut) -> @location(0) vec4f {
   var emissive = vec3f(0.0);
   // Paint keeps its colour through a monochrome look (M4 A7 ink, Last Color Standing).
   var keep = 0.0;
+  // Everything is cake (M4 C1): the rock inside the wave is a layer cake.
+  let cake_w = cake_amount(p);
+  if (cake_w > 0.0) {
+    let ck = cake_look(p, n0, noise);
+    albedo = mix(albedo, ck.albedo, cake_w);
+    rough = mix(rough, ck.rough, cake_w);
+    f0 = mix(f0, ck.f0, cake_w);
+    bump = mix(bump, vec2f(0.45, 0.6), cake_w);
+    emissive += ck.emissive;
+  }
   let ok = in.team.x + in.team.y + in.team.z + in.team.w;
   if (ok > 0.0) {
     // Paint: coverage sharpened into a splattered edge. Team and effect come
@@ -328,6 +345,8 @@ fn fs_main(in: VsOut) -> @location(0) vec4f {
   let color = albedo * lit * occl + (spec + dyn_gloss) * occl + emissive;
   // Open levels: rock fades into the sky before a hidden wall (premultiplied;
   // the sky is drawn under the scene by its alpha). VQP.
+  // Wrong genre's cutaway (M4 C1): rock opened by the near plane shows a flat brick fill.
+  if (!front) { return vec4f(cut_fill(p), 1.0); }
   let cover = room_fade(p);
   if (cover < 0.01) { discard; }
   // Alpha above 1 marks colour a monochrome look keeps (shaders/post.ts KEEP_ALPHA): painted rock.

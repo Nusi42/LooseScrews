@@ -54,12 +54,12 @@ fn mode_id(kind: u8) -> String {
     json_str(ModeKind::from_index(kind).map_or("", |k| k.id()))
 }
 
-fn object(fields: &[(&str, String)]) -> String {
+pub(crate) fn object(fields: &[(&str, String)]) -> String {
     let body: Vec<String> = fields.iter().map(|(k, v)| format!("\"{k}\":{v}")).collect();
     format!("{{{}}}", body.join(","))
 }
 
-fn array(items: impl IntoIterator<Item = String>) -> String {
+pub(crate) fn array(items: impl IntoIterator<Item = String>) -> String {
     format!("[{}]", items.into_iter().collect::<Vec<_>>().join(","))
 }
 

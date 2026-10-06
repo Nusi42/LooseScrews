@@ -4,6 +4,7 @@
 @import "./audio/audio.css";
 @import "./ui/workshop.css";
 @import "./ui/worldHud.css";
+@import "./ui/eventBanner.css";
 
 :root {
   --bg: #0b0d12;

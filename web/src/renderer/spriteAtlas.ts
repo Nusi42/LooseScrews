@@ -29,12 +29,14 @@ export const SPRITE = {
   shard: 9,
   /** Soft-edged beam/trail section: bright core line, soft sides (ribbons, arcs). */
   streak: 10,
+  /** A curved feather with a quill and barbs, long axis y (M4 C1: rubber chickens). */
+  feather: 11,
 } as const;
 
 export type SpriteId = (typeof SPRITE)[keyof typeof SPRITE];
 
 /** Number of layers in the atlas. */
-export const SPRITE_LAYERS = 11;
+export const SPRITE_LAYERS = 12;
 /** Edge length of a sprite layer at mip 0 (power of two). */
 export const SPRITE_SIZE = 128;
 
@@ -222,6 +224,27 @@ function shard(size: number): SpriteImage {
   });
 }
 
+function feather(size: number): SpriteImage {
+  // Long axis y; the quill bends a little to one side, the vane is wider on
+  // one side, and the barbs run diagonally out from the quill.
+  return render(size, (x, y) => {
+    const t = (y + 0.92) / 1.84;
+    if (t < 0 || t > 1) return [0, 0];
+    const bend = 0.12 * (t - 0.5) * (t - 0.5) * 4 - 0.06;
+    const dx = x - bend;
+    const side = dx < 0 ? 0.34 : 0.27;
+    const width = side * Math.pow(Math.sin(Math.PI * Math.min(1, t * 1.08)), 0.75) * (t < 0.12 ? t / 0.12 : 1);
+    const quill = Math.exp(-dx * dx * 900) * (0.6 + 0.4 * t);
+    const inVane = 1 - smoothstep(width * 0.82, width, Math.abs(dx));
+    // Barbs: diagonal stripes, a few gaps split the vane.
+    const barb = 0.5 + 0.5 * Math.cos((Math.abs(dx) * 1.1 + y) * 95);
+    const gap = smoothstep(0.85, 0.97, Math.sin((Math.abs(dx) * 0.6 + y) * 9 + 1.3)) * smoothstep(0.3, 0.8, Math.abs(dx) / Math.max(width, 1e-3));
+    const a = Math.max(quill, inVane * (0.72 + 0.28 * barb) * (1 - gap * 0.85)) * edge(Math.hypot(x, y));
+    const lit = 0.72 + 0.28 * (1 - Math.abs(dx) / Math.max(width, 1e-3)) - 0.12 * barb;
+    return [a, clamp01(lit)];
+  });
+}
+
 /** Renders every layer at `size` (SPRITE order). */
 export function bakeSprites(size = SPRITE_SIZE): SpriteImage[] {
   const layers: SpriteImage[] = [];
@@ -236,6 +259,7 @@ export function bakeSprites(size = SPRITE_SIZE): SpriteImage[] {
   layers[SPRITE.flare] = flare(size);
   layers[SPRITE.shard] = shard(size);
   layers[SPRITE.streak] = streak(size);
+  layers[SPRITE.feather] = feather(size);
   return layers;
 }
 

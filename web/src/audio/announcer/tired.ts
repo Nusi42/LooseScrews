@@ -49,7 +49,7 @@ export const TIRED: VoicePack = {
     "event.customer_survey": ["{target}, please rate your match. It's mandatory."],
     "event.disco_inferno": ["Disco. Lights off. I'll be in the corner."],
     "event.big_head_day": ["Big head day. Easier to hit. Bigger egos."],
-    "event.moving_day": ["Moving day. The pickups are moving. I'm not helping."],
+    "event.moving_day": ["Moving day. The pickups are moving. I'm not helping.", "Moving day. Sorry about the mess. Boxes everywhere."],
     "event.mimic_pickups": ["Some pickups bite now. Read the fine print."],
     "event.level_hiccups": ["The level has hiccups. Hold your breath. Not me."],
   },

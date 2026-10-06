@@ -11,7 +11,7 @@ Wave D of M3 extends it into the full renderer reference.
 | --- | --- | --- |
 | Lights (compute, skipped without lights): one invocation per froxel of a 16x9x24 grid, every light's view-space sphere tested against the froxel's box, one 128-bit mask per froxel | storage buffer (3456 x 16 bytes) | `lights.ts`, `shaders/lights.ts` |
 | Sun shadow map (only on frames after a terrain change; skipped in sealed levels): the dirty rectangles of the map cleared and redrawn from the chunks that overlap them, depth only, back faces | `depth16unorm` 4096² over the whole level | `sunShadow.ts`, `shaders/shadow.ts` |
-| Scene: terrain chunks (frustum culled per chunk AABB), then opaque instances, then translucent instances (no depth write), then the cockpit hull frame (own depth range) | `rgba16float` HDR colour, MSAA 4x at "high"/"medium", resolved into the post chain's HDR texture; `depth24plus` (stored for the particles) | `renderer.ts`, `shaders/terrain.ts`, `shaders/objects.ts`, `hullFrame.ts` |
+| Scene: terrain chunks (frustum culled per chunk AABB), then opaque instances, then translucent instances (no depth write), then the cockpit hull frame (own depth range) | `rgba16float` HDR colour, MSAA 4x at "high"/"medium", resolved into the post chain's HDR texture; `depth24plus` (stored for the particles) | `renderer.ts`, `shaders/terrain.ts`, `shaders/objects.ts`, `hullFrame.ts`; M4 C1: the cake branch (`shaders/cake.ts`) and, in Wrong genre's side view, the cutaway terrain pipeline (`shaders/cutaway.ts`) |
 | Volumetric sun shafts ("high"/"medium", caverns with openings to the sky): each pixel of a half (third) resolution target marches its view ray through the shadow map up to the scene depth; added onto the resolved scene with a 2x2 tent | `rgba16float` low-resolution target, then the HDR scene texture | `volumetric.ts`, `shaders/volumetric.ts` |
 | Sky (open levels only): drawn *under* the resolved scene, `out = scene + sky x (1 - alpha)` (geometry writes alpha 1, the clear is transparent black) | the HDR scene texture, single-sampled | `sky.ts`, `shaders/sky.ts` `SKY_WGSL` |
 | Light shafts ("high", open levels, sun on or near the screen): sky mask (scene alpha 0) at quarter resolution, radial blur toward the sun, added onto the scene | the HDR scene texture | `sky.ts` `encodeShafts`, `SHAFT_*_WGSL` |
@@ -22,7 +22,7 @@ Wave D of M3 extends it into the full renderer reference.
 | Ink lines (M4 A7; only from Palette 50, `needsLinePass`): outlines from the scene depth and world-space hatching from the scene's tone, see "Ink look" | `rgba8unorm` full resolution (r outline, g hatch, b fog fade, a sky) | `ink.ts`, `shaders/ink.ts` |
 | Bloom down: 13-tap filter, the first step with a Karis average and a soft-knee threshold | up to 6 half-size `rgba16float` mips | `post.ts`, `shaders/post.ts` `BLOOM_DOWN_WGSL` |
 | Bloom up: 3x3 tent, added onto the next larger mip | the same mips | `BLOOM_UP_WGSL` |
-| Composite: bloom (averaged over the mips, added), exposure, colour grade, vignette, AgX tonemap with a look, the ink look (from Palette 50: toon bands, paper grain, ink on paper, the ink lines), sRGB encode, half-LSB dither, optional film grain | the swapchain (`getPreferredCanvasFormat()`, non-sRGB, so the shader encodes) | `COMPOSITE_WGSL` |
+| Composite: bloom (averaged over the mips, added), exposure, colour grade, vignette, AgX tonemap with a look, the ink look (from Palette 50: toon bands, paper grain, ink on paper, the ink lines), sRGB encode, half-LSB dither, optional film grain; Wrong genre's pixel look (M4 C1: cells, 16 colours, dither, scanlines) instead of the dither while it runs | the swapchain (`getPreferredCanvasFormat()`, non-sRGB, so the shader encodes) | `COMPOSITE_WGSL` |
 
 With `timestamp-query` every pass writes timestamps (`gpuTimer.ts`), labelled `terrain` and
 `objects` (or `scene` when `Renderer.detailedTiming` is off), `lights`, `shadow` (map updates),
@@ -368,6 +368,86 @@ presentation adds nothing measurable (grade uniforms, mote colour). At the VQ
 plans' factor of 8-10 that is 0.3-0.5 ms on the reference mid GPU against the
 0.4 ms wells share (estimated, not measured). `PASS_BUDGETS_MS.wells` = 0.4 ms.
 
+## Comedy event visuals (M4 C1)
+
+The looks of the comedy events (milestone-4-plan.md §3.2). The game side is
+`game/events/`: `index.ts` (`EventVisuals`, the hub main.ts and the gallery
+call), one module per event, `fx.ts` (what the event does now), `shots.ts`
+(projectiles followed between frames), `info.ts` (names, accents, icons). The
+gallery strips are `gallery/eventScenes.ts` (data) and
+`gallery/eventScenesRun.ts` (set-up); `?eventfx=off` draws the match without
+event visuals (the banner and the announcer stay).
+
+**Timing.** ls-wasm `Game.eventFx(tick)` (`crates/ls-wasm/src/events.rs`)
+decodes the replicated mood view with the simulation's own functions at the
+estimated server tick: phase (advanced like the predictor's
+`MoodView::advanced`), well scale, hit scale, the chicken flag, the level's up,
+Bored level's start up and axis, every hiccup tick of Level hiccups
+(`level_hiccups::hiccup_ticks`, from the match seed) and the cake's origin.
+Without the export (older cores) `fxFromMood` decodes the phase and the
+parameter bytes in TS. Every module reads an `EventClock`: seconds since the
+active phase started (-3..0 while announced) or, after the end, seconds since
+it was over; the hub keeps a module running after its event until it says it
+is done (bursting balloons, landing boxes, receding cake, chickens still in
+flight).
+
+**Telegraph** (all 18 events, the hub): when an event is first seen in its
+announce phase, the announcer says `event.<id>` with the target's name (its
+fanfare `sting.event` first) and `ui/eventBanner.ts` shows a card under the mode
+bar (icon, kicker, name, target, a 3 s countdown bar) that shrinks to a pill
+with a ring of the time left while the event runs. The same overlay draws the
+per-event HUD hints (Bored level's down arrow, Wrong genre's title cards,
+sleepy Z's, comic words like "HIC!" and "POP!"). A late join into a running
+event gets the pill but no line.
+
+| Event | Look | Code |
+| --- | --- | --- |
+| Bored level | Sleepy Z's while announced; at the start a yawn and a creaking loop; grit streaking toward the new down around the camera while it turns; an arrow on a ring around the crosshair pointing at the new down (B5 turns sky, sun, fog and shadows, horizon assist rolls the pilot) | `boredLevel.ts` |
+| Level hiccups | At every hiccup tick: a camera bump (a dip and a nod along the up, decaying in 0.6 s; the sim's 2 u lift moves the ship), "HIC!" popping on the screen, a "hic", dust and pebbles from the ceilings above and ahead of the camera (CPU rays), bubbles rising from every ship within 60 u; the tell is one small "hic?" | `levelHiccups.ts` |
+| Gravity coffee break | A coffee mug (white ceramic, blue band, heart) drops onto every static well's core stone with two bounces and a clink while announced, steams and sips during the break (a slurp from the nearest), a warm lamp, a lounge loop on the music bus; lifts off after the end. B5 dims the wells | `coffeeBreak.ts` |
+| Wrong genre | Pixel glitches while announced; then the side view: the camera swings in 0.55 s to 22 u in front of the own ship's z plane (34° field of view, a platformer follow with a little lead), its near plane 1.4 u in front of the plane; the terrain's cutaway pipeline draws the rock the near plane opens as a brick fill; other ships and shots are drawn in the own plane, ships 1.9x and rolled to show their tops; the composite's pixel look (quarter resolution, 16 colours); "WORLD 1-1" and "1UP" cards, a power-on bleep, a chiptune loop, a 1-UP jingle; no cockpit frame, crosshair or fit ring | `wrongGenre.ts`, `renderer/pixelPost.ts`, `shaders/cutaway.ts` |
+| Big head day | A translucent balloon in the side's colour at exactly the hit sphere (radius x hit scale) around every other ship, an opaque face on its nose side (eyes, raised brows, grin, cheeks), googly pupils (spring-damper per eye kicked by the ship's acceleration, looking at the camera); blown up in three squeaky puffs while announced, popping to size at the start; hits honk and wobble the balloon; a burst (shreds, confetti, "POP!") at the end. The own ship's balloon is not drawn (it would tint the cockpit view) | `bigHeadDay.ts` |
+| Rubber chickens | Every projectile with the chicken bit (ls-wasm adds 256 to the state) is drawn as a rubber chicken sized by its shape (the Charge as a giant speckled egg), beak along the flight, rolling and flapping, a soft glow in the weapon's colour, feathers shed; squeaks on fire, a squawk and a feather burst where it ends. Its normal shot visuals are hidden (`hideShots`); the effect library still sparks at the impact | `rubberChickens.ts` |
+| Moving day | Every pickup gets a cardboard box (arrows, a red stamp, tape) that pops up with open flaps, shuts and is taped while announced, hops along an arc (one flip, a dust trail) to the point the sim moved the pickup to, lands with a squash and a thump, pops open and shrinks away; the pickup is hidden while boxed | `movingDay.ts` |
+| Everything is cake | A sprinkle fountain and a pink glow at the origin while announced; a party horn and confetti at the start; the terrain shader's cake branch in a sphere that grows at 32 u/s; crumbs and sprinkles where shots end inside it; debris is sponge-coloured; the cake recedes in 2.5 s after the end | `cake.ts`, `shaders/cake.ts` |
+
+**Renderer pieces.**
+- *Toy materials* (`models/toyPalette.ts`): parts `TOY_PART_BASE` (32) + i take
+  palette entry i (display colour and gloss; entry 0 the instance colour), so a
+  prop has many colours in one mesh. `shade_toy` (included by
+  `models/shading.ts`): wrapped diffuse, a gloss-dependent highlight from the
+  sun, headlight and dynamic lights, a rim sheen, cardboard fibres, a small
+  self-light floor so toys read in dark caves. Props in
+  `models/eventProps.ts`, mesh kinds `chicken`, `giant_egg`, `moving_box`,
+  `box_flap`, `box_tape` (instance `stretch` lays the tape), `balloon`,
+  `balloon_face`, `pupil`, `coffee_mug`.
+- *Feather sprite*: atlas layer 11 (`SPRITE.feather`).
+- *Pixel look* (`pixelPost.ts`, `PostSettings.pixel`, the composite's `pixel`
+  uniform): every pixel of a cell (4 px at 1080p, `quarterCell`) takes the
+  cell centre's scene, bloom and ink samples; the display colour is lifted
+  (gamma 0.72) and saturated (1.5x) and snapped to the PICO-8 palette after a
+  4x4 Bayer dither, matched by luma and colour difference (blues stay blue); a
+  faint scanline on each cell's last row. `pixelLookAt` steps the cell in whole
+  pixels as it eases in.
+- *Cutaway terrain* (`Renderer.terrainCutaway`): a terrain pipeline variant
+  without back-face culling; the terrain shader paints back faces (rock seen
+  from inside) with `cut_fill` (bricks in the x/y plane, lit top edges).
+  Front faces are unchanged, so the normal pipeline needs no branch.
+- *Cake* (`RenderSettings.cake`, `CakeWave`): two more vec4 in `TerrainParams`
+  (origin and radius, up and amount; `TerrainMaterial.setCake` uploads on
+  change). The terrain shader's cake branch (`shaders/cake.ts`, arithmetic
+  only): sponge with pores, cream and jam layers along the up, pink frosting on
+  faces turned up with round-ended drips down walls, capsule sprinkles in six
+  colours, a bright band with twinkles at the front.
+
+**Cost** (gallery, RTX 5080, 1920x1080, "high", label `c1-final`): see the
+milestone plan's C1 note; every strip is within budget. The side view's
+terrain pass rises from about 0.21 to 0.37-0.48 ms (back faces drawn, the
+cave behind the plane in view), the cake branch adds 0.1-0.15 ms to the
+terrain pass when it covers the screen, props and particles stay below
+0.05 ms. At the VQ plans' factor of 8-10 the worst event frame is about
+1 ms on the reference mid GPU against the 1.0 ms event share (estimated).
+
 ## Mode effects (M3 C1)
 
 `modeFx.ts` `ModeFxPass` draws the mode visuals that are not meshes or particles, analytically
@@ -560,7 +640,7 @@ ALU; `fwidth` is taken before the branch). Specular from VQ6's dynamic lights is
 attribute bit layout, sRGB helpers), `shaders/lighting.ts`, `shaders/terrain.ts`,
 `shaders/objects.ts` (instanced and translucent), `shaders/lights.ts` (the light froxel
 builder), `shaders/shadow.ts` (VQ9: the SunShadow struct and `sun_visibility`, included by
-`lighting.ts`; the caster pass), `shaders/volumetric.ts` (VQ9: the shaft march and composite), `shaders/ink.ts` (M4 A7: the ink lines), `shaders/modeFx.ts` (M3 C1's mode effects), `shaders/particles.ts` (particles, motes, half-resolution composite), `shaders/cloak.ts` (VQP: the cloak refraction), `shaders/post.ts`, `shaders/sky.ts` (VQ7: the
+`lighting.ts`; the caster pass), `shaders/volumetric.ts` (VQ9: the shaft march and composite), `shaders/ink.ts` (M4 A7: the ink lines), `shaders/modeFx.ts` (M3 C1's mode effects), `shaders/particles.ts` (particles, motes, half-resolution composite), `shaders/cloak.ts` (VQP: the cloak refraction), `shaders/cake.ts` and `shaders/cutaway.ts` (M4 C1, included by the terrain shader), `shaders/post.ts` (with `pixelPost.ts`'s pixel look), `shaders/sky.ts` (VQ7: the
 environment and planet bakes, the sky pass, the shafts, gradient noise). Each package edits its
 own file (VQ3b terrain, VQ5 particles, VQ6 lighting, VQ7 sky); keep `FRAME_UNIFORM_FLOATS` and
 `Renderer.writeFrameUniforms` in sync with the `Frame` struct (`sky.test.ts` checks the sizes of

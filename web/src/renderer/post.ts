@@ -12,6 +12,7 @@
 // paper, grain and the monochrome ink after the tonemap, plus the line work
 // of the ink pass (`setInkLines`).
 
+import { packPixel, type PixelLook } from "./pixelPost.ts";
 import type { GpuTimer } from "./gpuTimer.ts";
 import { inkActive, NO_INK, type InkLook } from "./ink.ts";
 import type { Rgb } from "./renderer.ts";
@@ -82,6 +83,8 @@ export interface PostSettings {
   grade: ColorGrade;
   /** The Palette slider's ink look (ink.ts); NO_INK = off. */
   ink: InkLook;
+  /** Wrong genre's 8-bit look (M4 C1, pixelPost.ts); absent = off. */
+  pixel?: PixelLook;
 }
 
 export const DEFAULT_POST: PostSettings = {
@@ -114,6 +117,7 @@ export function packPostUniforms(s: PostSettings, time: number, bloomMips: numbe
   out.set([ink.toon, ink.grain, ink.mono, ink.contrast], 24);
   out.set([lin(ink.paper[0]), lin(ink.paper[1]), lin(ink.paper[2]), inkActive(ink) ? 1 : 0], 28);
   out.set([lin(ink.ink[0]), lin(ink.ink[1]), lin(ink.ink[2]), lines ? 1 : 0], 32);
+  out.set(packPixel(s.pixel), 36);
   return out;
 }
 

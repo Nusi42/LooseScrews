@@ -658,6 +658,27 @@ table; blue paint on the walls of a tunnel lets you scrape along at full speed.
 A Tectonic Charge leaves a dust cloud 35 u in radius (70 u across) for 20 s. Inside it, the fog closes in and you
 see much less, and so does everyone else inside it.
 
+### Comedy events
+
+With **Absurdity** above 0 the level now and then plays a joke on everyone. Every event is
+announced 3 seconds before it starts: a card under the score bar with its name and icon (and the
+pilot it aims at, if any), the announcer's line and a fanfare. While it runs, a small pill under
+the score bar shows its name and a ring of the time left.
+
+| Event | What happens | What you see and hear |
+| --- | --- | --- |
+| **Bored level** | The level's "up" turns 90 degrees over 5 s and stays turned | Sleepy Z's drift over the screen while it is announced, then a long yawn and the stone creaking; the sky, sun and shadows turn, horizon assist rolls you with them, grit slides toward the new down, and an arrow around the crosshair shows where "down" is now |
+| **Level hiccups** | For 15 s, every 3 s or so, the level lifts everything about 2 u | "HIC!" pops on the screen, the view dips and nods, dust and pebbles shake off the ceilings and bubbles rise from every ship |
+| **Gravity coffee break** | Every gravity well switches off for 20 s | A coffee mug drops onto each well's core stone, the wells dim and stop swirling, the mugs steam and take a sip now and then, lounge music plays; when the break is over the mugs lift off |
+| **Wrong genre** | For 10 s every ship is locked to a flat plane, facing left or right | The game turns into an 80s side-scroller: the camera swings out to the side with the rock in front cut away (bricks), the picture drops to big pixels in 16 colours, everyone is drawn in your plane (shots hit by their position on the screen), a chiptune plays, then a 1-UP jingle |
+| **Big head day** | For 15 s every ship is three times as easy to hit with shots | Every ship wears a balloon head of exactly that size with googly eyes that follow you; hits honk and make it wobble; at the end they all pop |
+| **Rubber chickens** | For 12 s every new shot is a rubber chicken (same speed, damage and craters) | Shots fly as squeaking rubber chickens (the Tectonic Charge as a giant egg) and burst into feathers where they hit |
+| **Moving day** | Every pickup moves to another pickup point; for 2 s nothing can be taken | The pickups are packed into taped cardboard boxes that hop to their new places, land with a thump and pop open |
+| **Everything is cake** | For 20 s craters are bigger and debris repairs twice as much hull | The rock turns into a layer cake in a wave (sponge, cream, jam, pink frosting with sprinkles) after a party horn; shots throw cake crumbs |
+
+The other comedy events of the design (tax drone, pizza, cat paw and more) already happen in
+matches; their own looks come with the next builds.
+
 ## Pickups and wrecks
 
 Each level has **12 pickup points** in open space, spread across the level and away from the team
@@ -1204,6 +1225,7 @@ Advanced page options, added to the address (combine them with `&`):
 | `?join=host:port`, `&party=P-…`, `&room=R-…`, `&code=LS…`, `&rules=LR…` | Invite link parts (see [Invite links](#invite-links)) |
 | `?quality=low`, `medium` or `high` | Force a graphics quality instead of the automatic pick |
 | `?shipshadows=off` | Ships near you cast no shadows (the rock's shadows stay) |
+| `?eventfx=off` | Comedy events show only their card and the announcer, without their looks |
 
 ## Not in this build yet
 
@@ -1215,9 +1237,9 @@ These are part of the game design but aren't in the Milestone 3 build:
   architect watches with the spectator camera.
 - **Pigment pickups** that give colour back in Last Color Standing, and black-and-white levels
   as a general feature (the Palette slider only drains the colour of the picture).
-- **World sliders:** Absurdity only announces comedy events so far (what they do comes later),
+- **World sliders:** Absurdity's events are only partly drawn (see Comedy events),
   and gravity wells, cave-ins and radiation are felt but not yet drawn or heard.
-- **Comedy events** ("the level has moods"): not yet.
+- **Comedy events:** eight of the eighteen have their own looks and sounds (see Comedy events); the visitors and spectacles (drones, the cat paw, ducks, hats and the rest) still look like plain rock or crates.
 - **Voting for the next mode:** servers play their rotation in order.
 - **Sound:** no music yet, and no recorded voices: the announcer speaks in made-up robot
   speech with captions.

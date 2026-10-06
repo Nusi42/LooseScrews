@@ -23,8 +23,8 @@
 export const ROCK_TEXTURE_SIZE = 512;
 /** Layers of the texture array (rock, grain). */
 export const ROCK_TEXTURE_LAYERS = 2;
-/** Floats of the TerrainParams uniform (3 vec4). */
-export const TERRAIN_PARAM_FLOATS = 12;
+/** Floats of the TerrainParams uniform (5 vec4: strata, offset, look, and M4 C1's cake and cake_up). */
+export const TERRAIN_PARAM_FLOATS = 20;
 /** Workgroup edge of the generator and mip compute shaders. */
 const WG = 8;
 
@@ -299,7 +299,17 @@ export class TerrainMaterial {
   setSeed(seed: number): void {
     if (seed === this.seed) return;
     this.seed = seed;
-    this.device.queue.writeBuffer(this.params, 0, terrainParams(seed));
+    this.device.queue.writeBuffer(this.params, 0, terrainParams(seed).subarray(0, 12));
+  }
+
+  private cakeKey = "";
+
+  /** Everything is cake (M4 C1, shaders/cake.ts): 8 floats [origin xyz, radius, up xyz, amount]; re-uploads on change. */
+  setCake(cake: Float32Array): void {
+    const key = cake.join(",");
+    if (key === this.cakeKey) return;
+    this.cakeKey = key;
+    this.device.queue.writeBuffer(this.params, 12 * 4, cake);
   }
 
   destroy(): void {

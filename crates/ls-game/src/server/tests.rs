@@ -1071,3 +1071,74 @@ fn architect_actions_are_queued_bounded_and_attributed() {
     );
     assert_eq!(r.stats().dropped_architect_actions, 10);
 }
+
+/// The Architect (M4 B4): the room hands queued strokes to the world before
+/// each tick; the architect's valid stroke is accepted and telegraphed, a
+/// runner's forged one is refused and counted.
+#[test]
+fn architect_strokes_are_validated_counted_and_telegraphed() {
+    let code = ShareCode::new(79, Sliders::new(40, 30));
+    let mut mc = MatchConfig::paint_the_void(code);
+    mc.rules = ls_sim::RuleSet::default_for(ls_sim::ModeKind::TheArchitect);
+    let mut r = Room::new(mc, cfg()).unwrap();
+    let a = r.join(&client_hello("a", None, None)).unwrap();
+    let b = r.join(&client_hello("b", None, None)).unwrap();
+    r.step();
+    let pa = r.player_of(a).unwrap();
+    let state = r.world().mode().architect.as_deref().unwrap();
+    assert_eq!(state.architect, Some(pa));
+    let centre = r.terrain().bounds().center();
+    let palette = ls_net::ArchitectActionMsg {
+        stroke: ls_sim::modes::the_architect::StrokeKind::Palette.index(),
+        center: centre,
+        radius: 16.0,
+    };
+    // A runner forging the architect's stroke, a bad kind, a bad radius.
+    r.handle_packet(b, &Message::ArchitectAction(palette).encode().unwrap())
+        .unwrap();
+    r.handle_message(
+        a,
+        Message::ArchitectAction(ls_net::ArchitectActionMsg {
+            stroke: 200,
+            ..palette
+        }),
+    )
+    .unwrap();
+    r.handle_message(
+        a,
+        Message::ArchitectAction(ls_net::ArchitectActionMsg {
+            radius: 100.0,
+            ..palette
+        }),
+    )
+    .unwrap();
+    r.handle_message(a, Message::ArchitectAction(palette))
+        .unwrap();
+    let report = r.step();
+    assert_eq!(r.stats().rejected_architect_actions, 3);
+    assert_eq!(r.stats().architect_strokes, 1);
+    let cue = report.events.iter().find_map(|e| match e {
+        ls_sim::Event::Cue(c) if c.kind == ls_sim::CueKind::StrokeTelegraph => Some(*c),
+        _ => None,
+    });
+    let cue = cue.expect("the telegraph goes out");
+    assert_eq!(cue.source, Some(pa));
+    assert_eq!(cue.pos, centre);
+    // The budget meter (15 spent) is what the architect's client sees.
+    let view = r.net_mode_state();
+    let me = view
+        .players
+        .iter()
+        .find(|p| p.flags & ls_net::mode_player_flags::ARCHITECT != 0)
+        .expect("the architect's row");
+    assert_eq!(me.meter, 85);
+    // Sim and wire flags agree.
+    assert_eq!(
+        ls_sim::mode::player_flags::ARCHITECT,
+        ls_net::mode_player_flags::ARCHITECT
+    );
+    assert_eq!(
+        ls_sim::mode::player_flags::FINISHED,
+        ls_net::mode_player_flags::FINISHED
+    );
+}

@@ -6,6 +6,7 @@
 # lines: ls_sim::event_replays (B3's spectacles), ls_sim::events::visitor_replays (B2's visitors) and
 # ls_sim::events::replays (every other built event). Re-bless all of them:
 # LS_BLESS_MOOD_REPLAYS=1 cargo test -p ls-sim --lib replays -- --test-threads=1
+# The Architect ("mode/the_architect", ls_sim::modes::the_architect::replay): LS_BLESS_MOOD_REPLAYS=1 cargo test -p ls-sim --lib the_architect
 world/gravity 0x930876b7c1dfa16e
 world/cave_in 0xca8426a8a830b6bc
 world/pigment 0xc68e3c3054f034f6
@@ -28,3 +29,4 @@ event/tired_announcer 0x87aefee006453832
 event/duck_parade 0x70d4db60a6342f5d
 event/hat_rain 0xe077c3a81260bd87
 event/disco_inferno 0xebd4d46d366a0136
+mode/the_architect 0x18ae4636e93c18d6

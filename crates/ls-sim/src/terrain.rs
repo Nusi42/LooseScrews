@@ -97,6 +97,39 @@ pub trait SimTerrain: TerrainQuery {
     /// ([`ShelledTerrain`], `ls_game::GameTerrain`); the default ignores it
     /// (the mode's own crushing rules still apply).
     fn set_shell(&mut self, _shell: Option<ShellSphere>) {}
+
+    /// The Architect's reshape strokes (M4, `docs/milestone-4-plan.md`
+    /// §3.5 "Stroke edits"): the field (signed distance, negative in rock)
+    /// the level's generator gives at each of `points` with world slider
+    /// `slider` ([`reshape_slider`]: share-code order) moved by `delta`
+    /// (clamped to 0..=100), written to `out` (cleared first). `false`
+    /// (and `out` empty) when the terrain has no generator, the slider
+    /// cannot be reshaped (Verticality changes the level box) or the
+    /// clamped value equals the level's. The world compares it with the
+    /// edited terrain and emits ordinary `AddSphere` / `SubtractSphere`
+    /// edits (`modes::the_architect::plan_reshape`).
+    fn reshape_sample(
+        &self,
+        _slider: u8,
+        _delta: i8,
+        _points: &[Vec3],
+        out: &mut Vec<f32>,
+    ) -> bool {
+        out.clear();
+        false
+    }
+}
+
+/// World slider indices of [`SimTerrain::reshape_sample`] (share-code
+/// order of `ls_worldgen::Sliders`).
+pub mod reshape_slider {
+    pub const ENCLOSURE: u8 = 0;
+    pub const DENSITY: u8 = 1;
+    pub const VERTICALITY: u8 = 2;
+    pub const GRAVITY_CHAOS: u8 = 3;
+    pub const PALETTE: u8 = 4;
+    pub const ABSURDITY: u8 = 5;
+    pub const INSTABILITY: u8 = 6;
 }
 
 /// The Squeeze's wall: solid rock everywhere outside a sphere (the safe
@@ -182,6 +215,86 @@ impl<T: SimTerrain> SimTerrain for ShelledTerrain<T> {
     }
     fn set_shell(&mut self, shell: Option<ShellSphere>) {
         self.shell = shell;
+    }
+    fn reshape_sample(&self, slider: u8, delta: i8, points: &[Vec3], out: &mut Vec<f32>) -> bool {
+        self.inner.reshape_sample(slider, delta, points, out)
+    }
+}
+
+/// Any [`SimTerrain`] that answers [`SimTerrain::reshape_sample`]
+/// analytically (tests, replays and tools of The Architect without a
+/// generator): Enclosure moves the surface `0.15 x delta` u into the open
+/// (a positive delta grows rock everywhere, a negative one opens it),
+/// Density adds vertical pillars (radius `0.05 x delta` u, at most 3 u) on
+/// a 12 u grid, the other sliders give nothing. The level box (the
+/// terrain's bounds shrunk by 2 u) stays solid either way. Everything else
+/// is forwarded to `inner`.
+#[derive(Debug, Clone)]
+pub struct AnalyticReshape<T> {
+    pub inner: T,
+}
+
+impl<T> AnalyticReshape<T> {
+    pub fn new(inner: T) -> Self {
+        AnalyticReshape { inner }
+    }
+}
+
+impl<T: SimTerrain> TerrainQuery for AnalyticReshape<T> {
+    fn sdf(&self, p: Vec3) -> f32 {
+        self.inner.sdf(p)
+    }
+    fn bounds(&self) -> Aabb {
+        self.inner.bounds()
+    }
+    fn paint_colors_near(&self, center: Vec3, radius: f32) -> u8 {
+        self.inner.paint_colors_near(center, radius)
+    }
+}
+
+impl<T: SimTerrain> SimTerrain for AnalyticReshape<T> {
+    fn apply_edit(&mut self, edit: &TerrainEdit) {
+        self.inner.apply_edit(edit);
+    }
+    fn paint_coverage(&self) -> Option<PaintCoverage> {
+        self.inner.paint_coverage()
+    }
+    fn surface_states_near(&self, center: Vec3, radius: f32, now: u64) -> SurfaceStates {
+        self.inner.surface_states_near(center, radius, now)
+    }
+    fn material_at(&self, p: Vec3) -> u8 {
+        self.inner.material_at(p)
+    }
+    fn set_shell(&mut self, shell: Option<ShellSphere>) {
+        self.inner.set_shell(shell);
+    }
+    fn reshape_sample(&self, slider: u8, delta: i8, points: &[Vec3], out: &mut Vec<f32>) -> bool {
+        out.clear();
+        if delta == 0 || !matches!(slider, reshape_slider::ENCLOSURE | reshape_slider::DENSITY) {
+            return false;
+        }
+        let b = self.inner.bounds();
+        let inner_box = Aabb::new(b.min + Vec3::splat(2.0), b.max - Vec3::splat(2.0));
+        let d = delta as f32;
+        out.extend(points.iter().map(|&p| {
+            let base = self.inner.sdf(p);
+            let shaped = if slider == reshape_slider::ENCLOSURE {
+                base - 0.15 * d
+            } else if d > 0.0 {
+                let cell = 12.0;
+                let cx = det::floor(p.x / cell) * cell + 0.5 * cell;
+                let cz = det::floor(p.z / cell) * cell + 0.5 * cell;
+                let dx = p.x - cx;
+                let dz = p.z - cz;
+                let pillar = (dx * dx + dz * dz).sqrt() - (0.05 * d).min(3.0);
+                base.min(pillar)
+            } else {
+                base
+            };
+            // Solid outside the level box (`-inner_box.sdf`: negative outside).
+            shaped.min(-inner_box.sdf(p))
+        }));
+        true
     }
 }
 
@@ -387,6 +500,10 @@ impl<T: SimTerrain> SimTerrain for PaintedTerrain<T> {
 
     fn material_at(&self, p: Vec3) -> u8 {
         self.inner.material_at(p)
+    }
+
+    fn reshape_sample(&self, slider: u8, delta: i8, points: &[Vec3], out: &mut Vec<f32>) -> bool {
+        self.inner.reshape_sample(slider, delta, points, out)
     }
 
     fn paint_coverage(&self) -> Option<PaintCoverage> {

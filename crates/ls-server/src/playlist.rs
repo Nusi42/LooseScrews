@@ -48,14 +48,27 @@ use crate::server::{random_seed, ServerError};
 /// §3.1), each with the alternative file names it may land under, and its
 /// minimum player count. Ids without an embedded rule set yet are left out,
 /// so the default playlist grows as the mode rule sets land.
-pub const DEFAULT_ROTATION: [(&[&str], u8); 6] = [
+pub const DEFAULT_ROTATION: [(&[&str], u8); 7] = [
     (&["team_brawl"], 4),
     (&["the_squeeze", "squeeze"], 2),
     (&["paint_the_void"], 1),
     (&["hot_reactor"], 2),
     (&["heist"], 2),
     (&["last_color_standing"], 2),
+    // M4: one architect against 1-7 runners (2-8 players, see
+    // `default_max_players`).
+    (&["the_architect"], 2),
 ];
+
+/// Largest player count of a default rotation entry: The Architect is
+/// played by 2-8 (M4 plan §3.5), the others by up to
+/// [`MAX_ENTRY_PLAYERS`].
+pub fn default_max_players(id: &str) -> u8 {
+    match id {
+        "the_architect" => 8,
+        _ => MAX_ENTRY_PLAYERS,
+    }
+}
 
 /// Rule set id of the fallback entry when no entry fits the player count.
 pub const FALLBACK_RULES: &str = "team_brawl";
@@ -352,7 +365,7 @@ impl Playlist {
                 )?,
                 world: world.clone(),
                 min_players: min,
-                max_players: MAX_ENTRY_PLAYERS,
+                max_players: default_max_players(id),
             });
         }
         Playlist::new(entries)

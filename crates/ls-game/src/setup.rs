@@ -201,7 +201,14 @@ pub fn match_setup(
     rules: &RuleSet,
     terrain: &GameTerrain,
 ) -> Result<MatchSetup, GameError> {
-    let teams = rules.paint_the_void_rules().teams.clamp(1, 4);
+    // The Architect (free-for-all) runs from the team 0 end to an exit at
+    // the team 1 end: two ends are placed, only team 0's spawns kept.
+    let architect = rules.mode.kind() == ls_sim::ModeKind::TheArchitect;
+    let teams = if architect {
+        2
+    } else {
+        rules.paint_the_void_rules().teams.clamp(1, 4)
+    };
     let gen = terrain.generator();
     if let Some(belt) = gen.belt() {
         return Ok(belt_setup(code, teams, &gen, belt));
@@ -288,6 +295,10 @@ pub fn match_setup(
                 orientation: facing(centre - pos),
             });
         }
+    }
+
+    if architect {
+        spawns.retain(|s| s.team == 0);
     }
 
     let mut rng = Pcg32::from_seed(code.seed, RNG_STREAM_PICKUP_POINTS);

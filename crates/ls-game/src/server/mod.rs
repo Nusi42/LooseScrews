@@ -118,6 +118,13 @@ pub struct RoomStats {
     pub stale_epoch_inputs: u64,
     /// `ArchitectAction`s dropped because the queue was full.
     pub dropped_architect_actions: u64,
+    /// The Architect's strokes the world accepted
+    /// (`ls_sim::World::architect_action`).
+    pub architect_strokes: u64,
+    /// `ArchitectAction`s the world refused (not the architect, round over,
+    /// unknown kind, radius, range, cooldown, budget, ...: forged or stale
+    /// requests).
+    pub rejected_architect_actions: u64,
 }
 
 /// Most `ArchitectAction`s queued between two
@@ -342,10 +349,12 @@ impl Room {
     }
 
     /// The Architect's stroke requests (`Message::ArchitectAction`, protocol
-    /// 6) received since the last call, in order, with the sender's player.
-    /// The Architect mode (B4) validates kind, budget, cooldown, range and
-    /// radius and counts rejects; the room only checks that the values are
-    /// finite (the decoder does) and that the sender is a player.
+    /// 6) received since the last [`Room::step`] (or call), in order, with
+    /// the sender's player. [`Room::step`] hands them to the world before
+    /// each tick (`ls_sim::World::architect_action` validates role, round,
+    /// kind, radius, range, cooldown and budget; accepted and refused ones
+    /// are counted in [`RoomStats`]); the room itself only checks that the
+    /// values are finite (the decoder does) and that the sender is a player.
     pub fn take_architect_actions(&mut self) -> Vec<(PlayerId, ls_net::ArchitectActionMsg)> {
         std::mem::take(&mut self.architect_actions)
     }
@@ -712,6 +721,17 @@ impl Room {
             compensated: Vec::new(),
             snapshot: false,
         };
+        // The Architect's strokes, in arrival order, before the tick (the
+        // world refuses them once the match is over).
+        for (player, a) in std::mem::take(&mut self.architect_actions) {
+            match self
+                .world
+                .architect_action(&self.terrain, player, a.stroke, a.center, a.radius)
+            {
+                Ok(_) => self.stats.architect_strokes += 1,
+                Err(_) => self.stats.rejected_architect_actions += 1,
+            }
+        }
         if running && self.world.tick() + 1 == k {
             if self.cfg.lag_compensation {
                 report.compensated = lagcomp::plan_compensation(

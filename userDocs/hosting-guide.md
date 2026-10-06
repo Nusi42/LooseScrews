@@ -254,6 +254,7 @@ the [mode reference](reference/modes.md)):
 | `heist` | Heist: 2 teams (free-for-all for 1 to 3 players), first to 3 deliveries, 12 minutes |
 | `hot_reactor` | Hot Reactor: free-for-all, 3 lives, 20 s fuse |
 | `last_color_standing` | Last Color Standing: free-for-all, 100 colour, 34 per death, stalemate drain after 8 minutes |
+| `the_architect` | The Architect: 2-8 players, up to 3 rounds of 4 minutes; one architect reshapes the level with strokes, the others race for the exit |
 | `paint_the_void` | Paint the Void: 2 teams, 5 minutes; the only rule set with the Paint Thrower |
 | `instagib_brawl` | Team Brawl with the Instagib mutator: Railspike only, any hit kills |
 | `duel` | The duel rules: free-for-all Team Brawl, first to 10 kills or 5 minutes |
@@ -381,7 +382,7 @@ example:
   allowed, `match_secs` is above 0, `respawn_secs` and every mode setting at least 0, a mutator
   is listed once.
 - The team count fits the mode: Paint the Void 2 to 4; Team Brawl 0 (free-for-all) or 2 to 4;
-  Heist 0 or 2; The Squeeze, Hot Reactor and Last Color Standing 0 only.
+  Heist 0 or 2; The Squeeze, Hot Reactor, Last Color Standing and The Architect 0 only.
 - Mode settings make sense, for example Heist needs at least 1 delivery and a carrier speed of
   1 to 100%, Hot Reactor at least 1 life and a fuse above 0, The Squeeze at least one phase.
 
@@ -418,6 +419,7 @@ ban adds about three symbols. The built-in rules of each mode:
 | Heist | `LRAV-746S-WW00-03DB-4` |
 | Hot Reactor | `LRAV-749E-S600-040N-C` |
 | Last Color Standing | `LRAV-74AE-DC00-00PS-C` |
+| The Architect | `LRAV-74CF-5X00-04PD-W` |
 
 The editor has no mode picker yet: to edit another mode's rules, open it with that mode's code
 (`?editor=rules&rules=LRAV-7439-JH00-07NT-8`); it edits weapons, pickups, tuning and times, not
@@ -801,8 +803,8 @@ playlist.
 
 Without `--playlist` and `--ruleset`, the server rotates through the default playlist: Team
 Brawl (4 players or more), The Squeeze (2 or more), Paint the Void (1 or more), Hot Reactor,
-Heist and Last Color Standing (2 or more each), each on a new random world (or on `--code`'s
-world). `--ruleset` plays one rule set on one world in every match.
+Heist and Last Color Standing (2 or more each) and The Architect (2 to 8 players), each on a new
+random world (or on `--code`'s world). `--ruleset` plays one rule set on one world in every match.
 A team Heist with fewer than 4 players plays its free-for-all variant (every extraction zone
 counts for everyone).
 
@@ -1004,7 +1006,9 @@ the server list and invites over plain HTTP on one machine, not a TLS proxy.
 
 ## Not in this build yet
 
-- **Co-op modes and The Architect**, and a vote for the next mode (the rotation plays in order).
+- **Co-op modes**, and a vote for the next mode (the rotation plays in order). The Architect
+  plays (rules, rounds, strokes; the server refuses and counts invalid strokes), but the
+  architect's stroke controls in the browser come with a later build.
 - **No accounts, friends lists or ranked play.** Players are known by a random id their browser
   keeps; parties exist on one server only. A public directory is not run for you: host your own
   `ls-directory` (behind an HTTPS proxy for `https://` pages).

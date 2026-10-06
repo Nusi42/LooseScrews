@@ -17,7 +17,7 @@
 //! 6. ship trails (Borrowed Time history);
 //! 7. world physics (M4): radiation on belt levels, pigment pickups on
 //!    monochrome levels, ended dynamic wells, Instability's strain decay and
-//!    cave-ins;
+//!    cave-ins, The Architect's strokes and round changes;
 //! 8. mode: the mode's `on_tick` hook, then `end_check` (timer, scores,
 //!    eliminations; see [`crate::modes`]);
 //! 9. comedy director: mood, the running event's hooks, rolls (see
@@ -69,6 +69,10 @@ use crate::{
     Buttons, GadgetId, GadgetTable, InputCmd, RuleSet, ShieldInteraction, ShipTable, ShipTuning,
     ShipType, SimError, WeaponCost, WeaponDef, WeaponId, WeaponSlot, WeaponTable,
 };
+
+/// The Architect's strokes and rounds (M4): `World::architect_action` and
+/// the world side of the mode (`world/architect.rs`).
+mod architect;
 
 /// Distance (added to the ship radius) within which a ship collects a pickup.
 pub const PICKUP_RADIUS: f32 = 1.0;
@@ -3638,6 +3642,9 @@ impl World {
         if cfg.setup.instability > 0 {
             self.step_instability(cfg, terrain, now, events);
         }
+        if self.mode.architect.is_some() {
+            self.step_architect(cfg, terrain, now, events);
+        }
     }
 
     /// Radiation on belt levels: hull loss past shields, no kill credit.
@@ -3952,6 +3959,9 @@ fn hash_mode_extras(h: &mut StateHasher, m: &ModeState) {
         h.write_u64(v as u64);
     }
     h.write_u16(m.flags);
+    if let Some(a) = &m.architect {
+        a.hash_into(h);
+    }
 }
 
 fn hash_edit(h: &mut StateHasher, e: &TerrainEdit) {

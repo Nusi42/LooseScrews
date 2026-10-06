@@ -3,6 +3,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use ls_math::terrain::{SurfaceStates, TerrainEdit, TerrainQuery};
 use ls_math::{Aabb, Vec3};
@@ -67,7 +68,14 @@ pub struct GameTerrain {
     /// open space (terrain above [`SHELL_OPEN_BAND`]), one bit each;
     /// dropped on edits.
     open_blocks: BTreeMap<ChunkCoord, u64>,
+    /// Generators of the level with one slider moved (The Architect's
+    /// reshape strokes, [`SimTerrain::reshape_sample`]): `(slider, value)`,
+    /// the most recent [`RESHAPE_CACHE`] kept.
+    reshaped: RefCell<Vec<(u8, u8, Arc<Generator>)>>,
 }
+
+/// Reshaped generators [`GameTerrain`] keeps (a match uses a few).
+pub const RESHAPE_CACHE: usize = 4;
 
 impl GameTerrain {
     /// A pristine level for `gen`.
@@ -83,6 +91,7 @@ impl GameTerrain {
             shell: None,
             meshed_shell: None,
             open_blocks: BTreeMap::new(),
+            reshaped: RefCell::new(Vec::new()),
         }
     }
 
@@ -173,6 +182,46 @@ impl GameTerrain {
 
     pub fn share_code(&self) -> ShareCode {
         self.store.borrow().generator().code()
+    }
+
+    /// The level's generator with world slider `slider` (share-code order)
+    /// moved by `delta` (clamped to 0..=100): `None` for Verticality (its
+    /// box differs), an unknown slider or no change. Built once per
+    /// `(slider, value)` and cached ([`RESHAPE_CACHE`]).
+    pub fn reshaped_generator(&self, slider: u8, delta: i8) -> Option<Arc<Generator>> {
+        if slider == ls_sim::terrain::reshape_slider::VERTICALITY || slider >= 7 {
+            return None;
+        }
+        let (code, size) = {
+            let store = self.store.borrow();
+            (store.generator().code(), store.generator().size_chunks())
+        };
+        let mut values = code.sliders.to_array();
+        let cur = values[slider as usize];
+        let value = (cur as i16 + delta as i16).clamp(0, 100) as u8;
+        if value == cur {
+            return None;
+        }
+        if let Some((_, _, g)) = self
+            .reshaped
+            .borrow()
+            .iter()
+            .find(|(s, v, _)| *s == slider && *v == value)
+        {
+            return Some(Arc::clone(g));
+        }
+        values[slider as usize] = value;
+        let sliders = ls_worldgen::Sliders::from_array(values).ok()?;
+        let gen = Arc::new(match code.archetype {
+            ls_worldgen::Archetype::Classic => Generator::with_size(code.seed, sliders, size),
+            other => Generator::with_archetype(code.seed, sliders, other),
+        });
+        let mut cache = self.reshaped.borrow_mut();
+        if cache.len() >= RESHAPE_CACHE {
+            cache.remove(0);
+        }
+        cache.push((slider, value, Arc::clone(&gen)));
+        Some(gen)
     }
 
     /// Number of edits so far = sequence number of the next edit (on a late
@@ -665,6 +714,17 @@ impl SimTerrain for GameTerrain {
 
     fn material_at(&self, p: Vec3) -> u8 {
         GameTerrain::material_at(self, p).id()
+    }
+
+    /// The level's generator with the slider moved (same seed, archetype
+    /// and box; Verticality, which changes the box, is refused), cached.
+    fn reshape_sample(&self, slider: u8, delta: i8, points: &[Vec3], out: &mut Vec<f32>) -> bool {
+        out.clear();
+        let Some(gen) = self.reshaped_generator(slider, delta) else {
+            return false;
+        };
+        out.extend(points.iter().map(|&p| gen.sample(p)));
+        true
     }
 
     /// Coverage for simulation teams 0 and 1, cached until the next edit.
@@ -1243,5 +1303,59 @@ mod tests {
         let after = SimTerrain::paint_coverage(&t).unwrap();
         assert_eq!(after.team_cells[0], 0);
         assert!(after.team_cells[1] > 0);
+    }
+
+    /// The Architect's reshape sampling: the generator with one slider
+    /// moved, same seed and box; Verticality and no-change refused; cached.
+    #[test]
+    fn reshape_samples_the_generator_with_a_slider_moved() {
+        use ls_sim::terrain::reshape_slider::{DENSITY, ENCLOSURE, VERTICALITY};
+        let t = small_terrain(11);
+        let b = t.bounds();
+        let pts: Vec<Vec3> = (0..64)
+            .map(|i| {
+                let f = |k: u32| ((i * 37 + k * 11) % 64) as f32 / 64.0;
+                {
+                    let d = b.max - b.min;
+                    b.min + Vec3::new(d.x * f(1), d.y * f(2), d.z * f(3))
+                }
+            })
+            .collect();
+        let mut out = Vec::new();
+        assert!(SimTerrain::reshape_sample(
+            &t, ENCLOSURE, 40, &pts, &mut out
+        ));
+        assert_eq!(out.len(), pts.len());
+        let gen = Generator::with_size(11, Sliders::new(80, 30), [2, 2, 2]);
+        for (p, v) in pts.iter().zip(&out) {
+            assert_eq!(*v, gen.sample(*p), "the generator at Enclosure 80");
+        }
+        assert!(pts.iter().zip(&out).any(|(p, v)| *v != t.sdf(*p)));
+        // Density, cached per (slider, value).
+        assert!(SimTerrain::reshape_sample(&t, DENSITY, -30, &pts, &mut out));
+        assert!(SimTerrain::reshape_sample(
+            &t, ENCLOSURE, 40, &pts, &mut out
+        ));
+        assert_eq!(t.reshaped.borrow().len(), 2);
+        // Refused: the box would change, nothing changes, unknown slider.
+        assert!(!SimTerrain::reshape_sample(
+            &t,
+            VERTICALITY,
+            10,
+            &pts,
+            &mut out
+        ));
+        assert!(out.is_empty());
+        assert!(!SimTerrain::reshape_sample(
+            &t, ENCLOSURE, 0, &pts, &mut out
+        ));
+        assert!(!SimTerrain::reshape_sample(&t, 9, 10, &pts, &mut out));
+        let t2 = GameTerrain::new(Generator::with_size(11, Sliders::new(100, 0), [2, 2, 2]));
+        assert!(!SimTerrain::reshape_sample(
+            &t2, ENCLOSURE, 40, &pts, &mut out
+        ));
+        assert!(!SimTerrain::reshape_sample(
+            &t2, DENSITY, -40, &pts, &mut out
+        ));
     }
 }

@@ -39,17 +39,20 @@ pub enum ModeKind {
     Heist = 3,
     HotReactor = 4,
     LastColorStanding = 5,
+    /// M4: one architect moves the sliders live against the runners.
+    TheArchitect = 6,
 }
 
 impl ModeKind {
     /// Every mode in index order.
-    pub const ALL: [ModeKind; 6] = [
+    pub const ALL: [ModeKind; 7] = [
         ModeKind::PaintTheVoid,
         ModeKind::TeamBrawl,
         ModeKind::TheSqueeze,
         ModeKind::Heist,
         ModeKind::HotReactor,
         ModeKind::LastColorStanding,
+        ModeKind::TheArchitect,
     ];
 
     /// Stable index (rule set codes, wire).
@@ -70,6 +73,7 @@ impl ModeKind {
             ModeKind::Heist => "heist",
             ModeKind::HotReactor => "hot_reactor",
             ModeKind::LastColorStanding => "last_color_standing",
+            ModeKind::TheArchitect => "the_architect",
         }
     }
 
@@ -82,6 +86,7 @@ impl ModeKind {
             ModeKind::Heist => "rulesets/heist.ron",
             ModeKind::HotReactor => "rulesets/hot_reactor.ron",
             ModeKind::LastColorStanding => "rulesets/last_color_standing.ron",
+            ModeKind::TheArchitect => "rulesets/the_architect.ron",
         }
     }
 
@@ -94,6 +99,7 @@ impl ModeKind {
             ModeKind::Heist => "Heist",
             ModeKind::HotReactor => "Hot Reactor",
             ModeKind::LastColorStanding => "Last Color Standing",
+            ModeKind::TheArchitect => "The Architect",
         }
     }
 }
@@ -123,6 +129,14 @@ pub mod objective_kind {
     pub const EXTRACTION: u8 = 3;
     /// Hot Reactor: the reactor (`holder`, `timer_end` = detonation tick).
     pub const REACTOR: u8 = 4;
+    /// The Architect: the exit gate at the team 1 end (`pos`, `radius`;
+    /// `holder` = the round's architect; `state` and `timer_end` per
+    /// `modes::the_architect::exit_state`).
+    pub const EXIT: u8 = 5;
+    /// The Architect: a stroke (`pos`, `radius`, `holder` = the architect;
+    /// `state` = stroke kind | phase << 4, `timer_end` = the phase's end;
+    /// see `modes::the_architect`).
+    pub const STROKE: u8 = 6;
     /// Free for modules.
     pub const CUSTOM: u8 = 255;
 }
@@ -139,6 +153,12 @@ pub mod player_flags {
     pub const SPECTATOR: u8 = 1 << 1;
     /// Carries an objective (Heist core, Hot Reactor).
     pub const CARRIER: u8 = 1 << 2;
+    /// The Architect (M4): this player is the round's architect (no ship in
+    /// play; `meter` is the stroke budget).
+    pub const ARCHITECT: u8 = 1 << 3;
+    /// Reached the goal (The Architect's exit): out of play until the next
+    /// round, without a death.
+    pub const FINISHED: u8 = 1 << 4;
 }
 
 /// [`ModeView::flags`] bits: how clients present the mode.
@@ -181,9 +201,15 @@ impl Default for PlayerMode {
 }
 
 impl PlayerMode {
-    /// Eliminated or spectating: the ship does not respawn.
+    /// Eliminated, spectating, the architect or finished (M4): the ship is
+    /// out of play and does not respawn.
     pub fn is_out(&self) -> bool {
-        self.flags & (player_flags::ELIMINATED | player_flags::SPECTATOR) != 0
+        self.flags
+            & (player_flags::ELIMINATED
+                | player_flags::SPECTATOR
+                | player_flags::ARCHITECT
+                | player_flags::FINISHED)
+            != 0
     }
 }
 
@@ -269,6 +295,10 @@ pub struct ModeState {
     pub vars: [i64; 4],
     /// [`view_flags`] bits.
     pub flags: u16,
+    /// The Architect's rounds, roles, budget and strokes (M4; `None` in
+    /// every other mode; hashed when present).
+    #[serde(default)]
+    pub architect: Option<Box<crate::modes::the_architect::ArchitectState>>,
 }
 
 impl ModeState {
@@ -287,6 +317,7 @@ impl ModeState {
             objectives: Vec::new(),
             vars: [0; 4],
             flags: 0,
+            architect: None,
         }
     }
 
@@ -506,6 +537,6 @@ mod tests {
             assert_eq!(k.index() as usize, i);
             assert_eq!(ModeKind::from_index(i as u8), Some(*k));
         }
-        assert_eq!(ModeKind::from_index(6), None);
+        assert_eq!(ModeKind::from_index(7), None);
     }
 }

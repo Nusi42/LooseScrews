@@ -52,15 +52,6 @@ export const LEVEL_SCENES: readonly GalleryScene[] = [
     time: 1.0,
   },
   {
-    id: "belt-overview",
-    title: "Asteroid belt (Belt Up): the ring from above its outer edge",
-    covers: "belt",
-    world: { seed: 21, enclosure: 50, density: 60, verticality: 50, gravityChaos: 40, archetype: BELT },
-    pose: "belt",
-    content: "none",
-    time: 1.0,
-  },
-  {
     id: "belt-slot",
     title: "Asteroid belt: a start slot looking along the racing line",
     covers: "belt",

@@ -8,6 +8,7 @@ import type { SceneDecor } from "./decor.ts";
 import { LEVEL_SCENES } from "./levelScenes.ts";
 import { MOOD_SCENES, type WorldSceneKind } from "./moodScenes.ts";
 import type { ModeSceneKind } from "./modeScenes.ts";
+import { RACE_SCENES, type RaceSceneKind } from "./raceScenes.ts";
 
 /**
  * World of a scene: the share code is `randomShareCode(seed, 0, enclosure,
@@ -67,7 +68,7 @@ export type PoseKind = "closeup" | "tunnel" | "vista" | "border" | "sun" | "plan
  * one flies (weaponScenes.ts, M4 B7), `paperweight-wall` the same with the
  * landed stone on the rock ahead.
  */
-export type SceneContent = "none" | "lineup" | "fight" | "lights" | "explosion" | "stress" | "fit" | "charge" | "cloak" | "mode" | "shadow" | "paperweight" | "paperweight-wall" | "world";
+export type SceneContent = "none" | "lineup" | "fight" | "lights" | "explosion" | "stress" | "fit" | "charge" | "cloak" | "mode" | "shadow" | "paperweight" | "paperweight-wall" | "world" | "race";
 
 /** Radius of the `fit` scene's tunnel (u): 1.2 u across. */
 export const FIT_TUNNEL_RADIUS = 0.6;
@@ -109,6 +110,8 @@ export interface GalleryScene {
   mode?: ModeSceneKind;
   /** "world" content: which world visual (M4 B5, moodScenes.ts / worldScenes.ts). */
   worldFx?: WorldSceneKind;
+  /** "race" content: which Belt Up scene (M4 C7, raceScenes.ts). */
+  race?: RaceSceneKind;
   /**
    * A fixed camera instead of the picked pose, for scenes whose before and
    * after shots must match while the meshes (and so the picked pose) change
@@ -415,6 +418,8 @@ export const SCENES: readonly GalleryScene[] = [
   { id: "results", title: "Results: free-for-all, no event titles", covers: "results, M4 B3", world: BACKDROP, pose: "tunnel", content: "none", time: 12.0, page: "results", results: { awards: false } },
   { id: "results-hat-baron", title: "Results: the Hat Baron (Hat rain)", covers: "results, Hat rain, M4 B3", world: BACKDROP, pose: "tunnel", content: "none", time: 12.0, page: "results", results: { awards: true } },
   { id: "results-hat-baron-teams", title: "Results: the Hat Baron in a team match, the own pilot", covers: "results, Hat rain, M4 B3", world: BACKDROP, pose: "tunnel", content: "none", time: 12.0, page: "results", results: { awards: true, teams: true } },
+  // M4 C7: Belt Up's world look, race HUD and gallery strip.
+  ...RACE_SCENES,
   { id: "workshop-belt", title: "World workshop: an asteroid belt, hosting as Belt Up", covers: "world workshop, Belt Up", world: BACKDROP, pose: "tunnel", content: "none", time: 8.0, page: "workshop", workshop: { seed: "77", sliders: [50, 60, 50, 30, 0, 30, 20], archetype: "belt", host: true } },
 ];
 
@@ -445,6 +450,8 @@ export const PASS_BUDGETS_MS: Readonly<Record<string, number>> = {
   ink: 0.8,
   // M4 B5: gravity wells (lensing, glow, core stone), cave-in cracks and rubble (wells.ts; only the rectangle they cover).
   wells: 0.4,
+  // M4 C7: Belt Up's dust band, aurora, gates, exit portal and sign, glints and the screen-edge radiation (belt.ts).
+  belt: 0.8,
   // FI: the hull view behind the ship cards (attract/shipBay.ts; its own small canvas, "medium").
   bay: 0.8,
 };

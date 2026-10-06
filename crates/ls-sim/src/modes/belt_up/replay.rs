@@ -269,7 +269,7 @@ pub fn belt_up_replay() -> BeltUpReplay {
                     attacker: None,
                     amount,
                     ..
-                } if amount == crate::boulders::BoulderSettings::builtin().damage => {
+                } if amount == crate::obstacle::BoulderSettings::builtin().damage => {
                     out.boulder_hits += 1
                 }
                 _ => {}

@@ -649,9 +649,9 @@ fn step_ship<T: TerrainQuery + ?Sized>(
     // Drifting boulders (belt levels), as `World::step` pushes the ship
     // after its movement.
     if let Some(belt) = &env.belt {
-        ls_sim::boulders::push_sphere(
+        ls_sim::obstacle::push_boulders(
             belt,
-            ls_sim::boulders::BoulderSettings::builtin(),
+            ls_sim::obstacle::BoulderSettings::builtin(),
             now,
             &mut s.pos,
             &mut s.vel,

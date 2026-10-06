@@ -78,6 +78,8 @@ export interface ResultsModel {
   /** Titles from comedy events (Hat Baron), in award order. */
   titles: ResultTitle[];
   scoreLabel: string;
+  /** Unit after the podium scores (" pts" in Belt Up, else ""). */
+  scoreUnit: string;
   rows: ResultLine[];
   footer: string;
 }
@@ -153,6 +155,11 @@ export function resultsModel(i: ResultsInput): ResultsModel {
     else subtitle = `${teamName(r.winner)} ${paint ? "painted the most" : "wins"} · ${scores.join(" – ")}`;
   } else if (draw) {
     subtitle = "Nobody came out on top";
+  } else if (r.mode === "belt_up") {
+    // Belt Up (M4 C7): points over the heats.
+    const who = winnerRow ? nameOf(winnerRow.id, winnerRow.name) : "The winner";
+    const pts = winnerRow?.score ?? 0;
+    subtitle = winnerRow?.id === i.own ? `You rule the belt with ${pts} points` : `${who} rules the belt with ${pts} points`;
   } else {
     const who = winnerRow ? nameOf(winnerRow.id, winnerRow.name) : "The winner";
     subtitle = winnerRow?.id === i.own ? `You win with ${winnerRow.score} · ${info.name}` : `${who} wins with ${winnerRow?.score ?? 0}`;
@@ -216,6 +223,7 @@ export function resultsModel(i: ResultsInput): ResultsModel {
     podium: teamsMode ? [] : rows.slice(0, 3),
     titles,
     scoreLabel: info.scoreLabel,
+    scoreUnit: r.mode === "belt_up" ? " pts" : "",
     rows,
     footer,
   };
@@ -331,7 +339,7 @@ export class ResultsScreen {
         const step = el("div", `results-step place-${p.place}${p.you ? " you" : ""}`);
         step.style.setProperty("--side", p.color);
         el("div", "results-step-name", step).textContent = p.you ? `${p.name} (you)` : p.name;
-        el("div", "results-step-score", step).textContent = String(p.score);
+        el("div", "results-step-score", step).textContent = `${p.score}${model.scoreUnit}`;
         el("div", "results-step-block", step).textContent = String(p.place);
         return [step];
       }),

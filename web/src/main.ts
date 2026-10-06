@@ -94,6 +94,7 @@ import { audioEngine, MatchAudio } from "./audio/index.ts";
 import { wantsWorldFx, WorldVisuals } from "./game/worldFx.ts";
 import type { PointLight } from "./renderer/lights.ts";
 import { showAudioDemo, wantsAudioDemo } from "./audio/demo.ts";
+import { RaceClient } from "./game/race/index.ts";
 
 /** Largest frame time passed to the simulation; longer stalls (tab switch) are clamped. */
 const MAX_FRAME_DT = 0.1;
@@ -323,6 +324,8 @@ function runGame(
     const audio = new MatchAudio(ui, game.shareCode);
     // World visuals (M4 B5): gravity wells, cave-ins, pigment, the level's mood; `?worldfx=off` skips them.
     const world = new WorldVisuals(particles, wantsWorldFx(location), audioEngine());
+    // Belt Up (M4 C7): the belt's look on belt levels, the race HUD in Belt Up.
+    const race = new RaceClient(ui, particles, audioEngine());
     let worldShake = 0;
     let mono = 0;
     let shipBayOpen = false;
@@ -384,6 +387,7 @@ function runGame(
       lobby.dispose();
       audio.dispose();
       world.dispose();
+      race.dispose();
       delete ui.dataset["stage"];
       delete ui.dataset["matches"];
       overlay.dispose();
@@ -461,6 +465,7 @@ function runGame(
         charging.forget();
         modeVfx?.reset();
         world.reset();
+        race.reset();
         audio.newMatch(game.shareCode);
         mono = 0;
         particles?.clear();
@@ -506,6 +511,9 @@ function runGame(
         spectator ??= new SpectatorCamera(camera.current);
         const s = session.controls.settings;
         spectator.update(dt, state, r.ships, s.lookSensitivity, game.bounds(), s.invertY);
+        // Belt Up: a finished racer watches the leader (until they take the camera over).
+        const lead = race.followTarget(r.mode, r.ships, spectator.following, state.fireSecondary);
+        if (lead !== null) spectator.mode = { kind: "follow", id: lead };
       } else {
         spectator = null;
       }
@@ -626,6 +634,29 @@ function runGame(
       addModeProps(scene, modeInput);
       const worldLights: PointLight[] = [...wf.lights];
       world.addToScene(scene, r.entities, time, r.mode.teams, worldLights);
+      race.frame(
+        {
+          game,
+          time,
+          dt,
+          view,
+          mode: r.mode,
+          pose: r.pose,
+          ships: r.ships,
+          names,
+          ownColor: playerStyleFor(r.mode, r.mode.teams)?.(game.player, game.team)?.color ?? teamHull(game.team, r.mode.teams),
+          hull: r.hud.hull ?? 0,
+          hullMax: r.hud.hullMax ?? 100,
+          spectating: flow.spectating,
+          quiet: flow.showResults || flow.showLobby,
+          width: canvas.clientWidth,
+          height: canvas.clientHeight,
+          say: (t) => audio.announcer.say(t),
+        },
+        renderer,
+        scene,
+        worldLights,
+      );
       renderer.setScene(scene);
       renderer.setModeVolumes(modeVolumes(modeInput));
       renderer.setWorldVolumes(wf.volumes);

@@ -25,7 +25,7 @@ the game's data files, so those pages always match the build.
 - [Pickups and wrecks](#pickups-and-wrecks)
 - [Game modes](#game-modes): [Paint the Void](#paint-the-void), [Team Brawl](#team-brawl),
   [The Squeeze](#the-squeeze), [Heist](#heist), [Hot Reactor](#hot-reactor),
-  [Last Color Standing](#last-color-standing), [The Architect](#the-architect),
+  [Last Color Standing](#last-color-standing), [The Architect](#the-architect), [Belt Up](#belt-up),
   [Instagib](#instagib), [duels](#duels)
 - [Between matches: the lobby](#between-matches-the-lobby)
 - [Share codes, rule set codes and the rule set editor](#share-codes-rule-set-codes-and-the-rule-set-editor)
@@ -848,6 +848,46 @@ moves on every round in the order the pilots joined.
   if at least half of them got out.
 - After the last round, the pilot with the **most points** (as runner and as architect) wins;
   equal points are a draw.
+
+### Belt Up
+
+A race for 2 to 8 pilots around an **asteroid belt**: a flat ring of asteroids around an open
+centre with the **EXIT** in the middle. A match is **three heats** on the same belt.
+
+- **Start.** Everyone waits in a start slot of their own (all 8 slots fly exactly the same
+  course). Five **red lights** come on over your slot, one by one (also at the top of the
+  screen); when they all go out, the announcer shouts **"Belt up!"** and you race. Your slot
+  moves on by one each heat.
+- **The lap.** Fly one lap **counter-clockwise** (seen from above) through the **8 gates**:
+  glowing arches across the belt, numbered in *your* order (1 to 8; your own start gate is 8
+  and wears a chequered band). The next gate breathes brightly, gates you passed dim to your
+  colour. Gates count above and below the belt too, but not across the hot centre. Flying the
+  wrong way flashes **WRONG WAY**.
+- **The EXIT.** After the eighth gate the giant green **EXIT** sign and its swirling portal
+  (visible from everywhere) are open for you: dive to the centre and fly into the portal to
+  finish. Finished pilots watch the race: the camera follows the leader (left mouse button:
+  the next ship, right: a free camera).
+- **Radiation.** The belt shelters you; outside it radiation burns your **hull**, faster the
+  farther out (from 2 hull/s at the belt's surface up to 16 hull/s), past any Shield. The sky
+  above and below the belt glows with **aurora** where it is hot, your screen edges crackle
+  with static, an irradiated ship sizzles, and the **radiation meter** above your weapons
+  shows the dose and how long your hull lasts at it, with a Geiger counter ticking faster the
+  hotter it gets. The open line is fast, the belt line is full of rock: pick yours. Shooting
+  asteroids for scrap (hold R to scavenge) is how you repair on the way.
+- **Dying** costs time, never helps: you come back at the last gate you passed after a 4 s
+  hold, with the hull you had there (at least 30 %).
+- **Rivals.** Ships **bump** each other (heavier ships push harder), **drifting boulders**
+  orbit through the belt and push you around (a fast hit hurts), and every weapon works: Magnet
+  Sneeze pulls the racer ahead back, Swap Harpoon trades places, mines in the racing line, and
+  the **Paperweight** (a stone that becomes a small gravity well for 6 s) bends everyone's line.
+- **The race HUD.** Your place (P3/8), the heat, your points, the race clock and the gaps to
+  the racers ahead and behind (in seconds) at the top left; the distance to the EXIT along the
+  course; a marker on your next gate (or the EXIT); a ring map of the belt with every racer as
+  a dot in their colour at the right.
+- **Points.** A heat ends when everyone finished, 30 s after the first finisher or after 3
+  minutes. Places score 10, 8, 6, 5, 4, 3, 2 and 1 points (finishers by time, the rest by how
+  far they got); the heat results show between heats, and after the third heat the podium.
+  Most points wins; kills score nothing.
 
 ### Instagib
 

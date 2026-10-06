@@ -254,7 +254,7 @@ impl Harness {
         }
         if let Some(belt) = &self.room.world().setup().belt {
             for s in self.room.world().ships().filter(|s| s.alive) {
-                let touching = ls_game::ls_sim::boulders::poses(belt, report.tick)
+                let touching = ls_game::ls_sim::obstacle::boulder_poses(belt, report.tick)
                     .any(|(c, r)| c.distance(s.pos) < r + 0.6);
                 self.boulder_contacts += touching as usize;
             }

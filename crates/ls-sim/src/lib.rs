@@ -34,7 +34,6 @@
 //! This crate is deterministic: follow the rules in `CLAUDE.md`.
 
 pub mod behavior;
-pub mod boulders;
 pub mod data;
 pub mod director;
 pub mod entity;

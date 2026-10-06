@@ -24,6 +24,7 @@ import {
 import { buildProp, crateModel, gadgetModel, harpoonModel, mineModel, paperweightModel, rocketModel, upgradeModel } from "./props.ts";
 import { coreModel, reactorModel } from "./modeProps.ts";
 import { pigmentDropModel } from "./worldProps.ts";
+import { boulderMesh, gantryMesh, pebbleMesh } from "./raceProps.ts";
 import { hullOf } from "./ships.ts";
 import { wreckModel } from "./wrecks.ts";
 
@@ -56,7 +57,10 @@ export type MeshKind =
   | "core"
   | "reactor"
   | "paperweight"
-  | "pigment";
+  | "pigment"
+  | "boulder"
+  | "pebble"
+  | "gantry";
 
 /** Hull mesh of a ship type (unknown types: the Tinker's). */
 export function shipMeshKind(shipType: number): ShipMeshKind {
@@ -102,6 +106,10 @@ export const MESH_BUILDERS: Readonly<Record<MeshKind, () => MeshData>> = {
   paperweight: buildProp(paperweightModel),
   // M4 B5: the pigment drop (worldProps.ts).
   pigment: buildProp(pigmentDropModel),
+  // M4 C7: Belt Up's drifting boulders, the belt's pebbles and the start-light gantry (raceProps.ts).
+  boulder: boulderMesh,
+  pebble: pebbleMesh,
+  gantry: gantryMesh,
 };
 
 /** The pre-VQ4 primitives for every kind (one dart for all hulls, one wreck). */
@@ -132,6 +140,9 @@ export const LEGACY_MESH_BUILDERS: Readonly<Record<MeshKind, () => MeshData>> = 
   reactor: () => sphereMesh(1),
   paperweight: () => sphereMesh(1),
   pigment: () => sphereMesh(1),
+  boulder: debrisMesh,
+  pebble: debrisMesh,
+  gantry: crateMesh,
 };
 
 export const MESH_KINDS = Object.keys(MESH_BUILDERS) as MeshKind[];

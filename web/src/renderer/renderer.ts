@@ -28,6 +28,7 @@ import { HullFrame } from "./hullFrame.ts";
 import { InkPass, needsLinePass, NO_INK } from "./ink.ts";
 import { ModeFxPass, type ModeVolume } from "./modeFx.ts";
 import { WellsPass, type WorldVolume } from "./wells.ts";
+import { BeltPass, type BeltLook } from "./belt.ts";
 import { GpuMesh, type MeshData } from "./mesh.ts";
 import { LEGACY_MESH_BUILDERS, MESH_BUILDERS, MESH_KINDS, SHIP_MESH_KINDS, WRECK_MESH_KINDS, type MeshKind } from "./models/index.ts";
 import { ParticleSystem } from "./particles.ts";
@@ -329,6 +330,9 @@ export class Renderer {
   /** World effects (M4 B5, wells.ts): gravity wells, cave-in cracks and rubble from `setWorldVolumes`. */
   private readonly wells: WellsPass;
   private worldVolumes: readonly WorldVolume[] = [];
+  /** Belt Up's look (M4 C7, belt.ts): dust band, aurora, gates, exit, glints, screen radiation; null on classic levels. */
+  private readonly belt: BeltPass;
+  private beltLook: BeltLook | null = null;
   private depthTexture: GPUTexture | null = null;
   private msaaTexture: GPUTexture | null = null;
   private startTime = performance.now();
@@ -455,6 +459,7 @@ export class Renderer {
     this.particles = particles ? new ParticleSystem(device, this.frameBuffer, this.qualityLevel.particles) : null;
     this.modeFx = new ModeFxPass(device);
     this.wells = new WellsPass(device);
+    this.belt = new BeltPass(device);
     this.ink = new InkPass(device);
 
     this.timer = GpuTimer.create(device);
@@ -689,6 +694,11 @@ export class Renderer {
    * This frame's world effect volumes (M4 B5: gravity wells, cave-in
    * warnings, rubble; game/worldFx.ts builds them). Kept until the next call.
    */
+  /** This frame's Belt Up look (M4 C7, game/race/raceFx.ts); null skips the belt passes. */
+  setBelt(look: BeltLook | null): void {
+    this.beltLook = look;
+  }
+
   setWorldVolumes(volumes: readonly WorldVolume[]): void {
     this.worldVolumes = volumes;
   }
@@ -779,7 +789,7 @@ export class Renderer {
           depthClearValue: 1,
           depthLoadOp: first ? "clear" : "load",
           // The particle pass (soft particles), the volumetric shafts, the mode effects and the cloak pass read the depth after the scene.
-          depthStoreOp: last && !this.particles && quality.volumetric.divisor === 0 && refracted === 0 && this.modeVolumes.length === 0 && this.worldVolumes.length === 0 && !needsLinePass(this.settings.post.ink) ? "discard" : "store",
+          depthStoreOp: last && !this.particles && quality.volumetric.divisor === 0 && refracted === 0 && this.modeVolumes.length === 0 && this.worldVolumes.length === 0 && this.beltLook === null && !needsLinePass(this.settings.post.ink) ? "discard" : "store",
         },
       });
       pass.setBindGroup(0, this.bindGroup);
@@ -830,6 +840,8 @@ export class Renderer {
     this.modeFx.encode(encoder, sceneView, this.depthTexture!, camera, size, this.modeVolumes, time, this.settings.fogDensity, timer);
     // M4 B5: wells bend and light what lies behind them; cave-in cracks and rubble on the rock.
     this.wells.encode(encoder, this.post.sceneHdr, this.depthTexture!, camera, viewProj, this.worldVolumes, time, this.settings.fogDensity, timer);
+    // M4 C7: Belt Up's dust band, aurora, gates and exit over the backdrop, under the particles.
+    this.belt.encode(encoder, sceneView, this.depthTexture!, camera, size, this.beltLook, time, this.settings.fogDensity, this.lightSun, this.atmosphere?.sunColor ?? [1, 0.95, 0.88], viewProj, timer);
     // Cloaked ships bend the finished backdrop (VQP); particles draw over them.
     this.cloak.encode(encoder, this.post.sceneHdr, this.depthTexture!, this.bindGroup, camera.orientation, refracted, (p) => {
       for (const batch of this.batches.refract.values()) {
@@ -840,6 +852,8 @@ export class Renderer {
     }, timer);
     // Particles after the sky and shafts: smoke and glows draw over the finished backdrop.
     this.particles?.encode(encoder, sceneView, this.depthTexture!, camera, { width: this.canvas.width, height: this.canvas.height }, timer);
+    // M4 C7: an irradiated ship's screen edges (static, chromatic fringe) over everything but the HUD.
+    this.belt.encodeRadiation(encoder, this.post.sceneHdr, this.beltLook, time, timer);
     // M4 A7: the Palette slider's outlines and hatching from the finished scene and its depth.
     const inkLook = this.settings.post.ink;
     const lines = needsLinePass(inkLook)
@@ -869,6 +883,7 @@ export class Renderer {
     this.particles?.destroy();
     this.modeFx.destroy();
     this.wells.destroy();
+    this.belt.destroy();
     this.ink.destroy();
     this.sky.destroy();
     this.timer?.destroy();

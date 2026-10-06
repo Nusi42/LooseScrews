@@ -406,7 +406,7 @@ state, so pre-M4 replays keep their hashes.
 ### Kinematic obstacles (`ls_sim::obstacle`, M4 B3)
 
 Spheres moved by a pure function of the tick and replicated state (Duck parade's ducks;
-Belt Up's boulders reuse the code). The running event's `EventModule::obstacles` lists them
+Belt Up's boulders share its contact rule, `obstacle::push_boulders`, evaluated per ship from the orbits instead of a per-tick list). The running event's `EventModule::obstacles` lists them
 (`director::obstacles(view, seed, tick, setup)`); `World::step` collects them at the start of
 each tick and the client predictor computes the same list. They ignore rock, **push ships**
 (`obstacle::push_sphere`, after the ship's movement: out along the centre line unless that puts
@@ -511,15 +511,15 @@ events (the HUD reads hull and `ls_sim::radiation::dose_rate`). Belt Up scales i
 set's `radiation_scale` while racing and 0 in the start lights and heat results; clients get the
 same scale from `ClientSession::radiation_scale` (rule set plus the race phase).
 
-### Drifting boulders (`ls_sim::boulders`, `data/world/boulders.ron`)
+### Drifting boulders (`ls_sim::obstacle`, `data/world/boulders.ron`)
 
 On levels with a belt only: `BeltSite::boulders` (`BoulderOrbit`, position a pure function of
 the tick, never replicated). After its movement (and the event movement effects) every living
-ship sphere is pushed out of the boulders it overlaps (`boulders::push_sphere`: onto the surface,
+ship sphere is pushed out of the boulders it overlaps (`obstacle::push_boulders`: onto the surface,
 the inward velocity relative to the boulder reversed with restitution 0.3); the client predictor
 applies the same push, so contacts never cost a correction. A contact faster than 8 u/s along the
 normal deals 8 damage without a killer (server only). Projectiles end on a boulder
-(`boulders::segment_hit`, before ship, entity and terrain hits when nearer): an `Impact` event
+(`obstacle::boulder_hit`, before ship, entity and terrain hits when nearer): an `Impact` event
 without target, and ordnance with splash detonates (`Command::Splash`) without a crater.
 
 ### Belt Up race (`ls_sim::modes::belt_up`)

@@ -169,6 +169,13 @@ export function modeHudModel(i: ModeHudInput): ModeHudModel {
     }
   }
   if (!warmup && m.mode === "last_color_standing" && m.stage > 0) stage = "Stalemate · every pilot's colour drains";
+  // Belt Up (M4 C7): the heat and its phase; the race HUD (ui/raceHud.ts) has the race clock.
+  const race = m.mode === "belt_up" ? m.race : null;
+  if (!warmup && race) {
+    stage = beltUpStage(race, i.nowTick);
+    // The race HUD shows the place in the race; here the match points.
+    if (own) ownLine = `You · ${own.score} ${own.score === 1 ? "point" : "points"}`;
+  }
 
   // Objectives that concern the own ship.
   if (!warmup && m.running && !i.spectating) alerts.push(...objectiveAlerts(i, sq));
@@ -186,8 +193,9 @@ export function modeHudModel(i: ModeHudInput): ModeHudModel {
   const timerSecs = Math.max(0, i.timeLeft);
   return {
     title: warmup ? "Warm-up" : instagib ? `${info.name} · Instagib` : info.name,
-    timer: warmup || !m.running ? "" : formatTimer(timerSecs),
-    timerUrgent: !warmup && m.running && timerSecs > 0 && timerSecs <= 30,
+    // Belt Up's match timer is only a safety cap: the heats keep the time.
+    timer: warmup || !m.running || race ? "" : formatTimer(timerSecs),
+    timerUrgent: !warmup && m.running && !race && timerSecs > 0 && timerSecs <= 30,
     target,
     stage,
     chips,
@@ -197,6 +205,22 @@ export function modeHudModel(i: ModeHudInput): ModeHudModel {
     alerts,
     instagib,
   };
+}
+
+/** Belt Up's stage line: the heat and its phase ("Heat 2/3 · start lights", "Heat 2/3 · 1:42 left", "Heat results · next heat in 6 s"). */
+export function beltUpStage(race: NonNullable<ModeState["race"]>, nowTick: number): string {
+  const heat = `Heat ${race.heat + 1}/${race.heats}`;
+  const left = secsUntil(race.phaseEndTick, nowTick);
+  switch (race.phase) {
+    case "lights":
+      return `${heat} · start lights`;
+    case "racing":
+      return left > 0 ? `${heat} · ${formatTimer(left)} left` : heat;
+    case "results":
+      return race.heat + 1 < race.heats ? `${heat} results · next heat in ${Math.ceil(left)} s` : `${heat} results · podium next`;
+    default:
+      return `${heat} · race over`;
+  }
 }
 
 /** What wins, per mode ("First to 15 kills", "3 deliveries win", "Last ship flying wins"). */

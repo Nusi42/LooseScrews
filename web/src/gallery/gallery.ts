@@ -41,6 +41,8 @@ import { pickCloseup, pickCorner, pickLongest, pickVista, probeAround, raycast, 
 import { FIT_TUNNEL_RADIUS, needsWorldCode, sceneById, worldSliders, type GalleryScene } from "./scenes.ts";
 import { levelPose } from "./levelScenes.ts";
 import { prepareWorldScene, runWorldScene, type WorldPrep } from "./worldScenes.ts";
+import { prepareRaceScene, runRaceScene, type RacePrep } from "./raceSceneRun.ts";
+import { beltFromLevel, parseBelt } from "../game/race/course.ts";
 import { applyDecor, decorSpots, pickBorder, type DecorSpot } from "./decor.ts";
 import { explosionAt, simulateVfx } from "./vfxScenes.ts";
 import { pickShadePose, pickSunWallPose } from "./shadePose.ts";
@@ -451,7 +453,7 @@ export async function runGallery(canvas: HTMLCanvasElement, ui: HTMLElement, loc
         : api.randomShareCode(w.seed, 0, w.enclosure, w.density);
     const game = api.Game.practice(status.shareCode, 0);
     // The belt overview sees the whole level.
-    if (scene.pose === "belt" || scene.pose === "centre" || scene.pose === "rise") game.setViewRadius(600);
+    if (scene.pose === "belt" || scene.pose === "centre" || scene.pose === "rise" || scene.content === "race") game.setViewRadius(600);
     game.frame(0, new Float32Array(CONTROLS_LEN));
     const spawn = parsePose(game.localPose());
     const origin = spawn?.position ?? boundsCenter(game.bounds());
@@ -525,6 +527,16 @@ export async function runGallery(canvas: HTMLCanvasElement, ui: HTMLElement, loc
       pose.position = worldPrep.pose.position;
       pose.orientation = worldPrep.pose.orientation;
       if (worldPrep.edited) loader.reset(game);
+    }
+    // M4 C7 race scenes: the camera from the belt (clear of the asteroids).
+    let racePrep: RacePrep | null = null;
+    if (scene.content === "race" && scene.race) {
+      const belt = parseBelt(game.beltSite?.()) ?? beltFromLevel(api.levelBelt?.(status.shareCode) ?? []);
+      if (belt) {
+        racePrep = prepareRaceScene(scene.race, belt, (o, d, max) => raycast(rayMeshes.values(), o, d, max)?.t ?? -1);
+        pose.position = racePrep.pose.position;
+        pose.orientation = racePrep.pose.orientation;
+      }
     }
     // `?roomfade=off`: rock cut off sharply at the hidden walls (pre-VQP).
     renderer.roomFade = new URLSearchParams(loc.search).get("roomfade") !== "off";
@@ -614,6 +626,22 @@ export async function runGallery(canvas: HTMLCanvasElement, ui: HTMLElement, loc
         center: boundsCenter(game.bounds()),
         lights,
       });
+    } else if (scene.content === "race" && scene.race && racePrep) {
+      status.particles = runRaceScene({
+        kind: scene.race,
+        renderer,
+        game,
+        prep: racePrep,
+        time: scene.time,
+        visuals,
+        particles,
+        ui,
+        canvas,
+        ray: (o, d, max) => raycast(rayMeshes.values(), o, d, max)?.t ?? -1,
+        enabled: new URLSearchParams(loc.search).get("racefx") !== "off",
+        lights,
+        shareCode: status.shareCode,
+      });
     } else {
       const content = sceneContent(scene, pose, visuals, impact, lights, particles !== null && scene.content !== "lights", wallAhead);
       // Pigmented hulls (M4 A7 keep mask): their colour survives the monochrome ink.
@@ -623,7 +651,7 @@ export async function runGallery(canvas: HTMLCanvasElement, ui: HTMLElement, loc
       }
       renderer.setScene(content);
     }
-    if (particles && scene.content !== "mode" && scene.content !== "world") {
+    if (particles && scene.content !== "mode" && scene.content !== "world" && scene.content !== "race") {
       // VQ5: the particles of the scene's synthetic history up to its time (vfxScenes.ts).
       // Scenes whose effects come only from VQ5 also take its effect lights (VQ6
       // pulses); the fight and lights scenes emit theirs in sceneContent.

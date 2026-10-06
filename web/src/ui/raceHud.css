@@ -1,0 +1,565 @@
+/* M4 C7: Belt Up's race HUD (ui/raceHud.ts). */
+
+.race-hud {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  font-variant-numeric: tabular-nums;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.75);
+}
+
+.race-hud .hidden,
+.race-hud.hidden {
+  display: none !important;
+}
+
+/* Start lights: five red lamps in a dark housing, all green and "BELT UP!" at the go. */
+.race-lights {
+  position: absolute;
+  top: 132px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: grid;
+  justify-items: center;
+  gap: 10px;
+}
+
+.race-lamps {
+  display: flex;
+  gap: 14px;
+  padding: 12px 18px;
+  border-radius: 18px;
+  background: linear-gradient(180deg, #1b1e26, #0b0d12);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+}
+
+.race-lamp {
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 40% 35%, #3a1514, #170707 70%);
+  box-shadow: inset 0 -3px 8px rgba(0, 0, 0, 0.7);
+  transition: background 0.05s, box-shadow 0.05s;
+}
+
+.race-lamp.on {
+  background: radial-gradient(circle at 40% 35%, #ffd2c8, #ff3a22 35%, #b30d05 75%);
+  box-shadow: 0 0 22px 6px rgba(255, 50, 20, 0.75), 0 0 60px 10px rgba(255, 40, 10, 0.35), inset 0 -3px 8px rgba(80, 0, 0, 0.6);
+}
+
+.race-lights.go .race-lamp.on {
+  background: radial-gradient(circle at 40% 35%, #e4ffe0, #3cff6a 35%, #0e9b2c 75%);
+  box-shadow: 0 0 22px 6px rgba(60, 255, 110, 0.75), 0 0 60px 10px rgba(40, 255, 90, 0.35), inset 0 -3px 8px rgba(0, 60, 10, 0.6);
+}
+
+.race-go {
+  font-size: 54px;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  color: #eaffef;
+  text-shadow: 0 0 18px rgba(60, 255, 110, 0.9), 0 3px 0 #0b5f1f, 0 6px 14px rgba(0, 0, 0, 0.6);
+  opacity: 0;
+  transform: scale(0.6);
+}
+
+.race-lights.go .race-go {
+  opacity: 1;
+  transform: scale(1);
+  transition: opacity 0.12s, transform 0.25s cubic-bezier(0.2, 1.6, 0.4, 1);
+}
+
+/* Position card: below the mood badge at the top left. */
+.race-card {
+  position: absolute;
+  top: 118px;
+  left: 18px;
+  min-width: 210px;
+  padding: 10px 14px 11px;
+  border-radius: var(--radius);
+  background: var(--glass);
+  border: 1px solid var(--glass-edge);
+  box-shadow: var(--glass-shadow);
+  -webkit-backdrop-filter: blur(10px) saturate(1.2);
+  backdrop-filter: blur(10px) saturate(1.2);
+}
+
+.race-place-row {
+  display: flex;
+  align-items: baseline;
+  gap: 2px;
+  line-height: 1;
+}
+
+.race-place {
+  font-size: 46px;
+  font-weight: 900;
+  letter-spacing: -0.02em;
+  color: #fff;
+}
+
+.race-of {
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--muted);
+}
+
+.race-heat {
+  margin-top: 4px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  color: var(--muted);
+}
+
+.race-clock {
+  font-size: 22px;
+  font-weight: 700;
+  margin-top: 2px;
+}
+
+.race-gap {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 5px;
+  font-size: 13px;
+}
+
+.race-gap-arrow {
+  width: 12px;
+  font-size: 10px;
+}
+
+.race-gap.ahead .race-gap-arrow {
+  color: #ffb36b;
+}
+
+.race-gap.behind .race-gap-arrow {
+  color: #7fe0a0;
+}
+
+.race-gap-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  box-shadow: 0 0 6px rgba(0, 0, 0, 0.6);
+}
+
+.race-gap-name {
+  flex: 1;
+  max-width: 110px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.race-gap-time {
+  font-weight: 700;
+}
+
+.race-dist {
+  margin-top: 7px;
+  padding-top: 6px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: #9ff5b8;
+}
+
+/* Ring minimap at the right edge. */
+.race-mini {
+  position: absolute;
+  right: 18px;
+  top: 34%;
+  width: 170px;
+  height: 170px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(8, 12, 18, 0.55), rgba(8, 10, 16, 0.25) 70%, transparent 72%);
+}
+
+.race-mini-svg {
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.race-mini-belt {
+  fill: none;
+  stroke: rgba(255, 210, 150, 0.22);
+  stroke-width: 22;
+}
+
+.race-mini-cocoon {
+  fill: rgba(80, 255, 140, 0.08);
+  stroke: rgba(80, 255, 140, 0.25);
+  stroke-width: 1;
+}
+
+.race-mini-exit {
+  fill: #3cff6a;
+  filter: drop-shadow(0 0 4px rgba(60, 255, 110, 0.9));
+}
+
+.race-mini-gate {
+  stroke-width: 2.5;
+  stroke-linecap: round;
+}
+
+.race-mini-gate.later {
+  stroke: rgba(110, 200, 255, 0.45);
+}
+
+.race-mini-gate.next {
+  stroke: #b8f6ff;
+  stroke-width: 4;
+  filter: drop-shadow(0 0 4px rgba(120, 230, 255, 0.95));
+}
+
+.race-mini-gate.passed {
+  opacity: 0.55;
+}
+
+.race-mini-dot {
+  stroke: rgba(0, 0, 0, 0.7);
+  stroke-width: 1.2;
+}
+
+.race-mini-dot.own {
+  stroke: #fff;
+  stroke-width: 2;
+}
+
+.race-mini-dot.done {
+  opacity: 0.45;
+}
+
+/* Next gate / exit marker. */
+.race-marker {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 0;
+  height: 0;
+}
+
+.race-marker-label {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform: translate(-50%, 18px);
+  padding: 2px 8px;
+  border-radius: 6px;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  color: #d6fbff;
+  background: rgba(10, 40, 60, 0.55);
+  border: 1px solid rgba(140, 230, 255, 0.45);
+}
+
+.race-marker::before {
+  content: "";
+  position: absolute;
+  left: -13px;
+  top: -13px;
+  width: 22px;
+  height: 22px;
+  border: 2px solid #bff4ff;
+  transform: rotate(45deg);
+  box-shadow: 0 0 10px rgba(120, 230, 255, 0.8);
+}
+
+.race-marker.exit .race-marker-label {
+  color: #e6ffe9;
+  background: rgba(10, 60, 25, 0.6);
+  border-color: rgba(90, 255, 140, 0.6);
+}
+
+.race-marker.exit::before {
+  border-color: #7dff9e;
+  box-shadow: 0 0 10px rgba(80, 255, 130, 0.8);
+}
+
+.race-marker-arrow {
+  display: none;
+  position: absolute;
+  left: -14px;
+  top: -14px;
+  width: 28px;
+  height: 28px;
+}
+
+.race-marker.off::before {
+  display: none;
+}
+
+.race-marker.off .race-marker-arrow {
+  display: block;
+}
+
+.race-marker-arrow::after {
+  content: "";
+  position: absolute;
+  left: 6px;
+  top: 4px;
+  border-left: 18px solid #bff4ff;
+  border-top: 10px solid transparent;
+  border-bottom: 10px solid transparent;
+  filter: drop-shadow(0 0 6px rgba(120, 230, 255, 0.9));
+}
+
+.race-marker.exit .race-marker-arrow::after {
+  border-left-color: #7dff9e;
+}
+
+/* Wrong way. */
+.race-wrong {
+  position: absolute;
+  top: 30%;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 10px 26px;
+  border-radius: 12px;
+  font-size: 34px;
+  font-weight: 900;
+  letter-spacing: 0.14em;
+  color: #fff;
+  background: rgba(200, 20, 20, 0.75);
+  border: 2px solid rgba(255, 170, 160, 0.8);
+  box-shadow: 0 0 30px rgba(255, 40, 30, 0.6);
+  animation: race-blink 0.6s steps(2, jump-none) infinite;
+}
+
+@keyframes race-blink {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0.35;
+  }
+}
+
+/* Radiation meter above the bottom panels. */
+.race-rad {
+  --rad: 0;
+  position: absolute;
+  left: 50%;
+  bottom: 118px;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 340px;
+  padding: 8px 12px;
+  border-radius: 12px;
+  background: linear-gradient(180deg, rgba(20, 34, 18, 0.72), rgba(8, 14, 8, 0.6));
+  border: 1px solid rgba(160, 255, 120, 0.25);
+  box-shadow: 0 0 calc(10px + 30px * var(--rad)) rgba(120, 255, 90, calc(0.15 + 0.4 * var(--rad)));
+}
+
+.race-rad-icon {
+  width: 30px;
+  height: 30px;
+  flex: none;
+  fill: #ffd84a;
+  filter: drop-shadow(0 0 6px rgba(255, 210, 60, 0.8));
+  animation: race-tick 0.3s ease-in-out infinite alternate;
+}
+
+@keyframes race-tick {
+  to {
+    transform: rotate(18deg);
+  }
+}
+
+.race-rad-body {
+  flex: 1;
+  display: grid;
+  gap: 4px;
+}
+
+.race-rad-track {
+  height: 8px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+
+.race-rad-bar {
+  height: 100%;
+  border-radius: 4px;
+  background: linear-gradient(90deg, #9dff5a, #ffe24a 55%, #ff4a2a);
+  background-size: 340px 100%;
+}
+
+.race-rad-text {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  color: #d8ffc4;
+}
+
+.race-rad.danger {
+  border-color: rgba(255, 110, 80, 0.7);
+  animation: race-danger 0.5s ease-in-out infinite alternate;
+}
+
+.race-rad.danger .race-rad-lasts {
+  color: #ff9a80;
+}
+
+@keyframes race-danger {
+  to {
+    box-shadow: 0 0 40px rgba(255, 80, 40, 0.55);
+  }
+}
+
+/* Finish banner. */
+.race-finish {
+  position: absolute;
+  bottom: 24%;
+  left: 50%;
+  transform: translateX(-50%);
+  text-align: center;
+  padding: 14px 34px 16px;
+  border-radius: 16px;
+  background:
+    repeating-conic-gradient(rgba(255, 255, 255, 0.07) 0 25%, transparent 0 50%) 0 0 / 22px 22px,
+    linear-gradient(180deg, rgba(12, 50, 26, 0.85), rgba(6, 22, 12, 0.8));
+  border: 1px solid rgba(110, 255, 150, 0.5);
+  box-shadow: 0 0 40px rgba(60, 255, 120, 0.35);
+}
+
+.race-finish-big {
+  font-size: 40px;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  color: #eaffef;
+}
+
+.race-finish-time {
+  font-size: 22px;
+  font-weight: 700;
+  color: #9ff5b8;
+}
+
+/* Heat results. */
+.race-results {
+  position: absolute;
+  top: 18%;
+  left: 50%;
+  transform: translateX(-50%);
+  min-width: 380px;
+  padding: 14px 18px;
+  border-radius: var(--radius-lg);
+  background: var(--glass-strong);
+  border: 1px solid var(--glass-edge);
+  box-shadow: var(--glass-shadow);
+}
+
+.race-results-title {
+  margin-bottom: 8px;
+  text-align: center;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.2em;
+  color: var(--muted);
+}
+
+.race-results-row {
+  display: grid;
+  grid-template-columns: 44px 1fr 70px 44px 44px;
+  gap: 8px;
+  align-items: center;
+  padding: 4px 8px;
+  border-radius: 8px;
+  font-size: 14px;
+}
+
+.race-results-row.own {
+  background: rgba(255, 255, 255, 0.08);
+  outline: 1px solid rgba(255, 255, 255, 0.18);
+}
+
+.race-results-place {
+  font-weight: 900;
+}
+
+.race-results-name {
+  --side: #fff;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border-left: 3px solid var(--side);
+  padding-left: 8px;
+}
+
+.race-results-time {
+  text-align: right;
+  color: var(--muted);
+}
+
+.race-results-gain {
+  text-align: right;
+  font-weight: 700;
+  color: #9ff5b8;
+}
+
+.race-results-total {
+  text-align: right;
+  font-weight: 800;
+}
+
+@media (max-width: 700px) {
+  .race-mini {
+    width: 120px;
+    height: 120px;
+    top: 26%;
+    right: 10px;
+  }
+
+  .race-card {
+    top: 104px;
+    left: 10px;
+    min-width: 160px;
+    padding: 8px 10px;
+  }
+
+  .race-place {
+    font-size: 34px;
+  }
+
+  .race-lamp {
+    width: 30px;
+    height: 30px;
+  }
+
+  .race-lamps {
+    gap: 8px;
+    padding: 8px 12px;
+  }
+
+  .race-go {
+    font-size: 36px;
+  }
+
+  .race-rad {
+    width: min(300px, calc(100vw - 40px));
+    bottom: 140px;
+  }
+
+  .race-results {
+    min-width: 0;
+    width: calc(100vw - 32px);
+  }
+
+  .race-results-row {
+    grid-template-columns: 36px 1fr 58px 36px 36px;
+    font-size: 12px;
+  }
+}

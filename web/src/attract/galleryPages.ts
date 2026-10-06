@@ -66,7 +66,7 @@ export function sampleLobby(code: string): { lobby: LobbyState; names: Map<numbe
  * A finished match for the "results" pages (M4 B3): free-for-all Hot
  * Reactor or Team Brawl with six pilots; with `awards`, Hat rain's Hat Baron.
  */
-export function sampleResults(awards: boolean, teams: boolean): MatchResults {
+export function sampleResults(awards: boolean, teams: boolean, survey = false): MatchResults {
   const names = ["Scrapling", "Rivet", "Torque", "Sprocket", "Gasket", "Ratchet"];
   const scores = teams ? [9, 7, 6, 4, 3, 1] : [5, 4, 3, 2, 1, 0];
   const rows: ResultRow[] = names.map((name, id) => ({
@@ -85,7 +85,7 @@ export function sampleResults(awards: boolean, teams: boolean): MatchResults {
     winner: teams ? 0 : 0,
     teamScores: teams ? [21, 12] : [],
     rows,
-    awards: awards ? [{ event: "hat_rain", player: teams ? 0 : 3, value: 7 }] : [],
+    awards: awards ? [{ event: "hat_rain", player: teams ? 0 : 3, value: 7 }, ...(survey ? [{ event: "customer_survey", player: 0, value: 2 }] : [])] : [],
   };
 }
 
@@ -166,7 +166,7 @@ export async function runPageScene(canvas: HTMLCanvasElement, ui: HTMLElement, s
   } else if (scene.page === "results") {
     const screen = new ResultsScreen(ui);
     const teams = scene.results?.teams === true;
-    const results = sampleResults(scene.results?.awards === true, teams);
+    const results = sampleResults(scene.results?.awards === true, teams, scene.results?.survey === true);
     screen.update(
       resultsModel({
         results,

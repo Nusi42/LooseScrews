@@ -190,6 +190,7 @@ impl EventModule for HatRain {
                 vel,
                 rot,
                 state: [state[0], ph, state[2], state[3]],
+                vars: None,
             };
             match state[1] {
                 phase::FALLING => {

@@ -27,9 +27,15 @@ use ls_math::terrain::TerrainQuery;
 use ls_math::{Quat, Vec3, DT};
 
 use crate::behavior::{Ctx, View};
-use crate::entity::{Entity, EntityKind, EntitySpawn, NO_TEAM};
+use crate::entity::{Entity, EntityKind, EntitySpawn, ReplicatedKind, NO_TEAM};
 use crate::ship::PlayerId;
 use crate::visual::VisualId;
+
+/// The visitors' props ([`EntityKind::Prop`]): event drones, mimics, the
+/// gossip face.
+pub const DRONE: EntityKind = EntityKind::Prop(ReplicatedKind::Drone);
+pub const MIMIC: EntityKind = EntityKind::Prop(ReplicatedKind::Mimic);
+pub const GOSSIP_FACE: EntityKind = EntityKind::Prop(ReplicatedKind::GossipFace);
 
 /// Drone roles (`state[0]` of a `ReplicatedKind::Drone` entity).
 pub const ROLE_TAX: u8 = 0;

@@ -42,6 +42,7 @@ import { FIT_TUNNEL_RADIUS, needsWorldCode, sceneById, worldSliders, type Galler
 import { levelPose } from "./levelScenes.ts";
 import { prepareWorldScene, runWorldScene, type WorldPrep } from "./worldScenes.ts";
 import { runEventScene } from "./eventScenesRun.ts";
+import { prepareVisitorScene, runVisitorScene, type VisitorPrep } from "./visitorRun.ts";
 import { applyDecor, decorSpots, pickBorder, type DecorSpot } from "./decor.ts";
 import { explosionAt, simulateVfx } from "./vfxScenes.ts";
 import { pickShadePose, pickSunWallPose } from "./shadePose.ts";
@@ -527,6 +528,13 @@ export async function runGallery(canvas: HTMLCanvasElement, ui: HTMLElement, loc
       pose.orientation = worldPrep.pose.orientation;
       if (worldPrep.edited) loader.reset(game);
     }
+    // M4 C2 visitor strips: their own camera (the gossip face's wall).
+    let visitorPrep: VisitorPrep | null = null;
+    if (scene.content === "visitor" && scene.visitor) {
+      visitorPrep = prepareVisitorScene(scene.visitor, pose, (o, d, max) => raycast(rayMeshes.values(), o, d, max)?.t ?? -1);
+      pose.position = visitorPrep.pose.position;
+      pose.orientation = visitorPrep.pose.orientation;
+    }
     // `?roomfade=off`: rock cut off sharply at the hidden walls (pre-VQP).
     renderer.roomFade = new URLSearchParams(loc.search).get("roomfade") !== "off";
     view = { ...view, ...pose };
@@ -636,6 +644,19 @@ export async function runGallery(canvas: HTMLCanvasElement, ui: HTMLElement, loc
       });
       status.particles = ev.particles;
       if (ev.view) view = ev.view;
+    } else if (scene.content === "visitor" && scene.visitor && visitorPrep) {
+      status.particles = runVisitorScene({
+        kind: scene.visitor,
+        renderer,
+        prep: { ...visitorPrep, pose },
+        time: scene.time,
+        visuals,
+        particles,
+        ui,
+        canvas,
+        enabled: new URLSearchParams(loc.search).get("visitors") !== "off",
+        lights,
+      });
     } else {
       const content = sceneContent(scene, pose, visuals, impact, lights, particles !== null && scene.content !== "lights", wallAhead);
       // Pigmented hulls (M4 A7 keep mask): their colour survives the monochrome ink.
@@ -645,7 +666,7 @@ export async function runGallery(canvas: HTMLCanvasElement, ui: HTMLElement, loc
       }
       renderer.setScene(content);
     }
-    if (particles && scene.content !== "mode" && scene.content !== "world" && scene.content !== "event") {
+    if (particles && scene.content !== "mode" && scene.content !== "world" && scene.content !== "event" && scene.content !== "visitor") {
       // VQ5: the particles of the scene's synthetic history up to its time (vfxScenes.ts).
       // Scenes whose effects come only from VQ5 also take its effect lights (VQ6
       // pulses); the fight and lights scenes emit theirs in sceneContent.

@@ -25,6 +25,7 @@ import { buildProp, crateModel, gadgetModel, harpoonModel, mineModel, paperweigh
 import { coreModel, reactorModel } from "./modeProps.ts";
 import { pigmentDropModel } from "./worldProps.ts";
 import { balloonFaceModel, balloonModel, boxFlapModel, cardboardBoxModel, coffeeMugModel, giantEggModel, pupilModel, rubberChickenModel, tapeStripModel } from "./eventProps.ts";
+import { VISITOR_MESH_KINDS, visitorModel, type VisitorMeshKind } from "./visitors.ts";
 import { hullOf } from "./ships.ts";
 import { wreckModel } from "./wrecks.ts";
 
@@ -67,7 +68,8 @@ export type MeshKind =
   | "balloon"
   | "balloon_face"
   | "pupil"
-  | "coffee_mug";
+  | "coffee_mug"
+  | VisitorMeshKind;
 
 /** Hull mesh of a ship type (unknown types: the Tinker's). */
 export function shipMeshKind(shipType: number): ShipMeshKind {
@@ -123,6 +125,8 @@ export const MESH_BUILDERS: Readonly<Record<MeshKind, () => MeshData>> = {
   balloon_face: buildProp(balloonFaceModel),
   pupil: buildProp(pupilModel),
   coffee_mug: buildProp(coffeeMugModel),
+  // M4 C2: the event visitors (visitors.ts).
+  ...visitorBuilders((k) => () => visitorModel(k).build()),
 };
 
 /** The pre-VQ4 primitives for every kind (one dart for all hulls, one wreck). */
@@ -162,6 +166,11 @@ export const LEGACY_MESH_BUILDERS: Readonly<Record<MeshKind, () => MeshData>> = 
   balloon_face: () => sphereMesh(1),
   pupil: () => sphereMesh(1),
   coffee_mug: () => sphereMesh(1),
+  ...visitorBuilders(() => () => sphereMesh(1)),
 };
+
+function visitorBuilders(f: (k: VisitorMeshKind) => () => MeshData): Record<VisitorMeshKind, () => MeshData> {
+  return Object.fromEntries(VISITOR_MESH_KINDS.map((k) => [k, f(k)])) as Record<VisitorMeshKind, () => MeshData>;
+}
 
 export const MESH_KINDS = Object.keys(MESH_BUILDERS) as MeshKind[];

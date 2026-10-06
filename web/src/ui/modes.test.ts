@@ -273,7 +273,8 @@ test("results model: team victory, defeat, free-for-all podium, paint shares, pr
     { event: "hat_rain", label: "Hat Baron", name: "Pilot 4", detail: "7 hats", color: "", you: false },
   );
   assert.equal(m.titles[0]!.color, m.rows.find((x) => x.name === "Pilot 4")!.color);
-  assert.equal(m.titles[1]!.label, "Customer Survey");
+  assert.equal(m.titles[1]!.label, "Customer rating");
+  assert.equal(m.titles[1]!.detail, "★ 1 of 5");
   assert.equal(m.titles[1]!.you, true);
   m = resultsModel({ results: { ...awarded, awards: [{ event: "hat_rain", player: 5, value: 1 }] }, ...base });
   assert.equal(m.titles[0]!.detail, "1 hat");

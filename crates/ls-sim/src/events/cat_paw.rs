@@ -380,6 +380,7 @@ impl EventModule for CatPaw {
                 vel,
                 rot,
                 state,
+                vars: None,
             });
         }
         // Ships touched: damage and knockback, once each.

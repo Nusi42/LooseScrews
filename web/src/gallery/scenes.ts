@@ -9,6 +9,7 @@ import { LEVEL_SCENES } from "./levelScenes.ts";
 import { MOOD_SCENES, type WorldSceneKind } from "./moodScenes.ts";
 import { EVENT_SCENES, type EventSceneSpec } from "./eventScenes.ts";
 import type { ModeSceneKind } from "./modeScenes.ts";
+import { VISITOR_SCENES, type VisitorSceneKind } from "./visitorScenes.ts";
 
 /**
  * World of a scene: the share code is `randomShareCode(seed, 0, enclosure,
@@ -68,7 +69,7 @@ export type PoseKind = "closeup" | "tunnel" | "vista" | "border" | "sun" | "plan
  * one flies (weaponScenes.ts, M4 B7), `paperweight-wall` the same with the
  * landed stone on the rock ahead.
  */
-export type SceneContent = "none" | "lineup" | "fight" | "lights" | "explosion" | "stress" | "fit" | "charge" | "cloak" | "mode" | "shadow" | "paperweight" | "paperweight-wall" | "world" | "event";
+export type SceneContent = "none" | "lineup" | "fight" | "lights" | "explosion" | "stress" | "fit" | "charge" | "cloak" | "mode" | "shadow" | "paperweight" | "paperweight-wall" | "world" | "event" | "visitor";
 
 /** Radius of the `fit` scene's tunnel (u): 1.2 u across. */
 export const FIT_TUNNEL_RADIUS = 0.6;
@@ -96,7 +97,7 @@ export interface GalleryScene {
   /** "workshop" page: the world in the workshop (and behind it). */
   workshop?: WorkshopScene;
   /** "results" page: the sample match's results, with the comedy events' titles (M4 B3: the Hat Baron) or without. */
-  results?: { awards: boolean; teams?: boolean };
+  results?: { awards: boolean; teams?: boolean; survey?: boolean };
   /**
    * Own ship type (ls-sim ShipType index) whose cockpit frame and fit ring
    * show (VQ1); absent = no cockpit, the plain camera.
@@ -112,6 +113,8 @@ export interface GalleryScene {
   worldFx?: WorldSceneKind;
   /** "event" content: a comedy event's frame (M4 C1, eventScenes.ts / eventScenesRun.ts). */
   eventScene?: EventSceneSpec;
+  /** "visitor" content: which visitor event and frame of its strip (M4 C2, visitorScenes.ts / visitorRun.ts). */
+  visitor?: VisitorSceneKind;
   /**
    * A fixed camera instead of the picked pose, for scenes whose before and
    * after shots must match while the meshes (and so the picked pose) change
@@ -413,12 +416,15 @@ export const SCENES: readonly GalleryScene[] = [
   ...MOOD_SCENES,
   // M4 C1-C3: the comedy events' strips (announce, peak, aftermath).
   ...EVENT_SCENES,
+  // M4 C2: the visitor events, three frames each (tell, peak, aftermath).
+  ...VISITOR_SCENES,
   // World workshop (M4 A8): the workshop page over the preview of the world it makes.
   { id: "workshop", title: "World workshop over its preview", covers: "world workshop", world: BACKDROP, pose: "tunnel", content: "none", time: 8.0, page: "workshop", workshop: { seed: "6", sliders: [38, 60, 50, 30, 0, 40, 30], archetype: "classic" } },
   { id: "workshop-tall", title: "World workshop: a tall world (Verticality 90)", covers: "world workshop", world: BACKDROP, pose: "tunnel", content: "none", time: 8.0, page: "workshop", workshop: { seed: "5150", sliders: [55, 45, 90, 0, 20, 60, 50], archetype: "classic" } },
   // Results screen (M4 B3): the Hat Baron's badge under the headline, and the same table without titles.
   { id: "results", title: "Results: free-for-all, no event titles", covers: "results, M4 B3", world: BACKDROP, pose: "tunnel", content: "none", time: 12.0, page: "results", results: { awards: false } },
   { id: "results-hat-baron", title: "Results: the Hat Baron (Hat rain)", covers: "results, Hat rain, M4 B3", world: BACKDROP, pose: "tunnel", content: "none", time: 12.0, page: "results", results: { awards: true } },
+  { id: "results-survey", title: "Results: the Hat Baron and the leader's Customer rating (two stars)", covers: "results, Customer survey, M4 C2", world: BACKDROP, pose: "tunnel", content: "none", time: 12.0, page: "results", results: { awards: true, survey: true } },
   { id: "results-hat-baron-teams", title: "Results: the Hat Baron in a team match, the own pilot", covers: "results, Hat rain, M4 B3", world: BACKDROP, pose: "tunnel", content: "none", time: 12.0, page: "results", results: { awards: true, teams: true } },
   { id: "workshop-belt", title: "World workshop: an asteroid belt, hosting as Belt Up", covers: "world workshop, Belt Up", world: BACKDROP, pose: "tunnel", content: "none", time: 8.0, page: "workshop", workshop: { seed: "77", sliders: [50, 60, 50, 30, 0, 30, 20], archetype: "belt", host: true } },
 ];

@@ -679,6 +679,21 @@ the score bar shows its name and a ring of the time left.
 The other comedy events of the design (tax drone, pizza, cat paw and more) already happen in
 matches; their own looks come with the next builds.
 
+### Visitors (comedy events)
+
+Some comedy events send a visitor into the level. Each one is announced 3 seconds ahead, and
+the announcer names the pilot it is after.
+
+| Visitor | What you see | What to do |
+| --- | --- | --- |
+| **Tax drone** | A beige box drone with a frowning visor, a red tie and a red-and-blue siren waits at a cavern entrance, then chases the leader | Every touch takes 10% of the leader's energy (you see it streaming into the drone's receipt printer; up to 5 touches, and the receipt gets longer). Shoot it down (40 hp) for a scrap pile of what it took |
+| **Pizza delivery** | A red delivery drone with a steaming pizza box rings the doorbell next to a hurt pilot | The recipient holds still near it for 3 seconds in total: a pizza assembles slice by slice under the ship (and a ring fills around the crosshair), then the hull is full. Anyone else can shoot the drone (30 hp) and the pizza becomes 50 scrap |
+| **Customer survey** | A teal call-centre drone holds a five-star panel right in front of the leader's view ("How was your match today?") | Shoot a star: the star the destroying shot goes through is the leader's rating, shown to everyone and listed in the match results. Unanswered, it floats off after 12 seconds |
+| **Mimic pickups** | Some weapon and upgrade crates tremble and peek, then grow teeth, a tongue and googly eyes and hop at the nearest pilot | They bite (12 damage). Shoot one (25 hp) and its loot drops where it died, real again; the survivors hop home after 20 seconds |
+| **Gossip wall** | A stone face pushes out of the rock nearest the pilots and starts whispering | For 15 seconds everyone is revealed to everyone, cloaked pilots too: pink eye markers with names show through the rock, and the face tells you where people are ("Psst. Ana is 40 u below you. Again.") |
+
+Damage from visitors gives nobody a kill.
+
 ## Pickups and wrecks
 
 Each level has **12 pickup points** in open space, spread across the level and away from the team

@@ -17,7 +17,7 @@
 
 use ls_math::Pcg32;
 
-use crate::entity::EntityKind;
+use crate::events::drone;
 use crate::events::EventKind;
 use crate::golden::{arena, inputs, setup};
 use crate::ruleset::BUILTIN_RULESETS;
@@ -109,12 +109,10 @@ pub fn visitor_replay(kind: EventKind) -> VisitorReplay {
                 }
             }
         }
-        if w.entities().iter().any(|e| {
-            matches!(
-                e.kind,
-                EntityKind::Drone | EntityKind::Mimic | EntityKind::GossipFace
-            )
-        }) {
+        if w.entities()
+            .iter()
+            .any(|e| matches!(e.kind, drone::DRONE | drone::MIMIC | drone::GOSSIP_FACE))
+        {
             r.prop_ticks += 1;
         }
         r.ticks = tick;

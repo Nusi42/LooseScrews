@@ -982,6 +982,18 @@ impl Game {
         level::wells_array(&self.core.wells())
     }
 
+    /// The match's pickup points, `[x, y, z]` each, in the world's pickup
+    /// order: the spawn indices Mimic pickups puts in the mood params
+    /// (`modeState().mood.params`) index this list.
+    #[wasm_bindgen(js_name = pickupPoints)]
+    pub fn pickup_points(&self) -> Vec<f32> {
+        self.core
+            .pickup_points()
+            .iter()
+            .flat_map(|p| [p.x, p.y, p.z])
+            .collect()
+    }
+
     /// The level's up (unit vector; +Y unless Bored level turned it).
     pub fn up(&self) -> Vec<f32> {
         let u = self.core.up();

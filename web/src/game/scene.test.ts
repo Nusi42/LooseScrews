@@ -1,6 +1,7 @@
 // Data-driven entity and projectile rendering (scene.ts), the M2 decoders
 // (views.ts), the weapon panel, name tags and the new input bindings.
 
+import { VISITOR_MESH_KINDS } from "../renderer/models/visitors.ts";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { KEY_BINDINGS, WEAPON_ACTIONS, wheelStep, WHEEL_STEP } from "../input/bindings.ts";
@@ -81,8 +82,11 @@ test("procedural meshes are valid and about one unit across", () => {
     let max = 0;
     for (const v of m.positions) max = Math.max(max, Math.abs(v));
     // M4 C1's balloon head is a unit sphere (with its knot), its pupil is in the same units, and the tape strip is one unit long.
-    const limit = kind === "balloon" || kind === "balloon_face" || kind === "box_tape" ? 1.25 : 1.0;
-    const least = kind === "pupil" ? 0.05 : 0.2;
+    // The event visitors (M4 C2) are built at their size in the sim (drones of radius 0.9, the 2.5 u survey
+    // panel) and their small parts (siren domes, stars) at theirs.
+    const visitor = (VISITOR_MESH_KINDS as readonly string[]).includes(kind);
+    const limit = visitor ? 1.4 : kind === "balloon" || kind === "balloon_face" || kind === "box_tape" ? 1.25 : 1.0;
+    const least = visitor ? 0.1 : kind === "pupil" ? 0.05 : 0.2;
     assert.ok(max > least && max < limit, `${kind} extent ${max}`);
   }
 });

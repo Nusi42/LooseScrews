@@ -109,7 +109,7 @@ fn props(w: &World, kind: EntityKind) -> Vec<crate::Entity> {
 }
 
 fn drone_of(w: &World) -> Option<crate::Entity> {
-    props(w, EntityKind::Drone).into_iter().next()
+    props(w, drone::DRONE).into_iter().next()
 }
 
 fn outcomes(events: &[Event], kind: EventKind) -> Vec<Cue> {
@@ -267,10 +267,7 @@ fn tax_drone_chases_at_22_and_taxes_ten_percent_per_touch_five_times() {
     assert!(fifth < start + 25 * 60);
     assert_eq!(w.mood_view().event, None);
     assert!(w.tick() <= fifth + 91 + 1, "ending phase of 1.5 s");
-    assert!(
-        props(&w, EntityKind::Drone).is_empty(),
-        "removed at the end"
-    );
+    assert!(props(&w, drone::DRONE).is_empty(), "removed at the end");
 }
 
 #[test]
@@ -595,7 +592,8 @@ fn survey_parks_in_front_of_the_leader_and_follows_its_view() {
     let cues = outcomes(&events, EventKind::CustomerSurvey);
     assert_eq!(cues.len(), 1);
     assert_eq!(cues[0].value as u8, 0);
-    assert!(props(&w, EntityKind::Drone).is_empty());
+    assert!(props(&w, drone::DRONE).is_empty());
+    assert!(w.results().awards.is_empty(), "no answer, no title");
 }
 
 #[test]
@@ -627,6 +625,16 @@ fn survey_rating_is_the_star_the_destroying_shot_went_through() {
         assert_eq!(c.source, Some(b));
         assert_eq!(c.target, Some(a));
         assert_eq!(w.mood_view().phase, EventPhase::Ending);
+        // The rating is the leader's title in the results (C2).
+        for _ in 0..200 {
+            step(&mut w, &mut t, &[]);
+        }
+        assert_eq!(w.mood_view().event, None);
+        let awards = w.results().awards;
+        assert_eq!(awards.len(), 1);
+        assert_eq!(awards[0].kind, EventKind::CustomerSurvey);
+        assert_eq!(awards[0].player, a);
+        assert_eq!(awards[0].value, star as u32);
     }
 }
 
@@ -668,7 +676,7 @@ fn mimics_count_three_plus_a_quarter_of_the_players() {
         let mut t = room();
         assert!(weapon_pickups(&w) >= 6, "{}", weapon_pickups(&w));
         force(&mut w, &mut t, EventKind::MimicPickups);
-        let mimics = props(&w, EntityKind::Mimic);
+        let mimics = props(&w, drone::MIMIC);
         assert_eq!(mimics.len(), want, "{ships} ships");
         let listed: Vec<u8> = w
             .mood_view()
@@ -699,13 +707,13 @@ fn mimics_hunt_within_30_u_bite_12_a_second_and_return_home() {
     let mut w = mimic_world(2);
     let mut t = room();
     force(&mut w, &mut t, EventKind::MimicPickups);
-    let mimics = props(&w, EntityKind::Mimic);
+    let mimics = props(&w, drone::MIMIC);
     let first = mimics[0].clone();
     // Ships beyond 30 u: the mimics sit at home.
     for _ in 0..30 {
         step(&mut w, &mut t, &[]);
     }
-    for m in props(&w, EntityKind::Mimic) {
+    for m in props(&w, drone::MIMIC) {
         let home = w.pickups()[m.vars[0] as usize].content_pos();
         assert!(m.pos.distance(home) < 1e-3);
         assert_eq!(m.state[2] & FLAG_HUNTING, 0);
@@ -719,7 +727,7 @@ fn mimics_hunt_within_30_u_bite_12_a_second_and_return_home() {
         place(&mut w, a, first.pos + Vec3::new(0.0, 0.0, -25.0), Vec3::X);
         w.ship_mut(a).unwrap().hull = 100.0;
         let ev = step(&mut w, &mut t, &[]);
-        let m = props(&w, EntityKind::Mimic)
+        let m = props(&w, drone::MIMIC)
             .into_iter()
             .find(|m| m.id == first.id)
             .unwrap();
@@ -757,7 +765,7 @@ fn mimics_hunt_within_30_u_bite_12_a_second_and_return_home() {
     for _ in 0..(4 * 60) {
         step(&mut w, &mut t, &[]);
     }
-    let m = props(&w, EntityKind::Mimic)
+    let m = props(&w, drone::MIMIC)
         .into_iter()
         .find(|m| m.id == first.id)
         .unwrap();
@@ -770,7 +778,7 @@ fn mimicked_pickups_cannot_be_taken_and_a_killed_mimic_drops_its_content() {
     let mut t = room();
     force(&mut w, &mut t, EventKind::MimicPickups);
     let (a, b) = (PlayerId(0), PlayerId(1));
-    let mimics = props(&w, EntityKind::Mimic);
+    let mimics = props(&w, drone::MIMIC);
     let (m0, m1) = (mimics[0].clone(), mimics[1].clone());
     let (i0, i1) = (m0.vars[0] as usize, m1.vars[0] as usize);
     // A ship parked on a mimicked pickup's spot does not take it (the
@@ -788,10 +796,7 @@ fn mimicked_pickups_cannot_be_taken_and_a_killed_mimic_drops_its_content() {
     let lure = m0.pos + Vec3::new(0.0, 12.0, -14.0);
     let mut killed = None;
     for _ in 0..1200 {
-        let Some(m) = props(&w, EntityKind::Mimic)
-            .into_iter()
-            .find(|m| m.id == m0.id)
-        else {
+        let Some(m) = props(&w, drone::MIMIC).into_iter().find(|m| m.id == m0.id) else {
             break;
         };
         place(&mut w, b, lure, Vec3::X);
@@ -835,7 +840,7 @@ fn mimicked_pickups_cannot_be_taken_and_a_killed_mimic_drops_its_content() {
     while w.mood_view().event.is_some() {
         step(&mut w, &mut t, &[]);
     }
-    assert!(props(&w, EntityKind::Mimic).is_empty());
+    assert!(props(&w, drone::MIMIC).is_empty());
     let sp1 = w.pickups()[i1].clone();
     assert_eq!(sp1.content, content0);
     assert_eq!(sp1.offset, Vec3::ZERO);
@@ -877,7 +882,7 @@ fn mimics_need_weapon_pickups_and_skip_ones_taken_during_the_announcement() {
         step(&mut w, &mut t, &[]);
     }
     step(&mut w, &mut t, &[]);
-    assert_eq!(props(&w, EntityKind::Mimic).len(), 2);
+    assert_eq!(props(&w, drone::MIMIC).len(), 2);
     assert!(!w.mood_view().params.contains(&picked[0]));
 }
 
@@ -894,7 +899,7 @@ fn gossip_face_grows_on_the_rock_nearest_the_ships() {
     w.schedule_event(w.tick() + 1, EventKind::GossipWall);
     step(&mut w, &mut t, &[]);
     step(&mut w, &mut t, &[]);
-    let f = props(&w, EntityKind::GossipFace);
+    let f = props(&w, drone::GOSSIP_FACE);
     assert_eq!(f.len(), 1, "grows during the announcement");
     let f = &f[0];
     assert!(
@@ -911,11 +916,11 @@ fn gossip_face_grows_on_the_rock_nearest_the_ships() {
         step(&mut w, &mut t, &[]);
     }
     step(&mut w, &mut t, &[]);
-    assert_eq!(props(&w, EntityKind::GossipFace)[0].state[0], 1, "talking");
+    assert_eq!(props(&w, drone::GOSSIP_FACE)[0].state[0], 1, "talking");
     while w.mood_view().event.is_some() {
         step(&mut w, &mut t, &[]);
     }
-    assert!(props(&w, EntityKind::GossipFace).is_empty());
+    assert!(props(&w, drone::GOSSIP_FACE).is_empty());
 }
 
 #[test]

@@ -302,27 +302,18 @@ pub enum Command {
     AddWell(crate::gravity::DynamicWell),
     /// Removes the dynamic wells with this key.
     RemoveWell { key: u32 },
-    /// Sets the pose, velocity and module state of an entity (comedy event
-    /// props, which the world never moves; M4 B2). Ignored for unknown ids.
-    SetEntity {
-        id: u32,
-        pos: Vec3,
-        vel: Vec3,
-        rot: ls_math::Quat,
-        vars: [f32; 4],
-        state: [u8; 4],
-    },
     /// A scrap pile of `amount` at `pos` (a drone bursting; M4 B2).
     SpawnScrap { pos: Vec3, amount: f32 },
     /// Sets an entity's pose and velocity (comedy event props, which their
-    /// event moves along exact paths) and its replicated state bytes (B3's
-    /// props; B2's keep their module vars with `SetEntity`).
+    /// event moves), its replicated state bytes and, when given, its module
+    /// vars (`None` keeps them). Ignored for unknown ids.
     PoseEntity {
         id: u32,
         pos: Vec3,
         vel: Vec3,
         rot: ls_math::Quat,
         state: [u8; 4],
+        vars: Option<[f32; 4]>,
     },
     /// Sets the number of hats a ship wears (Hat rain; `ShipState::hats`).
     SetHats { target: PlayerId, hats: u8 },
@@ -829,15 +820,16 @@ impl<'a> Ctx<'a> {
         self.push(Command::RemoveWell { key });
     }
 
-    /// Sets an event prop's pose and state (see [`Command::SetEntity`]).
-    pub fn set_entity(&mut self, e: &Entity) {
-        self.push(Command::SetEntity {
+    /// Writes a changed copy of an event prop back: pose, state and vars
+    /// (see [`Command::PoseEntity`]).
+    pub fn pose_entity(&mut self, e: &Entity) {
+        self.push(Command::PoseEntity {
             id: e.id,
             pos: e.pos,
             vel: e.vel,
             rot: e.rot,
-            vars: e.vars,
             state: e.state,
+            vars: Some(e.vars),
         });
     }
 

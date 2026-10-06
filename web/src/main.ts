@@ -94,6 +94,8 @@ import { parseInvite } from "./rules/model.ts";
 import type { WasmApi } from "./wasm/api.ts";
 import { audioEngine, MatchAudio } from "./audio/index.ts";
 import { wantsWorldFx, WorldVisuals } from "./game/worldFx.ts";
+import { VisitorVisuals, wantsVisitors } from "./game/events/visitors.ts";
+import { transformPoint } from "./math/mat4.ts";
 import type { PointLight } from "./renderer/lights.ts";
 import { showAudioDemo, wantsAudioDemo } from "./audio/demo.ts";
 import { emptyOutput, EventVisuals, fxFromMood, parseEventFx, wantsEventFx, wellPoints } from "./game/events/index.ts";
@@ -327,6 +329,8 @@ function runGame(
     const audio = new MatchAudio(ui, game.shareCode);
     // World visuals (M4 B5): gravity wells, cave-ins, pigment, the level's mood; `?worldfx=off` skips them.
     const world = new WorldVisuals(particles, wantsWorldFx(location), audioEngine());
+    // Visitor events (M4 C2): drones, mimics, the gossip face, their HUD; `?visitors=off` skips them.
+    const visitors = new VisitorVisuals(particles, wantsVisitors(location), audioEngine(), ui);
     let worldShake = 0;
     // Comedy event visuals (M4 C1; `?eventfx=off` keeps only the banner and the announcer).
     const eventHud = new EventHud(ui);
@@ -395,6 +399,7 @@ function runGame(
       events.dispose();
       eventHud.dispose();
       if (!renderer.isLost) events.apply(renderer, emptyOutput());
+      visitors.dispose();
       delete ui.dataset["stage"];
       delete ui.dataset["matches"];
       overlay.dispose();
@@ -473,6 +478,7 @@ function runGame(
         modeVfx?.reset();
         world.reset();
         events.reset();
+        visitors.reset();
         audio.newMatch(game.shareCode);
         mono = 0;
         particles?.clear();
@@ -649,11 +655,31 @@ function runGame(
         (trigger) => audio.announcer.say(trigger),
       );
       worldShake = wf.shake;
+      const vf = visitors.update({
+        time,
+        dt,
+        nowTick: game.nowTick?.() ?? 0,
+        camera: view.position,
+        orientation: view.orientation,
+        up: wf.up,
+        mood: r.mode.mood,
+        cues: r.cues,
+        entities: r.entities,
+        ships: tracked,
+        own: game.player,
+        ownPosition: ownAlive ? ownAlive.position : null,
+        names,
+        visuals: session.visuals,
+        pickupPoints: game.pickupPoints?.(),
+        quiet: flow.showResults || flow.showLobby,
+      });
       audio.update({ time, dt, player: game.player, online: session.isOnline, stage: flow.stage, camera: view, pose: r.pose, ships: r.ships, projectiles: r.projectiles, entities: r.entities, cues: r.cues, visuals: session.visuals, boosting: cueFrame.boosting, gadgetOf, gadgetIds: session.gadgetIds, names });
       // The cinematic camera sees the own ship too.
       // ...and so does an event's side view (M4 C1).
       const shownShips = (cine || ev.thirdPerson) && r.pose && own ? [...drawnShips, cinematic.ownShip(game.player, game.team, r.pose, own.shipType, game.shipRadius ?? TINKER_RADIUS)] : drawnShips;
-      const shownEntities = ev.hideEntities.size > 0 ? r.entities.filter((e) => !ev.hideEntities.has(e.id)) : r.entities;
+      // Event pickups hidden by C1 (Moving day) and C2 (real pickups under their mimics).
+      const shownEntities = ev.hideEntities.size > 0 || vf.hidden.size > 0 ? r.entities.filter((e) => !ev.hideEntities.has(e.id) && !vf.hidden.has(e.id)) : r.entities;
+      const skipKinds = world.skipKinds && visitors.skipKinds ? new Set([...world.skipKinds, ...visitors.skipKinds]) : (world.skipKinds ?? visitors.skipKinds);
       const scene = buildScene(shownShips, drawnShots, shownEntities, session.visuals, session.teamOf(r.ships), time, {
           gadgetOf,
           beams: fx.beams,
@@ -666,12 +692,14 @@ function runGame(
           vfx: vfx !== null,
           refractCloak: true,
           shipStyle: shipStyleFor(r.mode, r.mode.teams) ?? wf.shipStyle,
-          skipKinds: world.skipKinds,
+          skipKinds,
         });
       addModeProps(scene, modeInput);
       const worldLights: PointLight[] = [...wf.lights];
       world.addToScene(scene, r.entities, time, r.mode.teams, worldLights);
       events.addToScene(scene, worldLights, ev);
+      visitors.addToScene(scene);
+      worldLights.push(...vf.lights);
       renderer.setScene(scene);
       renderer.setModeVolumes(modeVolumes(modeInput));
       renderer.setWorldVolumes(wf.volumes);
@@ -747,6 +775,11 @@ function runGame(
         r.mode.teams,
       );
       hud.pull.update(flow.showResults || flow.spectating ? null : wf.pull);
+      const vp = renderer.viewProjection(view);
+      visitors.updateHud(vf.hud, (p) => {
+        const [x, y, , w] = transformPoint(vp, p);
+        return { x, y, w };
+      }, canvas.clientWidth, canvas.clientHeight, time);
       hud.mood.update(flow.showResults ? null : wf.mood);
 
       // Mode HUD, objective markers, lobby card, results and the Tab scoreboard.

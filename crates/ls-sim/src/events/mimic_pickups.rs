@@ -25,7 +25,6 @@
 use ls_math::{Tick, Vec3};
 
 use crate::behavior::{Command, Cue, CueKind, DamageSource};
-use crate::entity::EntityKind;
 use crate::events::drone::{self, Flight, OUTCOME_SHOT_DOWN};
 use crate::events::{EffectCtx, EventCtx, EventKind, EventModule, EventPhase, EventRef};
 use crate::PickupKind;
@@ -146,7 +145,7 @@ impl EventModule for MimicPickups {
                 _ => crate::visual::BuiltinVisual::UpgradePickup.id(),
             };
             let mut spawn = drone::prop(
-                EntityKind::Mimic,
+                drone::MIMIC,
                 sp.content_pos(),
                 f.radius,
                 hp,
@@ -165,7 +164,7 @@ impl EventModule for MimicPickups {
         let hp_max = e.def.param("hp", 25.0);
         let range = e.def.param("range", 30.0);
         let ending = e.event.phase == EventPhase::Ending;
-        for m in drone::props(&view, EntityKind::Mimic) {
+        for m in drone::props(&view, drone::MIMIC) {
             let mut m = m.clone();
             let idx = m.vars[M_SPAWN] as usize;
             let home = view.pickups.get(idx).map_or(m.pos, |sp| sp.content_pos());
@@ -255,12 +254,12 @@ impl EventModule for MimicPickups {
                 flags,
                 drone::hp_percent(m.hp, hp_max),
             ];
-            e.ctx.set_entity(&m);
+            e.ctx.pose_entity(&m);
         }
     }
 
     fn on_end(&self, e: &mut EventCtx) {
-        drone::remove_props(e.ctx, EntityKind::Mimic);
+        drone::remove_props(e.ctx, drone::MIMIC);
     }
 
     /// Mimicked pickups cannot be taken while their mimic is out.

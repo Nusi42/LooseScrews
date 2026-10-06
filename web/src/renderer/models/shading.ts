@@ -13,7 +13,9 @@
 
 import {
   PART_CANOPY,
+  PART_ENAMEL,
   PART_ENGINE,
+  PART_FLESH,
   PART_GLOW,
   PART_HULL,
   PART_LAMP,
@@ -23,6 +25,7 @@ import {
   PART_NAV_STARBOARD,
   PART_NAV_TAIL,
   PART_SCORCH,
+  PART_STONE,
   PART_TRIM,
 } from "./kit.ts";
 import { srgbToLinear } from "../shaders/frame.ts";
@@ -63,6 +66,9 @@ const PART_NAV_TAIL = ${PART_NAV_TAIL}u;
 const PART_GLOW = ${PART_GLOW}u;
 const PART_SCORCH = ${PART_SCORCH}u;
 const PART_LAMP = ${PART_LAMP}u;
+const PART_STONE = ${PART_STONE}u;
+const PART_ENAMEL = ${PART_ENAMEL}u;
+const PART_FLESH = ${PART_FLESH}u;
 
 // Small-argument hash (model-space coordinates stay below a few units).
 fn model_hash(p: vec3f) -> f32 {
@@ -128,12 +134,12 @@ fn shade_model(part: u32, n: vec3f, world_pos: vec3f, lp: vec3f, ln: vec3f, colo
     return mix(shade_toy(part - TOY_PART_BASE, n, world_pos, lp, color), emissive_glow(color.rgb, color.a), color.a);
   }
   // PART_PLAIN and unknown parts: the pre-VQ4 instance look (lit once, below).
-  if (part > PART_LAMP) { return shade(color.rgb, color.a, n, world_pos); }
+  if (part > PART_LAMP && (part < PART_STONE || part > PART_FLESH)) { return shade(color.rgb, color.a, n, world_pos); }
   // Dynamic lights (VQ6) also leave a highlight; each material scales it.
   var dspec = vec3f(0.0);
   var lit = vec3f(0.0);
   // Self-lit parts (engines, nav lights, lamps) skip the light loop.
-  if (part < PART_ENGINE || part == PART_SCORCH) {
+  if (part < PART_ENGINE || part == PART_SCORCH || part >= PART_STONE) {
     lit = light_spec(n, world_pos, v, 40.0, &dspec);
   }
   let fres = pow(1.0 - clamp(dot(n, v), 0.0, 1.0), 4.0);
@@ -183,6 +189,20 @@ fn shade_model(part: u32, n: vec3f, world_pos: vec3f, lp: vec3f, ln: vec3f, colo
     let heat = smoothstep(0.74, 0.86, model_noise(lp * 31.0 + vec3f(7.0))) * burn * burn;
     let ember = heat * (0.65 + 0.35 * sin(t * 2.5 + model_noise(lp * 5.0) * 12.0));
     out = base * lit + vec3f(model_spec(n, v, 20.0) * 0.12 * (1.0 - burn)) + ${lin(1.0, 0.32, 0.06)} * ember * 0.8;
+  } else if (part == PART_STONE) {
+    // Carved stone (M4 C2): the instance colour, weathered by two octaves of grain and darker in the creases.
+    let grain = model_noise(lp * 7.0) * 0.55 + model_noise(lp * 23.0) * 0.3 + model_noise(lp * 61.0) * 0.15;
+    let pits = smoothstep(0.74, 0.88, model_noise(lp * 19.0 + vec3f(3.0)));
+    let base = color.rgb * (0.62 + 0.6 * grain) * (1.0 - 0.22 * pits);
+    out = base * lit + vec3f(model_spec(n, v, 12.0) * 0.05) + dspec * 0.15 + rim * base * 0.6;
+  } else if (part == PART_ENAMEL) {
+    // Glossy white (teeth, eyeballs): a bright base, a sharp highlight and a faint warm bounce.
+    let base = ${lin(0.93, 0.92, 0.88)};
+    out = base * lit + vec3f(model_spec(n, v, 90.0) * 1.1) + dspec * 1.0 + base * 0.06 + rim * 0.5;
+  } else if (part == PART_FLESH) {
+    // Wet pink (lips, tongues): soft wrapped light, a glint and a little glow from inside.
+    let base = ${lin(0.86, 0.36, 0.44)};
+    out = base * (lit * 0.85 + 0.12) + vec3f(model_spec(n, v, 60.0) * 0.8) + dspec * 0.7 + rim * base;
   } else {
     // PART_PLAIN: the pre-VQ4 instance look.
     return shade(color.rgb, color.a, n, world_pos);

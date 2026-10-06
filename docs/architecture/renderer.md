@@ -448,6 +448,49 @@ terrain pass when it covers the screen, props and particles stay below
 0.05 ms. At the VQ plans' factor of 8-10 the worst event frame is about
 1 ms on the reference mid GPU against the 1.0 ms event share (estimated).
 
+## Event visitors (M4 C2)
+
+The visitors of five comedy events (milestone-4-plan.md §3.2: Tax drone, Pizza
+delivery, Customer survey, Mimic pickups, Gossip wall), drawn from the sim's
+props (`ReplicatedKind::{Drone, Mimic, GossipFace}`), the mood view and the
+`CueKind::EventOutcome` cues (value = event index << 8 | outcome byte). One
+file per event in `web/src/game/events/` (`taxDrone.ts`, `pizzaDelivery.ts`,
+`customerSurvey.ts`, `mimicPickups.ts`, `gossipWall.ts`), shared pieces in
+`visitorKit.ts` (cue decoding, attached-part poses, the drones' hover and bank,
+damage smoke) and `visitors.ts` (`VisitorVisuals`: one `update` per frame from
+`main.ts` before the scene is built, `addToScene` after; the scene builder
+skips the three entity kinds, `SceneExtras.skipKinds`, and main leaves out the
+pickups it hides). HUD in `ui/visitorHud.ts`, sounds in
+`audio/sounds/visitors.ts`, models in `renderer/models/visitors.ts` (built at
+their size in the sim, in u; moving parts are their own meshes, posed per
+frame). `?visitors=off` draws the props as before (debris rocks, the pickup's
+look).
+
+| Visitor | Look | Sound and HUD |
+| --- | --- | --- |
+| Tax drone | A beige bureaucrat box (`tax_drone`) with a dark visor, two narrow glowing eyes under a frowning brow (`tax_eyes`, blinking), a red tie swinging with its flight (`tax_tie`), a red and a blue siren dome taking turns (`visitor_siren`, each with a point light), four ducted rotors (`visitor_rotor`, spun) and a receipt printer: the receipt (`tax_receipt`, length by instance `stretch`) prints another stretch per touch. A touch streams energy motes from the leader into the printer and flashes gold; shot down, the receipt, the tie and the domes fly off and a dozen receipt scraps flutter down with sparks and smoke (2.4 s) | Siren loop, ka-ching and printer per touch, a burst; toasts ("Taxed! 10 % of your energy", "… shot down the tax drone. Tax refund!") |
+| Pizza delivery | A red dome quadcopter (`pizza_drone`) with one big eye, a propeller beanie and claws holding a cardboard box (`pizza_box`, logos on top and bottom); steam and the odd falling topping. While the recipient holds still, a pizza assembles under its ship, one of 12 slices (`pizza_slice` cheese and pepperoni, `pizza_crust`) per twelfth of the hold. Delivered: hearts, a green ring and sparkles; shot down: a splat of cheese, tomato and cardboard | Rotor loop, doorbell when it arrives within 5 u, a jingle when delivered, a splat; the recipient's HUD ring around the crosshair ("Hold still for pizza") |
+| Customer survey | A teal call-centre drone with a headset (`survey_drone`) holding a cream 2.5 u panel (`survey_panel`, "text" lines in lamp bars) with five gold stars (`survey_star`) that twinkle in a wave across the row, exactly at the sim's pose (star k at panel x = 1 - (k - 1) / 2, the sim's columns). Rated: the panel tumbles away with the rating's stars lit and the others grey, gold star sparks, confetti for 4-5, a grey puff for 1-2 | Chime when it appears, the rating sting (fanfare, a flat "meh", the sad trombone); the surveyed leader's prompt ("How was your match today?"), toasts with the stars. The rating is the leader's title in the results (`MatchResults::awards`, "Customer rating") |
+| Mimic pickups | During the announcement the picked pickups (mood params = spawn indices into `Game.pickupPoints()`) tremble; crate pickups peek, their lid cracking open on teeth. Each mimic: a crate in the pickup's colour (`mimic_body`, built Z-up so the instance `stretch` squashes it) with plank grooves, a hinged lid (`mimic_lid`) with teeth that chatters, opens while hunting and snaps wide on a bite, a tongue hanging over the front (`mimic_tongue`), googly eyes on the lid (`visitor_eye`) following its prey. It hops (2.4 u per hop, 0.55 u high) with squash on landing and stretch in the air; killed: splinters in its colour. The real pickups stay hidden while their event runs | Growl when it appears, snarl loop while hunting, a hop per landing, chomp per bite, splinters; toasts |
+| Gossip wall | A stone face (`gossip_face`, `PART_STONE` with grain and pits) pushes out of the rock over the 3 s announcement with dust and pebbles crumbling off and a collar of rock chunks; arched brows that waggle (`gossip_brow`), eyes that follow the pilot it gossips about with darting glances (`visitor_eye`), sly half-shut lids that blink and wink (`gossip_lid`), lipsticked lips and a jaw chattering in syllables (`gossip_jaw`), a soft warm light on it. Sinking back it winks | Whisper loop and a "psst" per line; through-wall markers (pink eye, name, distance; pinned to the screen edge with an arrow when off screen) for every revealed ship, and a speech bubble beside the face (docked at the top when the face is off screen) with a new piece of gossip every 3.2 s about the next pilot ("Psst. Ana is 40 u below you. Again.") |
+
+Model materials (`models/shading.ts`): `PART_STONE` (20, the instance colour
+with two octaves of grain and pits), `PART_ENAMEL` (21, glossy white teeth and
+eyeballs) and `PART_FLESH` (22, wet pink lips, tongues, pepperoni); numbered
+from 20 so other packages can take 12 and up.
+
+**Gallery** (`gallery/visitorScenes.ts` data, `gallery/visitorRun.ts` set-up):
+`event-<id>-a|b|c` per event (the tell with the announcer's caption, the peak,
+the aftermath), built from scripted sim states run through the real
+`VisitorVisuals` for 2.6 s of history; `results-survey` (the rating in the
+results). Labels `c2-before` (`--query visitors=off`) and `c2-after`.
+
+**Cost** (gallery, RTX 5080, 1920x1080, "high"): the objects pass 0.01-0.04 ms
+with a visitor in view (0.00-0.03 ms without the C2 meshes), particles +0.02
+ms; frames 0.31-0.64 ms in all 15 strip frames. A visitor is 6-12 instances
+(a pizza in progress up to 24 more) and 1-3 point lights. At the VQ factor of 8-10, 0.3-0.5 ms on the reference mid
+GPU against the 1.0 ms event share (estimated, not measured).
+
 ## Mode effects (M3 C1)
 
 `modeFx.ts` `ModeFxPass` draws the mode visuals that are not meshes or particles, analytically

@@ -284,6 +284,7 @@ impl EventModule for DuckParade {
                         vel,
                         rot: facing(vel),
                         state: [i as u8, clear, 0, 0],
+                        vars: None,
                     });
                 }
                 None => e.ctx.push(Command::RemoveEntity { id }),

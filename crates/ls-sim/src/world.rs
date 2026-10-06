@@ -2198,8 +2198,10 @@ impl World {
                 }
                 // A decoy ignores its owner's shots, a pizza drone its
                 // recipient's (the drone's owner).
-                if matches!(e.kind, EntityKind::Decoy | EntityKind::Drone)
-                    && e.owner == Some(p.owner)
+                if matches!(
+                    e.kind,
+                    EntityKind::Decoy | EntityKind::Prop(ReplicatedKind::Drone)
+                ) && e.owner == Some(p.owner)
                 {
                     continue;
                 }
@@ -2379,13 +2381,14 @@ impl World {
                 expired.push(e.id);
                 continue;
             }
-            if e.kind.is_event_prop() {
-                // Comedy event props: their event sets the pose.
+            if e.kinematic {
+                // Driven by its module (kinematic event props coast between
+                // poses): no terrain collision.
+                e.pos += e.vel * DT;
                 continue;
             }
-            if e.kinematic {
-                // Driven by its module: no terrain collision.
-                e.pos += e.vel * DT;
+            if e.kind.is_event_prop() {
+                // The other event props hold still: their event poses them.
                 continue;
             }
             match e.kind {
@@ -2658,22 +2661,6 @@ impl World {
                     }
                 }
                 Command::RemoveEntity { id } => self.entities.retain(|e| e.id != id),
-                Command::SetEntity {
-                    id,
-                    pos,
-                    vel,
-                    rot,
-                    vars,
-                    state,
-                } => {
-                    if let Some(e) = self.entities.iter_mut().find(|e| e.id == id) {
-                        e.pos = pos;
-                        e.vel = vel;
-                        e.rot = rot;
-                        e.vars = vars;
-                        e.state = state;
-                    }
-                }
                 Command::SpawnScrap { pos, amount } => {
                     if amount.is_finite() && amount > 0.0 {
                         self.add_scrap_pile(pos, amount);
@@ -2831,12 +2818,16 @@ impl World {
                     vel,
                     rot,
                     state,
+                    vars,
                 } => {
                     if let Some(e) = self.entities.iter_mut().find(|e| e.id == id) {
                         e.pos = pos;
                         e.vel = vel;
                         e.rot = rot;
                         e.state = state;
+                        if let Some(vars) = vars {
+                            e.vars = vars;
+                        }
                     }
                 }
                 Command::SetHats { target, hats } => {

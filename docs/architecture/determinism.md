@@ -249,9 +249,13 @@ mimics acted. Re-bless only these lines:
 LS_BLESS_MOOD_REPLAYS=1 cargo test -p ls-sim --lib visitor_replays
 ```
 
-The event props (`EntityKind::Drone`, `Mimic`, `GossipFace`) hash like every entity; their
+The event props (`EntityKind::Prop(kind)`: drones, mimics, the gossip face, ducks, hats, the
+cat paw, the disco ball) hash like every entity (the kind as its `ReplicatedKind` byte); their
 `Entity::last_hit` is hashed only when set (never for other entities), so older replays keep
-their hashes.
+their hashes. M4 C2 folded B2's own prop kinds (`Drone`, `Mimic`, `GossipFace`) into `Prop` and
+`Command::SetEntity` into `PoseEntity` (which takes optional vars) without changing a hash; the
+`event/customer_survey` line was re-blessed once for C2's rating award (`EventState::award`, hashed
+when set).
 
 ### Milestone 3 record
 

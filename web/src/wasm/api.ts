@@ -207,6 +207,8 @@ export interface GameHandle {
   up?(): Float32Array;
   /** What the running comedy event does at `tick` (M4 C1, ls-wasm `events::event_fx_json`); absent in older cores. */
   eventFx?(tick: number): string;
+  /** The match's pickup points, [x, y, z] each, in the world's order (Mimic pickups' spawn indices index it; M4 C2). */
+  pickupPoints?(): Float32Array;
   /** Monochrome level (Palette 80+ or Last Color Standing): pigment rules and the ink look. */
   readonly monochrome?: boolean;
   /** Radiation dose rate (hull per second) at a point; 0 on classic levels. */

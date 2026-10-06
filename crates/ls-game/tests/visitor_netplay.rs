@@ -306,7 +306,11 @@ fn visitor_events_replicate_without_desyncs() {
                 break;
             }
             for e in w.entities() {
-                if matches!(e.kind, EntityKind::Drone | EntityKind::Mimic) && e.hp > 0.0 {
+                if matches!(
+                    e.kind,
+                    EntityKind::Prop(ReplicatedKind::Drone | ReplicatedKind::Mimic)
+                ) && e.hp > 0.0
+                {
                     let gap = contact_gap(h.room.terrain(), e.pos, e.radius);
                     worst_clearance = worst_clearance.min(gap);
                 }
@@ -461,7 +465,7 @@ fn drones_find_their_targets_on_generated_levels() {
                         }
                     }
                     for e in w.entities() {
-                        if e.kind == EntityKind::Drone {
+                        if e.kind == EntityKind::Prop(ReplicatedKind::Drone) {
                             if i == 2 {
                                 entry_gap = e.pos.distance(spot);
                             }

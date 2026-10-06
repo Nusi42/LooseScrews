@@ -131,6 +131,7 @@ impl EventModule for DiscoInferno {
                 vel: (pos - old) * ls_math::TICK_HZ as f32,
                 rot,
                 state,
+                vars: None,
             });
         }
     }

@@ -57,30 +57,23 @@ pub enum EntityKind {
     DustCloud,
     /// Anything else a module wants to show (grab points, warnings).
     Marker,
-    /// A comedy event's prop (M4: ducks, hats, the cat paw, the disco
-    /// ball, ...), replicated as its own [`ReplicatedKind`]. No physics
-    /// besides `vel` (props are kinematic: their event poses them).
+    /// A comedy event's prop (M4: drones, mimics, the gossip face, ducks,
+    /// hats, the cat paw, the disco ball, ...), replicated as its own
+    /// [`ReplicatedKind`]. Its event poses it
+    /// ([`crate::behavior::Command::PoseEntity`]); a kinematic prop also
+    /// coasts on `vel` between poses, the others hold still. Drones and
+    /// mimics block projectiles while `hp > 0`.
     Prop(ReplicatedKind),
-    /// Comedy event drone (Tax drone, Pizza delivery, Customer survey; M4
-    /// B2). Moved by its event only; blocks projectiles while `hp > 0`.
-    Drone,
-    /// Mimic pickup (M4 B2). Moved by its event only; blocks projectiles
-    /// while `hp > 0`.
-    Mimic,
-    /// Gossip wall face (M4 B2). Placed by its event; no collisions.
-    GossipFace,
 }
 
 impl EntityKind {
-    /// Kinds that a comedy event owns: the world never moves them (the
-    /// event sets their pose, `Command::SetEntity`), does not remove them
-    /// at `hp <= 0` (the event handles their destruction) and records the
+    /// Kinds that a comedy event owns ([`EntityKind::Prop`]): the world
+    /// moves them only along their velocity when kinematic (the event sets
+    /// their pose, `Command::PoseEntity`), does not remove them at
+    /// `hp <= 0` (the event handles their destruction) and records the
     /// point of the shot that destroyed them ([`Entity::last_hit`]).
     pub fn is_event_prop(self) -> bool {
-        matches!(
-            self,
-            EntityKind::Drone | EntityKind::Mimic | EntityKind::GossipFace
-        )
+        matches!(self, EntityKind::Prop(_))
     }
 }
 
@@ -159,9 +152,6 @@ impl From<EntityKind> for ReplicatedKind {
             EntityKind::Ghost => ReplicatedKind::Ghost,
             EntityKind::DustCloud => ReplicatedKind::DustCloud,
             EntityKind::Marker => ReplicatedKind::Marker,
-            EntityKind::Drone => ReplicatedKind::Drone,
-            EntityKind::Mimic => ReplicatedKind::Mimic,
-            EntityKind::GossipFace => ReplicatedKind::GossipFace,
             EntityKind::Prop(k) => k,
         }
     }
@@ -221,7 +211,7 @@ impl Entity {
     pub fn blocks_projectiles(&self) -> bool {
         match self.kind {
             EntityKind::Debris | EntityKind::Decoy => true,
-            EntityKind::Drone | EntityKind::Mimic => self.hp > 0.0,
+            EntityKind::Prop(ReplicatedKind::Drone | ReplicatedKind::Mimic) => self.hp > 0.0,
             _ => false,
         }
     }

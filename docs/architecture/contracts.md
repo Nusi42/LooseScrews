@@ -411,6 +411,19 @@ state, so pre-M4 replays keep their hashes.
   a well and thrust (at least 2.5x the clamped pull) always escapes. `MoveEnv::DEFAULT` (no pull,
   +Y up) is the M3 flight model bit for bit.
 
+### Event drone network (`ls_sim::events::drone::NavGraph`, M4 B2)
+
+Static level data, not hashed: the connection network's hub caverns and tunnel centre lines
+(`ls_worldgen::Network::hubs`, `tunnel_paths`) as a graph, entered from the team spawn caverns
+(`team_hubs` 0-3). `ls_game::setup::nav_graph` builds it from the generator and `build_match`
+(server rooms) and the practice core hand it to `World::set_nav_graph`; worlds without one (belt
+levels, tests) have an empty graph and the drones fly straight at their goal. Equal points are
+one node; a tunnel end that is not a hub joins the nearest other centre line within 8 u.
+`next_waypoint` attaches both ends to the nodes and centre-line points they see (sphere tracing
+with the drone radius + 0.3 u), runs Dijkstra (ties to lower node indices) and pulls the string
+over the next three points in sight. Every peer that runs the simulation must give it the same
+graph (the server and the offline practice do; clients only predict their own ship).
+
 ### The level's up (`World::up`)
 
 World +Y unless an event turns it (`World::set_up`, Bored level). Horizon assist levels the
@@ -475,7 +488,8 @@ sure it is the same data); details in [arsenal-framework.md](arsenal-framework.m
 | `VisualId` | Index in `VisualTable::new(weapons, gadgets)`: 8 built-ins, then 2 per weapon (projectile, pickup), then 1 per gadget |
 | Entity wire id | `entity id & 0x7fff`, unique among live entities (the allocator skips ids in use) |
 | `ReplicatedKind` | Entity `kind` byte: Debris 0, WeaponPickup 1, UpgradePickup 2, GadgetPickup 3, ScrapPile 4, Wreck 5, Decoy 6, Ghost 7, DustCloud 8, Marker 9, PigmentPickup 10 (M4; state `[splash 0/1, side of a splash, 0, 0]`) |
-| `CueKind` | Cue `kind` byte (`ls_sim::behavior::CueKind`); M4 appends `CaveInWarning` 14 (`pos`, `value` = ticks until the rock comes down) and `Pigment` 15 (`source` took a pigment pickup at `pos`, `value` 1 for a splash) |
+| `CueKind` | Cue `kind` byte (`ls_sim::behavior::CueKind`); M4 appends `CaveInWarning` 14 (`pos`, `value` = ticks until the rock comes down), `Pigment` 15 (`source` took a pigment pickup at `pos`, `value` 1 for a splash), `EventAnnounce` 16, `StrokeTelegraph` 17 and `EventOutcome` 18 (B2: `value` = `EventKind` index << 8 \| outcome byte, see [netcode.md](netcode.md#protocol-6-moods-the-architect-belt-up)) |
+| `EntityKind` (sim only) | Debris, Decoy, Ghost, DustCloud, Marker; M4 B2 adds the event props Drone, Mimic and GossipFace (`EntityKind::is_event_prop`: the world never moves them, keeps them at `hp <= 0` for their event and records the destroying shot in `Entity::last_hit`; set with `Command::SetEntity`) |
 | Data hash | `ls_sim::data_hash()`: FNV-1a over all embedded `data/` files sorted by path (path, 0, length, bytes without CR), plus `SIM_BEHAVIOR_VERSION` |
 | `ModeKind` index | Paint the Void 0, Team Brawl 1, The Squeeze 2, Heist 3, Hot Reactor 4, Last Color Standing 5 (append only): rule set code mode index, wire mode kind, `LobbyState::next_mode`; `ModeKind::id` is the module and directory mode id (`the_squeeze`; its rule set file is `squeeze.ron`) |
 | `Mutator` index | Instagib 0 (`Mutator::ALL` order, append only; rule set codes) |

@@ -1,17 +1,24 @@
 // Pizza delivery: A drone brings a pizza to a random living player weighted toward low hull (18
 // u/s along the network); staying under 1.5 u/s within 5 u for 3 s in total restores full hull;
 // others can shoot the drone (30 hp), dropping a 50-scrap pile.
-// Behaviour: crates/ls-sim/src/events/pizza_delivery.rs (B2). Schema: `ls_sim::events::EventDef`.
+// Behaviour: crates/ls-sim/src/events/pizza_delivery.rs. Schema: `ls_sim::events::EventDef`.
 EventDef(
     id: "pizza_delivery",
     name: "Pizza delivery",
     enabled: true,
     weight: 1.0,
     active_secs: 30.0,
+    // It flies back to its entry cavern.
+    ending_secs: 1.5,
     moods: [Giddy],
     targeted: true,
     params: {
         "speed": 18.0,
+        "accel": 50.0,
+        "radius": 0.9,
+        "min_entry_distance": 40.0,
+        // It hovers this far from the recipient.
+        "park_distance": 2.5,
         "hold_speed": 1.5,
         "hold_radius": 5.0,
         "hold_secs": 3.0,

@@ -15,3 +15,8 @@ event/everything_is_cake 0x3fabe9c76f45cbfa
 event/big_head_day 0x355fa7d9de1d030e
 event/moving_day 0x11343f7eee940418
 event/level_hiccups 0x2edb620defa2fbc7
+event/tax_drone 0x7f04130bda7cf2ff
+event/gossip_wall 0xac32eabe4cada0df
+event/pizza_delivery 0x4db68013e4c146b8
+event/customer_survey 0x3b0828700bce12a3
+event/mimic_pickups 0x2e842bed3bff7cad

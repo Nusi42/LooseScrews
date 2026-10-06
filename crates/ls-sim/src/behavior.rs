@@ -115,6 +115,13 @@ pub enum CueKind {
     /// The Architect's stroke telegraph: `source` = the architect, `pos` =
     /// centre, `value` = stroke kind << 8 | radius in u (clamped to 255).
     StrokeTelegraph = 17,
+    /// A comedy event's outcome (M4 B2): `value` = `EventKind` index << 8
+    /// | outcome byte (per event, see `docs/architecture/netcode.md`:
+    /// Tax drone touch 1-5, delivered pizza 1, survey rating 1-5 or 0,
+    /// mimic bite 2, a drone or mimic shot down 0xF0), `source` = the
+    /// player who caused it (the shooter), `target` = the player it
+    /// concerns, `pos` = where.
+    EventOutcome = 18,
     /// Free for modules; `value` is module-defined.
     Custom = 255,
 }
@@ -141,6 +148,7 @@ impl CueKind {
             15 => Pigment,
             16 => EventAnnounce,
             17 => StrokeTelegraph,
+            18 => EventOutcome,
             _ => Custom,
         }
     }
@@ -282,6 +290,18 @@ pub enum Command {
     AddWell(crate::gravity::DynamicWell),
     /// Removes the dynamic wells with this key.
     RemoveWell { key: u32 },
+    /// Sets the pose, velocity and module state of an entity (comedy event
+    /// props, which the world never moves; M4 B2). Ignored for unknown ids.
+    SetEntity {
+        id: u32,
+        pos: Vec3,
+        vel: Vec3,
+        rot: ls_math::Quat,
+        vars: [f32; 4],
+        state: [u8; 4],
+    },
+    /// A scrap pile of `amount` at `pos` (a drone bursting; M4 B2).
+    SpawnScrap { pos: Vec3, amount: f32 },
 }
 
 /// Read-only world view for hooks.
@@ -320,6 +340,9 @@ pub struct View<'a> {
     pub layers: &'a dyn TerrainLayers,
     /// This tick's input per player.
     pub inputs: &'a BTreeMap<PlayerId, InputCmd>,
+    /// The level's flight network for event drones (M4 B2; empty on levels
+    /// without one, see [`crate::events::drone::NavGraph`]).
+    pub nav: &'a crate::events::drone::NavGraph,
     pub(crate) trails: &'a BTreeMap<PlayerId, crate::world::Trail>,
 }
 
@@ -770,6 +793,25 @@ impl<'a> Ctx<'a> {
     /// Removes the dynamic wells with `key` (see [`Command::RemoveWell`]).
     pub fn remove_well(&mut self, key: u32) {
         self.push(Command::RemoveWell { key });
+    }
+
+    /// Sets an event prop's pose and state (see [`Command::SetEntity`]).
+    pub fn set_entity(&mut self, e: &Entity) {
+        self.push(Command::SetEntity {
+            id: e.id,
+            pos: e.pos,
+            vel: e.vel,
+            rot: e.rot,
+            vars: e.vars,
+            state: e.state,
+        });
+    }
+
+    /// A scrap pile (see [`Command::SpawnScrap`]); nothing for `amount <= 0`.
+    pub fn spawn_scrap(&mut self, pos: Vec3, amount: f32) {
+        if amount > 0.0 {
+            self.push(Command::SpawnScrap { pos, amount });
+        }
     }
 
     pub fn cue(&mut self, cue: Cue) {

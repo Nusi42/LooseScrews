@@ -1,20 +1,26 @@
 // Mimic pickups: 3 + players / 4 (max 6) weapon or upgrade pickups become mimics for 20 s: they
 // hop toward the nearest ship within 30 u at 12 u/s and bite (12 damage, 1 s apart); 25 hp; a
 // killed mimic drops its content. Needs at least 4 pickups in play.
-// Behaviour: crates/ls-sim/src/events/mimic_pickups.rs (B2). Schema: `ls_sim::events::EventDef`.
+// Behaviour: crates/ls-sim/src/events/mimic_pickups.rs. Schema: `ls_sim::events::EventDef`.
 EventDef(
     id: "mimic_pickups",
     name: "Mimic pickups",
     enabled: true,
     weight: 1.0,
     active_secs: 20.0,
+    // The survivors hop home, then turn back into pickups.
+    ending_secs: 2.0,
     moods: [],
     params: {
         "min_pickups": 4.0,
         "max_mimics": 6.0,
         "range": 30.0,
         "speed": 12.0,
+        "accel": 80.0,
+        "radius": 0.9,
         "bite_damage": 12.0,
+        "bite_knockback": 8.0,
+        "bite_margin": 0.3,
         "bite_interval_secs": 1.0,
         "hp": 25.0,
     },

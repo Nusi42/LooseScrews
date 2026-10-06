@@ -16,7 +16,8 @@
 //! wasm32 for every event whose module is built (`implemented()`).
 //! Re-bless after a deliberate change with
 //! `LS_BLESS_MOOD_REPLAYS=1 cargo test -p ls-sim --lib events::replays`
-//! (rewrites only the `event/` lines).
+//! (rewrites only the lines of the events it covers; packages with their
+//! own scenario replay, see [`has_own_replay`], bless theirs).
 
 use ls_math::{Pcg32, Vec3};
 
@@ -141,21 +142,31 @@ pub fn event_replay(kind: EventKind) -> EventReplay {
     r
 }
 
-/// The events with a built module, in [`EventKind`] order.
+/// Events whose package recorded its own scenario replay (B2's visitors in
+/// [`crate::events::visitor_replays`]); this generic replay skips them.
+pub fn has_own_replay(kind: EventKind) -> bool {
+    crate::events::visitor_replays::VISITOR_EVENTS.contains(&kind)
+}
+
+/// The events with a built module and no replay of their own, in
+/// [`EventKind`] order.
 pub fn replayed_events() -> Vec<EventKind> {
     EventKind::ALL
         .into_iter()
-        .filter(|k| k.module().implemented())
+        .filter(|k| k.module().implemented() && !has_own_replay(*k))
         .collect()
 }
 
-/// Fixture lines of every built event's replay (`tools/determinism-check.mjs`
-/// compares them with the WASM build).
+/// Fixture lines of every built event's replay, this generic one and the
+/// packages' own (`tools/determinism-check.mjs` compares them with the WASM
+/// build).
 pub fn event_replay_hashes() -> Vec<String> {
-    replayed_events()
+    let mut lines: Vec<String> = replayed_events()
         .into_iter()
         .map(|k| event_replay(k).line())
-        .collect()
+        .collect();
+    lines.extend(crate::events::visitor_replays::visitor_replay_hashes());
+    lines
 }
 
 #[cfg(test)]
@@ -166,11 +177,18 @@ mod tests {
 
     const FIXTURE: &str = include_str!("../../tests/fixtures/mood_replays.txt");
 
+    /// An `event/` line of an event this generic replay covers.
+    fn ours(line: &str) -> bool {
+        replayed_events()
+            .iter()
+            .any(|k| line.starts_with(&format!("event/{} ", k.id())))
+    }
+
     fn fixture_event_lines() -> Vec<String> {
         FIXTURE
             .lines()
             .map(str::trim)
-            .filter(|l| l.starts_with("event/"))
+            .filter(|l| ours(l))
             .map(str::to_string)
             .collect()
     }
@@ -193,9 +211,10 @@ mod tests {
                 env!("CARGO_MANIFEST_DIR"),
                 "/tests/fixtures/mood_replays.txt"
             );
-            let mut text: String = FIXTURE
+            let current = std::fs::read_to_string(path).expect("read the fixture");
+            let mut text: String = current
                 .lines()
-                .filter(|l| !l.trim().starts_with("event/"))
+                .filter(|l| !ours(l.trim()))
                 .map(|l| format!("{l}\n"))
                 .collect();
             for l in &got {

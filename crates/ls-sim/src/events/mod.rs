@@ -42,6 +42,7 @@ pub mod bored_level;
 pub mod cat_paw;
 pub mod customer_survey;
 pub mod disco_inferno;
+pub mod drone;
 pub mod duck_parade;
 pub mod everything_is_cake;
 pub mod gossip_wall;
@@ -56,6 +57,7 @@ pub mod replays;
 pub mod rubber_chickens;
 pub mod tax_drone;
 pub mod tired_announcer;
+pub mod visitor_replays;
 pub mod wrong_genre;
 
 use std::collections::BTreeMap;
@@ -633,5 +635,7 @@ pub fn damaged_ships<'v>(view: &View<'v>) -> Vec<&'v ShipState> {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod visitor_tests;
 #[cfg(test)]
 mod world_events_tests;

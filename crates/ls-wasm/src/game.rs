@@ -624,6 +624,7 @@ impl GameCore {
         let setup = match_setup(&cfg.code, &cfg.rules, &terrain)?;
         let (well_sites, belt) = (setup.wells.clone(), setup.belt.clone());
         let mut world = World::new(cfg.world_config(setup))?;
+        world.set_nav_graph(ls_game::setup::nav_graph(&terrain.generator()));
         if pregenerate {
             terrain.generate_all();
         }

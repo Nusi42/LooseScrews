@@ -125,8 +125,10 @@ fn bad_data_is_rejected() {
     ));
 }
 
-/// The events wave B package B1 built (world and movement).
-pub(crate) const B1_EVENTS: [EventKind; 8] = [
+/// Events built so far (wave B replaces the stubs); the rest stay
+/// announce-only.
+const BUILT: &[EventKind] = &[
+    // B1: world and movement.
     EventKind::BoredLevel,
     EventKind::LevelHiccups,
     EventKind::GravityCoffeeBreak,
@@ -135,14 +137,18 @@ pub(crate) const B1_EVENTS: [EventKind; 8] = [
     EventKind::RubberChickens,
     EventKind::MovingDay,
     EventKind::EverythingIsCake,
+    // B2: visitors.
+    EventKind::TaxDrone,
+    EventKind::PizzaDelivery,
+    EventKind::CustomerSurvey,
+    EventKind::MimicPickups,
+    EventKind::GossipWall,
 ];
 
 #[test]
-fn built_events_say_so() {
-    // Wave B replaces the stubs (B1: world and movement; B2 and B3 list
-    // theirs the same way).
-    for kind in B1_EVENTS {
-        assert!(kind.module().implemented(), "{kind:?}");
+fn stubs_are_announce_only() {
+    for m in &MODULES {
+        assert_eq!(m.module.implemented(), BUILT.contains(&m.kind), "{}", m.id);
     }
 }
 

@@ -462,7 +462,10 @@ fn scripted_inputs(
                     roll: rng.range_f32(-1.0, 1.0),
                     buttons,
                     weapon_select: if rng.chance(0.03) {
-                        rng.below(w.weapons().len() as u32 + 1) as u8
+                        crate::golden::scripted_select(
+                            w,
+                            rng.below(crate::golden::M3_WEAPONS as u32 + 1),
+                        )
                     } else {
                         0
                     },
@@ -524,7 +527,7 @@ fn replay(seed: u64) -> (Vec<u64>, Vec<Event>, World) {
 /// Golden hash of the Last Color Standing replay (native and wasm32 must
 /// agree). Changing the mode, the default rule set or sim behaviour changes
 /// it: update it in the same change.
-const LCS_REPLAY_GOLDEN_HASH: u64 = 0x168c_2c4c_9fc1_7821;
+const LCS_REPLAY_GOLDEN_HASH: u64 = 0xd7b1_0ad9_c4c0_35e9;
 
 #[test]
 fn replay_is_deterministic_and_matches_the_golden_hash() {

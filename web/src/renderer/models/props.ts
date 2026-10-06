@@ -5,7 +5,7 @@
 // shared materials (metal, dark trim, engine).
 
 import type { MeshData } from "../mesh.ts";
-import { Model, PART_ENGINE, PART_GLOW, PART_METAL, PART_PLAIN, PART_TRIM, rotate, type V3 } from "./kit.ts";
+import { Model, PART_CANOPY, PART_ENGINE, PART_GLOW, PART_METAL, PART_PLAIN, PART_TRIM, rotate, type V3 } from "./kit.ts";
 
 /** Rocket: smooth body in the weapon colour, metal nose and fins, a glowing motor. */
 export function rocketModel(): Model {
@@ -140,3 +140,65 @@ export function gadgetModel(): Model {
 
 /** Mesh helpers for MESH_BUILDERS. */
 export const buildProp = (f: () => Model) => (): MeshData => f().build();
+
+/**
+ * Paperweight (M4, the thrown gravity well): a classic office paperweight, a
+ * dark glass dome with a two-armed swirl glowing in the weapon colour up to
+ * a glowing bead on top, on a metal rim and a dark felt base. Upright
+ * along +Y (it lands "where you put it"), about 0.9 u across at scale 1.
+ */
+export function paperweightModel(): Model {
+  const m = new Model();
+  const sides = 32;
+  // Metal base plate with a dark felt pad, and the metal rim.
+  m.lathe([[0.0, -0.225], [0.3, -0.225]], sides, { part: PART_TRIM, axis: "y", group: m.flat() });
+  m.lathe([[0.3, -0.225], [0.3, -0.22], [0.4, -0.22], [0.44, -0.19]], sides, { part: PART_METAL, axis: "y", group: m.smooth(60) });
+  m.lathe([[0.44, -0.19], [0.455, -0.15], [0.45, -0.1], [0.42, -0.08]], sides, { part: PART_METAL, axis: "y", group: m.smooth(60) });
+  // The dome: a quarter ellipse; the swirl is two glowing arms winding up to the top.
+  const rings = 14;
+  const profile: [number, number][] = [];
+  for (let k = 0; k <= rings; k++) {
+    const t = (k / rings) * (Math.PI / 2);
+    profile.push([k === rings ? 0 : 0.42 * Math.cos(t), -0.08 + 0.47 * Math.sin(t)]);
+  }
+  m.lathe(profile, sides, { part: PART_CANOPY, axis: "y", group: m.smooth(70) });
+  // The swirl: two glowing tubes winding up the dome from the rim to the top.
+  const tube = 0.022;
+  for (const arm of [0, Math.PI]) {
+    const path: V3[] = [];
+    const steps = 40;
+    for (let i = 0; i <= steps; i++) {
+      const s = i / steps;
+      const t = (0.08 + 0.8 * s) * (Math.PI / 2);
+      const a = arm + s * Math.PI * 2.2;
+      const rr = 0.42 * Math.cos(t) + 0.004;
+      path.push([rr * Math.cos(a), -0.08 + 0.47 * Math.sin(t) + 0.004, rr * Math.sin(a)]);
+    }
+    const rings: V3[][] = path.map((p, i) => {
+      const prev = path[Math.max(0, i - 1)]!;
+      const next = path[Math.min(path.length - 1, i + 1)]!;
+      const d = norm([next[0] - prev[0], next[1] - prev[1], next[2] - prev[2]]);
+      const out = norm([p[0], p[1] + 0.08, p[2]]);
+      const b = norm(crossV(d, out));
+      const w = tube * (i === 0 || i === path.length - 1 ? 0.3 : 1);
+      return Array.from({ length: 6 }, (_, k): V3 => {
+        const ang = (k / 6) * Math.PI * 2;
+        const c = Math.cos(ang) * w, sn = Math.sin(ang) * w;
+        return [p[0] + out[0] * c + b[0] * sn, p[1] + out[1] * c + b[1] * sn, p[2] + out[2] * c + b[2] * sn];
+      });
+    });
+    m.loft(rings, { part: PART_GLOW, group: m.smooth(80), capStart: true, capEnd: true });
+  }
+  // A glowing bead on top where the arms meet.
+  m.sphere([0, 0.385, 0], 0.045, 1, PART_GLOW, m.smooth(80));
+  return m;
+}
+
+function norm(v: V3): V3 {
+  const l = Math.hypot(v[0], v[1], v[2]) || 1;
+  return [v[0] / l, v[1] / l, v[2] / l];
+}
+
+function crossV(a: V3, b: V3): V3 {
+  return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+}

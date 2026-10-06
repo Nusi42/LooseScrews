@@ -631,7 +631,7 @@ fn eight_bots_play_a_full_match_to_a_result() {
 /// Golden hash of a 60 s, 8-bot Heist replay (mining, collapse, carrying,
 /// deliveries; the match ends by deliveries inside the 60 s). Checked on native and wasm32; re-bless after a deliberate
 /// change of Heist or the simulation (the test prints the new value).
-const HEIST_REPLAY_GOLDEN_HASH: u64 = 0x9aa1_4ec8_8a94_291b;
+const HEIST_REPLAY_GOLDEN_HASH: u64 = 0x4348_368f_eb4b_1f43;
 
 #[test]
 fn heist_replay_golden_hash() {

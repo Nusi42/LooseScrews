@@ -3,7 +3,7 @@
 //! ```text
 //! ls-server --bind 0.0.0.0:7777 --code <share code> \
 //!     --ruleset data/rulesets/paint_the_void.ron --max-players 8 --web-root web/dist
-//! ls-server --ruleset LRAV-741Q-J900-01HQ-M --ban tectonic_charge --ban railspike \
+//! ls-server --ruleset LRAW-740M-8S00-01JD-4 --ban tectonic_charge --ban railspike \
 //!     --balance-list balance.ron
 //! ls-server --playlist playlist.ron --warmup 20 --countdown 5 --private-rooms 2
 //! ```

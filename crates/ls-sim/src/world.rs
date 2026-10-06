@@ -213,6 +213,8 @@ impl SimConfig {
     }
 }
 
+mod preview;
+
 /// Bits of [`Projectile::flags`]. The low 8 bits are replicated to clients
 /// (`Projectile::net_state`).
 pub mod proj_flags {
@@ -2840,6 +2842,14 @@ impl World {
                 Command::SetHats { target, hats } => {
                     if let Some(s) = self.ships.get_mut(&target) {
                         s.hats = hats;
+                    }
+                }
+                Command::WeakRock { center, radius } => {
+                    if center.is_finite() && radius > 0.0 {
+                        self.instability.add_rubble(
+                            InstabilitySettings::builtin(),
+                            &[crate::instability::RubbleSphere { center, radius }],
+                        );
                     }
                 }
                 Command::ResetRound => self.reset_round(events),

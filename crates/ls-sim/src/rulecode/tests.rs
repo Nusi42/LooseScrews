@@ -54,11 +54,23 @@ fn ids<'a>(w: &'a [&'a str], g: &'a [&'a str], e: &'a [&'a str]) -> Ids<'a> {
     }
 }
 
+/// Weapons in the registry of M3 builds.
+const M3_WEAPONS: usize = 27;
+
 /// What a rule set looked like in an M3 build (format 2-4 codes): the
 /// Absurdity of the M3 defaults where it is today's default, and decoded
 /// with today's pigment default and no event bans.
 fn m3(r: &RuleSet) -> RuleSet {
     let mut r = r.clone();
+    // Weapons appended in M4 (the Paperweight) were not in M3 codes: they
+    // decode banned.
+    for id in &weapon_ids()[M3_WEAPONS..] {
+        r.weapons.remove(*id);
+        r.pickups.remove(*id);
+        r.upgrade_pickups.remove(*id);
+        r.shield_overrides.remove(*id);
+        r.tuning.remove(*id);
+    }
     if r.absurdity == RuleSet::default_for(r.mode.kind()).absurdity {
         r.absurdity = LEGACY_ABSURDITY;
     }

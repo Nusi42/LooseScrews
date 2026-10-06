@@ -80,8 +80,11 @@ fn bots_fire_the_whole_arsenal() {
     // one of them; `..._000c` fired both. M4 wave A (the default
     // Instability 30 now grows craters and caves tunnels in, Absurdity 20
     // runs the director) changed the match again: `..._000c` and `..._000d`
-    // missed the Tectonic Charge; `..._000e` fires both.
-    let code = ShareCode::new(0x5a4d_b0c5_a115_000e, Sliders::default());
+    // missed the Tectonic Charge; `..._000e` fires both. The Paperweight
+    // (M4 B7: a new sandbox pickup, and the bots throw it) changed it again:
+    // `..._000e` fired only 13 weapons, `..._000f` to `..._0012` missed the
+    // Tectonic Charge; `..._0013` fires both.
+    let code = ShareCode::new(0x5a4d_b0c5_a115_0013, Sliders::default());
     let mut mc = MatchConfig::paint_the_void(code);
     mc.rules = RuleSet::sandbox_all_weapons();
     let ModeRules::PaintTheVoid(rules) = &mut mc.rules.mode else {

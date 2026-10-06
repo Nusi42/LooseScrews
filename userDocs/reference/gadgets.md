@@ -64,3 +64,4 @@ Knockback is never reduced. The shield drops when your energy runs out.
 | Magnet Sneeze | blocked |
 | Polite Laser | 50% passes through |
 | Seed Grenade | blocked |
+| Paperweight | blocked |

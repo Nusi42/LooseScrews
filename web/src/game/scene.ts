@@ -17,6 +17,7 @@ import { hidesMesh } from "./vfx.ts";
 import { sideColor, TEAM_PALETTE } from "./sides.ts";
 import {
   PROJ_ARMED,
+  PROJ_CUSTOM_SHIFT,
   PROJ_STUCK,
   projectilePaintColor,
   TINKER_RADIUS,
@@ -90,7 +91,17 @@ export const SHAPE_STYLES: Readonly<Record<string, ShapeStyle>> = {
   ghost: { mesh: "ship", size: 1, emissive: 0.7, opacity: 0.35 },
   dust: { mesh: "sphere", size: 6, emissive: 0.15, opacity: 0.4, radiusScaled: true },
   duck: { mesh: "duck", size: 2.5, emissive: 0.05, bob: 0.1 },
+  // M4 B7: tumbles end over end in flight; landed, it stands upright and glows (addProjectiles).
+  paperweight: { mesh: "paperweight", size: 1.0, emissive: 0, trail: 0.02 },
 };
+
+/** Projectile state bit of a landed Paperweight (ls-sim `paperweight::LANDED`, custom bit A). */
+export const PAPERWEIGHT_LANDED = 1 << PROJ_CUSTOM_SHIFT;
+
+/** Whether a projectile is a Paperweight that landed and is a gravity well now. */
+export function landedPaperweight(visual: VisualDef | undefined, state: number): boolean {
+  return visual?.shape === "paperweight" && (state & PAPERWEIGHT_LANDED) !== 0;
+}
 
 /** Fallback for shapes this client does not know yet. */
 export const DEFAULT_STYLE: ShapeStyle = { mesh: "bolt", size: 1, emissive: 1 };
@@ -274,8 +285,36 @@ export function addProjectiles(
       else if (team !== undefined) color = teamHull(team, teams);
     }
     const scale = style.size * (visual?.scale ?? 1);
+    if (landedPaperweight(visual, p.state)) {
+      // A landed Paperweight stands upright, its swirl turning, and glows
+      // with the well it is (B5 draws the well's own swirl and lensing).
+      const ph = phase(p.owner * 31 + p.kind);
+      const pulse = 0.5 + 0.5 * Math.sin(time * 3 + ph);
+      push(scene, "opaque", style.mesh, {
+        position: p.position,
+        rotation: q.fromAxisAngle({ x: 0, y: 1, z: 0 }, time * 0.8 + ph),
+        scale,
+        // The swirl glows by itself; the pulse tints the glass a little.
+        color,
+        emissive: 0.04 + 0.1 * pulse,
+      });
+      // A faint halo (with particles, game/vfx.ts draws a soft glow instead).
+      if (!vfx) {
+        push(scene, "translucent", "sphere", {
+          position: p.position,
+          rotation: q.identity(),
+          scale: scale * (1.9 + 0.25 * pulse),
+          color,
+          emissive: 1,
+          opacity: 0.06 + 0.04 * pulse,
+        });
+      }
+      continue;
+    }
     let rotation = alongVelocity(p.velocity);
-    if (style.spin) rotation = q.mul(rotation, q.fromAxisAngle({ x: 0, y: 0, z: 1 }, time * style.spin));
+    // A thrown Paperweight tumbles end over end (dome, then felt, then dome).
+    if (style.mesh === "paperweight") rotation = q.mul(rotation, q.fromAxisAngle({ x: 1, y: 0, z: 0 }, time * 7 + phase(p.owner)));
+    else if (style.spin) rotation = q.mul(rotation, q.fromAxisAngle({ x: 0, y: 0, z: 1 }, time * style.spin));
     let emissive = style.emissive;
     if (p.state & PROJ_ARMED) emissive = Math.sin(time * 10) > 0 ? 1 : 0.2;
     if (!meshless) push(scene, "opaque", style.mesh, { position: p.position, rotation, scale, color, emissive });

@@ -792,7 +792,10 @@ fn scripted_inputs(
                     roll: rng.range_f32(-1.0, 1.0),
                     buttons,
                     weapon_select: if rng.chance(0.03) {
-                        rng.below(w.weapons().len() as u32 + 1) as u8
+                        crate::golden::scripted_select(
+                            w,
+                            rng.below(crate::golden::M3_WEAPONS as u32 + 1),
+                        )
                     } else {
                         0
                     },
@@ -911,7 +914,7 @@ fn replay_same_inputs_same_state_hash() {
 /// contact estimate `d / |grad d|` kept it too: the replay arena's field is
 /// exact, slope 1, so the estimate equals the bound there; the bound-field
 /// path has its own golden hash, `ship::tests::bound_field_contact_golden_hash`.)
-const REPLAY_GOLDEN_HASH: u64 = 0x8321_c0ab_902b_8ee5;
+const REPLAY_GOLDEN_HASH: u64 = 0x6d20_19b0_f52b_3f3f;
 
 #[test]
 fn replay_golden_hash() {

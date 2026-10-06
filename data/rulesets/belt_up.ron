@@ -54,6 +54,7 @@ RuleSet(
         "swap_harpoon": PickupOnly,
         "borrowed_time": PickupOnly,
         "paint_thrower": PickupOnly,
+        "paperweight": PickupOnly,
     },
     gadgets: {
         "shield": PickupOnly,
@@ -78,6 +79,7 @@ RuleSet(
         "swap_harpoon": (weight: 1.0, respawn_secs: 25.0, ammo: 2),
         "borrowed_time": (weight: 0.5, respawn_secs: 30.0, ammo: 1),
         "paint_thrower": (weight: 0.5, respawn_secs: 30.0),
+        "paperweight": (weight: 1.0, respawn_secs: 25.0, ammo: 3),
     },
     upgrade_pickups: {
         "scrap_laser": (weight: 1.0, respawn_secs: 25.0),

@@ -1335,8 +1335,11 @@ mod tests {
         assert!(r.loadout_primaries.contains(&laser));
         assert_eq!(r.loadout_secondaries, vec![(rocket, 3)]);
         assert_eq!(r.loadout_gadget, gadgets.find("shield"));
-        // Every weapon of the design doc is listed.
-        assert_eq!(rules.weapons.len(), weapons.len());
+        // Every weapon of the design doc is listed; the Paperweight (M4)
+        // is a pickup only in Belt Up and the sandbox (plan open question
+        // 8.1.6), so the default set leaves it out (banned).
+        assert_eq!(rules.weapons.len(), weapons.len() - 1);
+        assert!(!rules.weapons.contains_key("paperweight"));
         assert_eq!(rules.allowed_ship_types.len(), 4);
         // Tectonic Charge: 1 per map, 90 s respawn.
         let tectonic = weapons.find("tectonic_charge").unwrap();

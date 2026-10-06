@@ -336,3 +336,48 @@ fn prediction_holds_through_wells_and_a_turned_up() {
     }
     check_errors(&h, "wells");
 }
+
+/// Paperweights (M4 B7): every pilot throws one every 100 ticks while
+/// flying the pattern, so stones land mid-air and on rock around the ships
+/// and their wells pull the thrower and everyone near (replicated as well
+/// entities on the wire grid): the reconciliation error stays under the
+/// bound and the clients see the server's wells.
+#[test]
+fn prediction_holds_near_thrown_paperweights() {
+    use ls_game::ls_sim::Availability;
+    let code = ShareCode::new(0x7061_7065, Sliders::new(40, 30));
+    let mut cfg = MatchConfig::paint_the_void(code);
+    cfg.rules
+        .weapons
+        .insert("paperweight".into(), Availability::LoadoutAndPickup);
+    cfg.rules.starting_loadout.secondaries = vec![("paperweight".into(), 3)];
+    let mut h = Harness::new(cfg);
+    let thrower = |seed: u64| -> Script {
+        let fly = flyer(seed);
+        Box::new(move |now, s| {
+            let mut cmd = fly(now, s);
+            if (now + seed * 33) % 100 == 0 {
+                cmd.buttons.set(Buttons::FIRE_SECONDARY, true);
+            }
+            cmd
+        })
+    };
+    h.connect("alpha", 3, LinkConditions::default(), thrower(0));
+    h.connect("bravo", 5, LinkConditions::default(), thrower(1));
+    h.connect("charlie", 4, lossy(), thrower(2));
+    let mut most = 0;
+    let mut seen_on_clients = 0;
+    for _ in 0..12 {
+        h.run(100);
+        let wells = h.room.world().dynamic_wells().len();
+        most = most.max(wells);
+        for c in &h.clients {
+            let s = c.session.as_ref().unwrap();
+            seen_on_clients = seen_on_clients.max(s.wells().dynamics.len());
+        }
+    }
+    eprintln!("paperweight wells at once: server {most}, clients {seen_on_clients}");
+    assert!(most >= 2, "paperweights landed: {most}");
+    assert!(seen_on_clients >= 2, "clients see the wells");
+    check_errors(&h, "paperweights");
+}

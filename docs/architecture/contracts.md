@@ -426,7 +426,11 @@ event and a `CueKind::EventHit` cue). `ObstacleKind` ids: Duck 0 (append only).
 - Dynamic wells (`DynamicWell { key, pos, peak_accel, range, start_tick, end_tick, owner }`):
   added by modules (`Ctx::add_well`, `Command::AddWell`, `World::add_well`), active for
   `start_tick <= tick < end_tick`, dropped after `end_tick`, removed early by key
-  (`Ctx::remove_well`). They pull everyone, their owner too. Hashed.
+  (`Ctx::remove_well`). They pull everyone, their owner too. Hashed. The Paperweight (M4 B7)
+  adds one per landed stone: key = its projectile id, from the tick after it lands for 6 s,
+  range 16 u, peak 9 u/s^2 (30 % of the Tinker's thrust), on the `ls_net::well_state` grid.
+  Its expiry leaves a lump of weak rock (`AddSphere` plus a rubble region, `Command::WeakRock`,
+  in the Instability state's rubble list).
 - Sum: statics in order, then active dynamics in order (`WellField::accel_at`). The total on a
   ship is clamped to `ship_clamp` (0.4) x its type's `thrust_accel`; on debris and projectiles to
   `body_clamp` (12 u/s^2).
@@ -541,7 +545,7 @@ sure it is the same data); details in [arsenal-framework.md](arsenal-framework.m
 
 | Id | Definition |
 | --- | --- |
-| `WeaponId` | Index in the weapon table sorted by weapon id (27 built-in weapons: `borrowed_time` 0 ... `tectonic_charge` 26); travels as projectile `kind`, ship flag bits 10-14, `InputCmd::weapon_select - 1` |
+| `WeaponId` | Index in the weapon table sorted by weapon id (28 built-in weapons: `bolt_rocket` 0 ... `paperweight` 11 ... `tectonic_charge` 27; a new weapon shifts the ids sorted after it, so every replay hash changes with it); travels as projectile `kind`, ship flag bits 10-14, `InputCmd::weapon_select - 1` |
 | Weapon registry order | `weapons::registry::MODULES`, design-doc order; rule set codes index it (append only) |
 | `GadgetId` | Index in the gadget table sorted by id (`cloak` 0, `decoy` 1, `shield` 2); registry order (`shield`, `cloak`, `decoy`) is the rule set code order |
 | `ShipType::index` | Skitter 0, Tinker 1, Hauler 2, Tug 3 (wire, rule set codes) |

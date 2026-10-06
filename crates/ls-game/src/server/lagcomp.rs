@@ -19,6 +19,11 @@
 //! rewound position, or when the target's movement would differ there
 //! (terrain contact). Splash from other explosions in the same tick sees the
 //! displaced position.
+//!
+//! Movement is previewed with `World::preview_movement`, exactly as the step
+//! moves the ship: mode limits, the running event's movement effects, the
+//! gravity wells (static and dynamic, such as a Paperweight's) and the
+//! level's up (M4).
 
 use std::collections::{BTreeMap, VecDeque};
 
@@ -26,7 +31,7 @@ use ls_math::terrain::TerrainQuery;
 use ls_math::{Vec3, DT};
 use ls_sim::terrain::segment_sphere;
 use ls_sim::world::PICKUP_RADIUS;
-use ls_sim::{simulate_movement, Buttons, InputCmd, PlayerId, World};
+use ls_sim::{Buttons, InputCmd, PlayerId, World};
 
 use crate::GameTerrain;
 
@@ -188,10 +193,10 @@ pub fn plan_compensation(
                 .ships()
                 .filter(|s| s.alive)
                 .map(|s| {
-                    let mut c = s.clone();
-                    let t = world.tuning_for(s.ship_type);
-                    simulate_movement(&mut c, &cmd_of(s.player), t, terrain);
-                    (s.player, c.pos)
+                    (
+                        s.player,
+                        world.preview_movement(s, &cmd_of(s.player), terrain).pos,
+                    )
                 })
                 .collect()
         });
@@ -231,7 +236,7 @@ pub fn plan_compensation(
         let offset = rewound - after;
         let mut probe = ship.clone();
         probe.pos += offset;
-        simulate_movement(&mut probe, &cmd, world.tuning_for(ship.ship_type), terrain);
+        let probe = world.preview_movement(&probe, &cmd, terrain);
         if probe.pos.distance(rewound) > 1e-3
             || segment_sphere(p.pos, dir, len, center(&fx, probe.pos), radius_of(ship)).is_none()
         {

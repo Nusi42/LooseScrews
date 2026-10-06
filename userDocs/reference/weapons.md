@@ -98,12 +98,14 @@ The comedy weapons: rarer pickups, each with its own trick.
 | **Magnet Sneeze** | secondary | 0 | – | 1 per 1.5 s | 1 (carry 5) | 40 | 20 | – | 0 | – | blocked | pickup, 2 per pickup |
 | **Polite Laser** | primary | 75 | 2 | 1 per 2 s | 25 energy | 40 | 120 | – | 5 | – | 50% passes through | pickup |
 | **Seed Grenade** | secondary | 5 | 20 | 1/s | 1 (carry 3) | 25 | 100 | – | 1 | – | blocked | pickup, 2 per pickup |
+| **Paperweight** | secondary | 0 | – | 1 per 2 s | 1 (carry 3) | 25 | 30 | – | 0 | – | blocked | banned |
 
 - **Echo Cannon:** flies back along its path after 2 s.
 - **Borrowed Time:** rewinds you 3 s; weapons offline 3 s.
 - **Magnet Sneeze:** pulls things in a 60° cone within 20 u.
 - **Polite Laser:** hold to charge, full at 1.5 s, no shot before 1.5 s, fires by itself.
 - **Seed Grenade:** 2% chance of a giant rubber duck; gravity wells bend it.
+- **Paperweight:** stops where it lands; a gravity well for 6 s pulls ships (yours too), debris and ordnance within 16 u at up to 30% of a Tinker's thrust, then fuses into a lump of weak rock; gravity wells bend it.
 
 ## Weapon parameters
 
@@ -136,3 +138,4 @@ pilots; the [player manual](../player-manual.md#weapons) explains what they do.
 | Magnet Sneeze | `cone_half_deg` 30, `range` 20, `pull_speed` 15, `ship_pull_speed` 10, `projectile_pull_speed` 12, `pickup_pull` 10, `pickup_stop` 1.5, `chunk_radius` 0.6, `chunk_rays` 5, `max_chunks` 3, `chunk_scrap` 2 |
 | Polite Laser | `warn_cone_deg` 8, `rewarn_ticks` 30, `hole_radius` 0.6, `hole_thickness` 2, `max_walls` 2 |
 | Seed Grenade | `grow_spheres` 6, `grow_radius` 2, `duck_chance` 0.02, `duck_scale` 3, `grow_on_expire` 1 |
+| Paperweight | `well_secs` 6, `well_range` 16, `well_pull` 0.3, `gather_radius` 4, `lump_min_radius` 1, `lump_max_radius` 2 |

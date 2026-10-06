@@ -103,7 +103,7 @@ random worlds, beginning with a warm-up for Team Brawl, and prints (shortened):
 
 ```
 INFO ls_server::sim: match ready room=public entry=team_brawl share_code=LS0G-APFE-9ZGE-BSJN-5C58-T2XM-57KF ruleset=Team Brawl warmup=true build_ms=496
-INFO ls_server::sim: rules: Team Brawl LRAV-7439-JH00-07NT-8 (banned weapons: paint_thrower) room=public
+INFO ls_server::sim: rules: Team Brawl LRAW-7422-ZQ00-002W-M (banned weapons: paint_thrower) room=public
 INFO ls_server: share code LS0G-APFE-9ZGE-BSJN-5C58-T2XM-57KF - open http://localhost:7777 to play
 ```
 
@@ -169,7 +169,7 @@ ls-server --code LS0G-C4GD-KYZH-1HJ5-BC58-T2XM-57NT
 ls-server --ruleset data/rulesets/sandbox_all_weapons.ron
 
 # Rules from the rule set editor, without the Tectonic Charge
-ls-server --ruleset LRAV-741Q-J900-01HQ-M --ban tectonic_charge
+ls-server --ruleset LRAW-740M-8S00-01JD-4 --ban tectonic_charge
 
 # Your own rule set file, a server-wide balance list and a longer break between matches
 ls-server --ruleset my_rules.ron --balance-list balance.ron --intermission 20
@@ -238,7 +238,7 @@ Standing and Paint the Void each have their own. You can give the server its rul
    [Playlists](#playlists)).
 2. **A built-in rule set by id:** `--ruleset team_brawl`, played in every match.
 3. **A rule set code** made in the [rule set editor](#rule-set-codes-the-editor-and-invite-links):
-   `--ruleset LRAV-741Q-J900-01HQ-M`. Nothing to copy around.
+   `--ruleset LRAW-740M-8S00-01JD-4`. Nothing to copy around.
 4. **A rule set file** (RON): `--ruleset my_rules.ron`. Copy one of the built-in files, edit
    the copy and pass its path.
 5. **Several of them in turn:** a playlist file, `--playlist playlist.ron` (see
@@ -413,16 +413,17 @@ ban adds about three symbols. The built-in rules of each mode:
 
 | Mode | Code of its built-in rules |
 | --- | --- |
-| Paint the Void | `LRAV-741Q-J900-01HQ-M` |
-| Team Brawl | `LRAV-7439-JH00-07NT-8` |
-| The Squeeze | `LRAV-7453-NW00-04CR-W` |
-| Heist | `LRAV-746S-WW00-03DB-4` |
-| Hot Reactor | `LRAV-749E-S600-040N-C` |
-| Last Color Standing | `LRAV-74AE-DC00-00PS-C` |
-| The Architect | `LRAV-74CF-5X00-04PD-W` |
+| Paint the Void | `LRAW-740M-8S00-01JD-4` |
+| Team Brawl | `LRAW-7422-ZQ00-002W-M` |
+| The Squeeze | `LRAW-745C-S000-00S7-0` |
+| Heist | `LRAW-7461-1900-0760-M` |
+| Hot Reactor | `LRAW-7484-X400-059E-G` |
+| Last Color Standing | `LRAW-74BD-HS00-00TZ-R` |
+| The Architect | `LRAW-74C3-W900-053H-M` |
+| Belt Up | `LRAW-74FN-3Y00-07KA-0` |
 
 The editor has no mode picker yet: to edit another mode's rules, open it with that mode's code
-(`?editor=rules&rules=LRAV-7439-JH00-07NT-8`); it edits weapons, pickups, tuning and times, not
+(`?editor=rules&rules=LRAW-7422-ZQ00-002W-M`); it edits weapons, pickups, tuning and times, not
 the mode's own settings (write a rule set file for those).
 Codes made by older versions (they start with `LR6` or `LR8`) still work; they mean what they
 meant then, so an older code keeps the Absurdity cap of 20 the built-in rules had before comedy

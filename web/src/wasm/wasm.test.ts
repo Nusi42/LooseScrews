@@ -68,7 +68,7 @@ test("WASM share-code check, hello packet and practice game", { skip }, async ()
   assert.equal(wasm.tickHz(), 60);
   assert.ok(wasm.helloPacket("tester", -1).length > 4);
   const ids = wasm.weaponIds();
-  assert.equal(ids.length, 27, "every design-doc weapon");
+  assert.equal(ids.length, 28, "every design-doc weapon and the Paperweight (M4)");
   assert.deepEqual(ids, [...ids].sort(), "weapon ids in ls-sim id order");
   // Every visual shape has a client style (new weapons need no client code).
   for (const shape of wasm.visualShapeNames()) assert.ok(SHAPE_STYLES[shape], `style for ${shape}`);
@@ -110,7 +110,7 @@ test("WASM share-code check, hello packet and practice game", { skip }, async ()
 
     // M2: visual table, entities, players and the weapon panel.
     const visuals = parseVisuals(game.visuals(), wasm.visualShapeNames());
-    assert.ok(visuals.length > 8 + 2 * 27, "built-ins, then two per weapon, then gadgets");
+    assert.ok(visuals.length > 8 + 2 * 28, "built-ins, then two per weapon, then gadgets");
     assert.equal(visuals[2]?.shape, "wreck");
     const entities = parseEntities(game.entities(), wasm.entityKindNames());
     for (const e of entities) assert.ok(visuals[e.visual], `visual of ${e.kind}`);

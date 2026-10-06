@@ -12,7 +12,7 @@ use ls_game::ls_math::{Quat, Vec3};
 use ls_game::ls_net::{
     check_welcome, Channel, LinkConditions, MemoryTransport, Message, Transport,
 };
-use ls_game::ls_sim::{Buttons, Event, InputCmd, PlayerId, ShipTuning, WeaponTable};
+use ls_game::ls_sim::{Buttons, DynamicWell, Event, InputCmd, PlayerId, ShipTuning, WeaponTable};
 use ls_game::ls_worldgen::{ShareCode, Sliders};
 use ls_game::server::{Room, RoomConfig};
 use ls_game::MatchConfig;
@@ -510,6 +510,13 @@ fn duel_positions(h: &Harness) -> (Vec3, Vec3, Vec3) {
 }
 
 fn duel(lag_compensation: bool) -> (bool, u64) {
+    duel_in(lag_compensation, false)
+}
+
+/// The duel; with `well`, the target does not climb but hangs idle under a
+/// gravity well (a dynamic one, as a Paperweight makes) that pulls it up
+/// out of the line of fire.
+fn duel_in(lag_compensation: bool, well: bool) -> (bool, u64) {
     let code = ShareCode::new(4242, Sliders::new(10, 10));
     let cfg = RoomConfig {
         lag_compensation,
@@ -536,9 +543,9 @@ fn duel(lag_compensation: bool) -> (bool, u64) {
         "target",
         5,
         perfect(),
-        Box::new(|now, _, _| {
+        Box::new(move |now, _, _| {
             let mut c = InputCmd::idle(0);
-            if now >= FIRE_AT {
+            if now >= FIRE_AT && !well {
                 c.thrust = Vec3::new(0.0, 1.0, 0.0);
                 c.buttons = Buttons::BOOST;
             }
@@ -548,6 +555,7 @@ fn duel(lag_compensation: bool) -> (bool, u64) {
     h.run(60);
     let (shooter_pos, target_pos, axis) = duel_positions(&h);
     let (s, t) = (h.player(0), h.player(1));
+    let to_shot = FIRE_AT - h.now;
     {
         let w = h.room.world_mut();
         let sh = w.ship_mut(s).unwrap();
@@ -558,6 +566,20 @@ fn duel(lag_compensation: bool) -> (bool, u64) {
         tg.pos = target_pos;
         tg.vel = Vec3::ZERO;
         tg.orientation = Quat::from_rotation_arc(Vec3::NEG_Z, -axis);
+        if well {
+            // 4 u above the target from the moment of the shot (the open
+            // space above it): it pulls the idle target up at ~6 u/s^2.
+            let now = w.tick();
+            w.add_well(DynamicWell {
+                key: 1,
+                pos: target_pos + Vec3::Y * 4.0,
+                peak_accel: 9.0,
+                range: 16.0,
+                start_tick: now + to_shot,
+                end_tick: now + to_shot + 360,
+                owner: None,
+            });
+        }
     }
     h.run(FIRE_AT + 60 - h.now);
     let hit = h.events.iter().any(|(_, e)| {
@@ -577,6 +599,20 @@ fn lag_compensation_hits_target_that_moved_after_the_shot() {
         !hit_without,
         "without compensation the target dodges on the server"
     );
+    assert_eq!(comp_without, 0);
+    assert!(hit_with, "the rewound target is hit");
+    assert!(comp_with >= 1);
+}
+
+/// Lag compensation re-simulates the target's movement with the wells
+/// (M4): a target pulled out of the line of fire by a gravity well is hit
+/// where the shooter saw it.
+#[test]
+fn lag_compensation_hits_a_target_pulled_by_a_gravity_well() {
+    let without = std::thread::spawn(|| duel_in(false, true));
+    let (hit_with, comp_with) = duel_in(true, true);
+    let (hit_without, comp_without) = without.join().unwrap();
+    assert!(!hit_without, "without compensation the well pulls it away");
     assert_eq!(comp_without, 0);
     assert!(hit_with, "the rewound target is hit");
     assert!(comp_with >= 1);

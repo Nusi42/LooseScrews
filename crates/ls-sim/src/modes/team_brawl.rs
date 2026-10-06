@@ -599,9 +599,9 @@ pub(crate) mod tests {
     /// free-for-all; kill target 255 so they run the full minute). Must be identical on native and wasm32. Changing Team
     /// Brawl, Instagib, these rule sets or any simulation behaviour they use
     /// changes them: update the constants in the same change.
-    const TEAM_BRAWL_REPLAY_GOLDEN: u64 = 0x4324_af1e_2f87_4773;
-    const INSTAGIB_BRAWL_REPLAY_GOLDEN: u64 = 0x61ed_c96b_b3c7_4e0a;
-    const DUEL_REPLAY_GOLDEN: u64 = 0xbf16_09a8_44fe_9b5c;
+    const TEAM_BRAWL_REPLAY_GOLDEN: u64 = 0xad28_1b20_7184_f03b;
+    const INSTAGIB_BRAWL_REPLAY_GOLDEN: u64 = 0x4df4_eb61_9a88_9d7a;
+    const DUEL_REPLAY_GOLDEN: u64 = 0x1de3_0604_a6ce_bee5;
 
     #[test]
     fn replays_match_their_golden_hashes() {

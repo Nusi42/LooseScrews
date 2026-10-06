@@ -2,32 +2,35 @@
 # starting with "world/") and of the comedy director's events. Checked by
 # `cargo test -p ls-sim --lib` (native and wasm32) and by tools/determinism-check.mjs.
 # Re-bless the world lines: LS_BLESS_MOOD_REPLAYS=1 cargo test -p ls-sim --lib world_replays
-# Event lines ("event/<id>", one per built event) have three owners that each rewrite only their own
-# lines: ls_sim::event_replays (B3's spectacles), ls_sim::events::visitor_replays (B2's visitors) and
-# ls_sim::events::replays (every other built event). Re-bless all of them:
-# LS_BLESS_MOOD_REPLAYS=1 cargo test -p ls-sim --lib replays -- --test-threads=1
-# The Architect ("mode/the_architect", ls_sim::modes::the_architect::replay): LS_BLESS_MOOD_REPLAYS=1 cargo test -p ls-sim --lib the_architect
-world/gravity 0x930876b7c1dfa16e
-world/cave_in 0xca8426a8a830b6bc
-world/pigment 0xc68e3c3054f034f6
-world/radiation 0x813873808786976f
-event/bored_level 0xe865cfcaba762be0
-event/gravity_coffee_break 0xa8189bc71fff9437
-event/rubber_chickens 0xe238085294b2f557
-event/wrong_genre 0x52db1a1f6350857d
-event/everything_is_cake 0x3fabe9c76f45cbfa
-event/big_head_day 0x355fa7d9de1d030e
-event/moving_day 0x11343f7eee940418
-event/level_hiccups 0x2edb620defa2fbc7
-event/tax_drone 0x7f04130bda7cf2ff
-event/gossip_wall 0xac32eabe4cada0df
-event/pizza_delivery 0x4db68013e4c146b8
-event/customer_survey 0x3b0828700bce12a3
-event/mimic_pickups 0x2e842bed3bff7cad
-event/cat_paw 0xbf65e4e26ebc55c3
-event/tired_announcer 0x87aefee006453832
-event/duck_parade 0x70d4db60a6342f5d
-event/hat_rain 0xe077c3a81260bd87
-event/disco_inferno 0xebd4d46d366a0136
-mode/the_architect 0x18ae4636e93c18d6
-mode/belt_up 0x5348689f4f38cac5
+# Event lines ("event/<id>", one per built event) have three owners that rewrite only their own lines:
+# ls_sim::events::replays (B1 and any later built event), ls_sim::events::visitor_replays (B2's visitors)
+# and ls_sim::event_replays (B3's spectacles). Mode lines: ls_sim::modes::the_architect::replay and
+# ls_sim::modes::belt_up::replay. Re-bless with LS_BLESS_MOOD_REPLAYS=1, one cargo run per harness (some
+# read this file at compile time): cargo test -p ls-sim --lib <filter> with the filters world_replays::,
+# events::replays::, visitor_replays::, event_replays::tests, the_architect::tests::architect_replay and
+# belt_up::tests::replay
+world/gravity 0x80cea8be620c3c95
+world/cave_in 0xa6a17f0fd26bbff4
+world/pigment 0xc85406f4941e608a
+world/radiation 0xa4b21ebe95f2c163
+world/paperweight 0x1e022c79ea0966a2
+event/bored_level 0xf260c8a2007e92ea
+event/gravity_coffee_break 0x87ce34315d4c1cb1
+event/rubber_chickens 0xf6b334486ae6f863
+event/wrong_genre 0x30c1038dc7320855
+event/everything_is_cake 0x83027c1c3e644cba
+event/big_head_day 0x303b1fa3e7ab5112
+event/moving_day 0x6b1fc1808cce6fe2
+event/level_hiccups 0x6b9224e27f293e27
+event/tax_drone 0xd773270f8b425ac7
+event/gossip_wall 0x65662aed6d49213e
+event/pizza_delivery 0xc524cea6beb4c7fc
+event/customer_survey 0x1d330e49ae746f55
+event/mimic_pickups 0x36736ce95e657fab
+event/cat_paw 0x7dbb9d7e00feb0fd
+event/tired_announcer 0xf9b752ea6bf7b101
+event/duck_parade 0xc44e4328bf6519e2
+event/hat_rain 0xf14f20a77b66c09e
+event/disco_inferno 0x352668e2313e195d
+mode/the_architect 0x70547b6b3626e613
+mode/belt_up 0x0c37e23d3167be3f

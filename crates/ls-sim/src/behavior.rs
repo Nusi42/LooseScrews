@@ -331,6 +331,10 @@ pub enum Command {
     /// are rolled again, and every ship in play respawns with its loadout
     /// (the mode's `on_spawn` places it). Terrain, debris and scrap stay.
     ResetRound,
+    /// Marks a sphere of the level as weak rock (a rubble region, like a
+    /// cave-in's; the Paperweight's fused lump). Grow the rock with an
+    /// [`Command::Edit`] first.
+    WeakRock { center: Vec3, radius: f32 },
 }
 
 /// Read-only world view for hooks.
@@ -842,6 +846,11 @@ impl<'a> Ctx<'a> {
         if amount > 0.0 {
             self.push(Command::SpawnScrap { pos, amount });
         }
+    }
+
+    /// Marks a sphere as weak rock (see [`Command::WeakRock`]).
+    pub fn weak_rock(&mut self, center: Vec3, radius: f32) {
+        self.push(Command::WeakRock { center, radius });
     }
 
     pub fn cue(&mut self, cue: Cue) {

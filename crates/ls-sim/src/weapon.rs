@@ -416,7 +416,8 @@ mod tests {
     #[test]
     fn builtin_weapons_match_design_doc() {
         let t = WeaponTable::builtin();
-        assert_eq!(t.len(), 27);
+        // The design doc's 27 plus the Paperweight (M4, Belt Up).
+        assert_eq!(t.len(), 28);
         let laser = t.get(t.find("scrap_laser").unwrap());
         assert_eq!(laser.speed, 30.0);
         assert_eq!(laser.lifetime_secs, 3.0);

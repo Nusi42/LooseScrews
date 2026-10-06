@@ -610,12 +610,12 @@ mod tests {
 
 | Failing test | Update |
 | --- | --- |
-| `weapons::tests::every_weapon_has_a_module_and_a_data_file`, `weapon::tests::builtin_weapons_match_design_doc` | the weapon count (27) |
-| `data::tests::hash_is_stable_and_sensitive` | the embedded file count (`27 + 3 + 4 + 2`) |
+| `weapons::tests::every_weapon_has_a_module_and_a_data_file`, `weapon::tests::builtin_weapons_match_design_doc` | the weapon count (28 since the Paperweight) |
+| `data::tests::hash_is_stable_and_sensitive` | nothing (it counts `weapons::MODULES`) |
 | `ruleset::tests::default_rule_set_loads_and_resolves`, `sandbox_offers_every_weapon_gadget_and_ship_type_as_pickups` | the rule set entries (8.4) |
 | `rulecode::tests::web_catalog_is_current` | bless the catalog (8.4) |
 | `tests::replay_golden_hash` | copy the printed hash into `REPLAY_GOLDEN_HASH` ([determinism](architecture/determinism.md#re-blessing-after-an-intentional-change)) |
-| `tests::replay_same_inputs_same_state_hash` | the scripted replay draws weapon selections from the table length, so its match plays out differently; if it no longer covers a kill, a respawn or a pickup, adjust `scripted_inputs` or the replay seed so it does, then re-bless |
+| `tests::replay_same_inputs_same_state_hash` | nothing: scripted inputs select weapons by the M3 ids (`golden::scripted_select`), so the match plays out as before; but every `WeaponId` sorted after the new id shifts, so every replay hash (`REPLAY_GOLDEN_HASH`, the module goldens, `mode_replays.txt`, the `world/` lines of `mood_replays.txt`) changes and is re-blessed |
 
 Regenerate the player reference pages (`node tools/gen-weapon-docs.mjs`, [section
 5](#generated-player-reference)); a weapon with new `params` also wants a line in the
@@ -741,7 +741,7 @@ groups of four (CRC-16 at the end), `RuleSet::from_code` reads it back exactly, 
 `ls-server --ruleset <code>` accepts one wherever it takes a file (an existing file of that name
 wins). Codes (format 5, every mode, comedy event bans and pigment pickups) store only the
 differences from the mode's default rules (`RuleSet::default_for`), so the default Paint the
-Void rules are `LRAV-741Q-J900-01HQ-M` and a ban adds about three symbols (an event ban one or
+Void rules are `LRAW-740M-8S00-01JD-4` and a ban adds about three symbols (an event ban one or
 two); a rule set far from the default falls back to the full encoding when that is shorter.
 Codes of the M3 format 4 (`LR8...`) and the M2 formats 2 and 3 (Paint the Void, `LR6...`) still
 decode, against the defaults of their time (Absurdity 20, no pigment, no event bans).
@@ -790,7 +790,7 @@ BalanceList(
 Effective rules = rule set, then balance list, then `--ban`s, validated at startup. The list is
 re-read before every match (if it no longer loads, the server warns and keeps the previous
 rules), so a host can change it while the server runs. Example:
-`cargo run -p ls-server --release -- --ruleset LRAV-741Q-J900-01HQ-M --ban seeker --balance-list balance.ron`
+`cargo run -p ls-server --release -- --ruleset LRAW-740M-8S00-01JD-4 --ban seeker --balance-list balance.ron`
 logs `rules: Paint the Void LR6V-... (banned weapons: seeker, tectonic_charge)`; the `Welcome`
 carries these effective rules, so clients see the bans. Host-facing details:
 [`userDocs/hosting-guide.md`](../userDocs/hosting-guide.md).

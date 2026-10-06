@@ -328,7 +328,12 @@ first applied input on (before that it is still setting up and has predicted not
 - Before each step `plan_compensation` sweeps each projectile's segment for the coming tick
   against targets rewound by that amount. If the rewound target is hit (before terrain) and the
   simulation would not hit anything at least as early, the target is displaced for this one
-  step so that after its own movement it sits exactly at the rewound position. `World::step`
+  step so that after its own movement it sits exactly at the rewound position: the movement is
+  previewed with `World::preview_movement` (M4), which moves a ship exactly as the coming step
+  does (mode limits, the running event's movement effects, the gravity wells, static and
+  dynamic, the level's up), so targets in a well or under a turned up land on the rewound
+  position too (`server::tests::lag_compensation_previews_targets_in_gravity_wells`,
+  `tests/netplay.rs::lag_compensation_hits_a_target_pulled_by_a_gravity_well`). `World::step`
   then resolves the hit with its normal rules (damage, friendly fire, knockback, kill credit,
   events) and the room moves the target back (`World::shift_ship`, which also corrects the
   newest Borrowed Time trail sample). Ships the step teleported keep their new place: after a

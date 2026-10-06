@@ -20,6 +20,8 @@
 //! | `crater_scale` | a hook digs a crater (`Ctx::crater`) | [`EffectCtx`] |
 //! | `scavenge_scale` | a ship scavenges (hull repaired per scrap) | [`EffectCtx`] |
 //! | `well_scale` | gravity wells pull (Gravity coffee break) | [`EffectCtx`] |
+//! | `level_up` | the level's up while the event runs (Bored level) | [`EffectCtx`] |
+//! | `hit_plane` | projectile hits on ships ignore depth along this normal (Wrong genre) | [`EffectCtx`] |
 //! | `reveal` | snapshot relevance: is this ship shown to everyone? | [`EffectCtx`] + the ship |
 //! | `allows_pickup` | a ship touches a pickup | [`EffectCtx`] + the spawn index |
 //!
@@ -48,7 +50,9 @@ pub mod hat_rain;
 pub mod level_hiccups;
 pub mod mimic_pickups;
 pub mod moving_day;
+pub mod params;
 pub mod pizza_delivery;
+pub mod replays;
 pub mod rubber_chickens;
 pub mod tax_drone;
 pub mod tired_announcer;
@@ -58,7 +62,7 @@ use std::collections::BTreeMap;
 use std::fmt::Debug;
 use std::sync::OnceLock;
 
-use ls_math::{Tick, Vec3};
+use ls_math::{Quat, Tick, Vec3};
 use serde::{Deserialize, Serialize};
 
 use crate::behavior::{Ctx, View};
@@ -432,6 +436,24 @@ pub struct MoveEffects {
     /// Plane lock: the velocity component (and this tick's movement) along
     /// this unit normal is removed (Wrong genre: +z).
     pub lock_normal: Option<Vec3>,
+    /// What happens to the orientation after moving (Wrong genre).
+    pub facing: Facing,
+}
+
+/// Orientation rule of [`MoveEffects`], applied after moving
+/// ([`crate::director::apply_move_effects_after`]).
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum Facing {
+    /// The pilot's look and roll as usual.
+    #[default]
+    Free,
+    /// Turn `blend` (0-1) of the way toward `target` this tick (normalized
+    /// linear interpolation; 1 = exactly `target`).
+    Toward { target: Quat, blend: f32 },
+    /// Keep the forward axis in the plane perpendicular to `normal` and the
+    /// right axis along it (roll levelled to the plane; pitch turns the ship
+    /// inside the plane, yaw is cancelled).
+    InPlane { normal: Vec3 },
 }
 
 impl MoveEffects {
@@ -439,6 +461,7 @@ impl MoveEffects {
         accel: Vec3::ZERO,
         impulse: Vec3::ZERO,
         lock_normal: None,
+        facing: Facing::Free,
     };
 
     pub fn is_none(&self) -> bool {
@@ -511,6 +534,18 @@ pub trait EventModule: Send + Sync + Debug {
     /// Scale of every gravity well's pull (Gravity coffee break: 0).
     fn well_scale(&self, _fx: &EffectCtx) -> f32 {
         1.0
+    }
+
+    /// The level's up while the event runs (Bored level: turning). The
+    /// world keeps the last value after the event (`World::up`).
+    fn level_up(&self, _fx: &EffectCtx) -> Option<Vec3> {
+        None
+    }
+
+    /// Projectile hits on ships ignore depth along this unit normal (Wrong
+    /// genre: +z; the ship's centre is moved into the projectile's plane).
+    fn hit_plane(&self, _fx: &EffectCtx) -> Option<Vec3> {
+        None
     }
 
     /// Whether `ship` is shown to everyone (Gossip wall, Hat rain).
@@ -598,3 +633,5 @@ pub fn damaged_ships<'v>(view: &View<'v>) -> Vec<&'v ShipState> {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod world_events_tests;

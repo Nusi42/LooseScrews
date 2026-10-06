@@ -537,6 +537,7 @@ fn move_effects_apply_forces_and_plane_locks() {
         accel: Vec3::new(0.0, 60.0, 0.0),
         impulse: Vec3::new(1.0, 0.0, 0.0),
         lock_normal: Some(Vec3::Z),
+        ..crate::MoveEffects::NONE
     };
     apply_move_effects_before(&mut s, &fx);
     assert_eq!(s.vel, Vec3::new(2.0, 3.0, 0.0));
@@ -553,7 +554,10 @@ fn move_effects_apply_forces_and_plane_locks() {
     assert!(allows_pickup(&v, 1, 1, 0));
     assert!(!reveals(&v, 1, 1, &s));
     // Stubs have no effects either, in any phase.
-    for kind in EventKind::ALL {
+    for kind in EventKind::ALL
+        .into_iter()
+        .filter(|k| !k.module().implemented())
+    {
         let v = MoodView {
             event: Some(kind),
             phase: EventPhase::Active,

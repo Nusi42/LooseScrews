@@ -9,5 +9,6 @@ EventDef(
     weight: 1.0,
     active_secs: 15.0,
     moods: [Bored],
-    params: { "interval_secs": 3.0, "jitter_secs": 1.0, "lift": 2.0, "lift_secs": 0.25 },
+    // damping: the ships' damper deceleration (data/ships, 8 u/s^2) the lift impulse makes up for.
+    params: { "interval_secs": 3.0, "jitter_secs": 1.0, "lift": 2.0, "lift_secs": 0.25, "damping": 8.0 },
 )

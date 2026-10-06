@@ -39,12 +39,13 @@
 //! them too.
 
 use ls_math::rng::mix64;
-use ls_math::{Pcg32, Tick, Vec3, DT};
+use ls_math::{Mat3, Pcg32, Quat, Tick, Vec3, DT};
 use serde::{Deserialize, Serialize};
 
 use crate::behavior::Ctx;
 use crate::events::{
-    EffectCtx, EventCtx, EventKind, EventPhase, EventRef, EventState, EventTable, MoveEffects,
+    EffectCtx, EventCtx, EventKind, EventPhase, EventRef, EventState, EventTable, Facing,
+    MoveEffects,
 };
 use crate::hash::StateHasher;
 use crate::mode::ModeState;
@@ -130,6 +131,45 @@ impl MoodView {
     /// Whether the event's effects apply (active or ending phase).
     pub fn effects_on(&self) -> bool {
         self.event.is_some() && self.phase != EventPhase::Announce
+    }
+
+    /// The view the world's tick `now` sees, for a view taken after an
+    /// earlier tick (a snapshot): the director's phase changes are
+    /// deterministic (the active phase starts when the announce phase ends,
+    /// the ending phase and the end follow from the event's data), so a
+    /// client predicting ticks after its newest snapshot applies the effects
+    /// from the tick the server does. Effects of tick `now` use the
+    /// director's state after tick `now - 1`. A view that is current (the
+    /// world's own) comes back unchanged.
+    pub fn advanced(&self, now: u64) -> MoodView {
+        let mut v = *self;
+        let Some(kind) = v.event else {
+            return v;
+        };
+        let last = now.saturating_sub(1);
+        let def = kind.def();
+        loop {
+            if last < v.phase_end_tick {
+                return v;
+            }
+            match v.phase {
+                EventPhase::Announce => {
+                    v.phase = EventPhase::Active;
+                    v.active_tick = v.phase_end_tick;
+                    v.phase_end_tick = v.active_tick + def.active_ticks();
+                }
+                EventPhase::Active if def.ending_ticks() > 0 => {
+                    v.phase = EventPhase::Ending;
+                    v.phase_end_tick += def.ending_ticks();
+                }
+                _ => {
+                    return MoodView {
+                        mood: v.mood,
+                        ..MoodView::default()
+                    };
+                }
+            }
+        }
     }
 }
 
@@ -576,6 +616,10 @@ pub struct EventEffects {
     pub crater_scale: f32,
     pub scavenge_scale: f32,
     pub well_scale: f32,
+    /// The level's up set by the event this tick (Bored level).
+    pub up: Option<Vec3>,
+    /// Projectile hits on ships ignore depth along this normal (Wrong genre).
+    pub hit_plane: Option<Vec3>,
 }
 
 impl EventEffects {
@@ -585,6 +629,8 @@ impl EventEffects {
         crater_scale: 1.0,
         scavenge_scale: 1.0,
         well_scale: 1.0,
+        up: None,
+        hit_plane: None,
     };
 }
 
@@ -622,6 +668,18 @@ pub fn event_effects(view: &MoodView, seed: u64, now: u64) -> EventEffects {
         crater_scale: m.crater_scale(&fx),
         scavenge_scale: m.scavenge_scale(&fx),
         well_scale: m.well_scale(&fx),
+        up: m.level_up(&fx),
+        hit_plane: m.hit_plane(&fx),
+    }
+}
+
+/// Where a projectile at `proj` tests its hit on a ship at `ship`: the
+/// ship's centre, or with a hit plane (Wrong genre: hits ignore depth) the
+/// centre moved along the plane normal into the projectile's plane.
+pub fn ship_hit_center(effects: &EventEffects, proj: Vec3, ship: Vec3) -> Vec3 {
+    match effects.hit_plane {
+        None => ship,
+        Some(n) => ship + n * (proj - ship).dot(n),
     }
 }
 
@@ -659,6 +717,47 @@ pub fn apply_move_effects_after(ship: &mut ShipState, fx: &MoveEffects, pos_befo
         ship.pos -= n * (ship.pos - pos_before).dot(n);
         ship.vel -= n * ship.vel.dot(n);
     }
+    match fx.facing {
+        Facing::Free => {}
+        Facing::Toward { target, blend } => {
+            ship.orientation = if blend >= 1.0 {
+                target
+            } else {
+                ship.orientation.nlerp(target, blend.max(0.0))
+            };
+        }
+        Facing::InPlane { normal } => {
+            ship.orientation = in_plane(ship.orientation, normal);
+        }
+    }
+}
+
+/// `q` turned so its forward axis lies in the plane perpendicular to the
+/// unit `normal` and its right axis along `normal` (the sign that keeps
+/// the right axis closest to `q`'s). Pitch inside the plane is kept, yaw
+/// and roll out of it removed. Exact arithmetic (`sqrt` only).
+pub fn in_plane(q: Quat, normal: Vec3) -> Quat {
+    let f = q.forward();
+    let flat = f - normal * f.dot(normal);
+    let fwd = match flat.try_normalize() {
+        Some(v) if flat.length_squared() > 1e-8 => v,
+        // Looking straight along the normal: keep the up axis' direction.
+        _ => {
+            let u = q.up();
+            (u - normal * u.dot(normal))
+                .try_normalize()
+                .map_or(Vec3::X, |u| u.cross(normal))
+        }
+    };
+    let right = if q.right().dot(normal) < 0.0 {
+        -normal
+    } else {
+        normal
+    };
+    // Local axes: right +X, up +Y, back +Z (forward is -Z).
+    let back = -fwd;
+    let up = back.cross(right);
+    Quat::from_mat3(&Mat3::from_cols(right, up, back))
 }
 
 // ----- helpers for events ------------------------------------------------------

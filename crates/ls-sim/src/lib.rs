@@ -66,7 +66,7 @@ pub use data::{data_hash, with_behavior_version, GameData, SIM_BEHAVIOR_VERSION}
 pub use director::{DirectorEvent, DirectorState, EventEffects, Mood, MoodView, RNG_STREAM_MOOD};
 pub use entity::{Entity, EntityKind, EntitySpawn, EntityView, ReplicatedKind, Source};
 pub use error::SimError;
-pub use events::{EventDef, EventKind, EventModule, EventPhase, EventTable, MoveEffects};
+pub use events::{EventDef, EventKind, EventModule, EventPhase, EventTable, Facing, MoveEffects};
 pub use gadgets::{GadgetActivation, GadgetDef, GadgetId, GadgetTable};
 pub use gravity::{DynamicWell, GravitySettings, WellField, WellSite};
 pub use hash::StateHasher;

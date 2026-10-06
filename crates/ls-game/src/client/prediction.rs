@@ -564,16 +564,31 @@ fn step_ship<T: TerrainQuery + ?Sized>(
         return;
     }
     let now = cmd.tick;
-    let fx = env.mood.as_ref().map_or(ls_sim::MoveEffects::NONE, |m| {
-        ls_sim::director::move_effects(m, env.seed, now, s)
-    });
+    // The mood view as the server's tick `now` sees it (phase changes after
+    // the snapshot are deterministic), so effects start and stop on the
+    // server's tick.
+    let mood = env
+        .mood
+        .as_ref()
+        .map(|m| m.advanced(now))
+        .filter(|m| m.event.is_some());
+    let (fx, effects) = match &mood {
+        Some(m) => (
+            ls_sim::director::move_effects(m, env.seed, now, s),
+            ls_sim::director::event_effects(m, env.seed, now),
+        ),
+        None => (ls_sim::MoveEffects::NONE, ls_sim::EventEffects::NONE),
+    };
+    // Bored level turns the level's up on a clock both ends share.
+    let up = effects.up.unwrap_or(env.up);
     let pos_before = s.pos;
     if !fx.is_none() {
         ls_sim::director::apply_move_effects_before(s, &fx);
     }
-    // Wells and the level's up exactly as `World::step` (a level without
-    // wells and with +Y up runs the plain flight model).
-    let plain = env.wells.is_empty() && env.up == Vec3::Y;
+    // Wells (dimmed by Gravity coffee break) and the level's up exactly as
+    // `World::step` (a level without wells and with +Y up runs the plain
+    // flight model).
+    let plain = env.wells.is_empty() && up == Vec3::Y;
     let (t, c);
     let (tuning, cmd) = if limits.is_none() {
         (tuning, cmd)
@@ -584,7 +599,9 @@ fn step_ship<T: TerrainQuery + ?Sized>(
     if plain {
         simulate_movement(s, cmd, tuning, terrain);
     } else {
-        let me = env.wells.move_env(s.pos, now, tuning, env.up);
+        let me = env
+            .wells
+            .move_env_scaled(s.pos, now, tuning, up, effects.well_scale);
         simulate_movement_env(s, cmd, tuning, terrain, &me);
     }
     if !fx.is_none() {

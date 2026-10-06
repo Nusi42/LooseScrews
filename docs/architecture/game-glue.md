@@ -216,7 +216,10 @@ catch-up sends only the newest 8 `Input` messages (older ones would be late anyw
   client gives its own ship) and the level's up before each reconciliation; every predicted tick
   applies the running event's movement effects (`ls_sim::director::move_effects` with the match
   seed, `apply_move_effects_before` / `_after`) around the movement, exactly as `World::step`
-  does. `Predictor::set_wells` takes the level's well field: the static wells of the match setup
+  does, with the view advanced to the predicted tick (`MoodView::advanced`: an event's phases
+  start and end on the server's tick even when the newest snapshot is older), the level's up
+  of the event (Bored level's turn is a pure function of the view, `EventEffects::up`) and the
+  wells dimmed by `EventEffects::well_scale` (Gravity coffee break). `Predictor::set_wells` takes the level's well field: the static wells of the match setup
   plus the dynamic wells rebuilt from the newest snapshot's well entities; the movement runs
   `simulate_movement_env` with the clamped pull at the ship and the level's up. Well entities
   carry their exact start and end ticks: a telegraphed well starts on its tick, and a changed
@@ -224,7 +227,9 @@ catch-up sends only the newest 8 `Input` messages (older ones would be late anyw
   well the client learns of after it started pulls from its exact start as on the server. `ClientSession::mood()`,
   `well_sites()`, `belt()` expose the rest; `architect_action(...)` builds the stroke message.
   Test: `crates/ls-game/tests/mood_netplay.rs` (reconciliation error below 0.05 u through forced
-  events, a turned up, a well field and dynamic wells starting and ending mid-flight).
+  events, a turned up, a well field and dynamic wells starting and ending mid-flight) and
+  `crates/ls-game/tests/world_events_netplay.rs` (B1's eight world and movement events with 4
+  clients: no desync, reconciliation error below 0.1 u).
 - **Interpolation** (`InterpolationBuffer`): remote ships at `server time - 6 ticks` (100 ms),
   lerp position/velocity, nlerp orientation, no interpolation across jumps above 8 u, at most
   6 ticks of extrapolation.
@@ -333,6 +338,10 @@ first applied input on (before that it is still setting up and has predicted not
   Projectiles are not compensated on the tick they are fired. Splash from other explosions in
   the same tick sees the displaced position, and a kill leaves its wreck where the shooter saw
   the target.
+- Comedy events (M4): each history frame also keeps that tick's hit rules
+  (`EventEffects::hit_radius_scale` of Big head day, `hit_plane` of Wrong genre), so a rewound
+  target is tested with the hit sphere and depth rule of its tick, and the simulation checks
+  with the coming step's (`World::next_event_effects`).
 - `lag_compensated_raycast` offers the same rewind for hitscan validation.
 
 `ls-sim` has no hook for per-projectile target positions; a `World::step` variant that accepts

@@ -807,6 +807,43 @@ impl GameCore {
         }
     }
 
+    /// Practice only (`?event=<id>`, the browser smoke's moods phase, M4
+    /// plan §3.1): forces comedy event `kind` `delay_ticks` from now (or as
+    /// soon as the running event ended; `World::schedule_event`). Returns
+    /// false online.
+    pub fn practice_schedule_event(&mut self, kind: ls_sim::EventKind, delay_ticks: u64) -> bool {
+        match &mut self.mode {
+            Mode::Online(_) => false,
+            Mode::Practice(p) => {
+                let at = p.world.tick() + delay_ticks.max(1);
+                p.world.schedule_event(at, kind);
+                true
+            }
+        }
+    }
+
+    /// Practice only (the browser smoke's moods phase): runs `ticks` world
+    /// ticks at once with the own ship idle, as frames would (cues, kill
+    /// feed and terrain edits are handled like a frame's), so a long event
+    /// can be looked at in its middle and after its end without waiting.
+    /// Returns the ticks run (0 online).
+    pub fn practice_warp(&mut self, ticks: u32) -> u32 {
+        let Mode::Practice(p) = &mut self.mode else {
+            return 0;
+        };
+        let mut events = Vec::new();
+        for _ in 0..ticks {
+            p.prev = p.world.ships().cloned().collect();
+            let idle = ls_sim::InputCmd::idle(p.world.tick() + 1);
+            events.extend(p.world.step(&mut p.terrain, &[(p.me, idle)]));
+        }
+        for e in events {
+            self.practice_event(e);
+        }
+        self.pull_dirty();
+        ticks
+    }
+
     // ----- network -------------------------------------------------------------
 
     /// Handles one packet from the server. Returns the reason if the server

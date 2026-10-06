@@ -25,7 +25,7 @@ use crate::convert::{
     entity_to_net, events_to_net, net_to_input, projectile_to_net, well_entities,
 };
 use crate::mode::{legacy_scores, mode_view_to_net, results_to_net};
-use crate::setup::{build_match, MatchConfig};
+use crate::setup::{build_match_lazy, MatchConfig};
 use crate::{GameError, GameTerrain, NetConv};
 pub use lagcomp::{Displacement, HistoryFrame, ShipHistory};
 
@@ -232,7 +232,7 @@ impl Room {
     /// Builds the level, the setup and the world (and generates every chunk
     /// if `cfg.pregenerate`).
     pub fn new(match_cfg: MatchConfig, cfg: RoomConfig) -> Result<Room, GameError> {
-        let (world, mut terrain) = build_match(&match_cfg)?;
+        let (world, mut terrain) = build_match_lazy(&match_cfg)?;
         if cfg.pregenerate {
             terrain.generate_all();
         }

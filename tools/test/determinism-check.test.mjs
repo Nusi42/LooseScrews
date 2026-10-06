@@ -1,6 +1,6 @@
 // Tests of tools/determinism-check.mjs's fixture parsing and the mode replay comparison.
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -42,4 +42,17 @@ test("compareModeReplays reports differences, missing and extra rule sets", () =
     "b: missing in the WASM build",
     "c: not in the native fixture (re-bless it)",
   ]);
+});
+
+test("the checked-in mood replay fixture parses: world physics, all 18 events, The Architect and Belt Up", () => {
+  const rows = parseModeFixture(readFileSync(join(root, "crates", "ls-sim", "tests", "fixtures", "mood_replays.txt"), "utf8"));
+  const names = rows.map((r) => r.file);
+  assert.equal(new Set(names).size, names.length, "no duplicate lines");
+  const events = readdirSync(join(root, "data", "events"))
+    .filter((f) => f.endsWith(".ron") && f !== "director.ron")
+    .map((f) => `event/${f.slice(0, -4)}`);
+  assert.equal(events.length, 18);
+  for (const n of [...events, "world/gravity", "world/cave_in", "world/pigment", "world/radiation", "world/paperweight", "mode/the_architect", "mode/belt_up"]) {
+    assert.ok(names.includes(n), `${n} in mood_replays.txt`);
+  }
 });

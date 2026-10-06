@@ -1,13 +1,17 @@
 // Tests of tools/e2e.mjs's helpers: the quick playlist's rule sets, log parsing of the rotation.
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
 import {
   QUICK_ENTRIES,
+  QUICK_EVENT_SCHEDULE,
   botTotals,
+  eventScheduleArg,
+  eventsFromLog,
   matchLength,
   parseFields,
   parsePrivateRooms,
@@ -16,6 +20,7 @@ import {
   rotationFromLog,
   setRonField,
   welcomeTimes,
+  writeQuickPlaylist,
 } from "../e2e.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -28,8 +33,10 @@ test("the quick playlist shortens every built-in mode rule set it names", () => 
     modes.add(/mode:\s*(\w+)/.exec(text)[1]);
     assert.ok(matchLength(text) <= 110, `${id}: ${matchLength(text)} s`);
   }
-  // Every PvP mode of the default rotation.
-  for (const m of ["TeamBrawl", "TheSqueeze", "PaintTheVoid", "HotReactor", "Heist", "LastColorStanding"]) assert.ok(modes.has(m), m);
+  // Every PvP mode of the default rotation, and (M4) The Architect and Belt Up.
+  for (const m of ["TeamBrawl", "TheSqueeze", "PaintTheVoid", "HotReactor", "Heist", "LastColorStanding", "TheArchitect", "BeltUp"]) {
+    assert.ok(modes.has(m), m);
+  }
   const squeeze = quickRuleSet(ruleset("squeeze"), QUICK_ENTRIES.find(([id]) => id === "squeeze")[1], 45);
   assert.match(squeeze, /match_secs: 105\.0/);
   assert.match(squeeze, /first_phase_secs: 3\.0/);
@@ -99,4 +106,52 @@ test("welcome times and a private room's lines are read from the logs", () => {
   const lines = roomLines(server, "R-ABC", "tick stats");
   assert.equal(lines.length, 1);
   assert.equal(lines[0].p99_us, "200");
+});
+
+test("the quick playlist file: Absurdity 100, The Architect, Belt Up only for up to 8 racers", () => {
+  const dir = mkdtempSync(join(tmpdir(), "e2e-quick-"));
+  try {
+    const plan = writeQuickPlaylist(dir, 45, 8);
+    const text = readFileSync(plan.file, "utf8");
+    assert.match(text, /rules: "absurdity_100\.ron", world: RandomSliders\(absurdity: \(100, 100\)\)/);
+    assert.match(text, /rules: "the_architect\.ron", world: Random, min_players: 2/);
+    assert.match(text, /rules: "belt_up\.ron", world: Random, max_players: 8/);
+    assert.equal(plan.entries.length, QUICK_ENTRIES.length);
+    // Shortened: 3 rounds of 15 + 3 s, 3 heats of 3 + 20 + 3 s.
+    assert.equal(plan.entries.find((e) => e.source === "the_architect.ron").secs, 54);
+    assert.equal(plan.entries.find((e) => e.source === "belt_up.ron").secs, 78);
+    const crowded = writeQuickPlaylist(dir, 45, 9);
+    assert.ok(!crowded.entries.some((e) => e.source === "belt_up.ron"), "no Belt Up for 9 players");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("--event-schedule defaults to forced events with the quick playlist", () => {
+  assert.equal(eventScheduleArg("", "quick"), QUICK_EVENT_SCHEDULE);
+  assert.equal(eventScheduleArg("", ""), "");
+  assert.equal(eventScheduleArg("off", "quick"), "");
+  assert.equal(eventScheduleArg("10 duck_parade", ""), "10 duck_parade");
+});
+
+test("comedy events are read from the server log per room and match", () => {
+  const log = [
+    'INFO ls_server::sim: event schedule: events forced in this match room=public events=bored_level@5.0s,tax_drone@6.0s',
+    'INFO ls_server::sim: comedy event room=public event="bored_level" phase=Announce target=-1 tick=300',
+    'INFO ls_server::sim: comedy event room=public event="bored_level" phase=Active target=-1 tick=480',
+    'INFO ls_server::sim: comedy event room=public event="bored_level" phase="Over" tick=840',
+    'INFO ls_server::sim: match over; building the next room room=public players=6 mode="team_brawl"',
+    'INFO ls_server::sim: event schedule: events forced in this match room=public events=gravity_coffee_break@5.0s,rubber_chickens@6.0s',
+    'INFO ls_server::sim: comedy event room=R-1 event="hat_rain" phase=Announce target=-1 tick=3000',
+  ].join("\n");
+  const rooms = eventsFromLog(log);
+  const pub = rooms.get("public");
+  assert.equal(pub.matches.length, 2);
+  assert.deepEqual(pub.matches[0].forced, [{ id: "bored_level", secs: 5 }, { id: "tax_drone", secs: 6 }]);
+  assert.deepEqual(pub.matches[0].announced, ["bored_level"]);
+  assert.deepEqual(pub.matches[1].announced, []);
+  assert.equal(pub.matches[0].finished, true);
+  assert.equal(pub.matches[1].finished, false);
+  assert.ok(pub.active.has("bored_level") && pub.over.has("bored_level"));
+  assert.deepEqual(rooms.get("R-1").announced, ["hat_rain"]);
 });

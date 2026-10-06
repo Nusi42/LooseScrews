@@ -40,9 +40,12 @@ declared with `default-features = false`; `ls-server` enables `features = ["serv
   left-out edits (`edit_count()`, `pruned_count()`), so its own `edit_log()` is not indexed
   by sequence number (only the server serves logs).
 - `SimTerrain::paint_coverage` maps `ls_worldgen::PaintCoverage` to teams 0-3 and caches it
-  until the next edit. It generates every chunk on first use (about 7 s in debug builds at the default sliders, well
-  under a second in release), which is why `Room::new` pregenerates and why tests that stay
-  below tick 30 (the first score update) turn that off.
+  until the next edit. It generates every chunk on first use (about 7 s in debug builds at the default sliders,
+  0.5-1.2 s in release), so no world may reach that query lazily: `build_match` generates the whole level
+  while building (M4 C6; before, tick 30 of a fresh `build_match` world stalled for that long, regression test
+  `crates/ls-game/tests/match_start.rs`), `Room::new` generates it unless `RoomConfig::pregenerate` is off,
+  and `build_match_lazy` (and `pregenerate: false`) is only for tests that stay below tick 30 (the first score
+  update).
 - The store sits in a `RefCell` because `paint_coverage(&self)` must generate chunks. The type
   is `Send`, not `Sync`: keep it on the thread that steps the world.
 - Every path applies edits verbatim (`SimTerrain::apply_edit`, `apply`, `apply_sequence`,

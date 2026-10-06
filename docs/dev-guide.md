@@ -238,7 +238,7 @@ Invites, parties and duels go through the game server's JSON API (`/api/...`,
 | Rule set codes and the web catalog | `cargo test -p ls-sim --lib rulecode` | Includes `web_catalog_is_current`; regenerate with `LS_BLESS_RULES_CATALOG=1` ([section 9](#rule-set-codes-and-the-editor)) |
 | Snapshot bandwidth | `cargo test -p ls-net --lib busy_fight_with_projectiles_fits_the_budget -- --nocapture` | Prints mean and worst delta size per seed and baseline age ([netcode](architecture/netcode.md#snapshots-and-deltas)); `cargo test -p ls-game --lib busy_fight_fits_the_bandwidth_budget` is the ship-physics variant |
 | Match setup sweep | `cargo test -p ls-game --release --lib setup` | 8 seeds x 25 slider mixes (1 seed in debug) |
-| ls-game in release | `cargo test -p ls-game --release` | Part of CI: the setup sweep, the Hot Reactor 8-bot match with the default rule set, The Squeeze's 8-seed shell remesh benchmark (`tests/squeeze.rs`, about 5 minutes) |
+| ls-game in release | `cargo test -p ls-game --release` | Part of CI: the setup sweep, the Hot Reactor 8-bot match with the default rule set, The Squeeze's 8-seed shell remesh benchmark (`tests/squeeze.rs`, about 5 minutes), the match-start regression (`tests/match_start.rs`: no tick of a fresh `build_match` world or `Room` over 50 ms, every built-in rule set) |
 | Visitor event replay hashes (M4 B2) | `cargo test -p ls-sim --lib visitor_replays` | Tax drone, Gossip wall, Pizza delivery, Customer survey and Mimic pickups forced in a 23 s replay each (`ls_sim::events::visitor_replays`) against their `event/` lines of `crates/ls-sim/tests/fixtures/mood_replays.txt`, native and wasm32. Re-bless: `LS_BLESS_MOOD_REPLAYS=1 cargo test -p ls-sim --lib visitor_replays`. Netplay and generated-level drone tests: `cargo test -p ls-game --release --test visitor_netplay` |
 | World physics replay hashes (M4) | `cargo test -p ls-sim --lib world_replays` | Gravity, cave-in, pigment and radiation replays (`ls_sim::world_replays`) against the `world/` lines of `crates/ls-sim/tests/fixtures/mood_replays.txt`, native and wasm32. Re-bless: `LS_BLESS_MOOD_REPLAYS=1 cargo test -p ls-sim --lib world_replays` |
 | Comedy event replay hashes (M4) | `cargo test -p ls-sim --lib event_replays` | One forced replay per spectacle event (`ls_sim::event_replays`, B3) and per other built event without its own replay (`ls_sim::events::replays`, B1) against their `event/` lines of the same fixture, native and wasm32. Re-bless: `LS_BLESS_MOOD_REPLAYS=1 cargo test -p ls-sim --lib event_replays` (both harnesses' tests match the filter) |
@@ -247,7 +247,7 @@ Invites, parties and duels go through the game server's JSON API (`/api/...`,
 | One crate / one test | `cargo test -p ls-sim replay_golden_hash` | Standard cargo filters |
 | Worldgen golden hashes | `cargo test -p ls-worldgen --release --test golden` | See [determinism](architecture/determinism.md) |
 | Unit tests on wasm32 | see [determinism.md](architecture/determinism.md#the-wasm-cross-check) | Needs `CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=wasm-bindgen-test-runner`; do not pass `-q` |
-| WASM vs native hashes | `node tools/determinism-check.mjs` | Worldgen golden hashes and the per-mode replay hashes; needs the package from `cd web && npm run build:wasm` (or `--pkg <dir>`) |
+| WASM vs native hashes | `node tools/determinism-check.mjs` | Worldgen golden hashes, the per-mode replay hashes and the mood replays (`moodReplayHashes()` against `crates/ls-sim/tests/fixtures/mood_replays.txt`: world physics, every event, The Architect, Belt Up); needs the package from `cd web && npm run build:wasm` (or `--pkg <dir>`) |
 | Lints and format | `cargo clippy --workspace --all-targets -- -D warnings` and `cargo fmt --all` | CI runs `cargo fmt --all -- --check` |
 | Generated player reference | `node tools/gen-weapon-docs.mjs --check` | Fails when `userDocs/reference/*.md` differ from `data/`; regenerate without `--check` ([section 5](#generated-player-reference)) |
 | Web | `cd web && npm run typecheck && npm test` | `src/**/*.test.ts` via `node --test`; Node strips types, so use `.ts` import extensions and erasable-only syntax (no enums, no parameter properties) |
@@ -340,8 +340,19 @@ node tools/e2e.mjs --server-bin target/<area>/release/ls-server --bots-bin targe
 
 (add `.exe` on Windows). The e2e run is not part of `tools/ci.*`.
 
+**Comedy events (M4 C6).** `--event-schedule <file|spec>` passes ls-server's testing flag of
+the same name: comedy events forced in every match room, `<seconds> <event id|next>` items (one
+per line in a file, or comma-separated; `next` walks every event in turn across matches). The
+server logs `event schedule: events forced in this match` per match room and a `comedy event`
+line per phase change (Announce, Active, Ending, Over); the e2e checks that every public match
+room got its events, that the first forced event of every match was announced and that announced
+events went active, and lists the events seen. The quick playlist uses `5 next, 6 next` unless
+`--event-schedule off`.
+
 **Rotation (M3).** `--playlist quick` writes a playlist of every mode (Team Brawl, The
-Squeeze, Paint the Void, Hot Reactor, Heist, Last Color Standing) plus Instagib Brawl into
+Squeeze, Paint the Void, Hot Reactor, Heist, Last Color Standing) plus Instagib Brawl (M4:
+then Team Brawl on a world at Absurdity 100 for 110 s, The Architect with 15 s rounds for 2+
+players and Belt Up with 20 s heats, left out above 8 players) into
 `<log-dir>/playlist/`, each built-in rule set shortened to `--match-secs` (45; The Squeeze's
 phases to 3 s + 5 x (3 s warning + 12 s close), Last Color Standing's stalemate to half the match), on random
 worlds, and runs the server with the lobby on (`--warmup 10 --countdown 2 --intermission 3`).
@@ -975,6 +986,30 @@ The wrappers take the server from `$CARGO_TARGET_DIR/release` and install puppet
    `?workshop=<code>`), Fly it starts practice on that world (the F3 overlay shows the code).
    Once more as an asteroid belt when the build generates belts (generator version 4); without
    one the belt pass is noted and skipped.
+9. **Moods** (`moods.mjs`, M4 C6): practice on a cave world with wells at Absurdity 0, the
+   first event from `?event=<id>@4`, the rest through `window.__lsEvents.schedule`; each of the
+   18 events gets a three-frame strip: `event-<id>-1-tell.png` (1.5 s into the warning),
+   `-2-peak.png` (a moment of the active phase per event, reached with
+   `window.__lsEvents.warp`, then 0.9 s of live frames, firing for the shot-based events) and
+   `-3-after.png` (after its end), with `moods-strip.json`. Two practice pages, so the events fit
+   Paint the Void's 5-minute practice match. Checks each event announces, runs and ends.
+10. **Architect** (`architect.mjs`, M4 C6): a server playing The Architect, two players in
+   separate contexts; the first is the architect, the second runs; the architect places a stroke
+   in front of the runner through `window.__lsGame.architectStroke` (the wire message the stroke
+   menu sends), the runner's page sees it telegraphed and then acting, the budget drops by its
+   cost.
+11. **Race** (`race.mjs`, M4 C6): a server with the lobby on and Belt Up in 2 heats of at most
+   40 s on a belt world; two pages ready up and race, flown by a script autopilot (mouse look
+   toward the next gate over the fake pointer lock; one in the belt plane, one on the open line
+   above it): start lights hold the racers, gates passed, heat results with places, the next
+   heat, the match results screen.
+
+`--only <phase,...>` runs a subset (`practice, online, mechanics, lobby, fit, social, editor,
+audio, workshop, moods, architect, race`). Scripts in the page can use two debug handles:
+`window.__lsEvents` in practice (`ids`, `schedule(id, delaySecs)`, `warp(secs)`, `mood()`;
+`web/src/game/eventParam.ts`) and `window.__lsGame` in every session (`playerId()`,
+`modeState()`, `pose()`, `belt()`, `architectStroke(kind, x, y, z, radius)`;
+`web/src/game/debugHooks.ts`).
 
 Every phase fails on console or page errors, WebGPU validation or uncaptured errors, a lost
 device, error screens, and server errors or panics. Screenshots, the browser console and the

@@ -148,6 +148,13 @@ struct Args {
     /// joined). For scripted runs such as tools/e2e.*.
     #[arg(long)]
     exit_when_empty: bool,
+
+    /// Testing only (end-to-end runs, browser smoke): forces comedy events
+    /// in every match, ignoring the Absurdity, bans and vetoes. A file or an
+    /// inline list of `<seconds> <event id|next>` items, e.g.
+    /// "5 duck_parade, 30 next" (`next` walks every event in turn).
+    #[arg(long, value_name = "FILE|SPEC")]
+    event_schedule: Option<String>,
 }
 
 fn parse_interval(s: &str) -> Result<f64, String> {
@@ -201,6 +208,15 @@ fn server_config(args: &Args) -> anyhow::Result<ServerConfig> {
         results: Duration::from_secs_f64(args.intermission),
     };
     cfg.private_rooms = usize::from(args.private_rooms);
+    if let Some(spec) = &args.event_schedule {
+        let schedule = ls_server::event_schedule::EventSchedule::load(spec)
+            .map_err(|e| anyhow::anyhow!("invalid --event-schedule: {e}"))?;
+        tracing::warn!(
+            events = schedule.events.len(),
+            "--event-schedule is a testing flag: comedy events are forced in every match"
+        );
+        cfg.event_schedule = Some(std::sync::Arc::new(schedule));
+    }
     if let Some(url) = &args.directory {
         ls_directory::DirectoryClient::new(url).context("invalid --directory")?;
     }

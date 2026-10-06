@@ -208,6 +208,10 @@ export interface GameHandle {
   readonly monochrome?: boolean;
   /** Radiation dose rate (hull per second) at a point; 0 on classic levels. */
   doseRateAt?(x: number, y: number, z: number): number;
+  /** Practice only (`?event=`, game/eventParam.ts): forces a comedy event `delaySecs` from now; false online or for an unknown id. */
+  practiceEvent?(id: string, delaySecs: number): boolean;
+  /** Practice only (browser smoke): runs `secs` of simulation at once with the own ship idle; returns the ticks run. */
+  practiceWarp?(secs: number): number;
   free(): void;
 }
 

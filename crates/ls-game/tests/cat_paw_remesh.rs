@@ -113,8 +113,7 @@ fn run_seed(seed: u64) -> Run {
         let v = world.mood_view();
         let running = v.event == Some(EventKind::CatPaw);
         // The paw's own ticks: the announcement (geometry, raycasts) and
-        // the active phase (sweep, hits, grooves). Tick 30 of a fresh
-        // level is slow with or without an event (not the paw's).
+        // the active phase (sweep, hits, grooves).
         let announced = running && !started;
         started |= running;
         if announced || (running && v.phase == ls_game::ls_sim::EventPhase::Active) {

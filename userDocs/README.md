@@ -11,6 +11,7 @@ documentation (architecture, design, implementation plan) lives in [`../docs/`](
 | [Ship reference](reference/ships.md) | Everyone | The four ship types' hull, damage, speeds, turn rates, resources, scavenging, paint effects |
 | [Gadget reference](reference/gadgets.md) | Everyone | Shield, Cloak and Decoy numbers, and how every weapon meets a Shield |
 | [Mode reference](reference/modes.md) | Everyone | Every built-in rule set: mode, teams, match length, the mode's settings, mutators, starting loadout and pickups |
+| [Comedy event reference](reference/events.md) | Everyone | The comedy director's timing and moods, all 18 events with their numbers, each rule set's Absurdity cap and event bans |
 
 The four reference pages are generated from the game data (`data/`) by
 `node tools/gen-weapon-docs.mjs`, so their numbers always match the build; CI fails when they
@@ -24,8 +25,8 @@ paint and chunk of debris changes the level. This build is **Milestone 3, modes 
 top of Milestone 2's arsenal and physics:
 
 - four ship types (Skitter, Tinker, Hauler, Tug), chosen on the start screen or in the ship bay
-- the full arsenal of 27 weapons: 7 energy primaries, 3 kinetic primaries, 10 ordnance
-  secondaries including the Tectonic Charge, and 7 comedy specials
+- the full arsenal of 28 weapons: 7 energy primaries, 3 kinetic primaries, 10 ordnance
+  secondaries including the Tectonic Charge, and 8 comedy specials (the Paperweight too)
 - three gadgets (Shield, Cloak, Decoy)
 - lasting physics: knockback, rock strength, surface states (hot, charged, glow, scorch),
   paint colours that change how ships fly, debris you can push and scavenge, dust clouds

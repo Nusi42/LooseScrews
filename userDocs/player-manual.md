@@ -21,7 +21,7 @@ the game's data files, so those pages always match the build.
 - [Weapons](#weapons)
 - [Surviving a Tectonic Charge](#surviving-a-tectonic-charge)
 - [Gadgets](#gadgets)
-- [The level fights back](#the-level-fights-back)
+- [The level fights back](#the-level-fights-back) ([comedy events](#comedy-events))
 - [Pickups and wrecks](#pickups-and-wrecks)
 - [Game modes](#game-modes): [Paint the Void](#paint-the-void), [Team Brawl](#team-brawl),
   [The Squeeze](#the-squeeze), [Heist](#heist), [Hot Reactor](#hot-reactor),
@@ -35,7 +35,8 @@ the game's data files, so those pages always match the build.
 - [Not in this build yet](#not-in-this-build-yet)
 
 Reference tables: [weapons](reference/weapons.md), [ships](reference/ships.md),
-[gadgets](reference/gadgets.md), [modes](reference/modes.md).
+[gadgets](reference/gadgets.md), [modes](reference/modes.md),
+[comedy events](reference/events.md).
 
 ## What Loose Screws is
 
@@ -598,6 +599,20 @@ The HUD's gadget line shows "on", "off", "ready" or the cooldown in seconds.
 ## The level fights back
 
 Every hit leaves a mark that lasts, so a long fight visibly carves up the arena.
+
+### Comedy events
+
+The level has moods, and now and then it plays a joke on everyone: a cat paw sweeps through the
+wall, a tax drone hunts the leader, rubber ducks parade through the tunnels, hats rain down,
+the game turns into a side-scroller for ten seconds. How often depends on the world's
+**Absurdity** slider (a server's rules can cap it; 0 means none). Every event is announced
+3 seconds ahead with a banner, the announcer's line and a tell in the world, and nothing an
+event does gives anyone kill credit. Nothing happens in a match's first 45 seconds or its last
+20. The [comedy event reference](reference/events.md) lists all 18 with their numbers.
+
+To try one without waiting, start practice with `?event=<id>` in the address, for example
+`?event=duck_parade` (two seconds after you spawn), `?event=hat_rain@10` (after ten
+seconds) or `?event=all` (every event in turn). The ids are in the reference.
 
 ### Craters and rock strength
 
@@ -1190,9 +1205,10 @@ These are part of the game design but aren't in the Milestone 3 build:
   architect watches with the spectator camera.
 - **Pigment pickups** that give colour back in Last Color Standing, and black-and-white levels
   as a general feature (the Palette slider only drains the colour of the picture).
-- **World sliders:** Absurdity only announces comedy events so far (what they do comes later),
-  and gravity wells, cave-ins and radiation are felt but not yet drawn or heard.
-- **Comedy events** ("the level has moods"): not yet.
+- **Radiation** on asteroid belts is felt but not yet drawn or heard.
+- **Comedy events:** the events play by their rules, but most of their own looks and sounds
+  (the drones, ducks, hats, the paw, the kill-cam window) come with a later build; until then
+  some of them show up as plain rocks or pickups.
 - **Voting for the next mode:** servers play their rotation in order.
 - **Sound:** no music yet, and no recorded voices: the announcer speaks in made-up robot
   speech with captions.

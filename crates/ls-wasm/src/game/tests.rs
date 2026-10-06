@@ -1562,3 +1562,29 @@ fn charge_start_cues_carry_the_charging_weapon() {
     assert_eq!(start.source, l.core.player());
     assert_eq!(start.target, fusion.0, "the charging weapon");
 }
+
+/// `?event=<id>` and the smoke's warp: a forced event starts after its
+/// delay, and a warp runs its ticks at once.
+#[test]
+fn practice_forces_and_warps_events() {
+    let mut g = small_practice(1);
+    let mood = |g: &GameCore| match &g.mode {
+        Mode::Practice(p) => p.world.mood_view(),
+        Mode::Online(_) => unreachable!(),
+    };
+    let tick = |g: &GameCore| match &g.mode {
+        Mode::Practice(p) => p.world.tick(),
+        Mode::Online(_) => unreachable!(),
+    };
+    assert!(g.practice_schedule_event(ls_sim::EventKind::DiscoInferno, 60));
+    assert_eq!(g.practice_warp(30), 30);
+    assert_eq!(tick(&g), 30);
+    assert_eq!(mood(&g).event, None, "not before its delay");
+    g.practice_warp(40);
+    let v = mood(&g);
+    assert_eq!(v.event, Some(ls_sim::EventKind::DiscoInferno));
+    assert_eq!(v.phase, ls_sim::EventPhase::Announce);
+    // Past the 3 s announcement: running.
+    g.practice_warp(4 * 60);
+    assert_eq!(mood(&g).phase, ls_sim::EventPhase::Active);
+}

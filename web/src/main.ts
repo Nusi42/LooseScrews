@@ -94,6 +94,8 @@ import { audioEngine, MatchAudio } from "./audio/index.ts";
 import { wantsWorldFx, WorldVisuals } from "./game/worldFx.ts";
 import type { PointLight } from "./renderer/lights.ts";
 import { showAudioDemo, wantsAudioDemo } from "./audio/demo.ts";
+import { applyEventParam } from "./game/eventParam.ts";
+import { installGameHooks } from "./game/debugHooks.ts";
 
 /** Largest frame time passed to the simulation; longer stalls (tab switch) are clamped. */
 const MAX_FRAME_DT = 0.1;
@@ -223,6 +225,8 @@ async function start(): Promise<void> {
   }
   loading.remove();
   intro.stop();
+  // M4 C6: `?event=<id>` forces comedy events in practice (and `window.__lsEvents` for scripts).
+  if (options.mode !== "online") applyEventParam(session.game, location.search, api.eventIds?.() ?? []);
   if (renderer.isLost) {
     // Lost while connecting: the `lost` handler shows the error; leave the server at once.
     session.dispose();
@@ -237,6 +241,7 @@ async function start(): Promise<void> {
       return;
     }
     active = session;
+    installGameHooks(session);
     const end = await runGame(canvas, ui, renderer, session, options, prefs, weaponNames);
     active = null;
     if (end.kind === "stopped") return;

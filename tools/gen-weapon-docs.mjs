@@ -6,11 +6,14 @@
 //   data/rulesets/*.ron -> userDocs/reference/modes.md (every built-in rule set: mode, teams,
 //                          match length, mode settings, mutators, arsenal); the team counts each
 //                          mode allows come from web/src/rules/catalog.ts (generated from ls-sim)
+//   data/events/*.ron   -> userDocs/reference/events.md (the comedy director's cadence, every
+//                          event with its numbers, moods and weight, each rule set's Absurdity
+//                          cap and event bans)
 // The default rule set (data/rulesets/paint_the_void.ron) supplies the weapon order (the
 // design doc's) and the "default rules" columns.
 //
 // Usage: node tools/gen-weapon-docs.mjs [--check]
-//   (no flag)  write the four files
+//   (no flag)  write the five files
 //   --check    write nothing; exit 1 if a file is missing or differs from what the data
 //              gives (CI runs this: after a data change, regenerate and commit the tables)
 //
@@ -966,6 +969,130 @@ function modesDoc(rulesets, weapons, gadgets, catalog) {
 }
 
 // ---------------------------------------------------------------------------
+// Comedy events (M4)
+
+/** Mood names as players see them (`data/events/*.ron` `moods`). */
+const MOOD_NAMES = { Calm: "calm", Bored: "bored", Grumpy: "grumpy", Giddy: "giddy" };
+
+/**
+ * What each event does, for players, from its data (`p` = params, `d` = the
+ * definition). The rules are in docs/milestone-4-plan.md §3.2 and the event
+ * modules; an event without an entry here shows its data file's name only.
+ */
+const EVENT_TEXT = {
+  bored_level: (p) =>
+    `The level gets bored and turns its "up" ${num(p.turn_degrees)} degrees over ${num(p.turn_secs)} s, and stays turned: the sky, the sun and horizon assist follow. Nothing moves physically.`,
+  tax_drone: (p) =>
+    `A bureaucrat drone chases the leader at ${num(p.speed)} u/s; each touch takes ${pct(p.energy_fraction)} of their energy (${num(p.touch_interval_secs)} s apart, at most ${num(p.max_touches)} touches). It has ${num(p.hp)} hp; anyone can shoot it down, and it bursts into a scrap pile (${num(p.scrap_per_energy)} scrap per energy it took, at most ${num(p.max_scrap)}).`,
+  gravity_coffee_break: (p) =>
+    `Every gravity well takes a break (fading over ${num(p.fade_secs)} s): debris and ships drift free. Needs a level with wells.`,
+  rubber_chickens: () => "Every new shot is a rubber chicken. Speed, damage and craters are unchanged; the squeak is not.",
+  cat_paw: (p) =>
+    `A giant paw reaches in through the boundary wall nearest the busiest group of ships and sweeps ${num(p.sweep_length)} u in ${num(p.sweep_secs)} s: ${num(p.damage)} damage and a ${num(p.knockback)} u/s shove to every ship it touches, debris swept along, three claw grooves raked into the rock (never in spawn zones). Watch for its shadow during the warning.`,
+  tired_announcer: (p) =>
+    `Every kill plays a ${num(p.killcam_secs)} s kill-cam for everyone, narrated by a very tired announcer.`,
+  wrong_genre: () =>
+    "The game becomes a side-scroller: every ship is locked to a flat plane facing left or right, shots fly in the plane, and hits ignore depth. Terrain stays 3D.",
+  gossip_wall: () => "A face grows on the rock and gossips: every ship's position is shown to everyone, through walls and cloaks.",
+  pizza_delivery: (p) =>
+    `A delivery drone brings a pizza to a player (more likely the more damaged); hold still (under ${num(p.hold_speed)} u/s within ${num(p.hold_radius)} u) for ${num(p.hold_secs)} s in total and your hull is full again. Others can shoot the drone (${num(p.hp)} hp) and turn the pizza into a ${num(p.scrap)}-scrap pile for anyone.`,
+  everything_is_cake: (p) =>
+    `The level turns into cake: craters are ${num(p.crater_scale)}x as wide, and scavenging cake debris repairs ${num(p.scavenge_scale)}x its scrap in hull.`,
+  duck_parade: (p) =>
+    `${num(p.ducks)} giant rubber ducks drift in a convoy along a route through the level at ${num(p.speed)} u/s. They ignore rock, swallow shots and push ships aside (no damage). On asteroid belts they parade around the ring against the race.`,
+  hat_rain: (p) =>
+    `${num(p.hats_base)} hats (plus ${num(p.hats_per_player)} per player) drift down from high above and rest on rock: touch one to wear it. ${num(p.reveal_hats)} or more hats make you visible to everyone while it rains; hats scatter when you die. The results name the Hat Baron.`,
+  customer_survey: (p) =>
+    `A survey drone parks right in front of the leader's view and asks for a rating. It has ${num(p.hp)} hp: the star the destroying shot passes through is the leader's rating (anyone may answer).`,
+  disco_inferno: (p) =>
+    `The lights drop to ${pct(p.light_level)}, a mirror ball descends over the players and every ship leaves a light trail in its colour. Nothing else changes.`,
+  big_head_day: (p) => `Every ship's hit sphere against shots is ${num(p.hit_scale)}x larger. Tunnels, ramming and pickups are unchanged.`,
+  moving_day: (p) =>
+    `Every pickup packs itself into a box and moves to another pickup point (they cannot be taken during the 2 s move; their timers are kept). Needs at least ${num(p.min_pickups)} pickups.`,
+  mimic_pickups: (p) =>
+    `Up to ${num(p.max_mimics)} weapon and upgrade pickups (3 plus one per 4 players) grow teeth: they hop at the nearest ship within ${num(p.range)} u at ${num(p.speed)} u/s and bite (${num(p.bite_damage)} damage, a shove). Each has ${num(p.hp)} hp; a killed mimic drops what it held. Needs at least ${num(p.min_pickups)} pickups.`,
+  level_hiccups: (p) =>
+    `Every ${num(p.interval_secs)} s (give or take ${num(p.jitter_secs)}) the level hiccups: ships, debris and loose mines hop about ${num(p.lift)} u along "up", shots in flight are nudged.`,
+};
+
+/** Rule set ids by event bans (`events: { "<id>": Banned }`). */
+function bannedEvents(def) {
+  const ev = def.events;
+  if (!(ev instanceof Map)) return [];
+  return [...ev.entries()].filter(([, v]) => tagOf(v) === "Banned").map(([k]) => k);
+}
+
+function eventsDoc(events, director, rulesets) {
+  const d = director?.def ?? {};
+  const list = events.filter((e) => e.id !== "director");
+  const nameOf = new Map(list.map((e) => [e.id, e.def.name ?? e.id]));
+  const out = [
+    header(
+      "Comedy event reference",
+      "data/events/*.ron and data/rulesets/*.ron",
+      [
+        "The level is a participant: a comedy director rolls events during a match, weighted by the",
+        "world's **Absurdity** slider and capped by the rule set. How the events feel is in the",
+        "[player manual](../player-manual.md#comedy-events); this page lists the numbers. A server's own",
+        "rule set can lower the cap (0 = no events) and ban single events.",
+      ].join("\n"),
+    ),
+    "## When events happen",
+    "",
+    table(
+      ["Rule", "Value"],
+      [
+        ["Effective Absurdity", "the lower of the world's Absurdity slider and the rule set's cap"],
+        ["Warning before every event", `${num(d.announce_secs)} s: banner, announcer line and a tell in the world`],
+        ["Rolls", `every ${num(d.roll_secs)} s, chance ${pct(d.chance_at_100)} x Absurdity / 100 per roll`],
+        ["Quiet times", `no event in the first ${num(d.quiet_start_secs)} s of a match, its last ${num(d.quiet_end_secs)} s, the warm-up, the countdown or the results`],
+        ["Between events", `at least ${num(d.gap_secs)} s from one event's end to the next warning (${num(d.calm_gap_scale)}x in a calm mood); one event at a time, no repeats while others can run`],
+        ["Moods", `the level is calm, bored, grumpy or giddy, changing every ${num(d.mood_min_secs)}-${num(d.mood_max_secs)} s; a mood makes its events ${num(d.mood_bias)}x as likely`],
+        ["Damage from events", "never gives kill credit (the killer is \"the level\")"],
+      ],
+    ),
+    "",
+    "About 1.2 events per 5-minute match at Absurdity 20, 3 at 50 and 4.5 at 100.",
+    "",
+    "## The events",
+    "",
+    table(
+      ["Event (id)", "Lasts", "Mood", "Weight", "What happens"],
+      list.map((e) => {
+        const def = e.def;
+        const p = def.params instanceof Map ? Object.fromEntries(def.params) : {};
+        const text = EVENT_TEXT[e.id]?.(p, def) ?? "";
+        const lasts = `${num(def.active_secs)} s${def.ending_secs ? ` (+${num(def.ending_secs)} s)` : ""}`;
+        const moods = (def.moods ?? []).map((m) => MOOD_NAMES[tagOf(m)] ?? tagOf(m)).join(", ") || "any";
+        const name = `**${def.name ?? e.id}** (\`${e.id}\`)${def.enabled === false ? " (disabled)" : ""}`;
+        return [name, lasts, moods, num(def.weight), text];
+      }),
+    ),
+    "",
+    "Lasts: after the warning; (+) is the wind-down (drones leave, the face sinks). Mood: the mood that",
+    "doubles the event's chance. Weight: its share of the draw among the events that can run.",
+    "",
+    "## Modes and rule sets",
+    "",
+    "Some modes leave events out where they would break the mode: **The Architect** runs no director",
+    "(the architect's Absurdity stroke starts events instead); **The Squeeze** has no Cat paw or Duck",
+    "parade once the walls are in phase 4; **Belt Up** has no Bored level, Wrong genre or Moving day,",
+    "and no event during start lights, a heat's first 15 s or heat results; the **Instagib** mutator",
+    "has no Tax drone or Pizza delivery (energy and hull are hidden).",
+    "",
+    table(
+      ["Rule set (id)", "Absurdity cap", "Banned events"],
+      rulesets.map((r) => {
+        const bans = bannedEvents(r.def).map((id) => nameOf.get(id) ?? id);
+        return [`**${r.def.name ?? r.id}** (\`${r.id}\`)`, num(r.def.absurdity ?? 20), bans.join(", ") || "–"];
+      }),
+    ),
+    "",
+  ];
+  return out.join("\n");
+}
+
+// ---------------------------------------------------------------------------
 
 export function generate() {
   const weapons = loadDir("weapons");
@@ -977,11 +1104,14 @@ export function generate() {
   const catalogPath = join(repoRoot, "web", "src", "rules", "catalog.ts");
   const catalog = existsSync(catalogPath) ? catalogModes(readFileSync(catalogPath, "utf8")) : new Map();
   const tinker = ships.find((s) => s.id === "tinker")?.def;
+  const events = loadDir("events");
+  const director = events.find((e) => e.id === "director");
   return {
     "weapons.md": weaponsDoc(weapons, rules, tinker?.hull_max ?? 100),
     "ships.md": shipsDoc(ships),
     "gadgets.md": gadgetsDoc(gadgets, weapons, rules),
     "modes.md": modesDoc(rulesets, weapons, gadgets, catalog),
+    "events.md": eventsDoc(events, director, rulesets),
   };
 }
 

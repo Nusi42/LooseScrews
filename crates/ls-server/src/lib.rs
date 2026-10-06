@@ -30,6 +30,8 @@
 //!   codes, routing a `Hello` with a party code, teams), [`duel`] (player
 //!   presence, challenges, duel rooms) and [`directory`] (the `ls-directory`
 //!   heartbeats behind `--directory`).
+//! - [`event_schedule`]: `--event-schedule`, comedy events forced at given
+//!   times of every match (end-to-end runs and the browser smoke only).
 //!
 //! The binary in `main.rs` is a thin CLI around this library.
 
@@ -37,6 +39,7 @@ pub mod api;
 pub mod directory;
 pub mod duel;
 pub mod endpoint;
+pub mod event_schedule;
 pub mod http;
 pub mod link;
 pub mod lobby;

@@ -899,11 +899,21 @@ only). Wave A ships announce-only stubs; to build one, replace its stub body:
   `scavenge_scale`, `well_scale`, `reveal`, `allows_pickup`) are pure functions of the
   replicated `MoodView`, the match seed and the tick, so the client predictor computes the
   same (`director::event_effects`, `director::move_effects`, `apply_move_effects_before` /
-  `_after`); the world already applies them;
+  `_after`); the world already applies them. `level_up` turns the level's up (Bored level),
+  `hit_plane` makes projectile hits ignore depth (Wrong genre), `MoveEffects::facing` turns or
+  constrains the orientation after moving (`Facing::Toward`, `Facing::InPlane`). Values an
+  event picks at its announce go into the 8 `params` bytes (`events::params` packs directions
+  and positions) so the client decodes the same; a client predicting past its snapshot uses
+  `MoodView::advanced(now)` (phase changes are deterministic);
 - tests: `World::schedule_event(tick, kind)` forces an event whatever the Absurdity, bans,
   vetoes and eligibility; `director/tests.rs` has the cadence and statistics tests
   (`cargo test --release -p ls-sim --lib event_statistics -- --nocapture` prints the mean
-  events per match at Absurdity 0, 20, 50 and 100).
+  events per match at Absurdity 0, 20, 50 and 100). A built event sets `implemented()`, gets
+  scenario tests (B1's: `events/world_events_tests.rs`) and a replay golden: `events::replays`
+  plays every built event forced in an 8-ship scripted match; its hash is an `event/<id>` line
+  in `crates/ls-sim/tests/fixtures/mood_replays.txt` (re-bless:
+  `LS_BLESS_MOOD_REPLAYS=1 cargo test -p ls-sim --lib events::replays`), checked on native and
+  wasm32. `crates/ls-game/tests/world_events_netplay.rs` runs B1's events with 4 clients.
 
 Rule sets ban events by id (`events: { "duck_parade": Banned }`, rule set code format 5) and
 cap the Absurdity; modes and mutators veto with `allows_event`, and `ModeModule::leader` picks

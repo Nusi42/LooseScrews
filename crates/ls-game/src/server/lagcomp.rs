@@ -36,6 +36,11 @@ pub struct HistoryFrame {
     pub tick: u64,
     /// `(player, position, alive)`, sorted by player.
     pub ships: Vec<(PlayerId, Vec3, bool)>,
+    /// The comedy event's hit sphere scale and hit plane during that tick
+    /// (Big head day, Wrong genre): a rewound target is tested as it was
+    /// then.
+    pub hit_scale: f32,
+    pub hit_plane: Option<Vec3>,
 }
 
 /// Ring buffer of [`HistoryFrame`]s covering the lag compensation window.
@@ -60,7 +65,13 @@ impl ShipHistory {
         if self.frames.len() == self.capacity {
             self.frames.pop_front();
         }
-        self.frames.push_back(HistoryFrame { tick, ships });
+        let fx = world.event_effects();
+        self.frames.push_back(HistoryFrame {
+            tick,
+            ships,
+            hit_scale: fx.hit_radius_scale,
+            hit_plane: fx.hit_plane,
+        });
     }
 
     pub fn oldest_tick(&self) -> Option<u64> {
@@ -79,6 +90,13 @@ impl ShipHistory {
             return Some(first);
         }
         self.frames.get((tick - first.tick) as usize)
+    }
+
+    /// The event effects of ships' hits during `tick` (as
+    /// [`ShipHistory::frame`]): `(hit sphere scale, hit plane)`.
+    pub fn hit_rules(&self, tick: u64) -> (f32, Option<Vec3>) {
+        self.frame(tick)
+            .map_or((1.0, None), |f| (f.hit_scale, f.hit_plane))
     }
 
     /// Position of `player` after `tick` if it was alive then.
@@ -127,11 +145,23 @@ pub fn plan_compensation(
             continue;
         };
         let len = speed * DT;
-        let radius_of = |s: &ls_sim::ShipState| world.tuning_for(s.ship_type).radius + p.radius;
+        // The coming step's hit rules (Big head day scale, Wrong genre's
+        // depth-free hits) and the rewound tick's for the rewound target.
+        let fx = world.next_event_effects();
+        let radius_of = |s: &ls_sim::ShipState| {
+            world.tuning_for(s.ship_type).radius * fx.hit_radius_scale + p.radius
+        };
+        let center =
+            |fx: &ls_sim::EventEffects, c: Vec3| ls_sim::director::ship_hit_center(fx, p.pos, c);
         let wall = terrain
             .raycast(p.pos, dir, len)
             .map_or(f32::INFINITY, |h| h.distance);
         let then = k.saturating_sub(rewind);
+        let (then_scale, then_plane) = history.hit_rules(then);
+        let then_fx = ls_sim::EventEffects {
+            hit_plane: then_plane,
+            ..ls_sim::EventEffects::NONE
+        };
 
         // Nearest rewound target on the segment, in front of any wall.
         let mut best: Option<(f32, PlayerId, Vec3)> = None;
@@ -142,7 +172,8 @@ pub fn plan_compensation(
             let Some(r) = history.position(s.player, then) else {
                 continue;
             };
-            if let Some(t) = segment_sphere(p.pos, dir, len, r, radius_of(s)) {
+            let then_radius = world.tuning_for(s.ship_type).radius * then_scale + p.radius;
+            if let Some(t) = segment_sphere(p.pos, dir, len, center(&then_fx, r), then_radius) {
                 if t <= wall && best.is_none_or(|(bt, _, _)| t < bt) {
                     best = Some((t, s.player, r));
                 }
@@ -168,7 +199,7 @@ pub fn plan_compensation(
         let sim_hits = moved.iter().any(|(id, pos)| {
             let r = world.ship(*id).map_or(0.5, radius_of);
             *id != p.owner
-                && segment_sphere(p.pos, dir, len, *pos, r)
+                && segment_sphere(p.pos, dir, len, center(&fx, *pos), r)
                     .is_some_and(|t| t <= wall && t <= t_best + 1e-4)
         });
         if sim_hits {
@@ -202,7 +233,7 @@ pub fn plan_compensation(
         probe.pos += offset;
         simulate_movement(&mut probe, &cmd, world.tuning_for(ship.ship_type), terrain);
         if probe.pos.distance(rewound) > 1e-3
-            || segment_sphere(p.pos, dir, len, probe.pos, radius_of(ship)).is_none()
+            || segment_sphere(p.pos, dir, len, center(&fx, probe.pos), radius_of(ship)).is_none()
         {
             continue;
         }
@@ -214,4 +245,43 @@ pub fn plan_compensation(
         });
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ls_math::terrain::BoxRoomTerrain;
+    use ls_sim::{EventKind, MatchSetup, ShipType, SpawnPoint, WorldConfig};
+
+    /// Big head day and Wrong genre: the history keeps each tick's hit rules,
+    /// so a rewound target is tested with the scale and plane of its tick.
+    #[test]
+    fn history_keeps_the_hit_rules_of_each_tick() {
+        let setup = MatchSetup {
+            spawns: vec![SpawnPoint {
+                pos: Vec3::ZERO,
+                team: 0,
+                orientation: ls_math::Quat::IDENTITY,
+            }],
+            ..Default::default()
+        };
+        let mut w = World::new(WorldConfig::paint_the_void(3, setup)).unwrap();
+        w.add_player(None, ShipType::Tinker).unwrap();
+        let mut t = BoxRoomTerrain::centered(Vec3::splat(60.0));
+        let mut h = ShipHistory::new(600);
+        w.schedule_event(2, EventKind::BigHeadDay);
+        let mut seen = Vec::new();
+        for _ in 0..400 {
+            let next = w.next_event_effects();
+            w.step(&mut t, &[]);
+            assert_eq!(next, w.event_effects(), "planned = applied");
+            h.record(w.tick(), &w);
+            seen.push((w.tick(), h.hit_rules(w.tick()).0));
+        }
+        let active = w.mood_view().active_tick;
+        assert_eq!(h.hit_rules(active), (1.0, None), "announce and start tick");
+        assert_eq!(h.hit_rules(active + 1), (3.0, None));
+        assert_eq!(h.hit_rules(1), (1.0, None));
+        assert!(seen.iter().any(|(_, s)| *s == 3.0));
+    }
 }

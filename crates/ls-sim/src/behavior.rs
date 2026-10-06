@@ -237,6 +237,10 @@ pub enum Command {
     /// mines in); a stuck projectile is pulled loose. A hook changes its own
     /// projectile through `&mut Projectile` instead.
     ImpulseProjectile { id: u32, dv: Vec3 },
+    /// Moves another projectile in flight by `delta`, swept against the
+    /// terrain (it stops short of rock; Level hiccups). Stuck projectiles
+    /// stay.
+    NudgeProjectile { id: u32, delta: Vec3 },
     /// Removes another projectile (its own: `Projectile::remove`).
     RemoveProjectile { id: u32 },
     /// Moves energy from one ship to another (or nowhere).
@@ -294,6 +298,8 @@ pub struct View<'a> {
     pub instability: u8,
     /// The running comedy event's effects this tick (crater scale, ...).
     pub effects: crate::director::EventEffects,
+    /// The level's up (`World::up`; Bored level turns it).
+    pub up: Vec3,
     pub ships: &'a BTreeMap<PlayerId, ShipState>,
     /// Projectiles in flight. While projectiles are being stepped this holds
     /// only the ones spawned during that stage; use

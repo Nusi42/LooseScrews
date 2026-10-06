@@ -6,7 +6,9 @@ EventDef(
     name: "Bored level",
     enabled: true,
     weight: 1.0,
-    active_secs: 5.0,
+    // The turn takes turn_secs (eased); the active phase holds the turned up a
+    // second longer so the final up is replicated before the event ends.
+    active_secs: 6.0,
     moods: [Bored],
-    params: { "turn_degrees": 90.0 },
+    params: { "turn_degrees": 90.0, "turn_secs": 5.0 },
 )

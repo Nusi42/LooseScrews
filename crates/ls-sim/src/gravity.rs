@@ -221,11 +221,19 @@ impl WellField {
     /// Pull on a ship at `p` whose type accelerates at `thrust_accel` per
     /// axis: the total clamped to [`GravitySettings::ship_clamp`] of it.
     pub fn ship_accel(&self, p: Vec3, now: u64, thrust_accel: f32) -> Vec3 {
+        self.ship_accel_scaled(p, now, thrust_accel, 1.0)
+    }
+
+    /// [`WellField::ship_accel`] with every well's pull scaled by `scale`
+    /// before the clamp (Gravity coffee break dims the wells:
+    /// `EventEffects::well_scale`). A scale of 1 is the unscaled pull
+    /// exactly.
+    pub fn ship_accel_scaled(&self, p: Vec3, now: u64, thrust_accel: f32, scale: f32) -> Vec3 {
         if self.is_empty() {
             return Vec3::ZERO;
         }
         let max = self.settings().ship_clamp * thrust_accel;
-        clamp_accel(self.accel_at(p, now), max)
+        clamp_accel(scaled(self.accel_at(p, now), scale), max)
     }
 
     /// The movement environment of a ship at `p` ([`crate::ship::MoveEnv`]):
@@ -238,8 +246,21 @@ impl WellField {
         tuning: &crate::ShipTuning,
         up: Vec3,
     ) -> crate::ship::MoveEnv {
+        self.move_env_scaled(p, now, tuning, up, 1.0)
+    }
+
+    /// [`WellField::move_env`] with the wells' pull scaled by `scale`
+    /// (Gravity coffee break).
+    pub fn move_env_scaled(
+        &self,
+        p: Vec3,
+        now: u64,
+        tuning: &crate::ShipTuning,
+        up: Vec3,
+        scale: f32,
+    ) -> crate::ship::MoveEnv {
         crate::ship::MoveEnv {
-            gravity: self.ship_accel(p, now, tuning.thrust_accel),
+            gravity: self.ship_accel_scaled(p, now, tuning.thrust_accel, scale),
             up,
             drift_secs: self.settings().drift_secs,
         }
@@ -248,10 +269,28 @@ impl WellField {
     /// Pull on debris or a flagged projectile at `p` (clamped to
     /// [`GravitySettings::body_clamp`]).
     pub fn body_accel(&self, p: Vec3, now: u64) -> Vec3 {
+        self.body_accel_scaled(p, now, 1.0)
+    }
+
+    /// [`WellField::body_accel`] with the wells' pull scaled by `scale`.
+    pub fn body_accel_scaled(&self, p: Vec3, now: u64, scale: f32) -> Vec3 {
         if self.is_empty() {
             return Vec3::ZERO;
         }
-        clamp_accel(self.accel_at(p, now), self.settings().body_clamp)
+        clamp_accel(
+            scaled(self.accel_at(p, now), scale),
+            self.settings().body_clamp,
+        )
+    }
+}
+
+/// `a * scale`, and `a` itself at scale 1 (bit-identical to the unscaled
+/// field).
+fn scaled(a: Vec3, scale: f32) -> Vec3 {
+    if scale == 1.0 {
+        a
+    } else {
+        a * scale.clamp(0.0, 1.0)
     }
 }
 

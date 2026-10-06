@@ -2,7 +2,16 @@
 # starting with "world/") and of the comedy director's events. Checked by
 # `cargo test -p ls-sim --lib` (native and wasm32) and by tools/determinism-check.mjs.
 # Re-bless the world lines: LS_BLESS_MOOD_REPLAYS=1 cargo test -p ls-sim --lib world_replays
+# Event lines ("event/<id>", ls_sim::events::replays, one per built event): LS_BLESS_MOOD_REPLAYS=1 cargo test -p ls-sim --lib events::replays
 world/gravity 0x930876b7c1dfa16e
 world/cave_in 0xca8426a8a830b6bc
 world/pigment 0xc68e3c3054f034f6
 world/radiation 0x813873808786976f
+event/bored_level 0xe865cfcaba762be0
+event/gravity_coffee_break 0xa8189bc71fff9437
+event/rubber_chickens 0xe238085294b2f557
+event/wrong_genre 0x52db1a1f6350857d
+event/everything_is_cake 0x3fabe9c76f45cbfa
+event/big_head_day 0x355fa7d9de1d030e
+event/moving_day 0x11343f7eee940418
+event/level_hiccups 0x2edb620defa2fbc7

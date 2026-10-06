@@ -222,6 +222,10 @@ pub mod proj_flags {
     /// craters unchanged). Replicated as `ls_net::NetProjectile::chicken`
     /// (protocol 6), not in the state byte.
     pub const CHICKEN: u16 = 1 << 8;
+    /// Flies in the plane perpendicular to z through its position (fired
+    /// during Wrong genre; its z velocity is removed every tick). Not
+    /// replicated: the client sees the flight.
+    pub const PLANAR: u16 = 1 << 9;
     /// Removed by a hook (not replicated; the projectile is gone after the hook).
     pub const REMOVED: u16 = 1 << 15;
 }
@@ -792,6 +796,16 @@ impl World {
         self.effects
     }
 
+    /// The effects the running event will have during the next step (tick
+    /// `tick() + 1`; the server's lag compensation plans that step).
+    pub fn next_event_effects(&self) -> EventEffects {
+        if self.director.current.is_some() {
+            crate::director::event_effects(&self.director.view(), self.config.seed, self.tick + 1)
+        } else {
+            EventEffects::NONE
+        }
+    }
+
     /// Forces comedy event `kind` at `tick` (or as soon as the running event
     /// ended): practice `?event=<id>`, the server's `--event-schedule`,
     /// replays and tests. Ignores the Absurdity, bans, vetoes, `enabled`
@@ -1210,6 +1224,12 @@ impl World {
         } else {
             EventEffects::NONE
         };
+        // An event turning the level's up (Bored level) sets it before the
+        // ships move; it stays after the event (the value both the world and
+        // the client predictor compute from the mood view).
+        if let Some(u) = self.effects.up {
+            self.up = u;
+        }
 
         let mut cmds: BTreeMap<PlayerId, InputCmd> = BTreeMap::new();
         for (p, c) in inputs {
@@ -1301,7 +1321,13 @@ impl World {
                 if plain {
                     simulate_movement(ship, &move_cmd, tuning, &*terrain);
                 } else {
-                    let env = self.wells.move_env(ship.pos, now, tuning, self.up);
+                    let env = self.wells.move_env_scaled(
+                        ship.pos,
+                        now,
+                        tuning,
+                        self.up,
+                        self.effects.well_scale,
+                    );
                     simulate_movement_env(ship, &move_cmd, tuning, &*terrain, &env);
                 }
             } else {
@@ -1309,7 +1335,13 @@ impl World {
                 if plain {
                     simulate_movement(ship, &move_cmd, &limited, &*terrain);
                 } else {
-                    let env = self.wells.move_env(ship.pos, now, &limited, self.up);
+                    let env = self.wells.move_env_scaled(
+                        ship.pos,
+                        now,
+                        &limited,
+                        self.up,
+                        self.effects.well_scale,
+                    );
                     simulate_movement_env(ship, &move_cmd, &limited, &*terrain, &env);
                 }
             }
@@ -1590,6 +1622,7 @@ impl World {
             visuals: &cfg.visuals,
             instability: cfg.setup.instability,
             effects: self.effects,
+            up: self.up,
             ships: &self.ships,
             projectiles: &self.projectiles,
             projectiles_stepping: &self.stepping,
@@ -1947,7 +1980,14 @@ impl World {
             }
             // Wells bend flagged projectiles (ordnance, mines; M4).
             if !p.is_stuck() && !self.wells.is_empty() && cfg.weapons.get(p.weapon).gravity {
-                p.vel += self.wells.body_accel(p.pos, now) * DT;
+                p.vel += self
+                    .wells
+                    .body_accel_scaled(p.pos, now, self.effects.well_scale)
+                    * DT;
+            }
+            // Planar projectiles (fired during Wrong genre) stay in their plane.
+            if p.flags & proj_flags::PLANAR != 0 {
+                p.vel.z = 0.0;
             }
             if !p.is_stuck() && !self.move_projectile(cfg, terrain, &mut p, events) {
                 continue;
@@ -2031,10 +2071,12 @@ impl World {
                     }
                     let r =
                         cfg.tuning(s.ship_type).radius * self.effects.hit_radius_scale + p.radius;
-                    if let Some(t) = segment_sphere(p.pos, dir, remaining, s.pos, r) {
+                    // Wrong genre: hits ignore depth.
+                    let center = crate::director::ship_hit_center(&self.effects, p.pos, s.pos);
+                    if let Some(t) = segment_sphere(p.pos, dir, remaining, center, r) {
                         if t < best_t {
                             best_t = t;
-                            best = Some(Hit::Ship(t, *id, s.pos));
+                            best = Some(Hit::Ship(t, *id, center));
                         }
                     }
                 }
@@ -2175,7 +2217,8 @@ impl World {
                     let pull = if self.wells.is_empty() {
                         Vec3::ZERO
                     } else {
-                        self.wells.body_accel(e.pos, now)
+                        self.wells
+                            .body_accel_scaled(e.pos, now, self.effects.well_scale)
                     };
                     if pull.length_squared() > wake * wake {
                         step_debris_pulled(e, &*terrain, pull);
@@ -2388,6 +2431,9 @@ impl World {
                     p.id = self.alloc_projectile_id();
                     p.flags &= !proj_flags::REMOVED;
                     p.flags |= self.effects.projectile_flags;
+                    if p.flags & proj_flags::PLANAR != 0 {
+                        p.vel.z = 0.0;
+                    }
                     p.passed = None;
                     if p.generation == 0 {
                         events.push(Event::Fired {
@@ -2447,6 +2493,29 @@ impl World {
                             // Pulled loose (a stuck mine).
                             p.flags &= !proj_flags::STUCK;
                         }
+                    }
+                }
+                Command::NudgeProjectile { id, delta } => {
+                    if let Some(p) = self
+                        .projectiles
+                        .iter_mut()
+                        .chain(self.stepping.iter_mut())
+                        .chain(self.stepped.iter_mut())
+                        .find(|p| p.id == id)
+                    {
+                        if p.is_stuck() || p.is_removed() {
+                            continue;
+                        }
+                        let len = delta.length();
+                        let Some(dir) = delta.try_normalize() else {
+                            continue;
+                        };
+                        // Swept: stops short of rock on the way.
+                        let reach = match terrain.raycast(p.pos, dir, len + p.radius) {
+                            Some(h) => (h.distance - p.radius - 0.05).clamp(0.0, len),
+                            None => len,
+                        };
+                        p.pos += dir * reach;
                     }
                 }
                 Command::RemoveProjectile { id } => {

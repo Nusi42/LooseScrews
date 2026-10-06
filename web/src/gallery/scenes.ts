@@ -8,6 +8,7 @@ import type { SceneDecor } from "./decor.ts";
 import { LEVEL_SCENES } from "./levelScenes.ts";
 import { MOOD_SCENES, type WorldSceneKind } from "./moodScenes.ts";
 import type { ModeSceneKind } from "./modeScenes.ts";
+import { SPECTACLE_SCENES, type SpectacleSceneKind } from "./spectacleScenes.ts";
 
 /**
  * World of a scene: the share code is `randomShareCode(seed, 0, enclosure,
@@ -67,7 +68,7 @@ export type PoseKind = "closeup" | "tunnel" | "vista" | "border" | "sun" | "plan
  * one flies (weaponScenes.ts, M4 B7), `paperweight-wall` the same with the
  * landed stone on the rock ahead.
  */
-export type SceneContent = "none" | "lineup" | "fight" | "lights" | "explosion" | "stress" | "fit" | "charge" | "cloak" | "mode" | "shadow" | "paperweight" | "paperweight-wall" | "world";
+export type SceneContent = "none" | "lineup" | "fight" | "lights" | "explosion" | "stress" | "fit" | "charge" | "cloak" | "mode" | "shadow" | "paperweight" | "paperweight-wall" | "world" | "event";
 
 /** Radius of the `fit` scene's tunnel (u): 1.2 u across. */
 export const FIT_TUNNEL_RADIUS = 0.6;
@@ -109,6 +110,8 @@ export interface GalleryScene {
   mode?: ModeSceneKind;
   /** "world" content: which world visual (M4 B5, moodScenes.ts / worldScenes.ts). */
   worldFx?: WorldSceneKind;
+  /** "event" content: which spectacle event frame (M4 C3, spectacleScenes.ts / spectacleRun.ts). */
+  spectacle?: SpectacleSceneKind;
   /**
    * A fixed camera instead of the picked pose, for scenes whose before and
    * after shots must match while the meshes (and so the picked pose) change
@@ -408,6 +411,8 @@ export const SCENES: readonly GalleryScene[] = [
   ...paletteScenes(),
   // M4 B5: wells, cave-ins, pigment, moods and the Bored level turn.
   ...MOOD_SCENES,
+  // M4 C3: the spectacle events' strips (announce, peak, aftermath) and the hat sheet.
+  ...SPECTACLE_SCENES,
   // World workshop (M4 A8): the workshop page over the preview of the world it makes.
   { id: "workshop", title: "World workshop over its preview", covers: "world workshop", world: BACKDROP, pose: "tunnel", content: "none", time: 8.0, page: "workshop", workshop: { seed: "6", sliders: [38, 60, 50, 30, 0, 40, 30], archetype: "classic" } },
   { id: "workshop-tall", title: "World workshop: a tall world (Verticality 90)", covers: "world workshop", world: BACKDROP, pose: "tunnel", content: "none", time: 8.0, page: "workshop", workshop: { seed: "5150", sliders: [55, 45, 90, 0, 20, 60, 50], archetype: "classic" } },

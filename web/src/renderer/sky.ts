@@ -95,6 +95,7 @@ export function packSkyUniforms(
   time: number,
   out = new Float32Array(SKY_UNIFORM_FLOATS),
   turn: Quat = q.identity(),
+  level = 1,
 ): Float32Array {
   const tanY = Math.tan(cam.fovY / 2);
   const tanX = tanY * (width / Math.max(height, 1));
@@ -123,7 +124,8 @@ export function packSkyUniforms(
   const room = a.room;
   out.set(room ? [room.min.x, room.min.y, room.min.z, 0] : [0, 0, 0, 0], 48);
   out.set(room ? [room.max.x, room.max.y, room.max.z, 0] : [0, 0, 0, 0], 52);
-  out.set([width, height, 0, 0], 56);
+  // z: the level's light (RenderSettings.lightLevel, M4 C3 Disco inferno dims the sky).
+  out.set([width, height, level, 0], 56);
   const b = a.nebula.band;
   out.set([b.x, b.y, b.z, BAND_WIDTH], 60);
   // World to sky frame (the inverse of the level's turn, M4 B5).
@@ -164,6 +166,8 @@ export class Sky {
   private atmosphereValue: Atmosphere | null = null;
   /** The level's turn (M4 B5, turn.ts): the sky, its sun and the shafts turn with it. */
   turn: Quat = q.identity();
+  /** The level's light (RenderSettings.lightLevel, M4 C3): scales the sky and the shafts. */
+  level = 1;
 
   /** The environment cube (sampled by the fog of every scene shader). */
   readonly envView: GPUTextureView;
@@ -362,7 +366,7 @@ export class Sky {
   composite(encoder: GPUCommandEncoder, scene: GPUTexture, cam: SkyCamera, time: number, timer: GpuTimer | null): void {
     const a = this.atmosphereValue;
     if (!a || a.open <= 0) return;
-    this.device.queue.writeBuffer(this.skyBuffer, 0, packSkyUniforms(a, cam, scene.width, scene.height, time, this.skyData, this.turn));
+    this.device.queue.writeBuffer(this.skyBuffer, 0, packSkyUniforms(a, cam, scene.width, scene.height, time, this.skyData, this.turn, this.level));
     const timestampWrites = timer?.pass("sky");
     const pass = encoder.beginRenderPass({
       label: "sky",
@@ -384,7 +388,7 @@ export class Sky {
     const a = this.atmosphereValue;
     if (!a || a.open <= 0 || a.shafts <= 0) return;
     const ndc = sunScreen(viewProj, q.rotate(this.turn, a.sunDirection));
-    const fade = shaftFade(ndc) * a.shafts;
+    const fade = shaftFade(ndc) * a.shafts * this.level;
     if (!ndc || fade <= 0.001) return;
     const width = Math.max(1, Math.ceil(scene.width / 4));
     const height = Math.max(1, Math.ceil(scene.height / 4));

@@ -368,6 +368,50 @@ presentation adds nothing measurable (grade uniforms, mote colour). At the VQ
 plans' factor of 8-10 that is 0.3-0.5 ms on the reference mid GPU against the
 0.4 ms wells share (estimated, not measured). `PASS_BUDGETS_MS.wells` = 0.4 ms.
 
+## Event visuals: the spectacles (M4 C3)
+
+These are the looks and sounds of B3's five spectacle events (milestone-4-plan.md §3.2):
+Duck parade, Hat rain, Cat paw, Disco inferno and the Tired announcer. They live in
+`game/events/` as one module per event behind `spectacles.ts` (`SpectacleVisuals`). `main.ts`
+calls it once per frame after the world visuals: `update`, then `addToScene` after the scene
+builder, then `renderKillCam` after the main render. The scene builder leaves the props to it
+(`skipKinds`: `duck`, `hat`, `catPaw`, `discoBall`). With `?worldfx=off` none of this runs, and
+the props draw as the scene builder's fallbacks (the before shots).
+
+| Event | Look | Code |
+| --- | --- | --- |
+| Duck parade | A glossy rubber duck (`rubber_duck`) per prop. It faces along its velocity with the level's up as up, waddles (roll, nod, bob) and squashes on a spring by the replicated clearance (state[1], tenths of a unit). The squash goes down to 0.6 with up to 1.65x stretch along the route, and the duck overshoots back when a tunnel opens. It squishes for 0.5 s per EventHit cue and per ship it shoves. The lead duck wears a top hat (`hat_0`) and the last one sunglasses (`duck_shades`). Soap bubbles (ring sprites, iridescent) trail behind each duck, with a warm light under it. The kazoo march loops on the music bus at the lead duck. | `duckParade.ts` |
+| Hat rain | Eight hat meshes (`hat_0`-`hat_7`, `hatMeshKind`; the beanie's spinning `hat_prop`). Loose hats flutter while falling. A resting hat is seated on the rock below it (one ray along -up when it lands), upright along the level's up, with a glint now and then. Stacks follow `Game.shipExt()` counts. A hat's style comes from the hats that vanished next to the hull, otherwise a seeded one. Each hat sits on the one below and sways on a spring driven by the hull's acceleration (`swayStep`, `stackPoses`). Every new hat gives a pop and confetti. Stacks of 3 or more get a gold glint while the event runs, and the own count shows in a HUD chip (`.hat-chip`). | `hatRain.ts` |
+| Cat paw | The tell (phase 0): from open space inside the face (`findWall`), a glowing print on the boundary wall: plane-oriented glow sprites in a pad and three toes, a dark heart and three red-hot claw slits, plus an orange light and trickling grit. Then the paw: a furry mitten (`cat_paw`, or the mirrored `cat_paw_up` for claw mode 1) with fur tufts, tabby stripes (`PART_FUR`), and pink toe beans and pad (`PART_BEAN`) facing the sweep. The foreleg (`paw_arm`, 14 pad radii long) leaves the wrist. In wall mode the paw is turned so its toes face the wall and the arm runs diagonally back into the rock (`pawFrame`). Four claws (`paw_claw`) spring out for the sweep and retract for the withdraw. During the sweep come motion blur (three translucent copies from the last frames), speed lines, rock spray and sparks where the claws' rays meet rock (the scrape loop), and ginger fur drifting down. A burst of rock comes on the reach, plus camera shake nearby and a light on the paw. | `catPaw.ts` |
+| Disco inferno | `RenderSettings.lightLevel` (below) eased to the ball's light percent (state[0]), and the headlight cut to 30 % + 70 % of it. The mirror ball (`disco_ball`: flat tiles over a dark core, `PART_MIRROR`) hangs on a chain (`disco_chain`) up to the ceiling. Its tiles reflect the environment and flash in the spots' colours at random per tile and time step (glitter). The ball has a pin-spot light. Eight beams turn with the spin and nod (`beamDirection`): each is a widening cone of streak sections up to where a ray meets rock, with a coloured light pool there. 36 reflection specks wheel over the rock, refreshed 12 rays per frame. Light trails are opaque glowing segments (`light_trail`, `PART_GLOW`, keep mask 1, so they stay coloured in ink levels) sampled at 30 Hz for 1.6 s, with a light on each ship. A four-on-the-floor loop plays on the music bus. | `discoInferno.ts` |
+| Tired announcer | `killcam.ts`: `KillCamRecorder` keeps the last 4 s of what was drawn: ships (the own one included), projectiles and entities. A KillCam cue (killer, victim, death position, delay) becomes a clip of the 3 s up to 0.4 s after the kill, which plays at the cue's delay plus 0.4 s, back to back. Clips that are narrated only (value 65535) just get the announcer's `killcam` line. The window (`.killcam`, top left under the caption) has its own `Renderer` on the main renderer's device (low quality, no particles, no shadows). Through `Renderer.shareTerrain` it draws the main renderer's chunk meshes without copying them. The camera rides behind the killer and turns to the victim as the kill nears (`killCamPose`). For a kill by the level it circles the victim. At the kill a synthetic blast shows and a "K.O." stamp comes up, under scanlines and a timeline. While the event is announced, the window shows static and "Zzz". | `killcam.ts`, `spectacles.ts` |
+
+**The level's light** (`RenderSettings.lightLevel`, 0..1, default 1) is written into
+`Frame.rock_color.w`. `static_light` scales the sun's visibility (so the terrain's GGX and the
+models' sun highlight follow) and the ambient light with it, and `apply_fog` scales the haze.
+The sky pass (`sky.viewport.z`), the screen-space shafts and the volumetric shafts are scaled
+too. Dynamic lights and the headlight keep their strength. At 1 every frame is unchanged.
+
+**Materials** (`models/spectacleShading.ts`, parts 40-51 routed by `shade_model` to
+`shade_spectacle`): glossy rubber in the instance colour, orange beak rubber, glossy ink,
+white cloth, fur, pink beans, ivory, mirror tiles, gold, felt, a self-lit catchlight and
+glowing ruby. **Sounds** are in `audio/sounds/spectacles.ts`: squeak, kazoo march and fanfare,
+slide whistle and pop, the cat's "mrrp", rumble, crash, whoosh and scrape, record scratch,
+glitter drop and the disco loop, the announcer's yawn and the tape rewind. The five events'
+announcements (the `event.<id>` line and a sting) are spoken here, so a generic announcer for
+all events must skip these five.
+
+**Gallery**: `gallery/spectacleScenes.ts` (data) and `gallery/spectacleRun.ts` (set-up). Each
+event has a strip `event-<id>-a|b|c` (announce, peak, aftermath), plus `event-hat-sheet`. The
+props are synthetic, driven through the real modules over the scene's last seconds. The cat
+paw scenes find a stretch of boundary wall with room in front of it using the exact terrain
+ray (`findPawWall`). The kill-cam window's GPU time is reported as its own pass, `killcam`.
+
+**Cost** (gallery, RTX 5080, 1920x1080, "high"): objects 0.01-0.06 ms, particles 0.02-0.03 ms
+and the kill-cam window 0.04-0.05 ms in every strip. Whole frames are 0.27-0.60 ms, all within
+budget. At the VQ plans' factor of 8-10 that is about 0.3-0.9 ms for the event visuals on the
+reference mid GPU, against the 1.0 ms share (estimated, not measured).
+
 ## Mode effects (M3 C1)
 
 `modeFx.ts` `ModeFxPass` draws the mode visuals that are not meshes or particles, analytically

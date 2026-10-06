@@ -191,6 +191,8 @@ export interface GameHandle {
   practiceEdit?(add: boolean, x: number, y: number, z: number, radius: number): boolean;
   /** Practice only (gallery, M3 C1): The Squeeze's shell on the terrain; a radius below 0 removes it. */
   practiceShell?(x: number, y: number, z: number, radius: number): boolean;
+  /** Practice only (M4 C3, `?event=<id>`): forces the comedy event with this `eventIds()` index `delay` ticks from now; false online. */
+  practiceEvent?(event: number, delay: number): boolean;
   // M4 protocol 6 (ls-wasm level.rs, modes.rs; the mood is in modeState() JSON as `mood`).
   /** `ArchitectAction` packet placing a stroke (send reliably; `undefined` offline). */
   architectActionPacket?(stroke: number, x: number, y: number, z: number, radius: number): Uint8Array | undefined;

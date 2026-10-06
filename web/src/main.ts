@@ -94,6 +94,8 @@ import { audioEngine, MatchAudio } from "./audio/index.ts";
 import { wantsWorldFx, WorldVisuals } from "./game/worldFx.ts";
 import type { PointLight } from "./renderer/lights.ts";
 import { showAudioDemo, wantsAudioDemo } from "./audio/demo.ts";
+import { SpectacleVisuals } from "./game/events/spectacles.ts";
+import { forcedEvent } from "./game/events/forceEvent.ts";
 
 /** Largest frame time passed to the simulation; longer stalls (tab switch) are clamped. */
 const MAX_FRAME_DT = 0.1;
@@ -324,6 +326,12 @@ function runGame(
     // World visuals (M4 B5): gravity wells, cave-ins, pigment, the level's mood; `?worldfx=off` skips them.
     const world = new WorldVisuals(particles, wantsWorldFx(location), audioEngine());
     let worldShake = 0;
+    // M4 C3: Duck parade, Hat rain, Cat paw, Disco inferno, the Tired announcer's kill-cams.
+    const spectacles = new SpectacleVisuals(ui, particles, wantsWorldFx(location), audioEngine(), (t, v) => audio.announcer.say(t, v));
+    let spectacleShake = 0;
+    // Practice: `?event=<id>` forces a comedy event a few seconds in (C3; tests and review).
+    const forced = session.isOnline ? null : forcedEvent(location);
+    if (forced !== null) game.practiceEvent?.(forced, 300);
     let mono = 0;
     let shipBayOpen = false;
     let shipError = "";
@@ -384,6 +392,7 @@ function runGame(
       lobby.dispose();
       audio.dispose();
       world.dispose();
+      spectacles.dispose();
       delete ui.dataset["stage"];
       delete ui.dataset["matches"];
       overlay.dispose();
@@ -461,6 +470,7 @@ function runGame(
         charging.forget();
         modeVfx?.reset();
         world.reset();
+        spectacles.reset();
         audio.newMatch(game.shareCode);
         mono = 0;
         particles?.clear();
@@ -517,7 +527,7 @@ function runGame(
         boosting: state.boost && (r.hud.boost ?? 0) > 0,
       };
       camera.params.fovY = cine ? cinematic.fovY(renderer.aspect) : cues.fovY(cueFrame);
-      const shake = Math.max(fx.shake, vfx?.shake(time) ?? 0, worldShake);
+      const shake = Math.max(fx.shake, vfx?.shake(time) ?? 0, worldShake, spectacleShake);
       const view = camera.update(r.pose, spectator ? spectator.view : (cine ?? ride), shakeOffset(shake, time));
       chunkStats = chunks.update(game, view.position, initialLoad ? LOADING_BUDGET : PLAY_BUDGET);
       if (initialLoad && chunkStats.pending === 0) initialLoad = false;
@@ -606,6 +616,26 @@ function runGame(
         (trigger) => audio.announcer.say(trigger),
       );
       worldShake = wf.shake;
+      const sf = spectacles.update({
+        time,
+        dt,
+        nowTick: game.nowTick?.() ?? 0,
+        camera: view.position,
+        orientation: view.orientation,
+        mood: r.mode.mood,
+        cues: r.cues,
+        ships: r.ships,
+        own: ownAlive ? { id: game.player, team: game.team, position: ownAlive.position, orientation: ownAlive.orientation, shipType: own?.shipType ?? 1, radius: game.shipRadius ?? TINKER_RADIUS } : null,
+        entities: r.entities,
+        shots: r.projectiles,
+        shipExt: game.shipExt?.(),
+        colorOf: (id) => teamHull(id === game.player ? game.team : (teamOfShip(id) ?? 0), r.mode.teams),
+        nameOf: (id) => names.get(id) ?? "",
+        up: wf.up,
+        raycast: game.raycast ? (o, d, max) => game.raycast?.(o.x, o.y, o.z, d.x, d.y, d.z, max) ?? -1 : undefined,
+        quiet: flow.showResults || flow.showLobby,
+      });
+      spectacleShake = sf.shake;
       audio.update({ time, dt, player: game.player, online: session.isOnline, stage: flow.stage, camera: view, pose: r.pose, ships: r.ships, projectiles: r.projectiles, entities: r.entities, cues: r.cues, visuals: session.visuals, boosting: cueFrame.boosting, gadgetOf, gadgetIds: session.gadgetIds, names });
       // The cinematic camera sees the own ship too.
       const shownShips = cine && r.pose && own ? [...r.ships, cinematic.ownShip(game.player, game.team, r.pose, own.shipType, game.shipRadius ?? TINKER_RADIUS)] : r.ships;
@@ -621,14 +651,18 @@ function runGame(
           vfx: vfx !== null,
           refractCloak: true,
           shipStyle: shipStyleFor(r.mode, r.mode.teams) ?? wf.shipStyle,
-          skipKinds: world.skipKinds,
+          skipKinds: new Set([...(world.skipKinds ?? []), ...spectacles.skipKinds]),
         });
       addModeProps(scene, modeInput);
       const worldLights: PointLight[] = [...wf.lights];
       world.addToScene(scene, r.entities, time, r.mode.teams, worldLights);
+      spectacles.addToScene(scene);
+      worldLights.push(...sf.lights);
+      renderer.settings.lightLevel = sf.lightLevel;
+      renderer.settings.headlight = DEFAULT_SETTINGS.headlight * sf.headlight;
       renderer.setScene(scene);
       renderer.setModeVolumes(modeVolumes(modeInput));
-      renderer.setWorldVolumes(wf.volumes);
+      renderer.setWorldVolumes(sf.volumes.length > 0 ? [...sf.volumes, ...wf.volumes] : wf.volumes);
       renderer.setWorldUp(wf.up, boundsCenter(game.bounds()));
       // Without VQ5 effects the light pulses come from watching projectiles and ships.
       if (!vfx) {
@@ -675,6 +709,12 @@ function runGame(
       // Per-pass GPU timing (separate terrain/objects passes) while the overlay shows.
       renderer.detailedTiming = overlay.visible;
       frameStats = renderer.render(view);
+      spectacles.renderKillCam(renderer, {
+        visuals: session.visuals,
+        teamOf: (id) => (id === game.player ? game.team : teamOfShip(id)),
+        teams: r.mode.teams,
+        create: (c, device) => Renderer.create(c, { device, quality: "low", particles: false, shadows: false }),
+      });
       nameTags.update(
         nameTagModel(
           r.ships,

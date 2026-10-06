@@ -193,7 +193,7 @@ struct Sky {
   air: vec4f,
   room_min: vec4f,
   room_max: vec4f,
-  viewport: vec4f,    // xy size in pixels
+  viewport: vec4f,    // xy size in pixels, z = the level's light (1; M4 C3 Disco inferno)
   band: vec4f,        // xyz galactic band normal, w = band width
   turn: vec4f,        // unit quaternion from world directions to the sky's frame (M4 B5: Bored level turns the sky)
 };
@@ -384,7 +384,7 @@ fn fs_main(in: FsOut) -> @location(0) vec4f {
   let p = planet(d);
   // The planet hides what lies behind it (stars, sun, nebula).
   c = mix(c, p.color, p.cover) + select(p.color, vec3f(0.0), p.cover > 0.0);
-  c += grid;
+  c = c * sky.viewport.z + grid;
   return vec4f(c, 0.0);
 }
 `;

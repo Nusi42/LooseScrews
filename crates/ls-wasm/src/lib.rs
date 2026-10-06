@@ -1352,6 +1352,14 @@ impl Game {
         self.core.practice_edit(edit)
     }
 
+    /// Practice only (M4 C3, `?event=<id>`): forces the comedy event with
+    /// `EventKind` index `event` (see [`event_ids`]) `delay` ticks from now.
+    /// Returns false online or for an unknown index.
+    #[wasm_bindgen(js_name = practiceEvent)]
+    pub fn practice_event(&mut self, event: u8, delay: u32) -> bool {
+        self.core.practice_force_event(event, delay)
+    }
+
     /// Practice only (the visual gallery's Squeeze scenes, M3 C1): puts The
     /// Squeeze's shell on the terrain (solid outside the sphere; a radius
     /// below 0 removes it) outside the simulation, so the next meshes show

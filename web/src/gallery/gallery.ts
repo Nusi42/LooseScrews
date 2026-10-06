@@ -41,6 +41,7 @@ import { pickCloseup, pickCorner, pickLongest, pickVista, probeAround, raycast, 
 import { FIT_TUNNEL_RADIUS, needsWorldCode, sceneById, worldSliders, type GalleryScene } from "./scenes.ts";
 import { levelPose } from "./levelScenes.ts";
 import { prepareWorldScene, runWorldScene, type WorldPrep } from "./worldScenes.ts";
+import { prepareSpectacleScene, runSpectacleScene, type SpectaclePrep, type SpectacleRunResult } from "./spectacleRun.ts";
 import { applyDecor, decorSpots, pickBorder, type DecorSpot } from "./decor.ts";
 import { explosionAt, simulateVfx } from "./vfxScenes.ts";
 import { pickShadePose, pickSunWallPose } from "./shadePose.ts";
@@ -411,6 +412,12 @@ async function loadAround(
   throw new Error("terrain did not finish loading");
 }
 
+/** The main renderer's timings plus the kill-cam window's (M4 C3) as its own pass, `killcam`. */
+export function withKillCam(gpu: GpuTimings | null, killcamMs: number | null): GpuTimings | null {
+  if (!gpu || killcamMs === null) return gpu;
+  return { ...gpu, passes: [...gpu.passes, ["killcam", killcamMs]], total: gpu.total + killcamMs, worst: gpu.worst + killcamMs };
+}
+
 export async function runGallery(canvas: HTMLCanvasElement, ui: HTMLElement, loc: { search: string }): Promise<void> {
   const id = new URLSearchParams(loc.search).get("gallery") ?? "";
   const status: GalleryStatus = {
@@ -526,6 +533,20 @@ export async function runGallery(canvas: HTMLCanvasElement, ui: HTMLElement, loc
       pose.orientation = worldPrep.pose.orientation;
       if (worldPrep.edited) loader.reset(game);
     }
+    // M4 C3 spectacle scenes: their own camera (the cat paw's wall) and terrain edits (grooves, a pinch for the ducks).
+    let spectaclePrep: SpectaclePrep | null = null;
+    if (scene.content === "event" && scene.spectacle) {
+      spectaclePrep = prepareSpectacleScene(
+        scene.spectacle,
+        pose,
+        game.bounds(),
+        (o, d, max) => game.raycast?.(o.x, o.y, o.z, d.x, d.y, d.z, max) ?? raycast(rayMeshes.values(), o, d, max)?.t ?? -1,
+        (add, c, r) => game.practiceEdit?.(add, c.x, c.y, c.z, r) ?? false,
+      );
+      pose.position = spectaclePrep.pose.position;
+      pose.orientation = spectaclePrep.pose.orientation;
+      if (spectaclePrep.edited) loader.reset(game);
+    }
     // `?roomfade=off`: rock cut off sharply at the hidden walls (pre-VQP).
     renderer.roomFade = new URLSearchParams(loc.search).get("roomfade") !== "off";
     view = { ...view, ...pose };
@@ -583,6 +604,7 @@ export async function runGallery(canvas: HTMLCanvasElement, ui: HTMLElement, loc
     const impact = hit ? v3.addScaled(pose.position, impactDir, Math.max(4, hit.t - 0.6)) : null;
     const lights: PointLight[] = [];
     const particles = renderer.particles;
+    let spectacleRun: SpectacleRunResult | null = null;
     // The light scenes (VQ6) have no VQ5 history (their tinted volley is not
     // simulated), so their shots keep the mesh cores.
     if (scene.content === "mode" && scene.mode) {
@@ -614,6 +636,21 @@ export async function runGallery(canvas: HTMLCanvasElement, ui: HTMLElement, loc
         center: boundsCenter(game.bounds()),
         lights,
       });
+    } else if (scene.content === "event" && scene.spectacle && spectaclePrep) {
+      spectacleRun = runSpectacleScene({
+        kind: scene.spectacle,
+        renderer,
+        game,
+        prep: spectaclePrep,
+        time: scene.time,
+        visuals,
+        particles,
+        ui,
+        ray: (o, d, max) => raycast(rayMeshes.values(), o, d, max)?.t ?? -1,
+        enabled: new URLSearchParams(loc.search).get("worldfx") !== "off",
+        lights,
+      });
+      status.particles = spectacleRun.particles;
     } else {
       const content = sceneContent(scene, pose, visuals, impact, lights, particles !== null && scene.content !== "lights", wallAhead);
       // Pigmented hulls (M4 A7 keep mask): their colour survives the monochrome ink.
@@ -623,7 +660,7 @@ export async function runGallery(canvas: HTMLCanvasElement, ui: HTMLElement, loc
       }
       renderer.setScene(content);
     }
-    if (particles && scene.content !== "mode" && scene.content !== "world") {
+    if (particles && scene.content !== "mode" && scene.content !== "world" && scene.content !== "event") {
       // VQ5: the particles of the scene's synthetic history up to its time (vfxScenes.ts).
       // Scenes whose effects come only from VQ5 also take its effect lights (VQ6
       // pulses); the fight and lights scenes emit theirs in sceneContent.
@@ -639,11 +676,12 @@ export async function runGallery(canvas: HTMLCanvasElement, ui: HTMLElement, loc
 
     const frame = (): void => {
       const stats = renderer.render(view);
+      spectacleRun?.afterRender?.();
       status.frames++;
       status.chunksDrawn = stats.chunksDrawn;
       status.triangles = stats.triangles;
       status.instances = stats.instances;
-      status.gpu = renderer.gpuTimings();
+      status.gpu = withKillCam(renderer.gpuTimings(), spectacleRun?.killCamMs() ?? null);
       status.lights = renderer.lightStats;
       status.gpuError = renderer.lastError;
       if (status.frames === WARMUP_FRAMES) status.phase = "ready";

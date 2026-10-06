@@ -7,7 +7,7 @@ import { KEY_BINDINGS, WEAPON_ACTIONS, wheelStep, WHEEL_STEP } from "../input/bi
 import * as mat4 from "../math/mat4.ts";
 import * as q from "../math/quat.ts";
 import { expandTeams, SURFACE_CHARGED, SURFACE_HOT, validateMesh, MeshError } from "../renderer/mesh.ts";
-import { MESH_BUILDERS, MESH_KINDS } from "../renderer/models/index.ts";
+import { MESH_BUILDERS, MESH_KINDS, SPECTACLE_MESH_KINDS } from "../renderer/models/index.ts";
 import { DEFAULT_SETTINGS } from "../renderer/renderer.ts";
 import { loadoutLines } from "../ui/hud.ts";
 import { nameTagModel, projectToScreen } from "../ui/nameTags.ts";
@@ -78,6 +78,8 @@ test("procedural meshes are valid and about one unit across", () => {
     const m = MESH_BUILDERS[kind]();
     validateMesh(m);
     assert.ok(m.indices.length >= 12, kind);
+    // M4 C3's event props use their own frames (pad radius 1, the paw's long arm; game/events/spectacles.test.ts).
+    if ((SPECTACLE_MESH_KINDS as readonly string[]).includes(kind)) continue;
     let max = 0;
     for (const v of m.positions) max = Math.max(max, Math.abs(v));
     assert.ok(max > 0.2 && max < 1.0, `${kind} extent ${max}`);

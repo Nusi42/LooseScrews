@@ -658,6 +658,23 @@ table; blue paint on the walls of a tunnel lets you scrape along at full speed.
 A Tectonic Charge leaves a dust cloud 35 u in radius (70 u across) for 20 s. Inside it, the fog closes in and you
 see much less, and so does everyone else inside it.
 
+### Comedy events you will see
+
+Now and then the level plays a joke on everyone. The announcer names it three seconds before it
+starts. Five of them have their full look and sound in this build:
+
+| Event | What you see and hear | What to do |
+| --- | --- | --- |
+| **Duck parade** | Five giant rubber ducks waddle along the tunnels to a kazoo march, trailing soap bubbles. The first wears a top hat, the last wears sunglasses. In tight tunnels they squeeze thin and long, and they pop back into shape after. They squeak when they swallow a shot or shove a ship. | Get out of the way: ducks push ships aside and soak up shots. They do no damage. |
+| **Hat rain** | Hats flutter down and land on the rock: top hats, cowboy hats, party cones, chef's hats, crowns, propeller beanies, fezzes and viking helmets. Fly through one and it pops onto your hull. Your stack sways when you turn, and the HUD shows your count. | Collect them. With three or more, a gold glint above your stack shows where you are, and the HUD says "Everyone sees you". Whoever wears the most hats at the end is named the **Hat Baron**. |
+| **Cat paw** | The boundary wall near a group of ships glows with the paw's print, and three red-hot claws poke through. Then a giant ginger paw with pink toe beans bursts through and swipes along. Rock sprays where its claws rake, and ginger fur drifts down after it. | Leave when the wall starts to glow. The paw hits for 30 and throws you hard. |
+| **Disco inferno** | The sun, sky and cave light drop to almost nothing, and your headlight dims too. A mirror ball comes down over the fight with eight coloured spotlights. Every ship leaves a glowing trail in its side's colour, even in black-and-white levels, and a four-on-the-floor beat plays. | Use the trails to find the others, and remember they can see yours. |
+| **Tired announcer** | For 30 seconds, every kill plays as a 3-second replay from behind the killer in a small "Kill-cam" window at the top left, with a deadpan line from the announcer. While the event is being announced, the window shows static and "Zzz". | Nothing. Enjoy the replays. |
+
+To try an event in practice, add `?event=<id>` to the page address (for example
+`?event=duck_parade`, `hat_rain`, `cat_paw`, `disco_inferno`, `tired_announcer`). That event
+then starts five seconds after you begin.
+
 ## Pickups and wrecks
 
 Each level has **12 pickup points** in open space, spread across the level and away from the team
@@ -1192,7 +1209,8 @@ These are part of the game design but aren't in the Milestone 3 build:
   as a general feature (the Palette slider only drains the colour of the picture).
 - **World sliders:** Absurdity only announces comedy events so far (what they do comes later),
   and gravity wells, cave-ins and radiation are felt but not yet drawn or heard.
-- **Comedy events** ("the level has moods"): not yet.
+- **Comedy events** ("the level has moods"): only the five listed under
+  [Comedy events you will see](#comedy-events-you-will-see) have their full look and sound so far.
 - **Voting for the next mode:** servers play their rotation in order.
 - **Sound:** no music yet, and no recorded voices: the announcer speaks in made-up robot
   speech with captions.

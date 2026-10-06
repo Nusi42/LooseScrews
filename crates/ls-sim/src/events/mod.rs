@@ -22,6 +22,7 @@
 //! | `well_scale` | gravity wells pull (Gravity coffee break) | [`EffectCtx`] |
 //! | `reveal` | snapshot relevance: is this ship shown to everyone? | [`EffectCtx`] + the ship |
 //! | `allows_pickup` | a ship touches a pickup | [`EffectCtx`] + the spawn index |
+//! | `obstacles` | the tick starts: kinematic obstacles that push ships and absorb projectiles (Duck parade; [`crate::obstacle`]) | [`EffectCtx`] + the [`MatchSetup`] |
 //!
 //! Effect hooks run only during the active and ending phases and must be
 //! pure functions of the [`MoodView`], the match seed and the tick, so a
@@ -33,7 +34,15 @@
 //! Wave A ships every event as a stub: it is announced and runs for its
 //! duration without effects (`implemented() == false`); wave B packages
 //! replace the stub bodies (B1: world and movement, B2: visitors, B3:
-//! spectacles).
+//! spectacles). Built by B3: Cat paw, Tired announcer, Duck parade, Hat
+//! rain, Disco inferno.
+//!
+//! Event props (ducks, hats, the paw, the mirror ball) are entities of kind
+//! [`crate::EntityKind::Prop`] that their event spawns, poses every tick
+//! ([`crate::Command::PoseEntity`]) and removes in `on_end`; since one event
+//! runs at a time, an event finds its props by kind. Lifecycle hooks see the
+//! kills since the last director step ([`EventCtx::kills`]) and may give a
+//! title for the results ([`EventState::award`]).
 
 pub mod big_head_day;
 pub mod bored_level;
@@ -328,6 +337,35 @@ pub struct EventState {
     pub entities: Vec<u32>,
     /// Started by a forced schedule (`World::schedule_event`).
     pub forced: bool,
+    /// Per-player module scratch (Cat paw: ships already hit; Hat rain: the
+    /// tick each ship reached its hat count), kept sorted by the module.
+    pub marks: Vec<(PlayerId, u64)>,
+    /// A title the event awards for the results (Hat rain's Hat Baron),
+    /// moved to `DirectorState::awards` when the event ends.
+    pub award: Option<Award>,
+}
+
+/// A kill this tick, as the lifecycle hooks of the running event see it
+/// ([`EventCtx::kills`]): Tired announcer's kill-cams, Hat rain's
+/// scattered hats.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct KillNote {
+    pub victim: PlayerId,
+    /// `None`: the level (environment, an event).
+    pub killer: Option<PlayerId>,
+    pub weapon: Option<crate::WeaponId>,
+    /// Where the victim died.
+    pub pos: Vec3,
+}
+
+/// A title an event gives a player, listed in the match results (Hat
+/// rain: the Hat Baron with the hat count; Customer survey: the rating).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Award {
+    pub kind: EventKind,
+    pub player: PlayerId,
+    /// Event-defined value (hats worn, stars).
+    pub value: u32,
 }
 
 impl EventState {
@@ -346,6 +384,8 @@ impl EventState {
             pos: Vec3::ZERO,
             entities: Vec::new(),
             forced: false,
+            marks: Vec::new(),
+            award: None,
         }
     }
 
@@ -383,6 +423,8 @@ pub struct EventCtx<'a, 'c> {
     pub mood: Mood,
     /// The mode's leader (`ModeModule::leader`).
     pub leader: Option<PlayerId>,
+    /// Kills earlier this tick (world stages 2-8), in order.
+    pub kills: &'c [KillNote],
 }
 
 impl EventCtx<'_, '_> {
@@ -522,6 +564,18 @@ pub trait EventModule: Send + Sync + Debug {
     fn allows_pickup(&self, _fx: &EffectCtx, _spawn: u16) -> bool {
         true
     }
+
+    /// Kinematic obstacles at `fx.now` (Duck parade's ducks): appended to
+    /// `out`; they push ships aside and absorb projectiles
+    /// ([`crate::obstacle`]). Pure like every effect hook, and read from
+    /// the [`MatchSetup`] that clients build from the share code too.
+    fn obstacles(
+        &self,
+        _fx: &EffectCtx,
+        _setup: &MatchSetup,
+        _out: &mut Vec<crate::obstacle::Obstacle>,
+    ) {
+    }
 }
 
 /// One registered event: module and data file.
@@ -596,5 +650,7 @@ pub fn damaged_ships<'v>(view: &View<'v>) -> Vec<&'v ShipState> {
         .collect()
 }
 
+#[cfg(test)]
+mod spectacle_tests;
 #[cfg(test)]
 mod tests;

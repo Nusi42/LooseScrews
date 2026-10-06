@@ -125,11 +125,20 @@ fn bad_data_is_rejected() {
     ));
 }
 
+/// Events wave B built (B3: the spectacles); the rest are still stubs.
+const BUILT: &[EventKind] = &[
+    // B3
+    EventKind::CatPaw,
+    EventKind::TiredAnnouncer,
+    EventKind::DuckParade,
+    EventKind::HatRain,
+    EventKind::DiscoInferno,
+];
+
 #[test]
 fn stubs_are_announce_only() {
     for m in &MODULES {
-        // Wave B replaces the stubs; this test then lists the built ones.
-        assert!(!m.module.implemented(), "{}", m.id);
+        assert_eq!(m.module.implemented(), BUILT.contains(&m.kind), "{}", m.id);
     }
 }
 

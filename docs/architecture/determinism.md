@@ -180,6 +180,25 @@ also asserts each system acted. Re-bless only the `world/` lines:
 LS_BLESS_MOOD_REPLAYS=1 cargo test -p ls-sim --lib world_replays
 ```
 
+### Comedy event replay hashes (M4 wave B)
+
+`ls_sim::event_replays` plays one scripted 8-ship replay per built event
+(`EventModule::implemented`): the golden arena and inputs, Team Brawl with 6 Bolt Rockets each,
+Absurdity 0, one parade route across the arena, the event forced 1 s in and played until it
+ended (at most 40 s; Hat rain's odd players fly at the nearest hat). Their hashes are the
+`event/<id>` lines of `crates/ls-sim/tests/fixtures/mood_replays.txt`, checked on native and
+wasm32 by `event_replays::tests::event_replays_match_the_fixture`, which also asserts each event
+acted (ducks absorbed shots, a Hat Baron, kill-cams, the paw and the ball). Re-bless only the
+`event/` lines (a newly built event adds its line):
+
+```sh
+LS_BLESS_EVENT_REPLAYS=1 cargo test -p ls-sim --lib event_replays
+```
+
+B3's additions are inert without a running event: kinematic obstacles, kill notes, hats
+(`ShipState::hats`, hashed only when non-zero), event marks and awards (hashed only when
+used), so `REPLAY_GOLDEN_HASH`, the per-mode and the world replays keep their hashes.
+
 Every world physics system is inert when its input is off (no wells, Instability 0, no
 monochrome level, no belt, world +Y up) and the state hash then skips its state, so
 `REPLAY_GOLDEN_HASH` and the per-mode replays stay as they were, except Last Color Standing,

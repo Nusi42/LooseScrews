@@ -169,6 +169,19 @@ pub fn results_to_net(
             })
             .take(MAX_SHIPS as usize)
             .collect(),
+        // Event titles (Hat Baron) of players that still have a wire id.
+        awards: results
+            .awards
+            .iter()
+            .filter_map(|a| {
+                Some(ls_net::NetAward {
+                    event: a.kind.index(),
+                    player: wire(a.player).filter(|&id| id < MAX_SHIPS)?,
+                    value: a.value,
+                })
+            })
+            .take(ls_net::mode::MAX_AWARDS)
+            .collect(),
     }
 }
 
@@ -326,6 +339,19 @@ mod tests {
                     score: 1,
                 },
             ],
+            // A Hat Baron who is still here and one who left.
+            awards: vec![
+                ls_sim::events::Award {
+                    kind: ls_sim::EventKind::HatRain,
+                    player: PlayerId(4),
+                    value: 6,
+                },
+                ls_sim::events::Award {
+                    kind: ls_sim::EventKind::HatRain,
+                    player: PlayerId(5),
+                    value: 2,
+                },
+            ],
         };
         let msg = results_to_net(
             &r,
@@ -337,6 +363,14 @@ mod tests {
         assert_eq!(msg.rows.len(), 1, "players who left are dropped");
         assert_eq!((msg.rows[0].id, msg.rows[0].kills), (2, 10));
         assert!(msg.rows[0].name.len() <= ls_net::MAX_PLAYER_NAME);
+        assert_eq!(
+            msg.awards,
+            vec![ls_net::NetAward {
+                event: ls_sim::EventKind::HatRain.index(),
+                player: 2,
+                value: 6,
+            }]
+        );
         let bytes = ls_net::Message::MatchResults(Box::new(msg.clone()))
             .encode()
             .unwrap();

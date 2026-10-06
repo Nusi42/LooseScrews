@@ -1,5 +1,6 @@
 // Tired announcer: For 30 s every kill plays a 3 s kill-cam for everyone, narrated by the
-// announcer.
+// announcer. Kill-cams play one after another; a kill that would wait longer than
+// `max_wait_secs` is only narrated.
 // Behaviour: crates/ls-sim/src/events/tired_announcer.rs (B3). Schema: `ls_sim::events::EventDef`.
 EventDef(
     id: "tired_announcer",
@@ -8,5 +9,5 @@ EventDef(
     weight: 1.0,
     active_secs: 30.0,
     moods: [],
-    params: { "killcam_secs": 3.0 },
+    params: { "killcam_secs": 3.0, "max_wait_secs": 6.0 },
 )

@@ -44,7 +44,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::behavior::Ctx;
 use crate::events::{
-    EffectCtx, EventCtx, EventKind, EventPhase, EventRef, EventState, EventTable, MoveEffects,
+    Award, EffectCtx, EventCtx, EventKind, EventPhase, EventRef, EventState, EventTable, KillNote,
+    MoveEffects,
 };
 use crate::hash::StateHasher;
 use crate::mode::ModeState;
@@ -263,6 +264,9 @@ pub struct DirectorState {
     pub count: u32,
     /// Forced events `(tick, kind)`, sorted by tick (then insertion).
     pub schedule: Vec<(u64, EventKind)>,
+    /// Titles events gave this match (Hat Baron, ...), in award order; the
+    /// match results list them.
+    pub awards: Vec<Award>,
 }
 
 /// Everything the director reads from the world for one step.
@@ -278,6 +282,8 @@ pub(crate) struct DirectorInput<'a> {
     pub mode_ref: ModeRef<'a>,
     pub mutators: &'a [&'static dyn MutatorModule],
     pub setup: &'a MatchSetup,
+    /// Kills earlier this tick (for the running event's hooks).
+    pub kills: &'a [KillNote],
 }
 
 impl DirectorState {
@@ -493,6 +499,9 @@ impl DirectorState {
         let now = ctx.now();
         let module = ev.kind.module();
         self.with_event(ctx, inp, &mut ev, |m, e| m.on_end(e), module);
+        if let Some(a) = ev.award {
+            self.awards.push(a);
+        }
         out.push(DirectorEvent::Ended { kind: ev.kind });
         let mut gap = Tick::ticks_for_secs(inp.def.gap_secs);
         if self.mood == Mood::Calm {
@@ -519,6 +528,7 @@ impl DirectorState {
             def,
             mood: self.mood,
             leader,
+            kills: inp.kills,
         };
         f(module, &mut e);
     }
@@ -537,6 +547,17 @@ impl DirectorState {
         for (t, k) in &self.schedule {
             h.write_u64(*t);
             h.write_u8(k.index());
+        }
+        // B3: awards (written only once there are any, so earlier
+        // director hashes stay).
+        if !self.awards.is_empty() {
+            h.write_u8(0xa1);
+            h.write_u32(self.awards.len() as u32);
+            for a in &self.awards {
+                h.write_u8(a.kind.index());
+                h.write_u16(a.player.0);
+                h.write_u32(a.value);
+            }
         }
         match &self.current {
             None => h.write_u8(0),
@@ -561,6 +582,25 @@ impl DirectorState {
                     h.write_u32(*id);
                 }
                 h.write_bool(e.forced);
+                // B3: per-player marks and the pending award (only when
+                // used, so earlier event hashes stay).
+                if !e.marks.is_empty() || e.award.is_some() {
+                    h.write_u8(0xa2);
+                    h.write_u32(e.marks.len() as u32);
+                    for (p, t) in &e.marks {
+                        h.write_u16(p.0);
+                        h.write_u64(*t);
+                    }
+                    match e.award {
+                        None => h.write_u8(0),
+                        Some(a) => {
+                            h.write_u8(1);
+                            h.write_u8(a.kind.index());
+                            h.write_u16(a.player.0);
+                            h.write_u32(a.value);
+                        }
+                    }
+                }
             }
         }
     }
@@ -636,6 +676,22 @@ pub fn move_effects(view: &MoodView, seed: u64, now: u64, ship: &ShipState) -> M
 /// Whether the event in `view` shows `ship` to everyone at `now`.
 pub fn reveals(view: &MoodView, seed: u64, now: u64, ship: &ShipState) -> bool {
     effect_ctx(view, seed, now).is_some_and(|(fx, kind)| kind.module().reveal(&fx, ship))
+}
+
+/// The kinematic obstacles of the event in `view` at `now` (Duck parade's
+/// ducks; [`crate::obstacle`]), appended to `out` (cleared first). The
+/// world and the client predictor both call it with the match setup.
+pub fn obstacles(
+    view: &MoodView,
+    seed: u64,
+    now: u64,
+    setup: &MatchSetup,
+    out: &mut Vec<crate::obstacle::Obstacle>,
+) {
+    out.clear();
+    if let Some((fx, kind)) = effect_ctx(view, seed, now) {
+        kind.module().obstacles(&fx, setup, out);
+    }
 }
 
 /// Whether the event in `view` lets ships take pickup spawn `spawn` at `now`.

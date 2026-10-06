@@ -115,6 +115,16 @@ pub enum CueKind {
     /// The Architect's stroke telegraph: `source` = the architect, `pos` =
     /// centre, `value` = stroke kind << 8 | radius in u (clamped to 255).
     StrokeTelegraph = 17,
+    /// Tired announcer: a kill-cam for everyone (protocol 6, B3): `source`
+    /// = the killer (none: the level), `target` = the victim, `pos` = where
+    /// the victim died, `value` = ticks until this kill-cam starts (kill-cams
+    /// play one after another), or `u16::MAX`: narrated only (the queue is
+    /// full).
+    KillCam = 18,
+    /// A comedy event's prop was hit (protocol 6, B3): `pos` = the point,
+    /// `value` = the prop's `ReplicatedKind` (a duck absorbing a shot
+    /// squeaks).
+    EventHit = 19,
     /// Free for modules; `value` is module-defined.
     Custom = 255,
 }
@@ -141,6 +151,8 @@ impl CueKind {
             15 => Pigment,
             16 => EventAnnounce,
             17 => StrokeTelegraph,
+            18 => KillCam,
+            19 => EventHit,
             _ => Custom,
         }
     }
@@ -278,6 +290,17 @@ pub enum Command {
     AddWell(crate::gravity::DynamicWell),
     /// Removes the dynamic wells with this key.
     RemoveWell { key: u32 },
+    /// Sets an entity's pose and velocity (comedy event props, which their
+    /// event moves along exact paths) and its replicated state bytes.
+    PoseEntity {
+        id: u32,
+        pos: Vec3,
+        vel: Vec3,
+        rot: ls_math::Quat,
+        state: [u8; 4],
+    },
+    /// Sets the number of hats a ship wears (Hat rain; `ShipState::hats`).
+    SetHats { target: PlayerId, hats: u8 },
 }
 
 /// Read-only world view for hooks.
@@ -294,6 +317,9 @@ pub struct View<'a> {
     pub instability: u8,
     /// The running comedy event's effects this tick (crater scale, ...).
     pub effects: crate::director::EventEffects,
+    /// The level's up (`World::up`; Bored level turns it, Hat rain's hats
+    /// fall against it).
+    pub up: Vec3,
     pub ships: &'a BTreeMap<PlayerId, ShipState>,
     /// Projectiles in flight. While projectiles are being stepped this holds
     /// only the ones spawned during that stage; use

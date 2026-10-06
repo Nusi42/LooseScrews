@@ -18,7 +18,10 @@
 //!   nextRuleset, nextShareCode, minPlayers, maxPlayers, teams, players:
 //!   [{id, team, ready, spectator}]}` (`team` -1 = auto).
 //! - [`results_json`]: `{tick, kind, mode, teams, winner, teamScores,
-//!   rows: [{id, side, kills, deaths, score, name}]}` (best first).
+//!   rows: [{id, side, kills, deaths, score, name}], awards: [{event,
+//!   player, value}]}` (rows best first; awards: titles comedy events gave,
+//!   `event` = the event id such as `"hat_rain"` for the Hat Baron, protocol
+//!   6).
 
 use ls_net::mode::{NONE, UNLIMITED_LIVES};
 use ls_net::{LobbyPhase, LobbyStateMsg, MatchResultsMsg, NetModeState, NetMoodView};
@@ -183,6 +186,14 @@ pub fn results_json(r: &MatchResultsMsg) -> String {
             ("name", json_str(&row.name)),
         ])
     });
+    let awards = r.awards.iter().map(|a| {
+        let id = ls_sim::EventKind::from_index(a.event).map_or("", |k| k.id());
+        object(&[
+            ("event", json_str(id)),
+            ("player", a.player.to_string()),
+            ("value", a.value.to_string()),
+        ])
+    });
     object(&[
         ("tick", r.tick.to_string()),
         ("kind", r.kind.to_string()),
@@ -194,6 +205,7 @@ pub fn results_json(r: &MatchResultsMsg) -> String {
             array(r.team_scores.iter().map(|s| s.to_string())),
         ),
         ("rows", array(rows)),
+        ("awards", array(awards)),
     ])
 }
 
@@ -287,13 +299,18 @@ mod tests {
                 score: 7,
                 name: "Rita".into(),
             }],
+            awards: vec![ls_net::NetAward {
+                event: ls_sim::EventKind::HatRain.index(),
+                player: 2,
+                value: 5,
+            }],
         };
         let j = results_json(&r);
         assert_eq!(
             j,
             "{\"tick\":99,\"kind\":1,\"mode\":\"team_brawl\",\"teams\":2,\"winner\":1,\
              \"teamScores\":[3,15],\"rows\":[{\"id\":2,\"side\":1,\"kills\":7,\"deaths\":1,\
-             \"score\":7,\"name\":\"Rita\"}]}"
+             \"score\":7,\"name\":\"Rita\"}],\"awards\":[{\"event\":\"hat_rain\",\"player\":2,\"value\":5}]}"
         );
     }
 }

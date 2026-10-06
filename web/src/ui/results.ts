@@ -1,8 +1,9 @@
 // Results screen (M3): after every match, per mode. Team modes show the
 // team scores as bars (paint share in Paint the Void); free-for-all modes a
-// podium of the top three. Below, every pilot with the mode score, kills
-// and deaths, and at the bottom what comes next (the lobby's next mode and
-// its countdown). Online the table is the server's `MatchResults`; in
+// podium of the top three. Titles comedy events gave (M4 B3: Hat rain's Hat
+// Baron) sit under the headline. Below, every pilot with the mode score,
+// kills and deaths, and at the bottom what comes next (the lobby's next
+// mode and its countdown). Online the table is the server's `MatchResults`; in
 // practice it is built from the local mode state (practiceResults). Models
 // are pure for Node tests; the class only writes the DOM on change.
 
@@ -34,6 +35,35 @@ export interface ResultLine {
   winner: boolean;
 }
 
+/** A title a comedy event gave (Hat Baron), as the results screen shows it. */
+export interface ResultTitle {
+  /** Event id ("hat_rain"); picks the badge icon. */
+  event: string;
+  /** "Hat Baron". */
+  label: string;
+  name: string;
+  /** "7 hats". */
+  detail: string;
+  color: string;
+  you: boolean;
+}
+
+/** How each event's award reads (unknown events: their id as the label). */
+const EVENT_TITLES: Readonly<Record<string, { label: string; detail: (value: number) => string }>> = {
+  hat_rain: { label: "Hat Baron", detail: (v) => `${v} ${v === 1 ? "hat" : "hats"}` },
+};
+
+function titleOf(event: string): { label: string; detail: (value: number) => string } {
+  const known = EVENT_TITLES[event];
+  if (known) return known;
+  const label = event
+    .split("_")
+    .filter(Boolean)
+    .map((w) => w[0]!.toUpperCase() + w.slice(1))
+    .join(" ");
+  return { label, detail: (v) => String(v) };
+}
+
 export interface ResultsModel {
   /** "Team Brawl · Match over". */
   kicker: string;
@@ -45,6 +75,8 @@ export interface ResultsModel {
   teams: ResultTeam[];
   /** Top three in free-for-all (empty in team modes). */
   podium: ResultLine[];
+  /** Titles from comedy events (Hat Baron), in award order. */
+  titles: ResultTitle[];
   scoreLabel: string;
   rows: ResultLine[];
   footer: string;
@@ -79,7 +111,7 @@ export function practiceResults(mode: ModeState, rows: readonly ScoreRow[], name
       name: names.get(p.id) || r?.name || "",
     };
   });
-  return { tick: 0, kind: mode.kind, mode: mode.mode, teams: mode.teams, winner: mode.winner, teamScores: [...mode.teamScores], rows: out };
+  return { tick: 0, kind: mode.kind, mode: mode.mode, teams: mode.teams, winner: mode.winner, teamScores: [...mode.teamScores], rows: out, awards: [] };
 }
 
 function pct(score: number, total: number): number {
@@ -151,6 +183,19 @@ export function resultsModel(i: ResultsInput): ResultsModel {
     winner: !draw && x.side === r.winner,
   }));
 
+  const titles: ResultTitle[] = (r.awards ?? []).map((a) => {
+    const row = r.rows.find((x) => x.id === a.player);
+    const t = titleOf(a.event);
+    return {
+      event: a.event,
+      label: t.label,
+      name: nameOf(a.player, row?.name ?? ""),
+      detail: t.detail(a.value),
+      color: row ? sideCss(row.side, r.teams) : "var(--muted)",
+      you: a.player === i.own,
+    };
+  });
+
   let footer: string;
   if (!i.online) footer = "Practice over · reload for a new round";
   else {
@@ -169,10 +214,37 @@ export function resultsModel(i: ResultsInput): ResultsModel {
     winnerColor: draw ? "" : sideCss(r.winner, r.teams),
     teams,
     podium: teamsMode ? [] : rows.slice(0, 3),
+    titles,
     scoreLabel: info.scoreLabel,
     rows,
     footer,
   };
+}
+
+const SVG_NS = "http://www.w3.org/2000/svg";
+
+/** The badge glyph of an event's title: a top hat for the Hat Baron. */
+function titleIcon(event: string): SVGSVGElement {
+  const svg = document.createElementNS(SVG_NS, "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("aria-hidden", "true");
+  svg.classList.add("results-title-icon");
+  const shapes: Array<[string, Record<string, string>]> =
+    event === "hat_rain"
+      ? [
+          // A top hat tipped at a jaunty angle: crown, sheen, band, brim.
+          ["path", { d: "M8.1 4.6Q12 3.5 15.9 4.6L15.2 15.6H8.8Z", class: "crown", transform: "rotate(-10 12 12)" }],
+          ["path", { d: "M9.4 5.6Q10 5.2 10.8 5.1L10.3 14.6H9.6Z", class: "sheen", transform: "rotate(-10 12 12)" }],
+          ["rect", { x: "8.6", y: "12.2", width: "6.8", height: "2.3", class: "band", transform: "rotate(-10 12 12)" }],
+          ["path", { d: "M2.6 16.4Q12 13.4 21.4 16.4Q12 21.2 2.6 16.4Z", class: "brim", transform: "rotate(-10 12 12)" }],
+        ]
+      : [["path", { d: "M12 3l2.6 5.6 6 .7-4.5 4.1 1.3 6L12 16.4 6.6 19.4l1.3-6L3.4 9.3l6-.7z", class: "crown" }]];
+  for (const [tag, attrs] of shapes) {
+    const e = document.createElementNS(SVG_NS, tag);
+    for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
+    svg.appendChild(e);
+  }
+  return svg;
 }
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, className: string, parent?: HTMLElement): HTMLElementTagNameMap[K] {
@@ -189,6 +261,7 @@ export class ResultsScreen {
   private readonly kicker: HTMLElement;
   private readonly title: HTMLElement;
   private readonly subtitle: HTMLElement;
+  private readonly titles: HTMLElement;
   private readonly teams: HTMLElement;
   private readonly podium: HTMLElement;
   private readonly table: HTMLTableElement;
@@ -201,6 +274,7 @@ export class ResultsScreen {
     this.kicker = el("div", "results-kicker", this.card);
     this.title = el("h1", "results-title", this.card);
     this.subtitle = el("p", "results-subtitle", this.card);
+    this.titles = el("div", "results-titles", this.card);
     this.teams = el("div", "results-teams", this.card);
     this.podium = el("div", "results-podium", this.card);
     this.table = el("table", "results-table", this.card);
@@ -224,6 +298,19 @@ export class ResultsScreen {
     this.kicker.textContent = model.kicker;
     this.title.textContent = model.title;
     this.subtitle.textContent = model.subtitle;
+    this.titles.replaceChildren(
+      ...model.titles.map((t) => {
+        const badge = el("div", `results-award${t.you ? " you" : ""}`);
+        badge.style.setProperty("--side", t.color);
+        badge.appendChild(titleIcon(t.event));
+        const text = el("div", "results-award-text", badge);
+        el("div", "results-award-label", text).textContent = t.label;
+        el("div", "results-award-name", text).textContent = t.you ? `${t.name} (you)` : t.name;
+        el("div", "results-award-detail", badge).textContent = t.detail;
+        return badge;
+      }),
+    );
+    this.titles.classList.toggle("hidden", model.titles.length === 0);
     this.teams.replaceChildren(
       ...model.teams.map((t) => {
         const row = el("div", `results-team${t.winner ? " winner" : ""}${t.yours ? " yours" : ""}`);

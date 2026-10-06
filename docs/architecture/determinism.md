@@ -180,6 +180,16 @@ also asserts each system acted. Re-bless only the `world/` lines:
 LS_BLESS_MOOD_REPLAYS=1 cargo test -p ls-sim --lib world_replays
 ```
 
+The Architect (M4 B4) adds the line `mode/the_architect`: a 40 s, 6-ship match in an arena that
+answers reshape strokes analytically (`ls_sim::AnalyticReshape`), 10 s rounds so all three
+rounds and the match end happen inside it, a scripted stroke every 1.25 s cycling through all
+eight kinds (some refused), half the runners flying at the exit
+(`ls_sim::modes::the_architect::replay`). Checked on native and wasm32 by
+`the_architect::tests::architect_replay_matches_the_fixture`; re-bless only that line with
+`LS_BLESS_MOOD_REPLAYS=1 cargo test -p ls-sim --lib the_architect`. The new mode also adds
+`rulesets/the_architect.ron` to the per-mode replays (no strokes there); the other nine lines
+and `REPLAY_GOLDEN_HASH` are unchanged (the Architect state is hashed only when present).
+
 Every world physics system is inert when its input is off (no wells, Instability 0, no
 monochrome level, no belt, world +Y up) and the state hash then skips its state, so
 `REPLAY_GOLDEN_HASH` and the per-mode replays stay as they were, except Last Color Standing,

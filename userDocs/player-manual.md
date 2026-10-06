@@ -25,7 +25,8 @@ the game's data files, so those pages always match the build.
 - [Pickups and wrecks](#pickups-and-wrecks)
 - [Game modes](#game-modes): [Paint the Void](#paint-the-void), [Team Brawl](#team-brawl),
   [The Squeeze](#the-squeeze), [Heist](#heist), [Hot Reactor](#hot-reactor),
-  [Last Color Standing](#last-color-standing), [Instagib](#instagib), [duels](#duels)
+  [Last Color Standing](#last-color-standing), [The Architect](#the-architect),
+  [Instagib](#instagib), [duels](#duels)
 - [Between matches: the lobby](#between-matches-the-lobby)
 - [Share codes, rule set codes and the rule set editor](#share-codes-rule-set-codes-and-the-rule-set-editor)
 - [Playing with friends: server list, invites, parties and duels](#playing-with-friends-server-list-invites-parties-and-duels)
@@ -814,6 +815,40 @@ Every pilot for themselves on a **black-and-white level**.
   2 seconds, so the match always ends.
 - The **last pilot with colour** wins; nobody left (the last two out at once) is a draw.
 
+### The Architect
+
+One pilot against everyone else, 2 to 8 players. A match is up to **three rounds of
+4 minutes** (as many rounds as there are players, at most three), and the **architect** role
+moves on every round in the order the pilots joined.
+
+- **Runners** start at one end of the level and race for the **exit** at the far end (an open
+  cavern). Flying into the exit scores **1 point**, and you are out of play until the next
+  round. You have **2 lives** per round; runners **cannot hurt each other**. You start with
+  the Scrap Laser and 4 Bolt Rockets (for digging through new rock); pickups are on.
+- **The architect** has no ship. Instead they spend a **budget** (100 points at the round
+  start, +4 per second, up to 250) on **strokes** that reshape a sphere of the level (12 to
+  24 u across the radius) live:
+
+  | Stroke | Cost | What it does |
+  | --- | --- | --- |
+  | Enclosure+ | 25 | grows rock in the region |
+  | Enclosure- | 15 | opens rock in the region |
+  | Density+ | 20 | pillars and floating rocks |
+  | Gravity Chaos+ | 30 | a gravity well for 30 s |
+  | Instability+ | 35 | a cave-in: weak rubble comes down from the ceiling |
+  | Absurdity+ | 60 | a random comedy event |
+  | Palette | 15 | an ink blackout of the region for 20 s |
+  | Verticality | 80 | the level gets bored and turns (once per round) |
+
+  Every stroke **glows for 2 seconds** before it acts, so runners see it coming; rock never
+  grows over a ship or seals one in, and rock strokes stay clear of the start and the exit.
+  New rock lands over a few frames, at most 32 pieces per stroke.
+- Every runner who does **not** make it out by the end of the round scores **1 point for the
+  architect**. The round ends early once no runner is left flying. The runners win the round
+  if at least half of them got out.
+- After the last round, the pilot with the **most points** (as runner and as architect) wins;
+  equal points are a draw.
+
 ### Instagib
 
 Instagib is a **mutator**: it changes the rules of any mode (the built-in **Instagib Brawl** is
@@ -1149,7 +1184,10 @@ Advanced page options, added to the address (combine them with `&`):
 
 These are part of the game design but aren't in the Milestone 3 build:
 
-- **Co-op modes** (Deep Dig, Tethered, Escort the Intern) and **The Architect**.
+- **Co-op modes** (Deep Dig, Tethered, Escort the Intern).
+- **The Architect's controls in the browser:** the mode's rules, rounds and strokes are in, but
+  the architect's camera, stroke menu and budget bar come with a later build; until then the
+  architect watches with the spectator camera.
 - **Pigment pickups** that give colour back in Last Color Standing, and black-and-white levels
   as a general feature (the Palette slider only drains the colour of the picture).
 - **World sliders:** Absurdity only announces comedy events so far (what they do comes later),

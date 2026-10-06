@@ -52,7 +52,7 @@ export interface WeaponTuning {
 }
 
 /** `ls_sim::ModeKind` names, in mode index order (rule set codes). */
-export type ModeKindName = "PaintTheVoid" | "TeamBrawl" | "TheSqueeze" | "Heist" | "HotReactor" | "LastColorStanding";
+export type ModeKindName = "PaintTheVoid" | "TeamBrawl" | "TheSqueeze" | "Heist" | "HotReactor" | "LastColorStanding" | "TheArchitect";
 
 /**
  * A mode and its settings: `kind` plus one number per field of the mode's settings

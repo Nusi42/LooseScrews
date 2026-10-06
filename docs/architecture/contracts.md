@@ -38,7 +38,7 @@ tests are in [determinism.md](determinism.md). The contract part is the RNG stre
   | `ls_game::setup::RNG_STREAM_PICKUP_POINTS` | `0x4741_4d45_5f50_4b50` ("GAME_PKP") | Pickup point placement, `Pcg32::from_seed(world_seed, ..)` |
   | `ls_sim::modes::the_squeeze::RNG_STREAM_SQUEEZE` | `0x5349_4d5f_5351_5a45` ("SIM_SQZE") | The Squeeze: safe-zone centres, `Pcg32::new(mix64(match_seed ^ mix64(phase ^ stream)), ..)` per phase, and wall scrap, `Pcg32::new(mix64(match_seed ^ mix64(tick ^ stream.rotate_left(17))), ..)` per batch |
   | `ls_sim::director::RNG_STREAM_MOOD` | `0x5349_4d5f_4d4f_4f44` ("SIM_MOOD") | The comedy director and its events (`director::mood_rng(match_seed, tick, key)`): `Pcg32::new(mix64(match_seed ^ mix64(tick ^ key.rotate_left(17) ^ stream)), stream)`, a fresh generator per draw; key 0 the roll, 1 the mood drift, 2 the event choice, `(event index << 32) ^ k` the events (`EventCtx::rng`) |
-  | `ls_sim::behavior::RNG_STREAM_MODULES` | `0x5349_4d5f_4d4f_4453` ("SIM_MODS") | Weapon and gadget modules (`Ctx::rng(key)`): `Pcg32::new(mix64(match_seed ^ mix64(key ^ tick.rotate_left(32))), ..)`, a private stream per key and tick. Seed Grenade growth uses the same stream id keyed only by the match seed and the projectile id (no tick: `seed_grenade::growth`). M4 world physics draw the same way with fixed keys: cave-in shapes `instability::CAVE_IN_RNG_KEY` (`0x4341_5645_494e`, "CAVEIN"), pigment respawn points `pigment::PIGMENT_RNG_KEY` (`0x0050_4947_4d45_4e54`, "PIGMENT") |
+  | `ls_sim::behavior::RNG_STREAM_MODULES` | `0x5349_4d5f_4d4f_4453` ("SIM_MODS") | Weapon and gadget modules (`Ctx::rng(key)`): `Pcg32::new(mix64(match_seed ^ mix64(key ^ tick.rotate_left(32))), ..)`, a private stream per key and tick. Seed Grenade growth uses the same stream id keyed only by the match seed and the projectile id (no tick: `seed_grenade::growth`). M4 world physics draw the same way with fixed keys: cave-in shapes `instability::CAVE_IN_RNG_KEY` (`0x4341_5645_494e`, "CAVEIN"), pigment respawn points `pigment::PIGMENT_RNG_KEY` (`0x0050_4947_4d45_4e54`, "PIGMENT"); The Architect's strokes (M4 B4): the Absurdity+ event choice `the_architect::STROKE_EVENT_RNG_KEY` (`0x4152_4348_4556`, "ARCHEV") at the acceptance tick, the Instability+ cave-in `STROKE_CAVE_IN_RNG_KEY ^ stroke id` (`0x4152_4348_4356`, "ARCHCV") at the telegraph's end |
 
   The simulation's `match_seed` (`WorldConfig::seed`) is
   `mix64(world_seed ^ ls_game::setup::MATCH_SEED_SALT)` with the salt `0x4d41_5443_485f_5345`
@@ -255,6 +255,24 @@ pub trait TerrainQuery {
 | --- | --- | --- |
 | `PlaneTerrain` | Rock below a plane (`PlaneTerrain::floor(y, bounds)`), analytic raycast | Simple collision and flight tests |
 | `BoxRoomTerrain` | Open box room (`BoxRoomTerrain::centered(size)`), rock outside, edits applied with `apply(edit)` | Wall collisions, craters, `AddSphere` obstacles, paint logging (`paint_log()`) |
+| `ls_sim::AnalyticReshape<T>` | Any `SimTerrain` that answers `reshape_sample` analytically: Enclosure moves the surface `0.15 x delta` u into the open, Density adds 12 u-grid pillars; solid outside the bounds shrunk by 2 u | The Architect's tests and replay (no generator) |
+
+### Reshape sampling (`SimTerrain::reshape_sample`, M4)
+
+```rust
+fn reshape_sample(&self, slider: u8, delta: i8, points: &[Vec3], out: &mut Vec<f32>) -> bool;
+```
+
+The Architect's reshape strokes ask the terrain for the field its level's generator gives at
+`points` with world slider `slider` (`ls_sim::terrain::reshape_slider`, share-code order:
+Enclosure 0, Density 1, Verticality 2, Gravity Chaos 3, Palette 4, Absurdity 5, Instability 6)
+moved by `delta` (clamped to 0..=100). `false` with `out` empty: no generator (the default),
+Verticality (the level box would change) or no change after the clamp. `ls_game::GameTerrain`
+builds `Generator`s of the same seed, archetype and box with the slider moved (cached, at most
+`RESHAPE_CACHE` 4) and returns `Generator::sample`, so every peer would get the same values;
+only the server calls it (strokes are planned when `World::architect_action` accepts them,
+and only their ordinary `AddSphere` / `SubtractSphere` edits travel). `TerrainEdit` is
+unchanged.
 
 The real implementation (`ls-worldgen`'s chunk store) implements the same trait, so
 `ls-sim` code written against the test terrains runs unchanged against generated worlds.
@@ -477,14 +495,15 @@ sure it is the same data); details in [arsenal-framework.md](arsenal-framework.m
 | `ReplicatedKind` | Entity `kind` byte: Debris 0, WeaponPickup 1, UpgradePickup 2, GadgetPickup 3, ScrapPile 4, Wreck 5, Decoy 6, Ghost 7, DustCloud 8, Marker 9, PigmentPickup 10 (M4; state `[splash 0/1, side of a splash, 0, 0]`) |
 | `CueKind` | Cue `kind` byte (`ls_sim::behavior::CueKind`); M4 appends `CaveInWarning` 14 (`pos`, `value` = ticks until the rock comes down) and `Pigment` 15 (`source` took a pigment pickup at `pos`, `value` 1 for a splash) |
 | Data hash | `ls_sim::data_hash()`: FNV-1a over all embedded `data/` files sorted by path (path, 0, length, bytes without CR), plus `SIM_BEHAVIOR_VERSION` |
-| `ModeKind` index | Paint the Void 0, Team Brawl 1, The Squeeze 2, Heist 3, Hot Reactor 4, Last Color Standing 5 (append only): rule set code mode index, wire mode kind, `LobbyState::next_mode`; `ModeKind::id` is the module and directory mode id (`the_squeeze`; its rule set file is `squeeze.ron`) |
+| `ModeKind` index | Paint the Void 0, Team Brawl 1, The Squeeze 2, Heist 3, Hot Reactor 4, Last Color Standing 5, The Architect 6 (M4; append only): rule set code mode index, wire mode kind, `LobbyState::next_mode`; `ModeKind::id` is the module and directory mode id (`the_squeeze`; its rule set file is `squeeze.ron`) |
 | `Mutator` index | Instagib 0 (`Mutator::ALL` order, append only; rule set codes) |
 | `EventKind` index | Comedy events in `events::MODULES` order (append only): Bored level 0, Tax drone 1, Gravity coffee break 2, Rubber chickens 3, Cat paw 4, Tired announcer 5, Wrong genre 6, Gossip wall 7, Pizza delivery 8, Everything is cake 9, Duck parade 10, Hat rain 11, Customer survey 12, Disco inferno 13, Big head day 14, Moving day 15, Mimic pickups 16, Level hiccups 17; `MoodView::event`, rule set code event-ban bits; `EventKind::id` is the module, data file and `RuleSet::events` key |
 | `Mood` index | Calm 0, Bored 1, Grumpy 2, Giddy 3 (append only; `MoodView::mood`) |
 | `EventPhase` index | Announce 0, Active 1, Ending 2 (`MoodView::phase`) |
 | Side ids | Teams 0-3 (`MAX_TEAMS` 4); in free-for-all every ship its own side 0-253 (`MAX_FFA_SIDE`) in `ShipState::team`, `NetPlayer::team`, `NetModePlayer::side`, `ResultRow::side`, `Welcome::team`; 255 = no side (`mode::NO_SIDE`, `ls_net::mode::NONE`); ship flags keep only the 2 low bits |
-| Objective kinds | `mode::objective_kind`: `SAFE_ZONE` 0, `NEXT_ZONE` 1, `CORE` 2, `EXTRACTION` 3, `REACTOR` 4, `CUSTOM` 255; at most 8 per view (`MAX_OBJECTIVES`) |
-| Player mode flags | `mode::player_flags`: `ELIMINATED` 1, `SPECTATOR` 2, `CARRIER` 4 (replicated; `move_limits` reads them, so the predictor applies the carrier's limits) |
+| Objective kinds | `mode::objective_kind`: `SAFE_ZONE` 0, `NEXT_ZONE` 1, `CORE` 2, `EXTRACTION` 3, `REACTOR` 4, The Architect's `EXIT` 5 (`holder` = architect, `state` = rounds << 4 \| `ROUND_OVER` 1 \| `RUNNERS_WON` 2) and `STROKE` 6 (`state` = stroke kind \| phase << 4, phase 0 telegraph, 1 acting; `timer_end` = the phase's end), `CUSTOM` 255; at most 8 per view (`MAX_OBJECTIVES`) |
+| Player mode flags | `mode::player_flags`: `ELIMINATED` 1, `SPECTATOR` 2, `CARRIER` 4, `ARCHITECT` 8 and `FINISHED` 16 (M4, The Architect: the round's architect; a runner through the exit) (replicated; `move_limits` reads them, so the predictor applies the carrier's limits). `PlayerMode::is_out` (no ship in play, no respawn) is any of `ELIMINATED`, `SPECTATOR`, `ARCHITECT`, `FINISHED` |
+| Architect stroke kinds | `the_architect::StrokeKind` (`ArchitectAction::stroke`, append only): Enclosure+ 0, Enclosure- 1, Density+ 2, Gravity Chaos+ 3, Instability+ 4, Absurdity+ 5, Palette 6, Verticality 7; their dynamic wells use keys `0x7f00 \| stroke id` |
 | View flags | `mode::view_flags` (u16): `INSTAGIB` 1, `MONOCHROME` 2, `PAINT_SCORES` 4, `LIVES` 8, `METER` 16 |
 | Room and party codes | `R-` / `P-` + 6 Crockford base32 symbols; parsing ignores case and a missing prefix and reads O as 0, I/L as 1 (`ls-server` `rooms.rs`, `party.rs`) |
 

@@ -43,6 +43,7 @@ pub mod hot_reactor;
 pub mod last_color_standing;
 pub mod paint_the_void;
 pub mod team_brawl;
+pub mod the_architect;
 pub mod the_squeeze;
 
 use std::collections::BTreeMap;
@@ -364,7 +365,7 @@ pub struct ModeEntry {
 }
 
 /// Every mode, in [`ModeKind`] order.
-pub static MODULES: [ModeEntry; 6] = [
+pub static MODULES: [ModeEntry; 7] = [
     ModeEntry {
         kind: ModeKind::PaintTheVoid,
         module: &paint_the_void::PaintTheVoid,
@@ -388,6 +389,10 @@ pub static MODULES: [ModeEntry; 6] = [
     ModeEntry {
         kind: ModeKind::LastColorStanding,
         module: &last_color_standing::LastColorStanding,
+    },
+    ModeEntry {
+        kind: ModeKind::TheArchitect,
+        module: &the_architect::TheArchitect,
     },
 ];
 

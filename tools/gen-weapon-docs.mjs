@@ -700,6 +700,14 @@ const MODES = [
     about: "A black-and-white level; every pilot has a colour meter that each death drains. Out of colour, out of the match. A late-match stalemate drain makes sure it ends.",
     wins: () => "last pilot with colour, else most colour on time",
   },
+  {
+    tag: "TheArchitect",
+    name: "The Architect",
+    anchor: "the-architect",
+    about: "One pilot is the architect: no ship, a budget of strokes that reshape the level live (grow or open rock, pillars, a gravity well, a cave-in, a comedy event, an ink blackout). Everyone else runs from one end of the level to the exit at the other. The role rotates every round; runners never hurt each other.",
+    wins: (m) =>
+      `most points after min(players, ${m.max_rounds}) rounds of ${duration(m.round_secs)}: 1 per runner through the exit, 1 to the architect per runner who misses (equal: draw)`,
+  },
 ];
 
 /** What each mode setting means (`ModeRules` fields in `crates/ls-sim/src/ruleset.rs`) and how to print it. */
@@ -732,6 +740,30 @@ const MODE_FIELDS = {
   drain_per_kill: ["Colour each death drains", (v) => String(v)],
   stalemate_secs: ["Stalemate drain starts after", (v) => duration(v)],
   stalemate_drain_secs: ["Stalemate: 1 colour lost every (s)", (v) => num(v)],
+  round_secs: ["Round length", (v) => duration(v)],
+  round_results_secs: ["Round results between rounds (s)", (v) => num(v)],
+  max_rounds: ["Rounds (at most; fewer with fewer players)", (v) => String(v)],
+  runner_lives: ["Runner lives per round", (v) => String(v)],
+  budget_start: ["Architect's stroke budget at the round start", (v) => String(v)],
+  budget_per_sec: ["Budget gained per second", (v) => num(v)],
+  budget_max: ["Largest budget", (v) => String(v)],
+  stroke_cooldown_secs: ["Time between two strokes (s)", (v) => num(v)],
+  telegraph_secs: ["A stroke glows for (s) before it acts", (v) => num(v)],
+  max_strokes: ["Strokes acting at once", (v) => String(v)],
+  min_radius: ["Smallest stroke radius (u)", (v) => num(v)],
+  max_radius: ["Largest stroke radius (u)", (v) => num(v)],
+  keep_clear: ["Rock strokes keep this far from the exit and the start (u)", (v) => num(v)],
+  cost_enclosure_plus: ["Cost: Enclosure+ (grow rock)", (v) => String(v)],
+  cost_enclosure_minus: ["Cost: Enclosure- (open rock)", (v) => String(v)],
+  cost_density_plus: ["Cost: Density+ (pillars, floating rocks)", (v) => String(v)],
+  cost_gravity_plus: ["Cost: Gravity Chaos+ (a gravity well)", (v) => String(v)],
+  cost_instability_plus: ["Cost: Instability+ (a cave-in)", (v) => String(v)],
+  cost_absurdity_plus: ["Cost: Absurdity+ (a random comedy event)", (v) => String(v)],
+  cost_palette: ["Cost: Palette (ink blackout of the region)", (v) => String(v)],
+  cost_verticality: ["Cost: Verticality (the level gets bored and turns; once per round)", (v) => String(v)],
+  reshape_delta: ["Rock strokes reshape like the slider moved by", (v) => String(v)],
+  well_secs: ["Gravity Chaos+ well lasts (s)", (v) => num(v)],
+  palette_secs: ["Palette blackout lasts (s)", (v) => num(v)],
 };
 
 /** Mutators: name and what they change. */
@@ -741,7 +773,7 @@ const MUTATOR_TEXT = {
 };
 
 /** Rule set files in the order the reference lists them; others follow by name. */
-const RULESET_ORDER = ["paint_the_void", "team_brawl", "squeeze", "heist", "hot_reactor", "last_color_standing", "instagib_brawl", "duel", "sandbox_all_weapons"];
+const RULESET_ORDER = ["paint_the_void", "team_brawl", "squeeze", "heist", "hot_reactor", "last_color_standing", "the_architect", "instagib_brawl", "duel", "sandbox_all_weapons"];
 
 /** `300` -> "5 min", `90` -> "1 min 30 s", `45` -> "45 s". */
 export function duration(secs) {

@@ -20,6 +20,7 @@ change every number here.
 | **Heist** (`heist`) | [Heist](#heist) | 2 | 12 min | 3 s | – | first to 3 deliveries, else most deliveries on time (equal: draw) |
 | **Hot Reactor** (`hot_reactor`) | [Hot Reactor](#hot-reactor) | free-for-all | 15 min | 3 s | – | last pilot with lives (3 each), else most lives on time |
 | **Last Color Standing** (`last_color_standing`) | [Last Color Standing](#last-color-standing) | free-for-all | 15 min | 3 s | – | last pilot with colour, else most colour on time |
+| **The Architect** (`the_architect`) | [The Architect](#the-architect) | free-for-all | 15 min | 3 s | – | most points after min(players, 3) rounds of 4 min: 1 per runner through the exit, 1 to the architect per runner who misses (equal: draw) |
 | **Instagib Brawl** (`instagib_brawl`) | [Team Brawl](#team-brawl) | 2 | 10 min | 3 s | Instagib | first to the kill target (15 to 50, from the player count), else most kills on time (equal: draw) |
 | **Duel** (`duel`) | [Team Brawl](#team-brawl) | free-for-all | 5 min | 3 s | – | first to 10 kills, else most kills on time (equal: draw) |
 | **Sandbox - all weapons** (`sandbox_all_weapons`) | [Paint the Void](#paint-the-void) | 2 | 5 min | 3 s | – | most painted surface when the timer ends (equal: draw) |
@@ -130,6 +131,43 @@ A black-and-white level; every pilot has a colour meter that each death drains. 
 | `stalemate_secs` | 8 min | Stalemate drain starts after |
 | `stalemate_drain_secs` | 2 | Stalemate: 1 colour lost every (s) |
 
+## The Architect
+
+One pilot is the architect: no ship, a budget of strokes that reshape the level live (grow or open rock, pillars, a gravity well, a cave-in, a comedy event, an ink blackout). Everyone else runs from one end of the level to the exit at the other. The role rotates every round; runners never hurt each other.
+
+- **Teams the mode allows:** free-for-all.
+- **Built-in rule sets:** The Architect (`the_architect`).
+
+| Setting | The Architect | Meaning |
+| --- | --- | --- |
+| `teams` | free-for-all | Teams (0 = every pilot for themselves) |
+| `match_secs` | 15 min | Match length (the timer) |
+| `respawn_secs` | 3 | Wait after being destroyed (s) |
+| `round_secs` | 4 min | Round length |
+| `round_results_secs` | 6 | Round results between rounds (s) |
+| `max_rounds` | 3 | Rounds (at most; fewer with fewer players) |
+| `runner_lives` | 2 | Runner lives per round |
+| `budget_start` | 100 | Architect's stroke budget at the round start |
+| `budget_per_sec` | 4 | Budget gained per second |
+| `budget_max` | 250 | Largest budget |
+| `stroke_cooldown_secs` | 2 | Time between two strokes (s) |
+| `telegraph_secs` | 2 | A stroke glows for (s) before it acts |
+| `max_strokes` | 4 | Strokes acting at once |
+| `min_radius` | 12 | Smallest stroke radius (u) |
+| `max_radius` | 24 | Largest stroke radius (u) |
+| `keep_clear` | 6 | Rock strokes keep this far from the exit and the start (u) |
+| `cost_enclosure_plus` | 25 | Cost: Enclosure+ (grow rock) |
+| `cost_enclosure_minus` | 15 | Cost: Enclosure- (open rock) |
+| `cost_density_plus` | 20 | Cost: Density+ (pillars, floating rocks) |
+| `cost_gravity_plus` | 30 | Cost: Gravity Chaos+ (a gravity well) |
+| `cost_instability_plus` | 35 | Cost: Instability+ (a cave-in) |
+| `cost_absurdity_plus` | 60 | Cost: Absurdity+ (a random comedy event) |
+| `cost_palette` | 15 | Cost: Palette (ink blackout of the region) |
+| `cost_verticality` | 80 | Cost: Verticality (the level gets bored and turns; once per round) |
+| `reshape_delta` | 40 | Rock strokes reshape like the slider moved by |
+| `well_secs` | 30 | Gravity Chaos+ well lasts (s) |
+| `palette_secs` | 20 | Palette blackout lasts (s) |
+
 ## Mutators
 
 Mutators combine with any mode; a rule set lists them in `mutators`.
@@ -151,6 +189,7 @@ What you start with and what spawns at the level's pickup points. Weapon numbers
 | **Heist** | Scrap Laser, 3 Bolt Rockets, Shield | 25 of 27 weapons; Scrap Laser upgrades; Shield, Cloak, Decoy; scrap piles | 50% | Skitter, Tinker, Hauler, Tug |
 | **Hot Reactor** | Scrap Laser, 3 Bolt Rockets, Shield | 25 of 27 weapons; Scrap Laser upgrades; Shield, Cloak, Decoy; scrap piles | off | Skitter, Tinker, Hauler, Tug |
 | **Last Color Standing** | Scrap Laser, 3 Bolt Rockets, Shield | 25 of 27 weapons; Scrap Laser upgrades; Shield, Cloak, Decoy; scrap piles | off | Skitter, Tinker, Hauler, Tug |
+| **The Architect** | Scrap Laser, 4 Bolt Rockets | 25 of 27 weapons; Scrap Laser upgrades; Shield, Cloak, Decoy; scrap piles | off | Skitter, Tinker, Hauler, Tug |
 | **Instagib Brawl** | Railspike | none | 50% | Skitter, Tinker, Hauler, Tug |
 | **Duel** | Scrap Laser, 3 Bolt Rockets, Shield | 25 of 27 weapons; Scrap Laser upgrades; Shield, Cloak, Decoy; scrap piles | 50% | Skitter, Tinker, Hauler, Tug |
 | **Sandbox - all weapons** | Scrap Laser, Paint Thrower, 3 Bolt Rockets, Shield | 27 of 27 weapons; Scrap Laser upgrades; Shield, Cloak, Decoy; scrap piles | 50% | Skitter, Tinker, Hauler, Tug |

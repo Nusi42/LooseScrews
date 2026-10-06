@@ -107,6 +107,9 @@ pub mod mode_player_flags {
     /// The Architect (protocol 6): this player is the round's architect (no
     /// ship; `meter` is the stroke budget, clamped to 255).
     pub const ARCHITECT: u8 = 1 << 3;
+    /// Reached the goal (protocol 6; The Architect's exit): out of play
+    /// until the next round, without a death.
+    pub const FINISHED: u8 = 1 << 4;
 }
 
 /// [`NetMoodView::phase`] values (`ls_sim::EventPhase::index`; meaningless

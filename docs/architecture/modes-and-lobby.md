@@ -91,6 +91,7 @@ camera.
 | Heist (`heist.rs`) | 0, 2 | Core in a hard-rock knot in a vein chamber (generator version 3 Heist site, `MatchSetup::heist`); freed by craters, taken by touch; carrier at 75 % speed without boost; drop returns after 20 s; the chamber collapses for 30 s once the core is free; delivery to the own extraction zone (any zone in free-for-all) scores; first to 3 | objective 0 = core (`state` embedded/free/carried/dropped/respawning), 1-2 = extraction zones; carrier flag |
 | Hot Reactor (`hot_reactor.rs`) | 0 | 3 lives, lost only to a detonation in your hands; any hit by another ship or a ram passes the reactor (1 s immunity); 20 s fuse, +0.5x per other ship within 15 u; blast 60 damage over 10 u; last pilot with lives | objective `REACTOR` (holder, detonation tick in `timer_end`, fuse radius), `CARRIER` flag, lives |
 | Last Color Standing (`last_color_standing.rs`) | 0 | 100 colour, every death drains 34, out at 0; from 8 min every player loses 1 colour per 2 s; last pilot with colour | `meter` per player, `MONOCHROME | METER` view flags |
+| The Architect (`the_architect.rs`, M4) | 0 | `min(players, 3)` rounds of 4 min; the architect role rotates by join order (no ship, `ARCHITECT` flag); runners start at the team 0 end (`ls_game::setup` keeps team 0's spawns only), 2 lives per round, never hurt each other, score 1 through the exit at the team 1 end (the Heist site's extraction zone; `FINISHED` flag, out of play until the next round); every runner who misses scores 1 for the architect; the round ends when no runner is in play or on time, 6 s results, then the next round (everyone respawned). Strokes: `World::architect_action` validates role, round, kind, radius 12-24, range (in the level; rock strokes 6 u clear of exit and spawns), 2 s cooldown, 4 in flight, budget (100 + 4/s, max 250), Verticality once per round; a stroke is telegraphed 2 s, then acts in `World::step_architect` (stage 7): reshape strokes (at most 32 edits over 8 ticks, sampled from the generator with the slider moved, `SimTerrain::reshape_sample`; never over or sealing in a ship), a 30 s dynamic well, a cave-in of weak rubble, a forced random event or Bored level, a 20 s ink blackout. The director rolls nothing (`allows_event` vetoes); most points over the rounds wins | objective `EXIT` (holder = architect, rounds and round phase in `state`), `STROKE` per stroke (kind and phase), `ARCHITECT` / `FINISHED` flags, `meter` = budget (architect) or architect points (others), lives, `stage` = round |
 | Instagib (mutator, `mutators/instagib.rs`) | any | Railspike only, loadout-only and free to fire; an enemy's direct hit takes the whole hull through shields; no secondaries, gadgets or pickups (Paint the Void keeps its Paint Thrower); instant respawn | `INSTAGIB` view flag (HUD hides hull and energy) |
 
 Each module's docs list the decisions the plan left open (for example: a Hot Reactor holder
@@ -152,7 +153,8 @@ move with everyone else. The old room is dropped on an `ls-drop` thread.
 the first `team_brawl` entry (2 teams from 4 players, free-for-all below), else the next
 entry. Without `--playlist`: `--ruleset` is a one-entry playlist on one world; neither plays
 `DEFAULT_ROTATION` (Team Brawl from 4 players, then The Squeeze, Paint the Void, Hot Reactor,
-Heist, Last Color Standing on random worlds, or on `--code`'s world). A team Heist planned for
+Heist, Last Color Standing, The Architect (2-8 players, `default_max_players`) on random worlds,
+or on `--code`'s world). A team Heist planned for
 1-3 players plays free-for-all (`sim::heist_variant`). Hosting view of all this:
 [hosting-guide.md](../../userDocs/hosting-guide.md#lobby-match-end-and-rotation).
 
@@ -248,7 +250,8 @@ not to protocol messages.
 | Rooms, joins during a build, `--ruleset` alone | `crates/ls-server/tests/rooms.rs`, `sim.rs` `joins_during_the_next_match_build_are_welcomed_at_once` |
 | Lobby, rotation, warm-up rules | `ls-server` `lobby::tests`, `playlist::tests` |
 | Parties, duels, directory, server list | `crates/ls-server/tests/social.rs`, `party.rs`, `duel.rs`, `directory.rs` unit tests, `crates/ls-directory/tests/http.rs`, `web/src/ui/party.test.ts`, `web/src/net/ping.test.ts` |
-| Bots play every mode | `crates/ls-bots/tests/mode_matches.rs` (8 bots, full match to a result, release), `social.rs` |
+| Bots play every mode | `crates/ls-bots/tests/mode_matches.rs` (8 bots, full match to a result, release), `social.rs`; The Architect: `crates/ls-game/tests/architect_match.rs` (in-process runner bots on a lattice distance field and a scripted architect through the wire, release) until C5's bots |
+| The Architect's rules and strokes | `crates/ls-sim/src/modes/the_architect/tests.rs` (roles, rounds, exit, scoring, lives, every refusal, every stroke, the "never encloses a ship" property, replay golden `mode/the_architect` in `mood_replays.txt`), `ls-game` `server::tests::architect_strokes_are_validated_counted_and_telegraphed`, `terrain::tests::reshape_samples_the_generator_with_a_slider_moved` |
 | End to end | `node tools/e2e.mjs --playlist quick|default [--directory local]`; browser smoke phases `lobby` and `social` ([dev-guide.md](../dev-guide.md#12-browser-smoke-test)) |
 
 ## Known gaps

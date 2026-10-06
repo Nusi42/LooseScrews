@@ -965,6 +965,7 @@ fn mode_vectors() -> Vec<(&'static str, RuleSet)> {
             "mode: Last Color Standing",
             mode(ModeKind::LastColorStanding, &|_| {}),
         ),
+        ("mode: The Architect", mode(ModeKind::TheArchitect, &|_| {})),
         (
             "Team Brawl duel with instagib",
             mode(ModeKind::TeamBrawl, &|r| {

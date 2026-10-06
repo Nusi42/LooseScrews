@@ -355,6 +355,66 @@ mode_settings! {
     }
 }
 
+mode_settings! {
+    /// The Architect (M4): one architect without a ship moves the sliders
+    /// live (strokes within a budget) against the runners, who must reach
+    /// the exit; the role rotates by rounds; most points over the rounds
+    /// wins. See `crate::modes::the_architect`.
+    TheArchitectRules {
+        /// 0 (free-for-all only: runners never hurt each other, the mode
+        /// zeroes their damage).
+        teams: u8 = 0, steps 1, bits 3;
+        /// Hard limit; the rounds normally end the match first.
+        match_secs: f32 = 900.0, steps 1, bits 16;
+        respawn_secs: f32 = 3.0, steps 10, bits 8;
+        /// Length of a round (4 minutes).
+        round_secs: f32 = 240.0, steps 1, bits 10;
+        /// Round results between rounds.
+        round_results_secs: f32 = 6.0, steps 1, bits 6;
+        /// Rounds per match: `min(players, max_rounds)`.
+        max_rounds: u8 = 3, steps 1, bits 3;
+        /// Lives of a runner per round.
+        runner_lives: u8 = 2, steps 1, bits 3;
+        /// The architect's stroke budget at the start of a round...
+        budget_start: u16 = 100, steps 1, bits 8;
+        /// ...plus this per second...
+        budget_per_sec: f32 = 4.0, steps 4, bits 8;
+        /// ...up to this.
+        budget_max: u16 = 250, steps 1, bits 8;
+        /// Time between two strokes.
+        stroke_cooldown_secs: f32 = 2.0, steps 10, bits 7;
+        /// Every stroke is telegraphed this long before it acts.
+        telegraph_secs: f32 = 2.0, steps 10, bits 6;
+        /// Strokes in flight (telegraphed or acting) at once.
+        max_strokes: u8 = 4, steps 1, bits 3;
+        /// Stroke sphere radius range.
+        min_radius: f32 = 12.0, steps 1, bits 6;
+        max_radius: f32 = 24.0, steps 1, bits 6;
+        /// Rock-changing strokes keep this far (beyond their radius) from
+        /// the exit gate and the runners' spawn points.
+        keep_clear: f32 = 6.0, steps 1, bits 5;
+        /// Stroke costs: Enclosure+ (grow rock), Enclosure- (open a
+        /// region), Density+ (pillars and floating rocks), Gravity Chaos+
+        /// (a temporary well), Instability+ (a cave-in), Absurdity+ (a
+        /// random eligible event), Palette (ink blackout), Verticality
+        /// (Bored level, once per round).
+        cost_enclosure_plus: u8 = 25, steps 1, bits 8;
+        cost_enclosure_minus: u8 = 15, steps 1, bits 8;
+        cost_density_plus: u8 = 20, steps 1, bits 8;
+        cost_gravity_plus: u8 = 30, steps 1, bits 8;
+        cost_instability_plus: u8 = 35, steps 1, bits 8;
+        cost_absurdity_plus: u8 = 60, steps 1, bits 8;
+        cost_palette: u8 = 15, steps 1, bits 8;
+        cost_verticality: u8 = 80, steps 1, bits 8;
+        /// Slider change a reshape stroke samples the generator with.
+        reshape_delta: u8 = 40, steps 1, bits 7;
+        /// The Gravity Chaos+ well lasts this long...
+        well_secs: f32 = 30.0, steps 1, bits 7;
+        /// ...and the Palette blackout this long.
+        palette_secs: f32 = 20.0, steps 1, bits 7;
+    }
+}
+
 /// Game mode and its settings (one variant per mode module in
 /// `crate::modes`). The variant order is the mode index of rule set codes
 /// ([`ModeKind`]); append new modes at the end.
@@ -366,6 +426,7 @@ pub enum ModeRules {
     Heist(HeistRules),
     HotReactor(HotReactorRules),
     LastColorStanding(LastColorStandingRules),
+    TheArchitect(TheArchitectRules),
 }
 
 impl Default for ModeRules {
@@ -384,6 +445,7 @@ impl ModeRules {
             ModeKind::Heist => ModeRules::Heist(Default::default()),
             ModeKind::HotReactor => ModeRules::HotReactor(Default::default()),
             ModeKind::LastColorStanding => ModeRules::LastColorStanding(Default::default()),
+            ModeKind::TheArchitect => ModeRules::TheArchitect(Default::default()),
         }
     }
 
@@ -395,6 +457,7 @@ impl ModeRules {
             ModeRules::Heist(_) => ModeKind::Heist,
             ModeRules::HotReactor(_) => ModeKind::HotReactor,
             ModeRules::LastColorStanding(_) => ModeKind::LastColorStanding,
+            ModeRules::TheArchitect(_) => ModeKind::TheArchitect,
         }
     }
 
@@ -407,6 +470,7 @@ impl ModeRules {
             ModeRules::Heist(m) => m.fields(),
             ModeRules::HotReactor(m) => m.fields(),
             ModeRules::LastColorStanding(m) => m.fields(),
+            ModeRules::TheArchitect(m) => m.fields(),
         }
     }
 
@@ -419,6 +483,7 @@ impl ModeRules {
             ModeRules::Heist(m) => m.set_field(name, value),
             ModeRules::HotReactor(m) => m.set_field(name, value),
             ModeRules::LastColorStanding(m) => m.set_field(name, value),
+            ModeRules::TheArchitect(m) => m.set_field(name, value),
         }
     }
 
@@ -430,6 +495,7 @@ impl ModeRules {
             ModeRules::Heist(m) => (m.teams, m.match_secs, m.respawn_secs),
             ModeRules::HotReactor(m) => (m.teams, m.match_secs, m.respawn_secs),
             ModeRules::LastColorStanding(m) => (m.teams, m.match_secs, m.respawn_secs),
+            ModeRules::TheArchitect(m) => (m.teams, m.match_secs, m.respawn_secs),
         }
     }
 
@@ -449,11 +515,13 @@ impl ModeRules {
     }
 
     /// Lives per player (0 = unlimited): The Squeeze 1, Hot Reactor its
-    /// `lives` (lost only at detonation, by the mode), others unlimited.
+    /// `lives` (lost only at detonation, by the mode), The Architect its
+    /// `runner_lives` per round, others unlimited.
     pub fn lives(&self) -> u8 {
         match self {
             ModeRules::TheSqueeze(_) => 1,
             ModeRules::HotReactor(m) => m.lives,
+            ModeRules::TheArchitect(m) => m.runner_lives,
             _ => 0,
         }
     }
@@ -512,9 +580,10 @@ const HOT_REACTOR_RON: &str = include_str!("../../../data/rulesets/hot_reactor.r
 const LAST_COLOR_STANDING_RON: &str =
     include_str!("../../../data/rulesets/last_color_standing.ron");
 const HEIST_RON: &str = include_str!("../../../data/rulesets/heist.ron");
+const THE_ARCHITECT_RON: &str = include_str!("../../../data/rulesets/the_architect.ron");
 
 /// Embedded rule set files (data hash).
-pub const BUILTIN_RULESETS: [(&str, &str); 9] = [
+pub const BUILTIN_RULESETS: [(&str, &str); 10] = [
     ("rulesets/paint_the_void.ron", PAINT_THE_VOID_RON),
     ("rulesets/sandbox_all_weapons.ron", SANDBOX_ALL_WEAPONS_RON),
     ("rulesets/team_brawl.ron", TEAM_BRAWL_RON),
@@ -524,6 +593,7 @@ pub const BUILTIN_RULESETS: [(&str, &str); 9] = [
     ("rulesets/last_color_standing.ron", LAST_COLOR_STANDING_RON),
     ("rulesets/heist.ron", HEIST_RON),
     ("rulesets/squeeze.ron", SQUEEZE_RON),
+    ("rulesets/the_architect.ron", THE_ARCHITECT_RON),
 ];
 
 impl RuleSet {

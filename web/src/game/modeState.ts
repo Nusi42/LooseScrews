@@ -172,6 +172,12 @@ export const MODE_INFO: Readonly<Record<string, ModeInfo>> = {
     scoreLabel: "Score",
     stageLabel: "",
   },
+  the_architect: {
+    name: "The Architect",
+    blurb: "One player reshapes the level live; everyone else races for the exit. The architect role rotates every round.",
+    scoreLabel: "Points",
+    stageLabel: "Round",
+  },
 };
 
 /** Display data of a mode id (a generic entry for unknown ids). */

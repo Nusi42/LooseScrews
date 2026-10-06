@@ -156,6 +156,15 @@ pub struct ShipTuning {
     /// of the cruise or boost cap (M2 plan: 0.4).
     #[serde(default = "default_paint_sticky")]
     pub paint_sticky_speed: f32,
+    /// Mass for ship bumps (M4 Belt Up §3.8; 1 = the Tinker): two touching
+    /// ships split a bump's impulse by mass. Read only by the mode's
+    /// `ship_contact` hook.
+    #[serde(default = "default_mass")]
+    pub mass: f32,
+}
+
+fn default_mass() -> f32 {
+    1.0
 }
 
 fn default_paint_bounce() -> f32 {
@@ -302,6 +311,7 @@ mod tests {
             scrap_pass_rate: 0.0,
             paint_bounce_restitution: 0.9,
             paint_sticky_speed: 0.4,
+            mass: 1.0,
         }
     }
 
@@ -329,6 +339,15 @@ mod tests {
             assert_eq!(s.damage_mult, dmg, "{ty:?}");
             assert_eq!(s.hull_max, hull, "{ty:?}");
             assert_eq!(s.secondary_slots, slots, "{ty:?}");
+        }
+        // Bump masses (M4 §3.8).
+        for (ty, mass) in [
+            (ShipType::Skitter, 0.7),
+            (ShipType::Tinker, 1.0),
+            (ShipType::Hauler, 1.5),
+            (ShipType::Tug, 1.1),
+        ] {
+            assert_eq!(t.get(ty).mass, mass, "{ty:?}");
         }
         // Skitter: smallest hitbox, fastest turning; Hauler: largest hitbox.
         let r = |ty| t.get(ty).radius;

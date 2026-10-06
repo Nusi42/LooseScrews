@@ -20,6 +20,7 @@ change every number here.
 | **Heist** (`heist`) | [Heist](#heist) | 2 | 12 min | 3 s | – | first to 3 deliveries, else most deliveries on time (equal: draw) |
 | **Hot Reactor** (`hot_reactor`) | [Hot Reactor](#hot-reactor) | free-for-all | 15 min | 3 s | – | last pilot with lives (3 each), else most lives on time |
 | **Last Color Standing** (`last_color_standing`) | [Last Color Standing](#last-color-standing) | free-for-all | 15 min | 3 s | – | last pilot with colour, else most colour on time |
+| **Belt Up** (`belt_up`) | [Belt Up](#belt-up) | free-for-all | 15 min | 1 s | – | most points over 3 heats (10, 8, 6, 5, 4, 3, 2, 1 per place), then more heat wins, the better last place, the lower total time |
 | **Instagib Brawl** (`instagib_brawl`) | [Team Brawl](#team-brawl) | 2 | 10 min | 3 s | Instagib | first to the kill target (15 to 50, from the player count), else most kills on time (equal: draw) |
 | **Duel** (`duel`) | [Team Brawl](#team-brawl) | free-for-all | 5 min | 3 s | – | first to 10 kills, else most kills on time (equal: draw) |
 | **Sandbox - all weapons** (`sandbox_all_weapons`) | [Paint the Void](#paint-the-void) | 2 | 5 min | 3 s | – | most painted surface when the timer ends (equal: draw) |
@@ -130,6 +131,38 @@ A black-and-white level; every pilot has a colour meter that each death drains. 
 | `stalemate_secs` | 8 min | Stalemate drain starts after |
 | `stalemate_drain_secs` | 2 | Stalemate: 1 colour lost every (s) |
 
+## Belt Up
+
+A race on an asteroid belt level, in heats: one lap through the 8 gates in order, then a dive to the EXIT at the centre. The belt shields you from radiation but is full of rock and drifting boulders; open space is fast but burns hull. A destroyed ship goes back to its last gate with the hull it had there. Ships bump each other; kills don't score.
+
+- **Teams the mode allows:** free-for-all.
+- **Built-in rule sets:** Belt Up (`belt_up`).
+
+| Setting | Belt Up | Meaning |
+| --- | --- | --- |
+| `teams` | free-for-all | Teams (0 = every pilot for themselves) |
+| `match_secs` | 15 min | Match length (the timer) |
+| `respawn_secs` | 1 | Wait after being destroyed (s) |
+| `heats` | 3 | Heats per match |
+| `heat_limit_secs` | 3 min | A heat ends after (from the start lights going out) |
+| `finish_grace_secs` | 30 | ...or this long after the first racer finished (s) |
+| `lights_secs` | 3 | Start lights (ships held in their slots, s) |
+| `results_secs` | 8 | Heat results before the next heat (s) |
+| `hold_secs` | 4 | A destroyed ship is held at its gate until this long after its death (s) |
+| `hull_floor_percent` | 30% | Hull after a respawn: as at the last gate, at least |
+| `radiation_scale` | 1x | Radiation dose (x the level's law) |
+| `points_1` | 10 | Points for 1st place |
+| `points_2` | 8 | Points for 2nd place |
+| `points_3` | 6 | Points for 3rd place |
+| `points_4` | 5 | Points for 4th place |
+| `points_5` | 4 | Points for 5th place |
+| `points_6` | 3 | Points for 6th place |
+| `points_7` | 2 | Points for 7th place |
+| `points_8` | 1 | Points for 8th place |
+| `bump_restitution` | 1.2x | Bumps: touching ships part at this times their approach speed |
+| `bump_max_speed` | 10 | Bumps: at most this speed change per ship (u/s) |
+| `bump_cooldown_secs` | 0.3 | Bumps: once per pair in (s) |
+
 ## Mutators
 
 Mutators combine with any mode; a rule set lists them in `mutators`.
@@ -151,6 +184,7 @@ What you start with and what spawns at the level's pickup points. Weapon numbers
 | **Heist** | Scrap Laser, 3 Bolt Rockets, Shield | 25 of 27 weapons; Scrap Laser upgrades; Shield, Cloak, Decoy; scrap piles | 50% | Skitter, Tinker, Hauler, Tug |
 | **Hot Reactor** | Scrap Laser, 3 Bolt Rockets, Shield | 25 of 27 weapons; Scrap Laser upgrades; Shield, Cloak, Decoy; scrap piles | off | Skitter, Tinker, Hauler, Tug |
 | **Last Color Standing** | Scrap Laser, 3 Bolt Rockets, Shield | 25 of 27 weapons; Scrap Laser upgrades; Shield, Cloak, Decoy; scrap piles | off | Skitter, Tinker, Hauler, Tug |
+| **Belt Up** | Scrap Laser, 3 Bolt Rockets | 12 of 27 weapons; Scrap Laser upgrades; Shield, Cloak, Decoy; scrap piles | off | Skitter, Tinker, Hauler, Tug |
 | **Instagib Brawl** | Railspike | none | 50% | Skitter, Tinker, Hauler, Tug |
 | **Duel** | Scrap Laser, 3 Bolt Rockets, Shield | 25 of 27 weapons; Scrap Laser upgrades; Shield, Cloak, Decoy; scrap piles | 50% | Skitter, Tinker, Hauler, Tug |
 | **Sandbox - all weapons** | Scrap Laser, Paint Thrower, 3 Bolt Rockets, Shield | 27 of 27 weapons; Scrap Laser upgrades; Shield, Cloak, Decoy; scrap piles | 50% | Skitter, Tinker, Hauler, Tug |

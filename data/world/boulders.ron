@@ -1,0 +1,12 @@
+// Drifting boulders of asteroid belt levels (M4 Belt Up; docs/milestone-4-plan.md §3.8
+// "Drifting boulders"). Schema: `ls_sim::boulders::BoulderSettings`. Speeds in u/s.
+// Boulders orbit the belt axis on seeded circles (`ls_math::level::BoulderOrbit`, positions a
+// pure function of the tick); they are indestructible, absorb projectiles (ordnance detonates
+// on them without craters) and push ships aside, bouncing them off with `restitution`. A
+// contact faster than `damage_speed` (relative, along the contact normal) deals `damage`
+// (no kill credit). Changing a number changes the data hash (handshake).
+BoulderSettings(
+    damage: 8.0,
+    damage_speed: 8.0,
+    restitution: 0.3,
+)

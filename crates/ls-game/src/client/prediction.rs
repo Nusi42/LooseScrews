@@ -79,6 +79,10 @@ pub struct PredictEnv {
     /// The level's static wells (from the match setup) and the dynamic
     /// wells of the newest snapshot (`World::well_field`).
     pub wells: WellField,
+    /// The asteroid belt (belt levels): its drifting boulders push the ship
+    /// exactly as on the server (`ls_sim::boulders`; positions are a pure
+    /// function of the tick).
+    pub belt: Option<ls_math::level::BeltSite>,
 }
 
 impl Default for PredictEnv {
@@ -88,6 +92,7 @@ impl Default for PredictEnv {
             mood: None,
             up: Vec3::Y,
             wells: WellField::default(),
+            belt: None,
         }
     }
 }
@@ -210,6 +215,12 @@ impl Predictor {
             self.env.wells.dynamics = wells;
             self.wells_changed = true;
         }
+    }
+
+    /// The level's asteroid belt (set once per match): its drifting
+    /// boulders push the predicted ship as on the server.
+    pub fn set_belt(&mut self, belt: Option<ls_math::level::BeltSite>) {
+        self.env.belt = belt.filter(|b| !b.boulders.is_empty());
     }
 
     /// Mood, up and wells the prediction applies.
@@ -589,6 +600,18 @@ fn step_ship<T: TerrainQuery + ?Sized>(
     }
     if !fx.is_none() {
         ls_sim::director::apply_move_effects_after(s, &fx, pos_before);
+    }
+    // Drifting boulders (belt levels), as `World::step` pushes the ship
+    // after its movement.
+    if let Some(belt) = &env.belt {
+        ls_sim::boulders::push_sphere(
+            belt,
+            ls_sim::boulders::BoulderSettings::builtin(),
+            now,
+            &mut s.pos,
+            &mut s.vel,
+            tuning.radius,
+        );
     }
 }
 

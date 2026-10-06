@@ -837,6 +837,12 @@ Playlist(
 - `min_players` (default 1) and `max_players` (default 32): the entry is skipped while the
   player count is outside this range. If no entry fits, the playlist's first `team_brawl` entry is played (with 2
   teams from 4 players on, free-for-all below), otherwise the next entry anyway.
+- **Belt Up** entries (`rules: "belt_up"`) always race on asteroid belts: `Random` becomes a
+  random belt with the belt ranges, and a classic world (a `Code`, or `RandomSliders` without
+  `archetype: Belt`) is played as a belt with the same seed and sliders (the lobby shows the
+  rewritten code). A Belt Up entry takes at most 8 players (one per start slot; `max_players`
+  above 8 is lowered to 8). All heats of a race are one match. `--ruleset belt_up` without
+  `--code` races on a random belt. Belt Up is not in the default rotation yet.
 
 The server checks the whole playlist at startup and refuses to start if an entry is invalid.
 

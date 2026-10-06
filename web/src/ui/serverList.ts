@@ -22,6 +22,7 @@ export const MODE_NAMES: Readonly<Record<string, string>> = {
   heist: "Heist",
   hot_reactor: "Hot Reactor",
   last_color_standing: "Last Color Standing",
+  belt_up: "Belt Up",
 };
 
 export function modeName(id: string): string {

@@ -180,6 +180,18 @@ also asserts each system acted. Re-bless only the `world/` lines:
 LS_BLESS_MOOD_REPLAYS=1 cargo test -p ls-sim --lib world_replays
 ```
 
+Belt Up (M4, B6) adds `mode/belt_up` to the same fixture: one heat on a full-size test belt
+(`ls_sim::modes::belt_up::replay`: rock spheres off the racing circle, boulder lanes, three
+pickup points per wedge) with 8 autopiloted racers (`belt_up::pilot`): racers finish, a rammer
+bumps a slow racer, one racer hits boulders, a skimmer above the belt dies of radiation and
+respawns at its gate. Checked on native and wasm32 by
+`modes::belt_up::tests::replay_matches_the_fixture`; re-bless its line with
+`LS_BLESS_MOOD_REPLAYS=1 cargo test -p ls-sim --lib belt_up::tests::replay`. Bumps
+(`ship_contact`) and boulders act only in Belt Up and on belt levels, ship `mass` is read only by
+the bumps, so `REPLAY_GOLDEN_HASH` and the nine earlier per-mode replays are unchanged (the
+per-mode fixture gained the `rulesets/belt_up.ron` line, played on the golden arena without a
+belt).
+
 Every world physics system is inert when its input is off (no wells, Instability 0, no
 monochrome level, no belt, world +Y up) and the state hash then skips its state, so
 `REPLAY_GOLDEN_HASH` and the per-mode replays stay as they were, except Last Color Standing,

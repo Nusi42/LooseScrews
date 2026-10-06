@@ -213,6 +213,8 @@ export function modeTarget(m: ModeState): string {
       return "Last pilot with lives wins";
     case "last_color_standing":
       return "Last pilot with colour wins";
+    case "belt_up":
+      return "Most points over the heats wins";
     default:
       return "";
   }

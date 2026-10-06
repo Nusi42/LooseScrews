@@ -12,7 +12,12 @@
 //!   none), eventId ("" = none), phase, phaseId ("announce" | "active" |
 //!   "ending" | "" without an event), target (-1 = none), activeTick,
 //!   phaseEndTick, params: [8 bytes], up: [x, y, z]}` (the comedy
-//!   director's state and the level's up, `ls_net::NetMoodView`).
+//!   director's state and the level's up, `ls_net::NetMoodView`), and
+//!   `race` (Belt Up, `null` in other modes): `{heat, heats, phase,
+//!   phaseId ("lights" | "racing" | "results" | "done"), phaseEndTick,
+//!   racers: [{id, gates, nextGate (-1 once the lap is done), finishTick,
+//!   place, holdEndTick, slot}]}` (`ls_net::NetRaceView`; `gates` 8 = the
+//!   exit is open; ticks 0 = none).
 //! - [`lobby_json`]: `{phase ("lobby" | "countdown" | "match" |
 //!   "results"), phaseTicksLeft, roomCode, nextMode, nextModeId,
 //!   nextRuleset, nextShareCode, minPlayers, maxPlayers, teams, players:
@@ -21,7 +26,7 @@
 //!   rows: [{id, side, kills, deaths, score, name}]}` (best first).
 
 use ls_net::mode::{NONE, UNLIMITED_LIVES};
-use ls_net::{LobbyPhase, LobbyStateMsg, MatchResultsMsg, NetModeState, NetMoodView};
+use ls_net::{LobbyPhase, LobbyStateMsg, MatchResultsMsg, NetModeState, NetMoodView, NetRaceView};
 use ls_sim::ModeKind;
 
 use crate::json_str;
@@ -98,6 +103,41 @@ pub fn mode_state_json(m: &NetModeState) -> String {
         ("players", array(players)),
         ("objectives", array(objectives)),
         ("mood", mood_json(&m.mood)),
+        ("race", m.race.as_ref().map_or("null".into(), race_json)),
+    ])
+}
+
+/// Heat phase ids by `ls_net::race_phase` value.
+pub const RACE_PHASE_IDS: [&str; 4] = ["lights", "racing", "results", "done"];
+
+/// The `race` object of [`mode_state_json`] (Belt Up).
+pub fn race_json(r: &NetRaceView) -> String {
+    let racers = r.racers.iter().map(|x| {
+        let next = if x.gates < 8 {
+            ((x.slot as u32 + 1 + x.gates as u32) % 8).to_string()
+        } else {
+            "-1".into()
+        };
+        object(&[
+            ("id", x.id.to_string()),
+            ("gates", x.gates.to_string()),
+            ("nextGate", next),
+            ("finishTick", x.finish_tick.to_string()),
+            ("place", x.place.to_string()),
+            ("holdEndTick", x.hold_end_tick.to_string()),
+            ("slot", x.slot.to_string()),
+        ])
+    });
+    object(&[
+        ("heat", r.heat.to_string()),
+        ("heats", r.heats.to_string()),
+        ("phase", r.phase.to_string()),
+        (
+            "phaseId",
+            json_str(RACE_PHASE_IDS.get(r.phase as usize).copied().unwrap_or("")),
+        ),
+        ("phaseEndTick", r.phase_end_tick.to_string()),
+        ("racers", array(racers)),
     ])
 }
 
@@ -204,6 +244,47 @@ mod tests {
     use ls_net::{LobbyPlayer, NetModePlayer, NetObjective, ResultRow};
     #[cfg(target_arch = "wasm32")]
     use wasm_bindgen_test::wasm_bindgen_test as test;
+
+    #[test]
+    fn race_as_json() {
+        let m = NetModeState {
+            kind: ModeKind::BeltUp.index(),
+            race: Some(NetRaceView {
+                heat: 1,
+                heats: 3,
+                phase: ls_net::race_phase::RACING,
+                phase_end_tick: 9000,
+                racers: vec![
+                    ls_net::NetRacer {
+                        id: 2,
+                        gates: 3,
+                        finish_tick: 0,
+                        place: 1,
+                        hold_end_tick: 0,
+                        slot: 6,
+                    },
+                    ls_net::NetRacer {
+                        id: 4,
+                        gates: 8,
+                        finish_tick: 8800,
+                        place: 2,
+                        hold_end_tick: 8700,
+                        slot: 0,
+                    },
+                ],
+            }),
+            ..Default::default()
+        };
+        let j = mode_state_json(&m);
+        assert!(j.contains("\"mode\":\"belt_up\""), "{j}");
+        assert!(
+            j.ends_with(
+                "\"race\":{\"heat\":1,\"heats\":3,\"phase\":1,\"phaseId\":\"racing\",\"phaseEndTick\":9000,\"racers\":[{\"id\":2,\"gates\":3,\"nextGate\":2,\"finishTick\":0,\"place\":1,\"holdEndTick\":0,\"slot\":6},{\"id\":4,\"gates\":8,\"nextGate\":-1,\"finishTick\":8800,\"place\":2,\"holdEndTick\":8700,\"slot\":0}]}}"
+            ),
+            "{j}"
+        );
+        assert!(mode_state_json(&NetModeState::default()).ends_with("\"race\":null}"));
+    }
 
     #[test]
     fn mode_state_as_json() {

@@ -278,6 +278,11 @@ pub enum Command {
     AddWell(crate::gravity::DynamicWell),
     /// Removes the dynamic wells with this key.
     RemoveWell { key: u32 },
+    /// A new round of the same match (Belt Up's next heat): every
+    /// projectile (mines included) and dynamic well is removed, the pickups
+    /// are rolled again, and every ship in play respawns with its loadout
+    /// (the mode's `on_spawn` places it). Terrain, debris and scrap stay.
+    ResetRound,
 }
 
 /// Read-only world view for hooks.

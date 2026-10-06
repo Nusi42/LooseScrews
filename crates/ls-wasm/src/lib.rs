@@ -236,12 +236,19 @@ pub fn hello_packet_with(
     .map_err(|e| JsError::new(&e.to_string()))
 }
 
-/// Mode ids in `ModeKind` index order (`kind` of the mode state).
+/// Mode ids by `ModeKind` index (`kind` of the mode state; "" for an
+/// index this build has no mode for).
 #[wasm_bindgen(js_name = modeIds)]
 pub fn mode_ids() -> Vec<String> {
-    ls_sim::ModeKind::ALL
+    let n = ls_sim::ModeKind::ALL
         .iter()
-        .map(|k| k.id().to_string())
+        .map(|k| k.index() as usize + 1)
+        .max()
+        .unwrap_or(0);
+    (0..n)
+        .map(|i| {
+            ls_sim::ModeKind::from_index(i as u8).map_or(String::new(), |k| k.id().to_string())
+        })
         .collect()
 }
 

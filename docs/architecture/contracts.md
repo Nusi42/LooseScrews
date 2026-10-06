@@ -459,7 +459,36 @@ rectangular cross-section) or the cocoon sphere, `BeltSite::shelter_distance` (s
 for `d <= -4`, `2 x (1 + d / 4)` inside, `min(2 + 0.4 d, 16)` outside; times the mode's
 `radiation_scale` (default 1). Applied to living ships every tick as hull loss past shields and
 gadgets; at 0 hull the ship dies without a killer (`Killed { killer: None }`). No `Damaged`
-events (the HUD reads hull and `ls_sim::radiation::dose_rate`).
+events (the HUD reads hull and `ls_sim::radiation::dose_rate`). Belt Up scales it by its rule
+set's `radiation_scale` while racing and 0 in the start lights and heat results; clients get the
+same scale from `ClientSession::radiation_scale` (rule set plus the race phase).
+
+### Drifting boulders (`ls_sim::boulders`, `data/world/boulders.ron`)
+
+On levels with a belt only: `BeltSite::boulders` (`BoulderOrbit`, position a pure function of
+the tick, never replicated). After its movement (and the event movement effects) every living
+ship sphere is pushed out of the boulders it overlaps (`boulders::push_sphere`: onto the surface,
+the inward velocity relative to the boulder reversed with restitution 0.3); the client predictor
+applies the same push, so contacts never cost a correction. A contact faster than 8 u/s along the
+normal deals 8 damage without a killer (server only). Projectiles end on a boulder
+(`boulders::segment_hit`, before ship, entity and terrain hits when nearer): an `Impact` event
+without target, and ordnance with splash detonates (`Command::Splash`) without a crater.
+
+### Belt Up race (`ls_sim::modes::belt_up`)
+
+Racers in join order take slots `round(i x 8 / n)`, shifted by one wedge per heat. A gate counts
+when the racer's movement segment from its position at the end of the last tick crosses it
+prograde (`BeltSite::crosses_gate`, gates in order, own gate last; teleports count); after the
+lap the swept segment reaching the exit sphere finishes. A respawn after a death is at the slot
+pose of the last gate passed (`slots[(slot + gates) % 8]`), with the hull at that gate (at least
+`hull_floor_percent`). Bumps (`ModeModule::ship_contact`, pairs in id order after all ships
+moved): along `b - a`, approach `max((va - vb) . n, 1)`, relative speed change `(1 +
+bump_restitution) x approach`, split by mass, each ship's change capped at `bump_max_speed`,
+once per pair per `bump_cooldown_secs`. Belt pickup points (wedge-major) share their rolls per
+index in the wedge (`ModeModule::pickup_group`, key from the heat and the index, seeded on
+`RNG_STREAM_PICKUPS` with the match seed). `Command::ResetRound` (next heat) removes projectiles
+and dynamic wells, rolls the pickups again and respawns every ship in play. The race
+(`RaceState`) is part of the state hash.
 
 ## Game data ids (`ls-sim`)
 
@@ -477,14 +506,15 @@ sure it is the same data); details in [arsenal-framework.md](arsenal-framework.m
 | `ReplicatedKind` | Entity `kind` byte: Debris 0, WeaponPickup 1, UpgradePickup 2, GadgetPickup 3, ScrapPile 4, Wreck 5, Decoy 6, Ghost 7, DustCloud 8, Marker 9, PigmentPickup 10 (M4; state `[splash 0/1, side of a splash, 0, 0]`) |
 | `CueKind` | Cue `kind` byte (`ls_sim::behavior::CueKind`); M4 appends `CaveInWarning` 14 (`pos`, `value` = ticks until the rock comes down) and `Pigment` 15 (`source` took a pigment pickup at `pos`, `value` 1 for a splash) |
 | Data hash | `ls_sim::data_hash()`: FNV-1a over all embedded `data/` files sorted by path (path, 0, length, bytes without CR), plus `SIM_BEHAVIOR_VERSION` |
-| `ModeKind` index | Paint the Void 0, Team Brawl 1, The Squeeze 2, Heist 3, Hot Reactor 4, Last Color Standing 5 (append only): rule set code mode index, wire mode kind, `LobbyState::next_mode`; `ModeKind::id` is the module and directory mode id (`the_squeeze`; its rule set file is `squeeze.ron`) |
+| `ModeKind` index | Paint the Void 0, Team Brawl 1, The Squeeze 2, Heist 3, Hot Reactor 4, Last Color Standing 5, The Architect 6 (M4 B4), Belt Up 7 (M4 B6) (append only): rule set code mode index, wire mode kind, `LobbyState::next_mode`; `ModeKind::id` is the module and directory mode id (`the_squeeze`; its rule set file is `squeeze.ron`). Look modes up by index (`ModeKind::from_index`, `modes::module`), not by position in `ModeKind::ALL` |
+| Ship `mass` | `ShipTuning::mass` (`data/ships/*.ron`; Skitter 0.7, Tinker 1, Hauler 1.5, Tug 1.1; default 1): read only by Belt Up's bumps (`ModeModule::ship_contact`) |
 | `Mutator` index | Instagib 0 (`Mutator::ALL` order, append only; rule set codes) |
 | `EventKind` index | Comedy events in `events::MODULES` order (append only): Bored level 0, Tax drone 1, Gravity coffee break 2, Rubber chickens 3, Cat paw 4, Tired announcer 5, Wrong genre 6, Gossip wall 7, Pizza delivery 8, Everything is cake 9, Duck parade 10, Hat rain 11, Customer survey 12, Disco inferno 13, Big head day 14, Moving day 15, Mimic pickups 16, Level hiccups 17; `MoodView::event`, rule set code event-ban bits; `EventKind::id` is the module, data file and `RuleSet::events` key |
 | `Mood` index | Calm 0, Bored 1, Grumpy 2, Giddy 3 (append only; `MoodView::mood`) |
 | `EventPhase` index | Announce 0, Active 1, Ending 2 (`MoodView::phase`) |
 | Side ids | Teams 0-3 (`MAX_TEAMS` 4); in free-for-all every ship its own side 0-253 (`MAX_FFA_SIDE`) in `ShipState::team`, `NetPlayer::team`, `NetModePlayer::side`, `ResultRow::side`, `Welcome::team`; 255 = no side (`mode::NO_SIDE`, `ls_net::mode::NONE`); ship flags keep only the 2 low bits |
 | Objective kinds | `mode::objective_kind`: `SAFE_ZONE` 0, `NEXT_ZONE` 1, `CORE` 2, `EXTRACTION` 3, `REACTOR` 4, `CUSTOM` 255; at most 8 per view (`MAX_OBJECTIVES`) |
-| Player mode flags | `mode::player_flags`: `ELIMINATED` 1, `SPECTATOR` 2, `CARRIER` 4 (replicated; `move_limits` reads them, so the predictor applies the carrier's limits) |
+| Player mode flags | `mode::player_flags`: `ELIMINATED` 1, `SPECTATOR` 2, `CARRIER` 4, (8: The Architect's `ARCHITECT` on the wire), `HELD` 16 (Belt Up: start lights, death hold, heat results; `move_limits` gives speed scale 0 and no boost) (replicated; `move_limits` reads them, so the predictor applies the same limits) |
 | View flags | `mode::view_flags` (u16): `INSTAGIB` 1, `MONOCHROME` 2, `PAINT_SCORES` 4, `LIVES` 8, `METER` 16 |
 | Room and party codes | `R-` / `P-` + 6 Crockford base32 symbols; parsing ignores case and a missing prefix and reads O as 0, I/L as 1 (`ls-server` `rooms.rs`, `party.rs`) |
 

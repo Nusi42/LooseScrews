@@ -355,6 +355,73 @@ mode_settings! {
     }
 }
 
+mode_settings! {
+    /// Belt Up: a race of 2-8 ships around an asteroid belt, one lap through
+    /// 8 gates and a dive to the EXIT, over several heats (M4 plan §3.8).
+    BeltUpRules {
+        /// 0 (free-for-all only).
+        teams: u8 = 0, steps 1, bits 3;
+        /// Safety cap of the whole match (every heat normally ends first).
+        match_secs: f32 = 900.0, steps 1, bits 16;
+        /// A destroyed ship's wreck shows this long before it respawns at
+        /// its last gate (held there until `hold_secs` after the death).
+        respawn_secs: f32 = 1.0, steps 10, bits 8;
+        /// Heats per match.
+        heats: u8 = 3, steps 1, bits 3;
+        /// A heat ends this long after its start lights went out...
+        heat_limit_secs: f32 = 180.0, steps 1, bits 10;
+        /// ...or this long after the first racer finished (or when everyone
+        /// finished).
+        finish_grace_secs: f32 = 30.0, steps 1, bits 8;
+        /// Start lights: ships held in their slots.
+        lights_secs: f32 = 3.0, steps 10, bits 8;
+        /// Heat results before the next heat.
+        results_secs: f32 = 8.0, steps 10, bits 8;
+        /// A destroyed ship is held at its gate until this long after it died.
+        hold_secs: f32 = 4.0, steps 10, bits 8;
+        /// A respawn restores the hull the ship had at its last gate, at least
+        /// this share of full.
+        hull_floor_percent: u8 = 30, steps 1, bits 7;
+        /// Scale of the radiation dose (`data/world/radiation.ron`).
+        radiation_scale: f32 = 1.0, steps 20, bits 8;
+        /// Points per heat by place.
+        points_1: u8 = 10, steps 1, bits 6;
+        points_2: u8 = 8, steps 1, bits 6;
+        points_3: u8 = 6, steps 1, bits 6;
+        points_4: u8 = 5, steps 1, bits 6;
+        points_5: u8 = 4, steps 1, bits 6;
+        points_6: u8 = 3, steps 1, bits 6;
+        points_7: u8 = 2, steps 1, bits 6;
+        points_8: u8 = 1, steps 1, bits 6;
+        /// Bumps: overlapping ships separate at this times their approach speed...
+        bump_restitution: f32 = 1.2, steps 10, bits 5;
+        /// ...with at most this much speed per ship per bump (u/s)...
+        bump_max_speed: f32 = 10.0, steps 1, bits 6;
+        /// ...once per pair in this time.
+        bump_cooldown_secs: f32 = 0.3, steps 20, bits 5;
+    }
+}
+
+impl BeltUpRules {
+    /// Points for `place` (1-based; 0 past the table).
+    pub fn points(&self, place: usize) -> i32 {
+        let t = [
+            self.points_1,
+            self.points_2,
+            self.points_3,
+            self.points_4,
+            self.points_5,
+            self.points_6,
+            self.points_7,
+            self.points_8,
+        ];
+        place
+            .checked_sub(1)
+            .and_then(|i| t.get(i))
+            .map_or(0, |&p| p as i32)
+    }
+}
+
 /// Game mode and its settings (one variant per mode module in
 /// `crate::modes`). The variant order is the mode index of rule set codes
 /// ([`ModeKind`]); append new modes at the end.
@@ -366,6 +433,7 @@ pub enum ModeRules {
     Heist(HeistRules),
     HotReactor(HotReactorRules),
     LastColorStanding(LastColorStandingRules),
+    BeltUp(BeltUpRules),
 }
 
 impl Default for ModeRules {
@@ -384,6 +452,7 @@ impl ModeRules {
             ModeKind::Heist => ModeRules::Heist(Default::default()),
             ModeKind::HotReactor => ModeRules::HotReactor(Default::default()),
             ModeKind::LastColorStanding => ModeRules::LastColorStanding(Default::default()),
+            ModeKind::BeltUp => ModeRules::BeltUp(Default::default()),
         }
     }
 
@@ -395,6 +464,7 @@ impl ModeRules {
             ModeRules::Heist(_) => ModeKind::Heist,
             ModeRules::HotReactor(_) => ModeKind::HotReactor,
             ModeRules::LastColorStanding(_) => ModeKind::LastColorStanding,
+            ModeRules::BeltUp(_) => ModeKind::BeltUp,
         }
     }
 
@@ -407,6 +477,7 @@ impl ModeRules {
             ModeRules::Heist(m) => m.fields(),
             ModeRules::HotReactor(m) => m.fields(),
             ModeRules::LastColorStanding(m) => m.fields(),
+            ModeRules::BeltUp(m) => m.fields(),
         }
     }
 
@@ -419,6 +490,7 @@ impl ModeRules {
             ModeRules::Heist(m) => m.set_field(name, value),
             ModeRules::HotReactor(m) => m.set_field(name, value),
             ModeRules::LastColorStanding(m) => m.set_field(name, value),
+            ModeRules::BeltUp(m) => m.set_field(name, value),
         }
     }
 
@@ -430,6 +502,7 @@ impl ModeRules {
             ModeRules::Heist(m) => (m.teams, m.match_secs, m.respawn_secs),
             ModeRules::HotReactor(m) => (m.teams, m.match_secs, m.respawn_secs),
             ModeRules::LastColorStanding(m) => (m.teams, m.match_secs, m.respawn_secs),
+            ModeRules::BeltUp(m) => (m.teams, m.match_secs, m.respawn_secs),
         }
     }
 
@@ -512,9 +585,10 @@ const HOT_REACTOR_RON: &str = include_str!("../../../data/rulesets/hot_reactor.r
 const LAST_COLOR_STANDING_RON: &str =
     include_str!("../../../data/rulesets/last_color_standing.ron");
 const HEIST_RON: &str = include_str!("../../../data/rulesets/heist.ron");
+const BELT_UP_RON: &str = include_str!("../../../data/rulesets/belt_up.ron");
 
 /// Embedded rule set files (data hash).
-pub const BUILTIN_RULESETS: [(&str, &str); 9] = [
+pub const BUILTIN_RULESETS: [(&str, &str); 10] = [
     ("rulesets/paint_the_void.ron", PAINT_THE_VOID_RON),
     ("rulesets/sandbox_all_weapons.ron", SANDBOX_ALL_WEAPONS_RON),
     ("rulesets/team_brawl.ron", TEAM_BRAWL_RON),
@@ -524,6 +598,7 @@ pub const BUILTIN_RULESETS: [(&str, &str); 9] = [
     ("rulesets/last_color_standing.ron", LAST_COLOR_STANDING_RON),
     ("rulesets/heist.ron", HEIST_RON),
     ("rulesets/squeeze.ron", SQUEEZE_RON),
+    ("rulesets/belt_up.ron", BELT_UP_RON),
 ];
 
 impl RuleSet {

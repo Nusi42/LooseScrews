@@ -20,6 +20,8 @@ export const PLAYER_FLAG = {
   eliminated: 1 << 0,
   spectator: 1 << 1,
   carrier: 1 << 2,
+  /** Belt Up: held in place (start lights, a death hold at a gate, heat results). */
+  held: 1 << 4,
 } as const;
 
 /** `ls_sim::mode::view_flags`. */
@@ -57,6 +59,38 @@ export interface Objective {
   pos: Vec3;
 }
 
+/** Belt Up's heat phases (`ls_sim::modes::belt_up::heat_phase`). */
+export type RacePhase = "lights" | "racing" | "results" | "done";
+
+/** One racer of a Belt Up heat (`ls_net::NetRacer`). */
+export interface Racer {
+  id: number;
+  /** Gates passed this heat (8 = the lap is done: the exit is open). */
+  gates: number;
+  /** Next gate (0-7), -1 once the lap is done. */
+  nextGate: number;
+  /** Tick it reached the exit, 0 = not finished. */
+  finishTick: number;
+  /** Live place (final after the heat), 0 = none. */
+  place: number;
+  /** Held at a gate until this tick after a death, 0 = not held. */
+  holdEndTick: number;
+  /** Start slot this heat (0-7). */
+  slot: number;
+}
+
+/** Belt Up's race (`ls_net::NetRaceView`; null in other modes). */
+export interface RaceState {
+  /** Current heat (0-based) of `heats`. */
+  heat: number;
+  heats: number;
+  phase: RacePhase;
+  /** Tick the phase ends (start lights, heat limit, results). */
+  phaseEndTick: number;
+  /** Racers of this heat, by id. */
+  racers: Racer[];
+}
+
 export interface ModeState {
   kind: number;
   /** Mode id (`team_brawl`, ...); "" when unknown. */
@@ -76,6 +110,8 @@ export interface ModeState {
   /** Best first. */
   players: ModePlayer[];
   objectives: Objective[];
+  /** Belt Up's race, null in other modes. */
+  race: RaceState | null;
 }
 
 export type LobbyPhase = "lobby" | "countdown" | "match" | "results";
@@ -172,6 +208,12 @@ export const MODE_INFO: Readonly<Record<string, ModeInfo>> = {
     scoreLabel: "Score",
     stageLabel: "",
   },
+  belt_up: {
+    name: "Belt Up",
+    blurb: "Race one lap round the asteroid belt and dive to the EXIT. The belt shields you from radiation; open space is fast but burns hull.",
+    scoreLabel: "Points",
+    stageLabel: "Heat",
+  },
 };
 
 /** Display data of a mode id (a generic entry for unknown ids). */
@@ -229,6 +271,34 @@ export function emptyModeState(): ModeState {
     teamScores: [],
     players: [],
     objectives: [],
+    race: null,
+  };
+}
+
+const RACE_PHASES: readonly RacePhase[] = ["lights", "racing", "results", "done"];
+
+/** The `race` object of `Game.modeState()` (null when absent or broken). */
+export function parseRace(v: unknown): RaceState | null {
+  if (v === null || typeof v !== "object" || Array.isArray(v)) return null;
+  const r = v as Record<string, unknown>;
+  const phase = RACE_PHASES[num(r["phase"], -1)] ?? "racing";
+  return {
+    heat: num(r["heat"]),
+    heats: num(r["heats"], 1),
+    phase,
+    phaseEndTick: num(r["phaseEndTick"]),
+    racers: list(r["racers"]).map((x) => {
+      const o = obj(x);
+      return {
+        id: num(o["id"]),
+        gates: num(o["gates"]),
+        nextGate: num(o["nextGate"], -1),
+        finishTick: num(o["finishTick"]),
+        place: num(o["place"]),
+        holdEndTick: num(o["holdEndTick"]),
+        slot: num(o["slot"]),
+      };
+    }),
   };
 }
 
@@ -274,6 +344,7 @@ export function parseModeState(text: string | undefined | null): ModeState {
         pos: { x: num(pos[0]), y: num(pos[1]), z: num(pos[2]) },
       };
     }),
+    race: parseRace(j["race"]),
   };
 }
 

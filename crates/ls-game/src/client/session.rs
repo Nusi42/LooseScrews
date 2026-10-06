@@ -203,6 +203,7 @@ impl ClientSession {
             setup.gravity_chaos,
             ls_sim::GravitySettings::builtin(),
         ));
+        predictor.set_belt(setup.belt.clone());
         predictor.set_spawn_poses(
             setup
                 .spawns
@@ -368,6 +369,43 @@ impl ClientSession {
     /// orbits), as the server's match setup has it.
     pub fn belt(&self) -> Option<&ls_math::level::BeltSite> {
         self.belt.as_ref()
+    }
+
+    /// Belt Up's race of the newest snapshot (protocol 6; `None` in other
+    /// modes): heat and phase, and per racer its gates, place, finish and
+    /// hold, with wire ids as players.
+    pub fn race(&self) -> Option<ls_sim::modes::belt_up::RaceView> {
+        self.mode().race.as_ref().map(crate::mode::race_from_net)
+    }
+
+    /// Scale of the radiation dose now (the server's `radiation_scale` mode
+    /// hook): Belt Up's rule set setting while racing, 0 in the start lights
+    /// and the heat results; 1 in every other mode.
+    pub fn radiation_scale(&self) -> f32 {
+        match &self.rules.mode {
+            ls_sim::ModeRules::BeltUp(r) => {
+                let phase = self
+                    .mode()
+                    .race
+                    .as_ref()
+                    .map_or(ls_net::race_phase::LIGHTS, |x| x.phase);
+                ls_sim::modes::belt_up::radiation_scale_in(r, phase)
+            }
+            _ => 1.0,
+        }
+    }
+
+    /// Radiation dose rate (hull/s, scaled as on the server) at `p`; 0 on
+    /// classic levels.
+    pub fn dose_rate_at(&self, p: ls_math::Vec3) -> f32 {
+        let Some(b) = &self.belt else {
+            return 0.0;
+        };
+        let scale = self.radiation_scale();
+        if scale <= 0.0 {
+            return 0.0;
+        }
+        ls_sim::radiation::dose_rate(b, ls_sim::radiation::RadiationSettings::builtin(), p) * scale
     }
 
     /// The comedy director's state and the level's up of the newest

@@ -26,6 +26,8 @@
 //! | `terrain_shell` | start of every tick: the solid shell the terrain adds (The Squeeze) | [`ModeState`] + tick |
 //! | `allows_event` | the comedy director rolls: may this event run now? (vetoes) | [`ModeRef`] + the event |
 //! | `leader` | the director's target for leader events (Tax drone, Customer survey) | [`ModeRef`] |
+//! | `ship_contact` | two living ships' hull spheres overlap after movement (Belt Up bumps; only if `wants_ship_contact`) | [`ModeMut`] + both ships |
+//! | `pickup_group` | a pickup point rolls new content: points of one group share their rolls (Belt Up: identical pickups in every wedge) | [`ModeState`] + the point |
 //!
 //! A module that does not override a hook gets the generic behaviour of
 //! this file ("generic fallback", like M2's weapon stubs): kills score for
@@ -38,6 +40,7 @@
 //! debris, terrain edits, cues), exactly like weapon hooks. All hooks
 //! change [`ModeState`] directly. Determinism rules apply (`CLAUDE.md`).
 
+pub mod belt_up;
 pub mod heist;
 pub mod hot_reactor;
 pub mod last_color_standing;
@@ -219,6 +222,19 @@ impl MoveLimits {
     }
 }
 
+/// One ship of a contact ([`ModeModule::ship_contact`]): where it is, how
+/// it moves and how heavy it is.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ContactShip {
+    pub player: PlayerId,
+    pub pos: Vec3,
+    pub vel: Vec3,
+    /// Hull sphere radius.
+    pub radius: f32,
+    /// `ShipTuning::mass`.
+    pub mass: f32,
+}
+
 /// The hooks of one game mode (see the module docs for when each runs).
 pub trait ModeModule: Send + Sync + Debug {
     fn kind(&self) -> ModeKind;
@@ -354,6 +370,33 @@ pub trait ModeModule: Send + Sync + Debug {
     fn leader(&self, m: &ModeRef) -> Option<PlayerId> {
         default_leader(m)
     }
+
+    /// Whether the world looks for touching ships every tick and calls
+    /// [`ModeModule::ship_contact`] (default no: ships pass through each
+    /// other, and the world skips the pair test).
+    fn wants_ship_contact(&self) -> bool {
+        false
+    }
+
+    /// Two living ships' hull spheres overlap after this tick's movement
+    /// (pairs in id order, `a` the lower id): the velocity changes to apply
+    /// to `a` and `b` (`None`: nothing). Belt Up's bumps.
+    fn ship_contact(
+        &self,
+        _m: &mut ModeMut,
+        _a: &ContactShip,
+        _b: &ContactShip,
+    ) -> Option<(Vec3, Vec3)> {
+        None
+    }
+
+    /// The group of pickup point `point` (of the level's
+    /// `MatchSetup::pickup_points`): points with the same group key roll
+    /// the same content (seeded by the key, ignoring per-map caps); `None`
+    /// (the default) rolls each point on the match's pickup stream.
+    fn pickup_group(&self, _state: &ModeState, _setup: &MatchSetup, _point: usize) -> Option<u64> {
+        None
+    }
 }
 
 /// One registered mode.
@@ -364,7 +407,7 @@ pub struct ModeEntry {
 }
 
 /// Every mode, in [`ModeKind`] order.
-pub static MODULES: [ModeEntry; 6] = [
+pub static MODULES: [ModeEntry; 7] = [
     ModeEntry {
         kind: ModeKind::PaintTheVoid,
         module: &paint_the_void::PaintTheVoid,
@@ -389,11 +432,19 @@ pub static MODULES: [ModeEntry; 6] = [
         kind: ModeKind::LastColorStanding,
         module: &last_color_standing::LastColorStanding,
     },
+    ModeEntry {
+        kind: ModeKind::BeltUp,
+        module: &belt_up::BeltUp,
+    },
 ];
 
 /// The module of a mode.
 pub fn module(kind: ModeKind) -> &'static dyn ModeModule {
-    MODULES[kind.index() as usize].module
+    MODULES
+        .iter()
+        .find(|e| e.kind == kind)
+        .expect("every mode is registered")
+        .module
 }
 
 // ----- generic fallback ------------------------------------------------------
@@ -609,6 +660,7 @@ pub(crate) fn base_view(
             .collect(),
         flags,
         mood: crate::director::MoodView::default(),
+        race: None,
     }
 }
 

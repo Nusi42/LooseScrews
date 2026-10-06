@@ -11,3 +11,4 @@ rulesets/hot_reactor.ron 0xc615541e095b8966
 rulesets/last_color_standing.ron 0x2a0a9d5371f2e972
 rulesets/heist.ron 0x9bf29897dfd856eb
 rulesets/squeeze.ron 0x65a96dbc63f30544
+rulesets/belt_up.ron 0xb50501b8346dc861

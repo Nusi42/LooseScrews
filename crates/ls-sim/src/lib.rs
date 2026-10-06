@@ -34,6 +34,7 @@
 //! This crate is deterministic: follow the rules in `CLAUDE.md`.
 
 pub mod behavior;
+pub mod boulders;
 pub mod data;
 pub mod director;
 pub mod entity;
@@ -78,9 +79,10 @@ pub use mode::{
 pub use modes::heist::HeistLevel;
 pub use modes::MoveLimits;
 pub use ruleset::{
-    Availability, EventRule, HeistRules, HotReactorRules, LastColorStandingRules, Loadout,
-    ModeField, ModeRules, Mutator, PaintTheVoidRules, PickupKind, PickupRule, PigmentPickupRule,
-    ResolvedRules, RuleSet, ScrapPickupRule, TeamBrawlRules, TheSqueezeRules, WeaponTuning,
+    Availability, BeltUpRules, EventRule, HeistRules, HotReactorRules, LastColorStandingRules,
+    Loadout, ModeField, ModeRules, Mutator, PaintTheVoidRules, PickupKind, PickupRule,
+    PigmentPickupRule, ResolvedRules, RuleSet, ScrapPickupRule, TeamBrawlRules, TheSqueezeRules,
+    WeaponTuning,
 };
 pub use ship::{
     simulate_movement, simulate_movement_env, ChargeState, MoveEnv, MovementReport, PlayerId,

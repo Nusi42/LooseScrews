@@ -6,3 +6,4 @@ world/gravity 0x930876b7c1dfa16e
 world/cave_in 0xca8426a8a830b6bc
 world/pigment 0xc68e3c3054f034f6
 world/radiation 0x813873808786976f
+mode/belt_up 0x070d095dc9d64f85

@@ -39,17 +39,22 @@ pub enum ModeKind {
     Heist = 3,
     HotReactor = 4,
     LastColorStanding = 5,
+    /// Belt Up (M4 §3.8). Index 7: 6 is The Architect's (package B4).
+    BeltUp = 7,
 }
 
 impl ModeKind {
-    /// Every mode in index order.
-    pub const ALL: [ModeKind; 6] = [
+    /// Every mode in index order (indices may have gaps while a mode is
+    /// being built in parallel: look modes up by [`ModeKind::index`], not
+    /// by position).
+    pub const ALL: [ModeKind; 7] = [
         ModeKind::PaintTheVoid,
         ModeKind::TeamBrawl,
         ModeKind::TheSqueeze,
         ModeKind::Heist,
         ModeKind::HotReactor,
         ModeKind::LastColorStanding,
+        ModeKind::BeltUp,
     ];
 
     /// Stable index (rule set codes, wire).
@@ -58,7 +63,7 @@ impl ModeKind {
     }
 
     pub fn from_index(i: u8) -> Option<ModeKind> {
-        ModeKind::ALL.get(i as usize).copied()
+        ModeKind::ALL.iter().copied().find(|k| k.index() == i)
     }
 
     /// Module id (`crates/ls-sim/src/modes/<id>.rs`, `data/rulesets/<id>.ron`).
@@ -70,6 +75,7 @@ impl ModeKind {
             ModeKind::Heist => "heist",
             ModeKind::HotReactor => "hot_reactor",
             ModeKind::LastColorStanding => "last_color_standing",
+            ModeKind::BeltUp => "belt_up",
         }
     }
 
@@ -82,6 +88,7 @@ impl ModeKind {
             ModeKind::Heist => "rulesets/heist.ron",
             ModeKind::HotReactor => "rulesets/hot_reactor.ron",
             ModeKind::LastColorStanding => "rulesets/last_color_standing.ron",
+            ModeKind::BeltUp => "rulesets/belt_up.ron",
         }
     }
 
@@ -94,6 +101,7 @@ impl ModeKind {
             ModeKind::Heist => "Heist",
             ModeKind::HotReactor => "Hot Reactor",
             ModeKind::LastColorStanding => "Last Color Standing",
+            ModeKind::BeltUp => "Belt Up",
         }
     }
 }
@@ -139,6 +147,10 @@ pub mod player_flags {
     pub const SPECTATOR: u8 = 1 << 1;
     /// Carries an objective (Heist core, Hot Reactor).
     pub const CARRIER: u8 = 1 << 2;
+    /// Held in place (Belt Up: start lights, the death hold at a gate, heat
+    /// results): the mode's `move_limits` stop the ship (bit 3 is The
+    /// Architect's on the wire).
+    pub const HELD: u8 = 1 << 4;
 }
 
 /// [`ModeView::flags`] bits: how clients present the mode.
@@ -269,6 +281,9 @@ pub struct ModeState {
     pub vars: [i64; 4],
     /// [`view_flags`] bits.
     pub flags: u16,
+    /// Belt Up's race (heats, racers, gates; `None` in other modes).
+    #[serde(default)]
+    pub race: Option<crate::modes::belt_up::RaceState>,
 }
 
 impl ModeState {
@@ -287,6 +302,7 @@ impl ModeState {
             objectives: Vec::new(),
             vars: [0; 4],
             flags: 0,
+            race: None,
         }
     }
 
@@ -416,6 +432,9 @@ pub struct ModeView {
     /// The comedy director: mood and running event (protocol 6).
     #[serde(default)]
     pub mood: crate::director::MoodView,
+    /// Belt Up's race (protocol 6 race section; `None` in other modes).
+    #[serde(default)]
+    pub race: Option<crate::modes::belt_up::RaceView>,
 }
 
 impl ModeView {
@@ -499,10 +518,11 @@ mod tests {
 
     #[test]
     fn kinds_round_trip() {
-        for (i, k) in ModeKind::ALL.iter().enumerate() {
-            assert_eq!(k.index() as usize, i);
-            assert_eq!(ModeKind::from_index(i as u8), Some(*k));
+        for k in ModeKind::ALL {
+            assert_eq!(ModeKind::from_index(k.index()), Some(k));
         }
         assert_eq!(ModeKind::from_index(6), None);
+        assert_eq!(ModeKind::from_index(7), Some(ModeKind::BeltUp));
+        assert_eq!(ModeKind::from_index(8), None);
     }
 }

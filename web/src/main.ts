@@ -94,6 +94,7 @@ import { audioEngine, MatchAudio } from "./audio/index.ts";
 import { wantsWorldFx, WorldVisuals } from "./game/worldFx.ts";
 import type { PointLight } from "./renderer/lights.ts";
 import { showAudioDemo, wantsAudioDemo } from "./audio/demo.ts";
+import { ArchitectClient } from "./game/architect/index.ts";
 
 /** Largest frame time passed to the simulation; longer stalls (tab switch) are clamped. */
 const MAX_FRAME_DT = 0.1;
@@ -324,6 +325,8 @@ function runGame(
     // World visuals (M4 B5): gravity wells, cave-ins, pigment, the level's mood; `?worldfx=off` skips them.
     const world = new WorldVisuals(particles, wantsWorldFx(location), audioEngine());
     let worldShake = 0;
+    // The Architect (M4 C4): the architect's god camera and strokes, the exit and stroke looks, its HUD.
+    const architect = new ArchitectClient(ui, game, (p) => (session.link?.isOpen ? (session.link.send(p, false), true) : false), particles, audioEngine());
     let mono = 0;
     let shipBayOpen = false;
     let shipError = "";
@@ -384,6 +387,8 @@ function runGame(
       lobby.dispose();
       audio.dispose();
       world.dispose();
+      architect.dispose();
+      renderer.cutaway = null;
       delete ui.dataset["stage"];
       delete ui.dataset["matches"];
       overlay.dispose();
@@ -461,6 +466,7 @@ function runGame(
         charging.forget();
         modeVfx?.reset();
         world.reset();
+        architect.reset();
         audio.newMatch(game.shareCode);
         mono = 0;
         particles?.clear();
@@ -502,7 +508,25 @@ function runGame(
       const shipUp = r.pose ? q.up(r.pose.orientation) : q.up(camera.current.orientation);
       const ride = guided ? eyeballPose(guided, shipUp) : null;
       const cine = cinematic.update(dt, game, flow.showLobby && !state.pointerLocked && !flow.spectating && !guided, camera.current, renderer.aspect);
-      if (flow.spectating) {
+      const s0 = session.controls.settings;
+      const arch = architect.update({
+        dt,
+        time,
+        nowTick: game.nowTick?.() ?? 0,
+        input: state,
+        mode: r.mode,
+        own: game.player,
+        names,
+        bounds: game.bounds(),
+        ships: r.ships,
+        lookScale: s0.lookSensitivity,
+        invertY: s0.invertY,
+        start: camera.current,
+        shareCode: game.shareCode,
+        quiet: flow.showResults || flow.showLobby,
+      });
+      renderer.cutaway = arch.cutaway;
+      if (flow.spectating && !arch.amArchitect) {
         spectator ??= new SpectatorCamera(camera.current);
         const s = session.controls.settings;
         spectator.update(dt, state, r.ships, s.lookSensitivity, game.bounds(), s.invertY);
@@ -518,7 +542,7 @@ function runGame(
       };
       camera.params.fovY = cine ? cinematic.fovY(renderer.aspect) : cues.fovY(cueFrame);
       const shake = Math.max(fx.shake, vfx?.shake(time) ?? 0, worldShake);
-      const view = camera.update(r.pose, spectator ? spectator.view : (cine ?? ride), shakeOffset(shake, time));
+      const view = camera.update(r.pose, arch.pose ?? (spectator ? spectator.view : (cine ?? ride)), shakeOffset(shake, time));
       chunkStats = chunks.update(game, view.position, initialLoad ? LOADING_BUDGET : PLAY_BUDGET);
       if (initialLoad && chunkStats.pending === 0) initialLoad = false;
 
@@ -627,7 +651,7 @@ function runGame(
       const worldLights: PointLight[] = [...wf.lights];
       world.addToScene(scene, r.entities, time, r.mode.teams, worldLights);
       renderer.setScene(scene);
-      renderer.setModeVolumes(modeVolumes(modeInput));
+      renderer.setModeVolumes([...arch.volumes, ...modeVolumes(modeInput)]);
       renderer.setWorldVolumes(wf.volumes);
       renderer.setWorldUp(wf.up, boundsCenter(game.bounds()));
       // Without VQ5 effects the light pulses come from watching projectiles and ships.
@@ -649,7 +673,7 @@ function runGame(
       });
       for (const g of charges) lights.push(chargeLight(g));
       modeLights(modeInput, lights);
-      lights.push(...worldLights);
+      lights.push(...worldLights, ...arch.lights);
       renderer.setLights(lightFx.frame(time, lights));
       // Last Color Standing: the world fades to monochrome; ships keep their meter's colour.
       mono = easeMonochrome(mono, isMonochrome(r.mode) && !modeInput.warmup && !flow.showResults ? 1 : 0, dt);
@@ -662,7 +686,8 @@ function runGame(
       const atmo = renderer.atmosphere ?? DEFAULT_SETTINGS;
       const dust = dustDensityAt(view.position, r.entities, session.visuals);
       const fog = dustFog(atmo, dust);
-      renderer.settings.fogDensity = fog.fogDensity;
+      renderer.settings.fogDensity = fog.fogDensity * arch.fogScale;
+      renderer.settings.headlight = DEFAULT_SETTINGS.headlight * arch.headlightScale;
       renderer.settings.fogColor = fog.fogColor;
       renderer.settings.terrainSeed = hashSeed(session.game.shareCode); // per-world rock look (VQ3b)
       // Inside dust the flat dust colour replaces the sky's haze.
@@ -721,17 +746,20 @@ function runGame(
       modeHud.updateMarkers(
         flow.showResults || flow.showLobby
           ? []
-          : objectiveMarkers(
-              r.mode,
-              game.player,
-              names,
-              nowTick,
-              renderer.viewProjection(view),
-              view.position,
-              canvas.clientWidth,
-              canvas.clientHeight,
-              ownSide,
-            ),
+          : [
+              ...objectiveMarkers(
+                r.mode,
+                game.player,
+                names,
+                nowTick,
+                renderer.viewProjection(view),
+                view.position,
+                canvas.clientWidth,
+                canvas.clientHeight,
+                ownSide,
+              ),
+              ...architect.runnerMarkers(architect.view, game.player, r.ships, names, renderer.viewProjection(view), view.position, canvas.clientWidth, canvas.clientHeight),
+            ],
       );
       hud.setInstagib(hudModel.instagib);
       hud.setSpectating(flow.spectating);
@@ -751,6 +779,7 @@ function runGame(
             lobby: r.lobby,
             secsLeft: lobbySecs,
             names,
+            architect: { rounds: architect.rounds, mode: r.mode },
           }),
         );
       }

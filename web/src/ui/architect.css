@@ -1,0 +1,695 @@
+/* M4 C4: The Architect's HUD (ui/architect.ts). The architect's tools look
+   like a drafting table: blueprint-blue glass with a faint grid, index-card
+   strokes on keys 1-8, a pencil badge. Runners get a small plate naming the
+   architect. */
+
+.arch-hud {
+  --bp: #3d8bff;
+  --bp-ink: #cfe3ff;
+  --bp-deep: rgba(10, 26, 58, 0.82);
+  --bp-grid: rgba(120, 175, 255, 0.11);
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  font-variant-numeric: tabular-nums;
+}
+
+.arch-hud.hidden {
+  display: none;
+}
+
+.arch-hud .hidden {
+  display: none !important;
+}
+
+/* Blueprint glass: deep blue, a 12 px grid, a brighter rule every 4 cells. */
+.arch-plate,
+.arch-dock,
+.arch-panel,
+.arch-reticle,
+.arch-banner {
+  background:
+    linear-gradient(var(--bp-grid) 1px, transparent 1px) 0 0 / 12px 12px,
+    linear-gradient(90deg, var(--bp-grid) 1px, transparent 1px) 0 0 / 12px 12px,
+    linear-gradient(rgba(140, 190, 255, 0.07) 1px, transparent 1px) 0 0 / 48px 48px,
+    linear-gradient(180deg, rgba(16, 38, 80, 0.86), rgba(8, 20, 46, 0.84));
+  border: 1px solid rgba(120, 175, 255, 0.32);
+  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  color: var(--bp-ink);
+  border-radius: var(--radius);
+  backdrop-filter: blur(6px);
+}
+
+/* ---- Plate: role, round, the architect's budget for runners ---- */
+
+.arch-plate {
+  position: absolute;
+  left: 18px;
+  top: 86px;
+  min-width: 210px;
+  max-width: 280px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.arch-badge {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.arch-badge-icon {
+  width: 34px;
+  height: 34px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  color: #ffe08a;
+  background: radial-gradient(circle at 35% 30%, rgba(255, 224, 138, 0.28), rgba(255, 224, 138, 0.06));
+  border: 1px solid rgba(255, 224, 138, 0.5);
+}
+
+.arch-badge-icon svg {
+  width: 20px;
+  height: 20px;
+}
+
+.arch-hud[data-role="architect"] .arch-badge-icon {
+  animation: arch-wiggle 3.2s ease-in-out infinite;
+}
+
+@keyframes arch-wiggle {
+  0%,
+  86%,
+  100% {
+    transform: rotate(0deg);
+  }
+  90% {
+    transform: rotate(-14deg);
+  }
+  95% {
+    transform: rotate(10deg);
+  }
+}
+
+.arch-badge-kicker {
+  font-size: 10.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: rgba(207, 227, 255, 0.66);
+}
+
+.arch-badge-title {
+  font-size: 15px;
+  font-weight: 750;
+  color: #fff;
+}
+
+.arch-mini {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11.5px;
+}
+
+.arch-mini-bar {
+  flex: 1;
+  height: 6px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.1);
+  overflow: hidden;
+}
+
+.arch-mini-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #ffcf5a, #ffe9a8);
+  box-shadow: 0 0 8px rgba(255, 207, 90, 0.6);
+}
+
+.arch-plate-lines {
+  font-size: 12px;
+  color: rgba(207, 227, 255, 0.82);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.arch-inflight {
+  color: #ffd27a;
+}
+
+/* ---- Dock: budget and the stroke cards ---- */
+
+.arch-dock {
+  position: absolute;
+  left: 50%;
+  bottom: 14px;
+  transform: translateX(-50%);
+  width: min(1060px, calc(100vw - 32px));
+  padding: 10px 12px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.arch-budget-head {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.arch-budget-label {
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  font-size: 10.5px;
+  color: rgba(207, 227, 255, 0.7);
+}
+
+.arch-budget-value {
+  font-size: 20px;
+  font-weight: 800;
+  color: #ffe08a;
+  text-shadow: 0 0 10px rgba(255, 207, 90, 0.55);
+}
+
+.arch-budget-max {
+  color: rgba(207, 227, 255, 0.7);
+}
+
+.arch-budget-bar {
+  position: relative;
+  height: 10px;
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  overflow: hidden;
+}
+
+.arch-budget-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #f0a531, #ffd25e 60%, #fff0b8);
+  box-shadow: 0 0 12px rgba(255, 207, 90, 0.65);
+  transition: width 0.18s ease-out;
+}
+
+/* What the armed stroke costs: the end of the bar it would eat, striped. */
+.arch-budget-spend {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: repeating-linear-gradient(-45deg, rgba(20, 30, 60, 0.75) 0 4px, rgba(255, 255, 255, 0.35) 4px 7px);
+  border-left: 2px solid #fff;
+}
+
+.arch-budget-bar.short .arch-budget-spend {
+  background: repeating-linear-gradient(-45deg, rgba(255, 70, 60, 0.6) 0 4px, rgba(255, 255, 255, 0.25) 4px 7px);
+  border-left-color: #ff6a5a;
+}
+
+.arch-budget-tick {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: rgba(10, 20, 40, 0.55);
+}
+
+.arch-cards {
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+  gap: 6px;
+}
+
+.arch-card {
+  --stroke: #fff;
+  position: relative;
+  pointer-events: auto;
+  cursor: pointer;
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  grid-template-areas: "icon name name" "icon verb cost";
+  align-items: center;
+  column-gap: 7px;
+  row-gap: 1px;
+  min-width: 0;
+  padding: 7px 8px 6px 9px;
+  border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--stroke) 40%, transparent);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--stroke) 16%, rgba(8, 18, 40, 0.7)), rgba(8, 18, 40, 0.75));
+  color: #fff;
+  font: inherit;
+  text-align: left;
+  transition: transform 0.12s, box-shadow 0.12s, opacity 0.2s;
+}
+
+.arch-card:hover {
+  transform: translateY(-2px);
+}
+
+.arch-card-key {
+  position: absolute;
+  top: -7px;
+  left: -5px;
+  width: 17px;
+  height: 17px;
+  display: grid;
+  place-items: center;
+  font-size: 10.5px;
+  font-weight: 800;
+  border-radius: 4px;
+  color: #0a1630;
+  background: var(--stroke);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+}
+
+.arch-card-icon {
+  grid-area: icon;
+  position: relative;
+  width: 24px;
+  height: 24px;
+  color: var(--stroke);
+}
+
+.arch-card-icon svg {
+  width: 24px;
+  height: 24px;
+}
+
+.arch-card-sign {
+  position: absolute;
+  right: -5px;
+  bottom: -5px;
+  font-size: 13px;
+  font-weight: 900;
+  line-height: 1;
+  color: #fff;
+  text-shadow: 0 0 4px var(--stroke), 0 1px 2px #000;
+}
+
+.arch-card-name {
+  grid-area: name;
+  font-size: 12.5px;
+  font-weight: 750;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.arch-card-verb {
+  grid-area: verb;
+  min-width: 0;
+  font-size: 10.5px;
+  color: rgba(207, 227, 255, 0.72);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.arch-card-cost {
+  grid-area: cost;
+  font-size: 11.5px;
+  font-weight: 800;
+  color: #ffe08a;
+}
+
+.arch-card.armed {
+  border-color: var(--stroke);
+  box-shadow: 0 0 0 1px var(--stroke), 0 0 18px color-mix(in srgb, var(--stroke) 55%, transparent);
+  transform: translateY(-3px);
+}
+
+.arch-card.poor,
+.arch-card.cooldown,
+.arch-card.used,
+.arch-card.busy,
+.arch-card.off,
+.arch-card.full {
+  opacity: 0.5;
+}
+
+.arch-card.poor .arch-card-cost {
+  color: #ff8a7a;
+}
+
+.arch-card.poor .arch-card-verb,
+.arch-card.used .arch-card-verb,
+.arch-card.busy .arch-card-verb,
+.arch-card.off .arch-card-verb,
+.arch-card.full .arch-card-verb,
+.arch-card.cooldown .arch-card-verb {
+  color: #ffb4a8;
+}
+
+.arch-hint {
+  text-align: center;
+  font-size: 11px;
+  color: rgba(207, 227, 255, 0.62);
+}
+
+/* ---- Reticle readout under the crosshair ---- */
+
+.arch-reticle {
+  --stroke: #fff;
+  position: absolute;
+  left: 50%;
+  top: calc(50% + 30px);
+  transform: translateX(-50%);
+  padding: 5px 10px 6px;
+  text-align: center;
+  border-color: color-mix(in srgb, var(--stroke) 55%, transparent);
+  min-width: 132px;
+}
+
+.arch-reticle::before {
+  /* A drafting cross-hair over the readout. */
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: -48px;
+  width: 30px;
+  height: 30px;
+  margin-left: -15px;
+  border: 2px solid var(--stroke);
+  border-radius: 50%;
+  box-shadow: 0 0 10px color-mix(in srgb, var(--stroke) 70%, transparent);
+  background:
+    linear-gradient(var(--stroke), var(--stroke)) center / 2px 40% no-repeat,
+    linear-gradient(var(--stroke), var(--stroke)) center / 40% 2px no-repeat;
+}
+
+.arch-reticle-name {
+  font-weight: 800;
+  font-size: 13px;
+  color: var(--stroke);
+}
+
+.arch-reticle-size {
+  font-size: 11px;
+  color: rgba(207, 227, 255, 0.75);
+}
+
+.arch-reticle-status {
+  font-size: 11.5px;
+  font-weight: 650;
+  color: #c8ffd4;
+}
+
+.arch-reticle.bad {
+  border-color: rgba(255, 90, 80, 0.8);
+}
+
+.arch-reticle.bad::before {
+  border-color: #ff5a4a;
+}
+
+.arch-reticle.bad .arch-reticle-status {
+  color: #ff9a8a;
+}
+
+/* ---- The stroke wheel (hold R) ---- */
+
+.arch-radial {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 0;
+  height: 0;
+}
+
+.arch-radial-ring {
+  position: absolute;
+  left: -160px;
+  top: -160px;
+  width: 320px;
+  height: 320px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(8, 20, 46, 0.25) 0 38%, rgba(8, 20, 46, 0.78) 39% 70%, rgba(8, 20, 46, 0) 71%);
+  animation: arch-pop 0.14s ease-out;
+}
+
+@keyframes arch-pop {
+  from {
+    transform: scale(0.85);
+    opacity: 0;
+  }
+}
+
+.arch-radial-item {
+  --stroke: #fff;
+  position: absolute;
+  left: calc(50% + var(--x));
+  top: calc(50% + var(--y));
+  width: 78px;
+  transform: translate(-50%, -50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  padding: 6px 4px;
+  border-radius: 10px;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  text-align: center;
+  transition: transform 0.1s, background 0.1s;
+}
+
+.arch-radial-icon {
+  width: 26px;
+  height: 26px;
+  color: var(--stroke);
+}
+
+.arch-radial-icon svg {
+  width: 26px;
+  height: 26px;
+}
+
+.arch-radial-cost {
+  font-size: 10px;
+  color: #ffe08a;
+}
+
+.arch-radial-item.dim {
+  opacity: 0.45;
+}
+
+.arch-radial-item.selected {
+  background: color-mix(in srgb, var(--stroke) 30%, rgba(8, 20, 46, 0.9));
+  box-shadow: 0 0 0 1.5px var(--stroke), 0 0 22px color-mix(in srgb, var(--stroke) 60%, transparent);
+  transform: translate(-50%, -50%) scale(1.12);
+}
+
+.arch-radial-hub {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 44px;
+  height: 44px;
+  margin: -22px 0 0 -22px;
+  display: grid;
+  place-items: center;
+  color: #ffe08a;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 224, 138, 0.5);
+  background: rgba(8, 20, 46, 0.85);
+}
+
+.arch-radial-hub svg {
+  width: 24px;
+  height: 24px;
+}
+
+/* ---- Slider panel (pointer free) ---- */
+
+.arch-panel {
+  position: absolute;
+  right: 18px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: min(300px, calc(100vw - 36px));
+  padding: 12px;
+  pointer-events: auto;
+}
+
+.arch-panel-title {
+  font-weight: 800;
+  font-size: 14px;
+  color: #fff;
+}
+
+.arch-panel-sub {
+  font-size: 11.5px;
+  color: rgba(207, 227, 255, 0.7);
+  margin: 2px 0 8px;
+}
+
+.arch-panel .slider-panel {
+  gap: 6px;
+}
+
+/* ---- Banner and toast ---- */
+
+.arch-banner {
+  position: absolute;
+  left: 50%;
+  top: 19%;
+  transform: translateX(-50%);
+  padding: 12px 26px 14px;
+  text-align: center;
+  animation: arch-banner-in 0.45s cubic-bezier(0.2, 0.9, 0.25, 1.2);
+  border-width: 1.5px;
+}
+
+@keyframes arch-banner-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -14px) scale(0.94);
+  }
+}
+
+.arch-banner-kicker {
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: rgba(207, 227, 255, 0.7);
+}
+
+.arch-banner-title {
+  font-size: 30px;
+  font-weight: 850;
+  letter-spacing: 0.01em;
+  color: #fff;
+}
+
+.arch-banner-sub {
+  font-size: 14px;
+  color: rgba(207, 227, 255, 0.85);
+}
+
+.arch-banner[data-tone="architect"] {
+  border-color: rgba(255, 224, 138, 0.7);
+}
+
+.arch-banner[data-tone="architect"] .arch-banner-title {
+  color: #ffe08a;
+  text-shadow: 0 0 18px rgba(255, 207, 90, 0.5);
+}
+
+.arch-banner[data-tone="runner"] .arch-banner-title,
+.arch-banner[data-tone="win"] .arch-banner-title {
+  color: #b6ffc8;
+  text-shadow: 0 0 18px rgba(110, 255, 150, 0.45);
+}
+
+.arch-banner[data-tone="loss"] .arch-banner-title {
+  color: #ffb0a4;
+}
+
+.arch-toast {
+  position: absolute;
+  left: 50%;
+  bottom: 168px;
+  transform: translateX(-50%);
+  padding: 7px 14px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 700;
+  color: #fff;
+  background: rgba(10, 22, 48, 0.86);
+  border: 1px solid rgba(120, 175, 255, 0.4);
+  animation: arch-pop 0.18s ease-out;
+}
+
+.arch-toast[data-tone="bad"] {
+  border-color: rgba(255, 100, 90, 0.75);
+  color: #ffd2cc;
+}
+
+.arch-toast[data-tone="good"] {
+  border-color: rgba(110, 255, 150, 0.7);
+  color: #c8ffd4;
+}
+
+.arch-hud[data-role="runner"] .arch-toast {
+  bottom: 120px;
+}
+
+/* ---- Results: the rounds of an Architect match ---- */
+
+.results-rounds {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 4px 0 12px;
+}
+
+.results-round {
+  display: grid;
+  grid-template-columns: 74px 1fr auto;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  font-size: 13px;
+  background: rgba(255, 255, 255, 0.04);
+  border-left: 3px solid var(--muted);
+}
+
+.results-round.runners {
+  border-left-color: #6eff96;
+}
+
+.results-round.architect {
+  border-left-color: #ffcf5a;
+}
+
+.results-round-label {
+  font-weight: 750;
+}
+
+.results-round-text {
+  color: var(--muted);
+}
+
+.results-round-winner {
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.results-round.runners .results-round-winner {
+  color: #6eff96;
+}
+
+.results-round.architect .results-round-winner {
+  color: #ffcf5a;
+}
+
+.results-round.you {
+  background: rgba(255, 255, 255, 0.09);
+}
+
+/* Phones: the dock's cards wrap into two rows, the plate shrinks. */
+@media (max-width: 720px) {
+  .arch-cards {
+    grid-template-columns: repeat(4, 1fr);
+  }
+  .arch-plate {
+    top: 70px;
+    min-width: 0;
+    max-width: 200px;
+    padding: 8px;
+  }
+  .arch-banner-title {
+    font-size: 22px;
+  }
+  .arch-hint {
+    display: none;
+  }
+}

@@ -529,6 +529,11 @@ impl Predictor {
         self.spawn_poses = poses;
     }
 
+    /// The match's spawn poses (see [`Predictor::set_spawn_poses`]).
+    pub fn spawn_poses(&self) -> &[(Vec3, Quat)] {
+        &self.spawn_poses
+    }
+
     fn matches(&self, p: &ShipState, s: &ShipState) -> bool {
         let c = &self.config;
         let dv = (p.vel - s.vel).abs().max_element();

@@ -348,6 +348,12 @@ export class Renderer {
   timeOverride: number | null = null;
   /** Open levels: rock fades into the sky before the hidden walls (VQP); false = cut off sharply (before shots). */
   roomFade = true;
+  /**
+   * A cut through the level (The Architect's map view, M4 C4): rock outside
+   * this box is not drawn (the room box clip of `room_fade`, frame.ts), so
+   * the floors below the cut read like a floor plan. Null = no cut.
+   */
+  cutaway: { min: Vec3; max: Vec3; fade: number } | null = null;
   /** False for a renderer on another renderer's device (`create(..., { device })`): `destroy` leaves the device alone. */
   private ownsDevice = true;
   /** The own ship's cockpit frame (VQ1), drawn last in the scene pass; set its `state` per frame. */
@@ -790,8 +796,11 @@ export class Renderer {
     let pass = beginPass(split ? "terrain" : "scene", true, !split);
     pass.setPipeline(pipelines.terrain);
     pass.setBindGroup(1, this.terrainMaterial.bindGroup);
+    const cut = this.cutaway;
     for (const mesh of this.chunks.values()) {
       if (!mesh.extraBuffer || (mesh.aabb && !this.frustum.intersectsAabb(mesh.aabb))) continue;
+      // The Architect's map view: chunks wholly outside the cut draw nothing.
+      if (cut && mesh.aabb && (mesh.aabb.min.y > cut.max.y || mesh.aabb.max.y < cut.min.y)) continue;
       pass.setVertexBuffer(0, mesh.positionBuffer);
       pass.setVertexBuffer(1, mesh.normalBuffer);
       pass.setVertexBuffer(2, mesh.teamBuffer);
@@ -941,8 +950,10 @@ export class Renderer {
     const h = s.heightFog;
     d.set([h.density, h.falloff, h.baseY, s.skyHaze], 48);
     // Open levels: rock fades out before the hidden walls (VQP; frame.ts room_fade).
-    const room = this.sky.visible && this.roomFade ? this.sky.atmosphere?.room : null;
-    d.set(room ? [room.min.x, room.min.y, room.min.z, ROOM_FADE] : [0, 0, 0, 0], 52);
+    const cut = this.cutaway;
+    const room = cut ?? (this.sky.visible && this.roomFade ? this.sky.atmosphere?.room : null);
+    const fade = cut ? Math.max(0.01, cut.fade) : ROOM_FADE;
+    d.set(room ? [room.min.x, room.min.y, room.min.z, fade] : [0, 0, 0, 0], 52);
     d.set(room ? [room.max.x, room.max.y, room.max.z, 0] : [0, 0, 0, 0], 56);
     // The level's turned up (M4 B5, turn.ts): height fog along it, the sky's haze turned with it.
     packTurn(this.turn, this.turnCenter, d, 60);

@@ -48,6 +48,7 @@ import { chargeAt, cloakAt, CLOAKED } from "./vqpScenes.ts";
 import { paperweightAt } from "./weaponScenes.ts";
 import { chargeLight } from "../game/chargeFx.ts";
 import { modeMoment, modeScene } from "./modeScenes.ts";
+import { prepareArchitectScene, runArchitectScene, type ArchitectPrep } from "./architectScenes.ts";
 import { colourMeterStyle, monochromeGrade } from "../game/modeVisuals.ts";
 import { runPageScene } from "../attract/galleryPages.ts";
 import { shipMeshKind } from "../renderer/models/index.ts";
@@ -526,6 +527,22 @@ export async function runGallery(canvas: HTMLCanvasElement, ui: HTMLElement, loc
       pose.orientation = worldPrep.pose.orientation;
       if (worldPrep.edited) loader.reset(game);
     }
+    // M4 C4 Architect scenes: their own camera (the map view), strokes on a timeline, grown rock.
+    let archPrep: ArchitectPrep | null = null;
+    if (scene.content === "architect" && scene.architect) {
+      archPrep = prepareArchitectScene(
+        scene.architect,
+        pose,
+        origin,
+        game.bounds(),
+        (o, d, max) => raycast(rayMeshes.values(), o, d, max)?.t ?? -1,
+        (add, c, r) => game.practiceEdit?.(add, c.x, c.y, c.z, r) ?? false,
+      );
+      pose.position = archPrep.pose.position;
+      pose.orientation = archPrep.pose.orientation;
+      if (archPrep.overview) game.setViewRadius(400);
+      if (archPrep.edited || archPrep.overview) loader.reset(game);
+    }
     // `?roomfade=off`: rock cut off sharply at the hidden walls (pre-VQP).
     renderer.roomFade = new URLSearchParams(loc.search).get("roomfade") !== "off";
     view = { ...view, ...pose };
@@ -614,6 +631,20 @@ export async function runGallery(canvas: HTMLCanvasElement, ui: HTMLElement, loc
         center: boundsCenter(game.bounds()),
         lights,
       });
+    } else if (scene.content === "architect" && scene.architect && archPrep) {
+      status.particles = runArchitectScene({
+        kind: scene.architect,
+        renderer,
+        prep: archPrep,
+        time: scene.time,
+        visuals,
+        particles,
+        ui,
+        canvas,
+        ray: (o, d, max) => raycast(rayMeshes.values(), o, d, max)?.t ?? -1,
+        bounds: game.bounds(),
+        lights,
+      });
     } else {
       const content = sceneContent(scene, pose, visuals, impact, lights, particles !== null && scene.content !== "lights", wallAhead);
       // Pigmented hulls (M4 A7 keep mask): their colour survives the monochrome ink.
@@ -623,7 +654,7 @@ export async function runGallery(canvas: HTMLCanvasElement, ui: HTMLElement, loc
       }
       renderer.setScene(content);
     }
-    if (particles && scene.content !== "mode" && scene.content !== "world") {
+    if (particles && scene.content !== "mode" && scene.content !== "world" && scene.content !== "architect") {
       // VQ5: the particles of the scene's synthetic history up to its time (vfxScenes.ts).
       // Scenes whose effects come only from VQ5 also take its effect lights (VQ6
       // pulses); the fight and lights scenes emit theirs in sceneContent.

@@ -2051,6 +2051,31 @@ impl GameCore {
         }
     }
 
+    /// The Architect's numbers for the architect's stroke UI (M4 C4): the
+    /// match's mode settings, the rule set's Absurdity cap and the spawn
+    /// points rock strokes keep clear of; `None` in other modes.
+    pub fn architect_rules(&self) -> Option<(ls_sim::ruleset::TheArchitectRules, u8, Vec<Vec3>)> {
+        let (rules, spawns): (&ls_sim::RuleSet, Vec<Vec3>) = match &self.mode {
+            Mode::Online(o) => (
+                o.session.rules(),
+                o.session
+                    .predictor()
+                    .spawn_poses()
+                    .iter()
+                    .map(|(p, _)| *p)
+                    .collect(),
+            ),
+            Mode::Practice(p) => (
+                p.world.rules(),
+                p.world.setup().spawns.iter().map(|s| s.pos).collect(),
+            ),
+        };
+        match &rules.mode {
+            ls_sim::ModeRules::TheArchitect(a) => Some((*a, rules.absurdity, spawns)),
+            _ => None,
+        }
+    }
+
     /// `ArchitectAction` placing a stroke (online only; the server
     /// validates it).
     pub fn architect_action_packet(

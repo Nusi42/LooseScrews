@@ -194,6 +194,8 @@ export interface GameHandle {
   // M4 protocol 6 (ls-wasm level.rs, modes.rs; the mood is in modeState() JSON as `mood`).
   /** `ArchitectAction` packet placing a stroke (send reliably; `undefined` offline). */
   architectActionPacket?(stroke: number, x: number, y: number, z: number, radius: number): Uint8Array | undefined;
+  /** The Architect's numbers as JSON (costs, radii, cooldown, budget, spawns; M4 C4, game/architect/model.ts); `undefined` in other modes. */
+  architectRules?(): string | undefined;
   /** SHIP_EXT_STRIDE numbers per ship: [id, pigmented (0/1), hats]. */
   shipExt?(): Uint8Array;
   /** The asteroid belt as JSON (centre, radii, gateAzimuths, slots, pickupPoints, boulders); `undefined` on classic levels. */

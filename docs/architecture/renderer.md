@@ -413,6 +413,47 @@ and the Hot Reactor (a glowing sphere in two containment rings with six vents), 
 `core` and `reactor` (the legacy builders use spheres). Their glowing parts take the instance
 colour, an HDR display value above 1.
 
+## The Architect (M4 C4)
+
+The Architect's looks reuse the passes above; `game/architect/` builds them, `main.ts` hands
+them on (one `ArchitectClient.update` per frame).
+
+- **Map view (cutaway).** `Renderer.cutaway` (`{ min, max, fade }` or null) replaces the room
+  box of `room_fade` (frame.ts) while the architect's map view is on: rock outside the box is
+  clipped (`step(ROOM_CLIP, d)`) with a `fade`-wide ragged edge, so a slab one storey deep
+  (`SLAB_DEPTH` 34 u under a cut 6 u above the view's target, `game/architect/camera.ts`)
+  shows the tunnel floors from above; back faces stay culled, so solid rock reads as black
+  between them. No new pass, shader or uniform. The map view multiplies the headlight by
+  `OVERVIEW_HEADLIGHT` (55; the headlight falls off as 1 / (1 + 0.004 d²), about 1 at the floor
+  120 u below) and the fog by `OVERVIEW_FOG` (0.25).
+- **Volumes** (mode effects pass, `game/architect/visuals.ts` `architectVolumes`, placed before
+  the mode's own in the pass's 12): the placement preview (a `zone` with a strong grid and a
+  fast dashed contour, the stroke's colour or red), every telegraphed stroke (a `zone` whose
+  equator ring fills with the telegraph and whose pulse speeds up, plus a `beam`), acting
+  strokes (a fading flash for rock and events, a faint violet field for the Gravity+ well next
+  to B5's well look, a thin pale outline for the ink), the exit gate (a green `zone` with a full
+  ring and a `beam`) and, for the architect, a thin `beam` above every runner.
+- **Lights** (VQ6): the exit, every telegraph (brightening with it), and the map view's work
+  lamp over the target.
+- **Particles** (VQ5, `ArchitectFx`): sparks drawn into a telegraph, a ring and sparkles when a
+  stroke appears; when it acts rock dust, pale stone dust that hangs for 3-5 s and hot chips
+  (rock strokes), confetti (Absurdity+, Verticality), an inward sparkle burst (Gravity+); the
+  Palette blackout is a churning cloud of blue-black alpha puffs (140 a second, thickest at the
+  centre) with two cartoon eyes peering out (`squidEyeSprites`: alpha sprites with an opacity
+  far above 1, which turns the soft glow sprite into a crisp disc); motes rising in the exit.
+- **HUD** (`ui/architect.ts`, `ui/architect.css`): the architect's drafting-table dock (budget
+  bar with the picked stroke's cost striped, eight stroke cards, the hint line), the reticle
+  readout, the stroke wheel, the world's slider panel (the workshop's `SliderPanel`), the
+  runner's plate, round banners and toasts; runner markers through rock come from
+  `ArchitectClient.runnerMarkers` next to the objective markers; the exit and telegraph markers
+  and the runner's stroke warnings are in `ui/modeHud.ts`.
+
+Cost (gallery `architect-*`, RTX 5080, 1080p "high"): `mode` 0.03-0.09 ms, `particles`
+0.02-0.06 ms (the ink at its thickest 0.05 ms); the map view draws far more terrain (`terrain`
+1.0-1.3 ms for 1.8-2.0 M triangles over a whole cave level against 0.2 ms in a tunnel), still
+well inside the 4 ms terrain share. Estimated on the reference mid GPU (factor about 10):
+mode and particles 0.3-0.9 ms together, within the 1.0 ms event-visuals share.
+
 ## Particles (VQ5)
 
 `particles.ts` `ParticleSystem` (`Renderer.particles`, null with `?vfx=off` or

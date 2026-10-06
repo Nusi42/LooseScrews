@@ -1023,6 +1023,17 @@ impl Game {
             .architect_action_packet(stroke, Vec3::new(x, y, z), radius)
     }
 
+    /// The Architect's numbers for the stroke UI as JSON
+    /// (`modes::architect_rules_json`: costs, radii, cooldown, telegraph,
+    /// budget, the Absurdity cap, the spawn points); `undefined` in other
+    /// modes.
+    #[wasm_bindgen(js_name = architectRules)]
+    pub fn architect_rules(&self) -> Option<String> {
+        self.core
+            .architect_rules()
+            .map(|(r, absurdity, spawns)| modes::architect_rules_json(&r, absurdity, &spawns))
+    }
+
     /// Protocol 6 ship bits, 3 numbers per ship: `[id, pigmented (0/1),
     /// hats]` (`ls_net::ship_ext`).
     #[wasm_bindgen(js_name = shipExt)]

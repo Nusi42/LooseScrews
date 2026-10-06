@@ -79,6 +79,10 @@ test("WASM share-code check, hello packet and practice game", { skip }, async ()
   try {
     assert.equal(game.isOnline, false);
     assert.equal(game.shareCode, code);
+    // The Architect's numbers (M4 C4) exist only in an Architect match; practice plays the default rules.
+    assert.equal(typeof game.architectRules, "function");
+    assert.equal(game.architectRules?.(), undefined);
+    assert.equal(game.architectActionPacket?.(3, 0, 0, 0, 16), undefined, "no stroke packets offline");
     const start = game.localPose();
     assert.ok(start && start.length === 11);
     const controls = new Float32Array(CONTROLS_LEN);

@@ -27,6 +27,11 @@
 //!   player, value}]}` (rows best first; awards: titles comedy events gave,
 //!   `event` = the event id such as `"hat_rain"` for the Hat Baron, protocol
 //!   6).
+//! - [`architect_rules_json`] (M4 C4): `{costs: [8, by stroke index],
+//!   minRadius, maxRadius, cooldownSecs, telegraphSecs, maxStrokes,
+//!   budgetStart, budgetPerSec, budgetMax, keepClear, wellSecs,
+//!   paletteSecs, roundSecs, roundResultsSecs, runnerLives, absurdity (the
+//!   rule set's cap; 0 refuses the event strokes), spawns: [[x, y, z]]}`.
 
 use ls_net::mode::{NONE, UNLIMITED_LIVES};
 use ls_net::{LobbyPhase, LobbyStateMsg, MatchResultsMsg, NetModeState, NetMoodView, NetRaceView};
@@ -249,6 +254,38 @@ pub fn results_json(r: &MatchResultsMsg) -> String {
     ])
 }
 
+/// See the module docs.
+pub fn architect_rules_json(
+    r: &ls_sim::ruleset::TheArchitectRules,
+    absurdity: u8,
+    spawns: &[ls_math::Vec3],
+) -> String {
+    use ls_sim::modes::the_architect::StrokeKind;
+    let costs = StrokeKind::ALL.iter().map(|k| k.cost(r).to_string());
+    let spawns = spawns
+        .iter()
+        .map(|p| format!("[{},{},{}]", num(p.x), num(p.y), num(p.z)));
+    object(&[
+        ("costs", array(costs)),
+        ("minRadius", num(r.min_radius)),
+        ("maxRadius", num(r.max_radius)),
+        ("cooldownSecs", num(r.stroke_cooldown_secs)),
+        ("telegraphSecs", num(r.telegraph_secs)),
+        ("maxStrokes", r.max_strokes.to_string()),
+        ("budgetStart", r.budget_start.to_string()),
+        ("budgetPerSec", num(r.budget_per_sec)),
+        ("budgetMax", r.budget_max.to_string()),
+        ("keepClear", num(r.keep_clear)),
+        ("wellSecs", num(r.well_secs)),
+        ("paletteSecs", num(r.palette_secs)),
+        ("roundSecs", num(r.round_secs)),
+        ("roundResultsSecs", num(r.round_results_secs)),
+        ("runnerLives", r.runner_lives.to_string()),
+        ("absurdity", absurdity.to_string()),
+        ("spawns", array(spawns)),
+    ])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -340,6 +377,18 @@ mod tests {
         assert!(j.contains("\"team\":-1,"));
         assert!(j.contains("\"radius\":1.5,\"pos\":[1,-2.5,3.25]"), "{j}");
         assert!(j.contains("\"teamScores\":[]"));
+    }
+
+    #[test]
+    fn architect_rules_as_json() {
+        let r = ls_sim::ruleset::TheArchitectRules::default();
+        let j = architect_rules_json(&r, 100, &[ls_math::Vec3::new(1.0, 2.5, -3.0)]);
+        assert!(j.contains("\"costs\":[25,15,20,30,35,60,15,80]"), "{j}");
+        assert!(j.contains("\"minRadius\":12,\"maxRadius\":24,"), "{j}");
+        assert!(
+            j.contains("\"absurdity\":100,\"spawns\":[[1,2.5,-3]]"),
+            "{j}"
+        );
     }
 
     #[test]

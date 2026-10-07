@@ -227,7 +227,7 @@ Commands and details: [dev-guide.md](dev-guide.md#4-tests) and [architecture/det
 | M2 Arsenal and physics | Done | All weapons from the design doc, Tectonic Charge, debris physics, surface states, ship types, gadgets (Shield, Cloak, Decoy), rule set editor — see [milestone-2-plan.md](milestone-2-plan.md) |
 | M3 Modes and lobby | Done with exceptions (soak tick p99 on a quiet machine, private rooms' tick budget under load, the Tectonic collapse tick) — [milestone-3-plan.md](milestone-3-plan.md#milestone-summary) | Team Brawl, The Squeeze, Instagib, Heist, Hot Reactor, Last Color Standing, duels; lobby in `ls-server` with match rotation, optional directory service for the server list, invites, party codes ([modes-and-lobby.md](architecture/modes-and-lobby.md)) |
 | M4 The level has moods | Done with exceptions (review sign-off of the gallery and Belt Up looks pending; thin-rock steps and the cave-in remesh budget partly met; soak: bot-process stalls caused 6 server input-starvation warnings, tick p99 met outside load bursts) — [milestone-4-plan.md](milestone-4-plan.md#milestone-summary) | Comedy director with moods and all 18 events, remaining sliders (verticality, gravity chaos, palette, instability), monochrome levels and pigment, The Architect, the asteroid belt and the racing mode Belt Up, the Paperweight, world workshop, audio foundation ([moods-and-world.md](architecture/moods-and-world.md)); carried over: Tectonic collapse tick, dual contouring in play; M3 leftovers: thin-rock jaggies, bore-rim folds, reference mid-GPU timings, teams 3/4 spawn zones, quiet-machine soak (status below) |
-| M5 Platforms and ops | Next (plan to be written with the owner) | Tauri app with UDP, WebRTC fallback, WebGL2 fallback, regional deployment with Agones or Nomad, bandwidth optimization |
+| M5 Platforms and ops | Next: plan drafted, pending review — [milestone-5-plan.md](milestone-5-plan.md) (open questions in §8) | Tauri app with UDP, WebRTC fallback, WebGL2 fallback, regional deployment with Agones or Nomad, bandwidth optimization; carried over: every M5 item below, the M3 security gaps, the M4 exceptions, the own-death kill-cam and the grumpy mood's cave-ins |
 | M6 Coop and business | Planned | Deep Dig, Tethered, Escort the Intern; cosmetics store, creator economy |
 
 ### Carried-over items
@@ -327,7 +327,8 @@ milestone-4-plan.md §7 (to be confirmed when M4 closes):
   modes with respawns" is the first item of the §7 cut order. Moves to M5 (client work, no
   protocol change).
 
-**M5 Platforms and ops**
+**M5 Platforms and ops** (all taken into [milestone-5-plan.md](milestone-5-plan.md) §1, draft pending
+review)
 - **Bandwidth worst case (accepted for now).** Busy 32-ship fights average within
   17,280 B/s at every baseline age, but the busiest snapshots are up to about 6 % over at a
   4-tick and 19 % over at a 6-tick baseline (`busy_fight_with_projectiles_fits_the_budget`).

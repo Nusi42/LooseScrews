@@ -93,6 +93,11 @@ pub const EXIT_ID: u8 = 0;
 pub const MAX_STROKE_EDITS: usize = 32;
 /// Ticks a stroke's edits are spread over.
 pub const STROKE_EDIT_TICKS: u64 = 8;
+/// A stroke refused after planning ([`StrokeReject::NothingToChange`]: the
+/// reshape sampled the generator, the cave-in searched a ceiling, the
+/// event stroke found no event) holds the next stroke back this long, so
+/// a flood of duds cannot make the server plan every tick (D1 review).
+pub const STROKE_DUD_TICKS: u64 = 6;
 /// Spacing (u) of the grid a reshape stroke samples inside its sphere.
 pub const RESHAPE_GRID: f32 = 4.0;
 /// Largest edit sphere of a reshape stroke (u).
@@ -803,7 +808,10 @@ impl ModeModule for TheArchitect {
             }
             // Budget.
             if let Some(arch) = a.architect {
-                a.budget = (a.budget + budget_per_tick(&r)).min(r.budget_max as u32 * BUDGET_UNIT);
+                a.budget = a
+                    .budget
+                    .saturating_add(budget_per_tick(&r))
+                    .min(r.budget_max as u32 * BUDGET_UNIT);
                 if let Some(p) = m.state.players.get_mut(&arch) {
                     p.meter = a.budget_points().min(255) as u8;
                 }

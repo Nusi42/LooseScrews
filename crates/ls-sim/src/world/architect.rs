@@ -15,8 +15,8 @@ use crate::instability::{escapes, plan_cave_in, InstabilitySettings, RubbleSpher
 use crate::mode::{player_flags, ModeKind};
 use crate::modes::the_architect::{
     begin_round, plan_reshape, rules, RoundPhase, Stroke, StrokeKind, StrokeReject,
-    STROKE_CAVE_IN_RNG_KEY, STROKE_EDIT_TICKS, STROKE_EVENT_RNG_KEY, STROKE_SHIP_CLEARANCE,
-    WELL_KEY_BASE,
+    STROKE_CAVE_IN_RNG_KEY, STROKE_DUD_TICKS, STROKE_EDIT_TICKS, STROKE_EVENT_RNG_KEY,
+    STROKE_SHIP_CLEARANCE, WELL_KEY_BASE,
 };
 use crate::ship::PlayerId;
 use crate::terrain::SimTerrain;
@@ -114,7 +114,7 @@ impl World {
                 let delta = (r.reshape_delta.min(100) as i8) * sign;
                 edits = plan_reshape(terrain, slider, delta, center, radius);
                 if edits.is_empty() {
-                    return Err(StrokeReject::NothingToChange);
+                    return Err(self.dud_stroke(now));
                 }
                 apply_tick + STROKE_EDIT_TICKS
             }
@@ -122,7 +122,7 @@ impl World {
                 let mut rng = rng_at(cfg.seed, now, STROKE_CAVE_IN_RNG_KEY);
                 let s = InstabilitySettings::builtin();
                 if plan_cave_in(s, terrain, self.up, center, &mut rng, &[]).is_none() {
-                    return Err(StrokeReject::NothingToChange);
+                    return Err(self.dud_stroke(now));
                 }
                 apply_tick + STROKE_EDIT_TICKS
             }
@@ -141,7 +141,10 @@ impl World {
                 } else {
                     self.stroke_event(&cfg, terrain, now)
                 };
-                event = Some(kind.ok_or(StrokeReject::NothingToChange)?);
+                match kind {
+                    Some(k) => event = Some(k),
+                    None => return Err(self.dud_stroke(now)),
+                }
                 apply_tick + ls_math::TICK_HZ as u64
             }
         };
@@ -189,6 +192,16 @@ impl World {
             p.meter = budget;
         }
         Ok(id)
+    }
+
+    /// A stroke refused after planning: the next one waits
+    /// [`STROKE_DUD_TICKS`] (planning samples the generator or the
+    /// terrain; a flood of duds must not plan every tick).
+    fn dud_stroke(&mut self, now: u64) -> StrokeReject {
+        if let Some(a) = self.mode.architect.as_deref_mut() {
+            a.next_stroke_tick = a.next_stroke_tick.max(now + STROKE_DUD_TICKS);
+        }
+        StrokeReject::NothingToChange
     }
 
     /// The Absurdity+ stroke's event: a weighted pick among the enabled,

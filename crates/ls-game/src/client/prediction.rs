@@ -635,8 +635,8 @@ fn step_ship<T: TerrainQuery + ?Sized>(
         ls_sim::director::apply_move_effects_after(s, &fx, pos_before);
     }
     // Kinematic obstacles (Duck parade's ducks) push the ship aside, as in
-    // `World::step`.
-    if let Some(m) = env.mood.as_ref() {
+    // `World::step` (from the view advanced to the tick, like the effects).
+    if let Some(m) = mood.as_ref() {
         let mut obstacles = Vec::new();
         ls_sim::director::obstacles(m, env.seed, now, &env.setup, &mut obstacles);
         if !obstacles.is_empty() {
@@ -673,6 +673,63 @@ mod tests {
     use ls_sim::{PlayerId, ShipType, WeaponTable};
     #[cfg(target_arch = "wasm32")]
     use wasm_bindgen_test::wasm_bindgen_test as test;
+
+    /// D1 review: the ducks of an event whose phase changed after the
+    /// newest snapshot push the predicted ship as the server's ducks do
+    /// (the predictor advances the mood view for the obstacles too, as for
+    /// the movement effects).
+    #[test]
+    fn obstacles_follow_the_advanced_mood_view() {
+        use ls_sim::{EventKind, MatchSetup, MoodView, SpawnPoint};
+        let (conv, room, ship) = setup();
+        let spawn = |x: f32| SpawnPoint {
+            pos: Vec3::new(x, 60.0, 60.0),
+            team: 0,
+            orientation: Quat::IDENTITY,
+        };
+        let level = std::sync::Arc::new(MatchSetup {
+            spawns: vec![spawn(20.0), spawn(110.0)],
+            ..Default::default()
+        });
+        // Announced in the newest snapshot; active from tick 280.
+        let stale = MoodView {
+            event: Some(EventKind::DuckParade),
+            phase_end_tick: 280,
+            ..MoodView::default()
+        };
+        let now = 400;
+        let fresh = stale.advanced(now);
+        assert!(fresh.effects_on());
+        let mut ducks = Vec::new();
+        ls_sim::director::obstacles(&fresh, 7, now, &level, &mut ducks);
+        assert!(!ducks.is_empty(), "the parade flies");
+        let env = |mood: Option<MoodView>| PredictEnv {
+            seed: 7,
+            mood,
+            setup: std::sync::Arc::clone(&level),
+            ..PredictEnv::default()
+        };
+        let mut start = ship.clone();
+        start.pos = ducks[0].pos + Vec3::new(0.0, 0.0, 0.3);
+        let run = |mood| {
+            let mut s = start.clone();
+            let c = InputCmd::idle(now);
+            step_ship(
+                &mut s,
+                &c,
+                conv.tuning(),
+                MoveLimits::NONE,
+                None,
+                &env(mood),
+                &room,
+            );
+            s
+        };
+        let (from_stale, from_fresh, plain) = (run(Some(stale)), run(Some(fresh)), run(None));
+        assert_ne!(from_fresh.pos, plain.pos, "the duck pushes the ship");
+        assert_eq!(from_stale.pos, from_fresh.pos);
+        assert_eq!(from_stale.vel, from_fresh.vel);
+    }
 
     fn setup() -> (NetConv, BoxRoomTerrain, ShipState) {
         let bounds = Aabb::new(Vec3::ZERO, Vec3::new(256.0, 128.0, 256.0));

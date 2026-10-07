@@ -116,12 +116,15 @@ pub struct RoomStats {
     /// `Input` messages of another match epoch (the previous match's,
     /// still in flight after a transition), dropped.
     pub stale_epoch_inputs: u64,
-    /// `ArchitectAction`s dropped because the queue was full.
+    /// `ArchitectAction`s of the current architect dropped because the
+    /// queue was full.
     pub dropped_architect_actions: u64,
     /// The Architect's strokes the world accepted
     /// (`ls_sim::World::architect_action`).
     pub architect_strokes: u64,
-    /// `ArchitectAction`s the world refused (not the architect, round over,
+    /// `ArchitectAction`s refused: from a player who is not the current
+    /// architect (at once, never queued, so they cannot crowd the
+    /// architect's strokes out of the queue), or by the world (round over,
     /// unknown kind, radius, range, cooldown, budget, ...: forged or stale
     /// requests).
     pub rejected_architect_actions: u64,
@@ -354,7 +357,8 @@ impl Room {
     /// each tick (`ls_sim::World::architect_action` validates role, round,
     /// kind, radius, range, cooldown and budget; accepted and refused ones
     /// are counted in [`RoomStats`]); the room itself only checks that the
-    /// values are finite (the decoder does) and that the sender is a player.
+    /// values are finite (the decoder does) and that the sender is the
+    /// current architect.
     pub fn take_architect_actions(&mut self) -> Vec<(PlayerId, ls_net::ArchitectActionMsg)> {
         std::mem::take(&mut self.architect_actions)
     }
@@ -598,9 +602,21 @@ impl Room {
             }
             Message::ArchitectAction(a) => {
                 if let Some(c) = self.clients.get(&client) {
-                    // Bounded: a client cannot grow the queue without limit
-                    // between two takes.
-                    if self.architect_actions.len() < MAX_QUEUED_ARCHITECT_ACTIONS {
+                    // Only the current architect's requests are queued: a
+                    // runner flooding the room cannot push the architect's
+                    // strokes out of the bounded queue (the world refuses
+                    // everyone else's anyway).
+                    let architect = self
+                        .world
+                        .mode()
+                        .architect
+                        .as_deref()
+                        .and_then(|s| s.architect);
+                    if architect != Some(c.player) {
+                        self.stats.rejected_architect_actions += 1;
+                    } else if self.architect_actions.len() < MAX_QUEUED_ARCHITECT_ACTIONS {
+                        // Bounded: a client cannot grow the queue without
+                        // limit between two takes.
                         self.architect_actions.push((c.player, a));
                     } else {
                         self.stats.dropped_architect_actions += 1;

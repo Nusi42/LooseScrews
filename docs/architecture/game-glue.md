@@ -135,7 +135,7 @@ implement them.
 | Results | `Message::MatchResults` once when the mode stops running (`World::results` through `ls_game::mode::results_to_net`: winner and team scores from the mode view, kills and deaths counted by the simulation per ship, rows best first), and after the `Welcome` to clients joining a finished match |
 | Lobby | `Ready`, `PickTeam`, `Spectate` are queued as `LobbyRequest`s (`Room::take_lobby_requests`); hosts send `LobbyState` with `Room::send` / `Room::broadcast` |
 | Mood (protocol 6) | `NetModeState::mood` = `ls_game::mode::mood_to_net(&view.mood, world.up(), wire)`: the director's mood, event (`EventKind` index), phase (`EventPhase` index), target wire id, active tick, phase end tick, 8 parameter bytes and the level's up |
-| Architect | `ArchitectAction` (stroke, centre, radius) is queued per sender player (at most `MAX_QUEUED_ARCHITECT_ACTIONS` between two steps, the rest counted in `RoomStats::dropped_architect_actions`); `Room::step` hands the queue to `World::architect_action` before each tick in arrival order (it validates role, round, kind, radius, range, cooldown, strokes in flight and budget and plans the stroke against `GameTerrain`); accepted and refused ones are counted (`RoomStats::architect_strokes`, `rejected_architect_actions`) |
+| Architect | `ArchitectAction` (stroke, centre, radius) is queued only from the current architect (anyone else's is refused at once and counted in `rejected_architect_actions`, so a runner's flood cannot crowd the architect's strokes out; at most `MAX_QUEUED_ARCHITECT_ACTIONS` between two steps, the rest counted in `RoomStats::dropped_architect_actions`); `Room::step` hands the queue to `World::architect_action` before each tick in arrival order (it validates role, round, kind, radius, range, cooldown, strokes in flight and budget and plans the stroke against `GameTerrain`); accepted and refused ones are counted (`RoomStats::architect_strokes`, `rejected_architect_actions`) |
 | Ship ext (protocol 6) | `NetShip::ext` = `ls_game::convert::ship_ext(ship)`: pigmented (`ShipState::pigmented`), hats worn (`ShipState::hats`, Hat rain, B3) |
 | Event obstacles (B3) | Nothing on the wire: the predictor computes the running event's kinematic obstacles (Duck parade's ducks) from the replicated mood view, the match seed and its own `MatchSetup` (`Predictor::set_setup`, built from the share code like the server's; `routes` from `ls_game::setup::network_routes`) and pushes the own ship out of them after its movement, as `World::step` does (`ls_sim::obstacle::push_sphere`). Measured: worst reconciliation error 0.0065 u through duck pushes on a lossy link (0.19-0.51 u without the predictor's push; `tests/spectacle_netplay.rs`) |
 | Results awards (B3) | `World::results().awards` -> `MatchResultsMsg::awards` (`ls_game::mode::results_to_net`; awards of players without a wire id are dropped); the browser reads them in `Game.results()` as `awards: [{event, player, value}]` |
@@ -333,8 +333,9 @@ first applied input on (before that it is still setting up and has predicted not
   simulation would not hit anything at least as early, the target is displaced for this one
   step so that after its own movement it sits exactly at the rewound position: the movement is
   previewed with `World::preview_movement` (M4), which moves a ship exactly as the coming step
-  does (mode limits, the running event's movement effects, the gravity wells, static and
-  dynamic, the level's up), so targets in a well or under a turned up land on the rewound
+  does (mode limits, the running event's movement effects and kinematic obstacles such as Duck
+  parade's ducks, the gravity wells, static and dynamic, dimmed by Gravity coffee break, the
+  level's up as Bored level turns it on the coming tick, a belt's drifting boulders), so targets in a well or under a turned up land on the rewound
   position too (`server::tests::lag_compensation_previews_targets_in_gravity_wells`,
   `tests/netplay.rs::lag_compensation_hits_a_target_pulled_by_a_gravity_well`). `World::step`
   then resolves the hit with its normal rules (damage, friendly fire, knockback, kill credit,
@@ -344,7 +345,10 @@ first applied input on (before that it is still setting up and has predicted not
   stands where the other was, so it takes the other's offset), and a Borrowed Time rewind
   (`CueKind::Rewound`) needs none (`restore_offsets` in `ls_game::server`).
 - Guards: no displacement when the target fires or scavenges this tick, when a pickup is in
-  reach of the rewound position, or when its movement would differ there (terrain contact).
+  reach of the rewound position, when its movement would differ there (terrain contact, event
+  obstacles, drifting boulders), or when its hull would touch another ship's there (Belt Up
+  would bump the pair apart for real;
+  `server::tests::lag_compensation_never_puts_a_target_onto_another_ship`).
   Projectiles are not compensated on the tick they are fired. Splash from other explosions in
   the same tick sees the displaced position, and a kill leaves its wreck where the shooter saw
   the target.

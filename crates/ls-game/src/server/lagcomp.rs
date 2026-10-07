@@ -16,14 +16,16 @@
 //! `ls-sim` has no hook for per-projectile target positions, hence the
 //! displacement. Its side effects are kept small by refusing it when the
 //! target fires or scavenges this tick, when a pickup is within reach of the
-//! rewound position, or when the target's movement would differ there
-//! (terrain contact). Splash from other explosions in the same tick sees the
-//! displaced position.
+//! rewound position, when the target's movement would differ there
+//! (terrain contact, event obstacles, drifting boulders) or when its hull
+//! would touch another ship there (Belt Up bumps). Splash from other
+//! explosions in the same tick sees the displaced position.
 //!
 //! Movement is previewed with `World::preview_movement`, exactly as the step
-//! moves the ship: mode limits, the running event's movement effects, the
-//! gravity wells (static and dynamic, such as a Paperweight's) and the
-//! level's up (M4).
+//! moves the ship: mode limits, the running event's movement effects and
+//! obstacles, the gravity wells (static and dynamic, such as a
+//! Paperweight's, dimmed by Gravity coffee break), the level's up and a
+//! belt's boulders (M4).
 
 use std::collections::{BTreeMap, VecDeque};
 
@@ -240,6 +242,18 @@ pub fn plan_compensation(
         if probe.pos.distance(rewound) > 1e-3
             || segment_sphere(p.pos, dir, len, center(&fx, probe.pos), radius_of(ship)).is_none()
         {
+            continue;
+        }
+        // Never onto another ship: their hulls would touch where neither
+        // is (Belt Up bumps the pair apart for real).
+        let reach = world.tuning_for(ship.ship_type).radius;
+        let crowded = moved.iter().any(|(id, pos)| {
+            *id != target
+                && world.ship(*id).is_some_and(|o| {
+                    pos.distance(probe.pos) < reach + world.tuning_for(o.ship_type).radius
+                })
+        });
+        if crowded {
             continue;
         }
         moved.insert(target, probe.pos);

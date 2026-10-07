@@ -1038,12 +1038,23 @@ fn mode_state_in_snapshots_and_results_once_at_the_end() {
     assert_eq!(kinds, vec!["Welcome", "MatchResults"]);
 }
 
+/// Only the current architect's requests are queued (bounded, attributed);
+/// everyone else's are refused at once, so a runner flooding the room
+/// cannot crowd the architect's strokes out of the queue (D1 review).
 #[test]
 fn architect_actions_are_queued_bounded_and_attributed() {
     let code = ShareCode::new(78, Sliders::new(40, 30));
-    let mut r = Room::new(MatchConfig::paint_the_void(code), cfg()).unwrap();
+    let mut mc = MatchConfig::paint_the_void(code);
+    mc.rules = ls_sim::RuleSet::default_for(ls_sim::ModeKind::TheArchitect);
+    let mut r = Room::new(mc, cfg()).unwrap();
     let a = r.join(&client_hello("a", None, None)).unwrap();
     let b = r.join(&client_hello("b", None, None)).unwrap();
+    r.step();
+    let pa = r.player_of(a).unwrap();
+    assert_eq!(
+        r.world().mode().architect.as_deref().unwrap().architect,
+        Some(pa)
+    );
     let action = |stroke: u8| ls_net::ArchitectActionMsg {
         stroke,
         center: Vec3::new(10.0, 20.0, 30.0),
@@ -1053,14 +1064,24 @@ fn architect_actions_are_queued_bounded_and_attributed() {
         .unwrap();
     r.handle_packet(b, &Message::ArchitectAction(action(5)).encode().unwrap())
         .unwrap();
-    let pa = r.player_of(a).unwrap();
-    let pb = r.player_of(b).unwrap();
-    assert_eq!(
-        r.take_architect_actions(),
-        vec![(pa, action(2)), (pb, action(5))]
-    );
+    assert_eq!(r.take_architect_actions(), vec![(pa, action(2))]);
+    assert_eq!(r.stats().rejected_architect_actions, 1);
     assert!(r.take_architect_actions().is_empty());
-    // A flood between two takes is capped and counted.
+    // A runner's flood is refused without touching the queue; the
+    // architect's stroke after it is still queued.
+    for _ in 0..crate::server::MAX_QUEUED_ARCHITECT_ACTIONS + 10 {
+        r.handle_message(b, Message::ArchitectAction(action(1)))
+            .unwrap();
+    }
+    r.handle_message(a, Message::ArchitectAction(action(3)))
+        .unwrap();
+    assert_eq!(r.take_architect_actions(), vec![(pa, action(3))]);
+    assert_eq!(r.stats().dropped_architect_actions, 0);
+    assert_eq!(
+        r.stats().rejected_architect_actions,
+        crate::server::MAX_QUEUED_ARCHITECT_ACTIONS as u64 + 11
+    );
+    // The architect's own flood between two takes is capped and counted.
     for _ in 0..crate::server::MAX_QUEUED_ARCHITECT_ACTIONS + 10 {
         r.handle_message(a, Message::ArchitectAction(action(1)))
             .unwrap();
@@ -1267,4 +1288,124 @@ fn lag_compensation_previews_targets_in_gravity_wells() {
     }
     assert!(planned >= 1, "some shot needed compensation");
     assert!(worst <= 1e-3, "target {worst} u off its rewound position");
+}
+
+/// D1 review: lag compensation never displaces a target onto another ship
+/// (their hulls would touch where neither is; Belt Up would bump them apart
+/// for real). Control: with the other ship away, the same shot is
+/// compensated.
+#[test]
+fn lag_compensation_never_puts_a_target_onto_another_ship() {
+    use super::lagcomp::{plan_compensation, ShipHistory};
+    use ls_math::terrain::TerrainQuery;
+    use ls_math::Quat;
+    use ls_sim::{Buttons, ShipType};
+    use std::collections::BTreeMap;
+    const REWIND: u64 = 10;
+    let r = room();
+    let t0 = r.terrain().clone();
+    let b = t0.bounds();
+    // Open space along a line through the spot.
+    let c = (0..400)
+        .map(|i| {
+            let f = |k: u32| ((i * k) % 97) as f32 / 97.0;
+            b.min
+                + (b.max - b.min).mul_elem(Vec3::new(
+                    0.2 + 0.6 * f(13),
+                    0.3 + 0.4 * f(29),
+                    0.2 + 0.6 * f(53),
+                ))
+        })
+        .find(|&p| {
+            [-8.0f32, -4.0, 0.0, 4.0, 8.0]
+                .iter()
+                .all(|&x| t0.sdf(p + Vec3::X * x) > 4.0 && t0.sdf(p + Vec3::new(x, 6.0, 0.0)) > 4.0)
+        })
+        .expect("open space in the level");
+    let mut plans = Vec::new();
+    for crowd in [false, true] {
+        let mut w = r.world().clone();
+        let mut t = t0.clone();
+        let a = w.add_player(Some(0), ShipType::Tinker).unwrap();
+        let tg = w.add_player(Some(1), ShipType::Tinker).unwrap();
+        let o = w.add_player(Some(1), ShipType::Tinker).unwrap();
+        let place = |w: &mut World, id, pos: Vec3| {
+            let s = w.ship_mut(id).unwrap();
+            s.pos = pos;
+            s.vel = Vec3::ZERO;
+            s.orientation = Quat::from_rotation_arc(Vec3::NEG_Z, Vec3::X);
+        };
+        let rs = w.tuning_for(ShipType::Tinker).radius;
+        let mut history = ShipHistory::new(REWIND);
+        let idle = |k: u64| -> BTreeMap<PlayerId, InputCmd> {
+            [a, tg, o]
+                .iter()
+                .map(|&id| (id, InputCmd::idle(k)))
+                .collect()
+        };
+        // The target was at `c` when the shooter saw it...
+        for _ in 0..REWIND + 1 {
+            place(&mut w, a, c - Vec3::X * 3.5);
+            place(&mut w, tg, c);
+            place(&mut w, o, c + Vec3::new(0.0, 6.0, 8.0));
+            let k = w.tick() + 1;
+            w.step(&mut t, &idle(k).into_iter().collect::<Vec<_>>());
+            history.record(k, &w);
+        }
+        // ...and is above it now; the other ship sits next to that spot
+        // (off the shot's line) or far away.
+        let rewound = history.position(tg, w.tick() + 1 - REWIND).unwrap();
+        place(&mut w, tg, rewound + Vec3::Y * 6.0);
+        let beside = if crowd {
+            rewound + Vec3::Z * (1.6 * rs)
+        } else {
+            rewound + Vec3::new(0.0, 6.0, 8.0)
+        };
+        place(&mut w, o, beside);
+        place(&mut w, a, rewound - Vec3::X * 3.5);
+        let k0 = w.tick() + 1;
+        let mut inputs = idle(k0);
+        inputs.insert(a, InputCmd::idle(k0).with_buttons(Buttons::FIRE_PRIMARY));
+        let ev = w.step(&mut t, &inputs.into_iter().collect::<Vec<_>>());
+        history.record(k0, &w);
+        let pid = ev
+            .iter()
+            .find_map(|e| match e {
+                Event::Fired { projectile, .. } => Some(*projectile),
+                _ => None,
+            })
+            .expect("fired");
+        let p = w
+            .projectiles()
+            .iter()
+            .find(|p| p.id == pid)
+            .unwrap()
+            .clone();
+        assert!(1.6 * rs > rs + p.radius, "the bolt passes the other ship");
+        let rewinds: BTreeMap<u32, u64> = [(pid, REWIND)].into();
+        let mut planned = Vec::new();
+        for _ in 0..REWIND - 1 {
+            let k = w.tick() + 1;
+            // Everyone holds still where the test put them.
+            place(&mut w, tg, rewound + Vec3::Y * 6.0);
+            place(&mut w, o, beside);
+            let inputs = idle(k);
+            planned.extend(plan_compensation(&w, &t, &inputs, &history, &rewinds));
+            if !planned.is_empty() {
+                break;
+            }
+            w.step(&mut t, &inputs.into_iter().collect::<Vec<_>>());
+            history.record(k, &w);
+            if !w.projectiles().iter().any(|p| p.id == pid) {
+                break;
+            }
+        }
+        plans.push(planned);
+    }
+    assert!(
+        plans[0].iter().any(|d| d.offset.y < -5.0),
+        "control: compensated {:?}",
+        plans[0]
+    );
+    assert!(plans[1].is_empty(), "onto the other ship: {:?}", plans[1]);
 }

@@ -391,6 +391,19 @@ fn forged_and_invalid_strokes_are_refused() {
         try_as(&mut w, ids[0], 0, Vec3::new(40.0, 0.0, 4.0), 12.0),
         Err(StrokeReject::NothingToChange)
     );
+    // A dud holds the next stroke back briefly: a flood of them never
+    // plans more than once per STROKE_DUD_TICKS (D1 review).
+    for _ in 0..64 {
+        assert_eq!(
+            try_as(&mut w, ids[0], 0, Vec3::new(40.0, 0.0, 4.0), 12.0),
+            Err(StrokeReject::Cooldown)
+        );
+    }
+    assert_eq!(
+        try_as(&mut w, ids[0], 6, ok, 14.0),
+        Err(StrokeReject::Cooldown)
+    );
+    step(&mut w, &mut t, STROKE_DUD_TICKS);
     assert!(try_as(&mut w, ids[0], 6, ok, 14.0).is_ok());
     step(&mut w, &mut t, 2 * 60);
     let a = st(&w);

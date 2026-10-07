@@ -11,6 +11,7 @@
 //! | `validate` | `RuleSet::resolve` | the mode settings |
 //! | `on_join` | a player joins (before the first spawn) | [`ModeMut`] |
 //! | `late_join_spectates` | a player joins: spectate until the next match? | [`ModeRef`] |
+//! | `may_stop_spectating` | a player spectating by choice wants to play again: now? | [`ModeRef`] + the player |
 //! | `on_start` | first tick of the match, before anything moves | [`ModeCtx`] (commands) |
 //! | `allow_respawn` | a dead ship's respawn timer ran out | [`ModeRef`] |
 //! | `on_spawn` | a ship (re)spawned with its loadout | [`ModeMut`] + the ship |
@@ -264,6 +265,13 @@ pub trait ModeModule: Send + Sync + Debug {
     /// Whether a player joining now spectates until the next match.
     fn late_join_spectates(&self, m: &ModeRef) -> bool {
         m.rules.lives() > 0 && m.now > LATE_JOIN_GRACE_TICKS
+    }
+
+    /// Whether `player`, spectating by choice, may play again now
+    /// (`World::set_spectator`; eliminated players never may). Generic:
+    /// when a joiner would play.
+    fn may_stop_spectating(&self, m: &ModeRef, _player: PlayerId) -> bool {
+        !self.late_join_spectates(m)
     }
 
     /// The match starts (first tick).

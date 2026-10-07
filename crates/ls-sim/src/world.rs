@@ -538,6 +538,10 @@ pub struct World {
     pigment: PigmentState,
     /// Set while a cave-in applies its own edits (they add no strain).
     no_strain: bool,
+    /// A round reset this tick ([`Command::ResetRound`], Belt Up's heats):
+    /// the running comedy event ends in this tick's director step (set and
+    /// consumed within one tick, so not hashed).
+    end_event: bool,
     /// The level's flight network for event drones (M4 B2; static, not
     /// hashed; [`World::set_nav_graph`]).
     nav: Arc<crate::events::drone::NavGraph>,
@@ -693,6 +697,7 @@ impl World {
             instability: InstabilityState::default(),
             pigment: PigmentState::default(),
             no_strain: false,
+            end_event: false,
             nav: Arc::new(crate::events::drone::NavGraph::default()),
             obstacles: Vec::new(),
             kill_notes: Vec::new(),
@@ -925,7 +930,9 @@ impl World {
         if flags & player_flags::SPECTATOR == 0 {
             return Ok(());
         }
-        let late = cfg.mode_module.late_join_spectates(&self.mode_ref(&cfg));
+        let late = !cfg
+            .mode_module
+            .may_stop_spectating(&self.mode_ref(&cfg), id);
         if flags & player_flags::ELIMINATED != 0 || late {
             return Err(SimError::InvalidRuleSet(
                 "the match is in progress: spectating until the next match".into(),
@@ -1552,9 +1559,11 @@ impl World {
             ended = true;
         }
 
-        // 9. The comedy director.
+        // 9. The comedy director (a round reset ends the running event as
+        // the match end does).
+        let end_event = std::mem::take(&mut self.end_event);
         if self.director.is_on(cfg.absurdity) {
-            self.run_director(&cfg, terrain, ended, &mut events);
+            self.run_director(&cfg, terrain, ended || end_event, &mut events);
         }
         events
     }
@@ -2849,8 +2858,11 @@ impl World {
     }
 
     /// [`Command::ResetRound`]: projectiles and dynamic wells removed,
-    /// pickups rolled again, every ship in play respawned.
+    /// pickups rolled again, every ship in play respawned, and the running
+    /// comedy event ends in this tick's director step (Duck parade's ducks
+    /// would push the held racers out of their slots).
     fn reset_round(&mut self, events: &mut Vec<Event>) {
+        self.end_event = self.director.current.is_some();
         self.projectiles.clear();
         self.wells.dynamics.clear();
         self.scrap.retain(|s| s.spawn.is_none());

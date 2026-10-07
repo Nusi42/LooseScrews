@@ -972,3 +972,117 @@ fn replay_matches_the_fixture() {
         "Belt Up replay hash changed: re-bless with LS_BLESS_MOOD_REPLAYS=1 if deliberate"
     );
 }
+
+/// D1 review: a racer who switches to spectating during a heat leaves it
+/// (no place, no points, the others' heat can end without it) and stays
+/// out of the next heat; finishers (spectating because they finished) race
+/// again.
+#[test]
+fn a_racer_who_spectates_mid_heat_leaves_the_race() {
+    let (mut w, mut t, ids) = race_world(3);
+    lights_out(&mut w, &mut t);
+    let (a, b, c) = (ids[0], ids[1], ids[2]);
+    w.step(&mut t, &[]);
+    w.set_spectator(c, true).unwrap();
+    w.step(&mut t, &[]);
+    assert!(!racer(&w, c).in_heat, "the spectator left the heat");
+    for &id in &[a, b] {
+        pass_gates(&mut w, &mut t, id, 8);
+        teleport(&mut w, &mut t, id, 0.0, 0.0, 0.0);
+        assert!(racer(&w, id).finish_tick > 0);
+    }
+    // Everyone still racing finished: the heat ends without the grace.
+    assert_eq!(race_phase(&w), heat_phase::RESULTS);
+    let score = |w: &World, id| w.mode().player(id).unwrap().score;
+    assert_eq!([score(&w, a), score(&w, b), score(&w, c)], [10, 8, 0]);
+    assert_eq!(racer(&w, c).last_place, 0);
+    while race_phase(&w) == heat_phase::RESULTS {
+        w.step(&mut t, &[]);
+    }
+    w.step(&mut t, &[]);
+    assert_eq!(race(&w).heat, 1);
+    assert!(w.is_spectator(c), "spectating by choice stays out");
+    assert!(!racer(&w, c).in_heat);
+    for &id in &[a, b] {
+        assert!(racer(&w, id).in_heat, "finishers race again");
+        assert!(!w.is_spectator(id));
+    }
+    // Back to racing during the start lights.
+    w.set_spectator(c, false).unwrap();
+    w.step(&mut t, &[]);
+    assert!(racer(&w, c).in_heat);
+}
+
+/// D1 review: when every racer of a running heat leaves, players waiting
+/// for the next heat do not watch an empty race until the heat limit: the
+/// heat starts over with them.
+#[test]
+fn waiting_players_race_when_the_heat_empties() {
+    let (mut w, mut t, ids) = race_world(1);
+    lights_out(&mut w, &mut t);
+    let late = w.add_player(None, ShipType::Tinker).unwrap();
+    assert!(w.is_spectator(late));
+    step(&mut w, &mut t, 10);
+    assert!(w.remove_player(ids[0]));
+    w.step(&mut t, &[]);
+    assert_eq!(race_phase(&w), heat_phase::LIGHTS);
+    assert_eq!(race(&w).heat, 0, "the same heat starts over");
+    w.step(&mut t, &[]);
+    assert!(racer(&w, late).in_heat);
+    assert!(!w.is_spectator(late));
+    assert!(w.ship(late).unwrap().alive);
+    lights_out(&mut w, &mut t);
+    assert!(!held(&w, late));
+}
+
+/// D1 review: a comedy event still running when a heat ends (Duck parade
+/// lasts 45 s; its ducks fly the belt's middle ring through the slots)
+/// ends with the heat reset, so the next heat's start lights hold every
+/// racer in its slot.
+#[test]
+fn a_running_event_ends_with_the_heat() {
+    // Without the drifting boulders (they may cross the test belt's slots).
+    let (mut setup, mut t) = belt_arena();
+    setup.belt.as_mut().unwrap().boulders.clear();
+    let mut cfg = WorldConfig::paint_the_void(7, setup);
+    cfg.rules = belt_up_rules();
+    // Long start lights: the ducks would cross several slots meanwhile.
+    if let crate::ModeRules::BeltUp(r) = &mut cfg.rules.mode {
+        r.lights_secs = 25.0;
+    }
+    let mut w = World::new(cfg).unwrap();
+    let ids: Vec<PlayerId> = (0..8)
+        .map(|_| w.add_player(None, ShipType::Tinker).unwrap())
+        .collect();
+    lights_out(&mut w, &mut t);
+    step(&mut w, &mut t, 60);
+    w.schedule_event(w.tick() + 1, crate::EventKind::DuckParade);
+    step(&mut w, &mut t, 200);
+    let running = |w: &World| {
+        w.director()
+            .current
+            .as_ref()
+            .is_some_and(|e| e.kind == crate::EventKind::DuckParade)
+    };
+    assert!(running(&w), "the parade runs");
+    // The heat ends on its limit; the results pass.
+    w.mode_mut().race.as_mut().unwrap().phase_end_tick = w.tick() + 1;
+    while race(&w).heat == 0 {
+        w.step(&mut t, &[]);
+    }
+    assert_eq!(race_phase(&w), heat_phase::LIGHTS);
+    assert!(!running(&w), "the event ended with the heat reset");
+    // Everyone stays in its slot through the lights.
+    w.step(&mut t, &[]);
+    let b = belt(&w);
+    let mut worst = 0.0f32;
+    while race_phase(&w) == heat_phase::LIGHTS {
+        for id in &ids {
+            let slot = racer(&w, *id).slot as usize;
+            let d = w.ship(*id).unwrap().pos.distance(b.slots[slot].pos);
+            worst = worst.max(d);
+        }
+        w.step(&mut t, &[]);
+    }
+    assert!(worst < 0.05, "a racer left its slot by {worst} u");
+}

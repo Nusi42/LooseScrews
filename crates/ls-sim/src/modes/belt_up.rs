@@ -595,6 +595,15 @@ impl ModeModule for BeltUp {
             || race.phase != heat_phase::LIGHTS
     }
 
+    /// Back from spectating only into a heat's start lights with a free
+    /// seat (the lights seat it).
+    fn may_stop_spectating(&self, m: &ModeRef, _player: PlayerId) -> bool {
+        m.state
+            .race
+            .as_ref()
+            .is_none_or(|race| race.phase == heat_phase::LIGHTS && race.in_heat() < MAX_RACERS)
+    }
+
     fn on_start(&self, m: &mut ModeCtx) {
         let r = rules(m.rules);
         let now = m.now();
@@ -731,6 +740,36 @@ impl ModeModule for BeltUp {
         let ships = m.ctx.view.ships;
         race.racers.retain(|id, _| ships.contains_key(id));
         race.bump_ready.retain(|(_, _, t)| *t > now);
+        // Racers who switched to spectating during the heat (finishers
+        // spectate too, but with their finish tick) leave it: no place, no
+        // points, and they stay out of the next heats until they play again.
+        let racing_or_lights = matches!(race.phase, heat_phase::LIGHTS | heat_phase::RACING);
+        for (id, x) in race.racers.iter_mut() {
+            let spectating = m
+                .state
+                .player(*id)
+                .is_some_and(|p| p.flags & player_flags::SPECTATOR != 0);
+            if x.in_heat && x.finish_tick == 0 && spectating {
+                x.in_heat = false;
+                if racing_or_lights {
+                    x.place = 0;
+                }
+                if race.phase == heat_phase::LIGHTS {
+                    race.dirty = true;
+                }
+            }
+        }
+        // Everyone racing left while others wait for the next heat: the
+        // heat starts over with them instead of running empty to its limit.
+        if race.phase == heat_phase::RACING && race.in_heat() == 0 {
+            let seats_someone = race.racers.iter().any(|(id, x)| {
+                x.order >= u32::MAX / 2 || !m.state.player(*id).is_some_and(|p| p.is_out())
+            });
+            if seats_someone {
+                start_heat(m.state, &mut race, now, &r);
+                m.ctx.push(crate::Command::ResetRound);
+            }
+        }
         match race.phase {
             heat_phase::LIGHTS => {
                 // Players who stopped spectating during the lights race.

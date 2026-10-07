@@ -192,8 +192,6 @@ export interface GameHandle {
   practiceEdit?(add: boolean, x: number, y: number, z: number, radius: number): boolean;
   /** Practice only (gallery, M3 C1): The Squeeze's shell on the terrain; a radius below 0 removes it. */
   practiceShell?(x: number, y: number, z: number, radius: number): boolean;
-  /** Practice only (M4 C3, `?event=<id>`): forces the comedy event with this `eventIds()` index `delay` ticks from now; false online. */
-  practiceEvent?(event: number, delay: number): boolean;
   // M4 protocol 6 (ls-wasm level.rs, modes.rs; the mood is in modeState() JSON as `mood`).
   /** `ArchitectAction` packet placing a stroke (send reliably; `undefined` offline). */
   architectActionPacket?(stroke: number, x: number, y: number, z: number, radius: number): Uint8Array | undefined;
@@ -217,6 +215,10 @@ export interface GameHandle {
   readonly monochrome?: boolean;
   /** Radiation dose rate (hull per second) at a point; 0 on classic levels. */
   doseRateAt?(x: number, y: number, z: number): number;
+  /** Practice only (`?event=`, game/eventParam.ts): forces a comedy event `delaySecs` from now; false online or for an unknown id. */
+  practiceEvent?(id: string, delaySecs: number): boolean;
+  /** Practice only (browser smoke): runs `secs` of simulation at once with the own ship idle; returns the ticks run. */
+  practiceWarp?(secs: number): number;
   free(): void;
 }
 

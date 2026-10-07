@@ -31,11 +31,21 @@
 //                           (Team Brawl, The Squeeze, Paint the Void, Hot
 //                           Reactor, Heist, Last Color Standing) plus Instagib
 //                           Brawl, each shortened to --match-secs, on random
-//                           worlds (written to <log-dir>/playlist/);
+//                           worlds, then (M4) a Team Brawl on a world with
+//                           Absurdity 100 (longer, so the director rolls too),
+//                           The Architect (rounds shortened) and Belt Up on a
+//                           random belt (heats shortened; left out when more
+//                           than 8 players would race) (written to
+//                           <log-dir>/playlist/);
 //                           `default` = the server's built-in rotation at full
 //                           length (the M3 soak: --duration 3600 --count 8);
 //                           or a playlist file [none]
 //   --match-secs <s>        match length of the quick playlist [45]
+//   --event-schedule <s>    passed to ls-server --event-schedule (testing
+//                           flag): comedy events forced in every match, a
+//                           file or `<seconds> <event|next>, ...`; `off` for
+//                           none [`5 next, 6 next` with --playlist quick,
+//                           else none]
 //   --warmup <s>            lobby warm-up; 0 together with --countdown 0
 //                           turns the lobby off [0; 10 with --playlist]
 //   --countdown <s>         lobby countdown [0; 2 with --playlist]
@@ -80,6 +90,9 @@
 // protocol errors or desyncs), full snapshots per join or transition within
 // --max-full-per-join, a match reached its result, tick p99 under budget.
 // --welcome-probes: every probe got its Welcome within --welcome-budget-ms.
+// --event-schedule (and the quick playlist): every match room got its forced
+// events, the first forced event of every public match was announced, every
+// announced event went active, the events seen are listed.
 
 import { spawn, spawnSync } from "node:child_process";
 import { createWriteStream, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -112,6 +125,7 @@ const defaults = {
   transport: "ws",
   playlist: "",
   "match-secs": "45",
+  "event-schedule": "",
   warmup: "",
   countdown: "",
   intermission: "",
@@ -203,8 +217,24 @@ function parseArgs(argv) {
     privateRooms,
     welcomeProbes: o["welcome-probes"] === "" ? rotating : o["welcome-probes"] === "on",
     welcomeBudgetMs: posNum(o["welcome-budget-ms"], "welcome-budget-ms"),
+    eventSchedule: eventScheduleArg(o["event-schedule"], o.playlist),
   };
 }
+
+/**
+ * `--event-schedule`: the ls-server argument (a file path made absolute, or
+ * an inline spec), `""` for none. Default: `5 next, 6 next` with the quick
+ * playlist (two forced events per match, every event in turn over the
+ * rotation), none otherwise (exported for tests).
+ */
+export function eventScheduleArg(value, playlist) {
+  if (value === "off") return "";
+  if (value === "") return playlist === "quick" ? QUICK_EVENT_SCHEDULE : "";
+  return existsSync(value) ? resolve(value) : value;
+}
+
+/** The quick playlist's forced events. */
+export const QUICK_EVENT_SCHEDULE = "5 next, 6 next";
 
 /** `rules:bots,...` -> [{rules, bots}] (exported for tests). */
 export function parsePrivateRooms(spec) {
@@ -255,7 +285,10 @@ const num = (v) => (v === undefined ? Number.NaN : Number(v));
 
 /**
  * The quick rotation: built-in rule set file, and mode settings to override
- * (`null` = --match-secs). Every mode of the default rotation, plus Instagib.
+ * (`+60` = --match-secs + 60, `half` = half of it), and optionally the
+ * entry's `world` (playlist syntax), its file name and a player range. Every
+ * mode of the default rotation, plus Instagib; then (M4) Absurdity 100, The
+ * Architect and Belt Up.
  */
 export const QUICK_ENTRIES = [
   ["team_brawl", {}],
@@ -268,6 +301,13 @@ export const QUICK_ENTRIES = [
   // The stalemate drain starts half way through.
   ["last_color_standing", { stalemate_secs: "half", stalemate_drain_secs: 0.5 }],
   ["instagib_brawl", {}],
+  // M4: a world at Absurdity 100 (the rule sets cap at 100 already), long enough for the director's
+  // own rolls after its quiet first 45 s.
+  ["team_brawl", { match_secs: 110 }, { world: "RandomSliders(absurdity: (100, 100))", file: "absurdity_100" }],
+  // M4: 3 rounds of 15 s for 3+ players (one architect, the rest runners).
+  ["the_architect", { round_secs: 15, round_results_secs: 3, match_secs: "+60" }, { minPlayers: 2 }],
+  // M4: three heats of at most 20 s on a random belt, at most 8 racers.
+  ["belt_up", { heat_limit_secs: 20, finish_grace_secs: 5, results_secs: 3, match_secs: "+60" }, { maxPlayers: 8 }],
 ];
 
 /** Sets `field: <number>` in a rule set's RON text; throws when the field is missing. */
@@ -293,6 +333,12 @@ export function quickRuleSet(text, overrides, matchSecs) {
 export function matchLength(text) {
   const f = (k) => Number(new RegExp(`\\b${k}:\\s*([0-9.]+)`).exec(text)?.[1] ?? Number.NaN);
   let secs = f("match_secs");
+  // The Architect: rounds (at most max_rounds) with their results.
+  const rounds = f("max_rounds") * (f("round_secs") + f("round_results_secs"));
+  if (Number.isFinite(rounds)) secs = Math.min(secs, rounds);
+  // Belt Up: heats of start lights, the race and heat results.
+  const heats = f("heats") * (f("lights_secs") + f("heat_limit_secs") + f("results_secs"));
+  if (Number.isFinite(heats)) secs = Math.min(secs, heats);
   const first = f("first_phase_secs");
   if (Number.isFinite(first)) {
     // The Squeeze seals after its phases and a final close of 4 close times.
@@ -306,16 +352,22 @@ export function matchLength(text) {
  * Writes the quick playlist into `dir`; returns `{file, entries}` with each
  * entry's `source` (as the server logs it) and longest match length.
  */
-function writeQuickPlaylist(dir, matchSecs) {
+export function writeQuickPlaylist(dir, matchSecs, players = 0) {
   mkdirSync(dir, { recursive: true });
   const entries = [];
   const lines = ["// Generated by tools/e2e.mjs --playlist quick: every mode, shortened.", "Playlist(", "    entries: ["];
-  for (const [id, overrides] of QUICK_ENTRIES) {
+  for (const [id, overrides, extra = {}] of QUICK_ENTRIES) {
+    // Belt Up races at most 8: with more players the entry would never be picked.
+    if (extra.maxPlayers && players > extra.maxPlayers) {
+      console.log(`e2e: quick playlist without ${id} (${players} players, at most ${extra.maxPlayers})`);
+      continue;
+    }
     const src = readFileSync(join(repoRoot, "data", "rulesets", `${id}.ron`), "utf8");
     const text = quickRuleSet(src, overrides, matchSecs);
-    const file = `${id}.ron`;
+    const file = `${extra.file ?? id}.ron`;
     writeFileSync(join(dir, file), text);
-    lines.push(`        (rules: "${file}", world: Random),`);
+    const range = `${extra.minPlayers ? `, min_players: ${extra.minPlayers}` : ""}${extra.maxPlayers ? `, max_players: ${extra.maxPlayers}` : ""}`;
+    lines.push(`        (rules: "${file}", world: ${extra.world ?? "Random"}${range}),`);
     entries.push({ source: file, secs: matchLength(text) });
   }
   lines.push("    ],", ")", "");
@@ -766,6 +818,76 @@ function checkRotation(server, totals, opts, plan) {
   }
 }
 
+/**
+ * Comedy events from the server log (`comedy event` phase lines and the
+ * `--event-schedule` lines; exported for tests): per room, the match rooms
+ * with their forced events, the events announced in each and whether the
+ * match finished, and the events that went active and ended.
+ */
+export function eventsFromLog(text) {
+  const rooms = new Map();
+  const room = (name) => {
+    if (!rooms.has(name)) rooms.set(name, { matches: [], announced: [], active: new Set(), over: new Set() });
+    return rooms.get(name);
+  };
+  for (const raw of text.replace(ANSI, "").split(/\r?\n/)) {
+    if (raw.includes("event schedule: events forced")) {
+      const f = parseFields(raw);
+      const forced = (f.events ?? "")
+        .split(",")
+        .filter(Boolean)
+        .map((e) => {
+          const [id, at] = e.split("@");
+          return { id, secs: Number.parseFloat(at) };
+        });
+      room(f.room ?? "?").matches.push({ forced, announced: [], finished: false });
+    } else if (raw.includes("match over")) {
+      const r = rooms.get(parseFields(raw).room ?? "?");
+      const m = r?.matches[r.matches.length - 1];
+      if (m) m.finished = true;
+    } else if (raw.includes("comedy event")) {
+      const f = parseFields(raw);
+      const r = room(f.room ?? "?");
+      if (f.phase === "Announce") {
+        r.announced.push(f.event);
+        r.matches[r.matches.length - 1]?.announced.push(f.event);
+      } else if (f.phase === "Active") r.active.add(f.event);
+      else if (f.phase === "Over") r.over.add(f.event);
+    }
+  }
+  return rooms;
+}
+
+function checkEvents(server, opts) {
+  const rooms = eventsFromLog(server.text);
+  const pub = rooms.get("public") ?? { matches: [], announced: [], active: new Set(), over: new Set() };
+  const all = [...rooms.values()].flatMap((r) => r.announced);
+  const distinct = [...new Set(all)].sort();
+  if (opts.eventSchedule) {
+    check("event schedule: every public match room got its forced events", pub.matches.length > 0 && pub.matches.every((m) => m.forced.length > 0),
+      `${pub.matches.length} match rooms: ${pub.matches.map((m) => m.forced.map((e) => e.id).join("+")).join(", ")}`);
+    // The first forced event starts at its time (the director rolls nothing in a match's first
+    // 45 s), so every finished match announced it; later ones wait for the running event to end.
+    // A match the bots left before its end (the last one of the run) is not counted.
+    const finished = pub.matches.filter((m) => m.finished && m.forced.length > 0);
+    const missed = finished.filter((m) => !m.announced.includes(m.forced[0].id));
+    check("event schedule: the first forced event of every finished public match was announced", finished.length > 0 && missed.length === 0,
+      missed.length ? `missed: ${missed.map((m) => m.forced[0].id).join(", ")}` : `${finished.length} of ${finished.length}`);
+    const forced = pub.matches.flatMap((m) => m.forced.map((e) => e.id));
+    const started = pub.matches.flatMap((m) => m.forced.filter((e) => m.announced.includes(e.id)).map((e) => e.id));
+    note(`forced events announced: ${started.length} of ${forced.length} (${new Set(started).size} distinct)`);
+  }
+  if (all.length > 0) {
+    // An event announced in a match's last 3 s ends with the match before it goes active.
+    const stuck = [...rooms.values()].flatMap((r) => r.announced.filter((e) => !r.active.has(e)));
+    note(`comedy events announced: ${all.length} (${distinct.length} distinct: ${distinct.join(", ")})`);
+    check("comedy events: announced events went active", stuck.length <= pub.matches.length,
+      stuck.length ? `never active: ${stuck.join(", ")}` : `${all.length} announced, all active`);
+  } else if (opts.eventSchedule) {
+    check("comedy events: some event announced", false, "no `comedy event` line in the server log");
+  }
+}
+
 /** Per private room: its bots and the room's server lines. */
 function checkPrivateRooms(rooms, server, opts) {
   for (const r of rooms) {
@@ -861,7 +983,8 @@ async function main() {
   const base = `http://127.0.0.1:${port}`;
 
   let plan = null;
-  if (opts.playlist === "quick") plan = writeQuickPlaylist(join(opts.logDir, "playlist"), opts.matchSecs);
+  // The welcome probes take one more player slot for a moment.
+  if (opts.playlist === "quick") plan = writeQuickPlaylist(join(opts.logDir, "playlist"), opts.matchSecs, opts.count + (opts.welcomeProbes ? 1 : 0));
   else if (opts.playlist === "default") plan = defaultPlaylist(opts.count);
   else if (opts.playlist) plan = filePlaylist(opts.playlist);
   if (plan && opts.duration === 0) {
@@ -906,10 +1029,11 @@ async function main() {
       "--stats-interval", String(opts.statsInterval),
       // A free slot for the Welcome probes next to the bots.
       ...(opts.welcomeProbes ? ["--max-players", String(Math.max(8, opts.count + 1))] : []),
+      ...(opts.eventSchedule ? ["--event-schedule", opts.eventSchedule] : []),
       "--exit-when-empty",
     ],
     join(opts.logDir, "server.log"),
-    (l) => /listening|WARN|ERROR|final stats|match over|registered/.test(l),
+    (l) => /listening|WARN|ERROR|final stats|match over|registered|comedy event.*phase=Announce/.test(l),
   );
   // Level generation takes ~2 s in release, ~30 s in debug.
   if (!(await waitForLine(server, /listening \(http \+ websocket/, 120_000))) {
@@ -1044,6 +1168,7 @@ async function main() {
   checkTransport(bots, server, opts);
   if (privateRooms.length) checkPrivateRooms(privateRooms, server, opts);
   if (opts.welcomeProbes) checkProbes(probes, opts);
+  checkEvents(server, opts);
   if (directoryUrl) checkDirectory(snaps, info, `127.0.0.1:${port}`, afterShutdown, opts);
   finish(opts);
 }

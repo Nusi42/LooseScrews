@@ -28,7 +28,7 @@ pub mod terrain;
 
 pub use convert::NetConv;
 pub use error::GameError;
-pub use setup::{build_match, match_setup, MatchConfig};
+pub use setup::{build_match, build_match_lazy, match_setup, MatchConfig};
 pub use terrain::GameTerrain;
 
 /// The `Hello` a client sends: name, preferred team and ship type, and the

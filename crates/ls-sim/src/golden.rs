@@ -281,6 +281,23 @@ pub fn mode_replay_hashes() -> Vec<String> {
         .collect()
 }
 
+/// Fixture lines of every M4 mood replay, in the order of
+/// `tests/fixtures/mood_replays.txt`: the world physics replays
+/// (`world/`), every built event's replay (`event/`) and the Architect and
+/// Belt Up replays (`mode/`). What `ls-wasm`'s `moodReplayHashes` returns
+/// for `tools/determinism-check.mjs`.
+pub fn mood_replay_hashes() -> Vec<String> {
+    let mut lines = crate::world_replays::world_replay_hashes();
+    lines.extend(crate::events::replays::event_replay_hashes());
+    lines.push(format!(
+        "{} {:#018x}",
+        crate::modes::the_architect::replay::ARCHITECT_REPLAY,
+        crate::modes::the_architect::replay::architect_replay().hash
+    ));
+    lines.push(crate::modes::belt_up::replay::belt_up_replay_line());
+    lines
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

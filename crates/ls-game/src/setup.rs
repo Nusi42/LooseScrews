@@ -470,8 +470,22 @@ pub fn heist_level(gen: &Generator) -> Option<HeistLevel> {
 }
 
 /// Builds the terrain for `cfg.code`, the setup and a [`World`] at tick 0,
-/// ready for players and [`World::step`].
+/// ready for players and [`World::step`]. Every chunk of the level is
+/// generated here, so no tick of the match has to: Paint the Void's first
+/// coverage query (tick 30) used to generate the whole level inside that
+/// tick (0.5-1.2 s in release) on worlds built without it. Tests that stay
+/// below tick 30 and want a fast build use [`build_match_lazy`].
 pub fn build_match(cfg: &MatchConfig) -> Result<(World, GameTerrain), GameError> {
+    let (world, mut terrain) = build_match_lazy(cfg)?;
+    terrain.generate_all();
+    Ok((world, terrain))
+}
+
+/// [`build_match`] with the chunks generated on demand: the first query
+/// that needs the whole level (Paint the Void's coverage at tick 30)
+/// generates it inside that tick. For tests that never get there and for
+/// [`crate::server::Room::new`], which generates per `RoomConfig::pregenerate`.
+pub fn build_match_lazy(cfg: &MatchConfig) -> Result<(World, GameTerrain), GameError> {
     let terrain = GameTerrain::from_code(&cfg.code)?;
     let setup = match_setup(&cfg.code, &cfg.rules, &terrain)?;
     let mut world = World::new(cfg.world_config(setup))?;
@@ -827,7 +841,7 @@ mod tests {
         let c = ShareCode::new(old.seed, old.sliders);
         assert_eq!((c.sliders.enclosure, c.sliders.density), (75, 20));
         let cfg = MatchConfig::paint_the_void(c);
-        let (world, terrain) = build_match(&cfg).unwrap();
+        let (world, terrain) = build_match_lazy(&cfg).unwrap();
         let setup = match_setup(&c, &cfg.rules, &terrain).unwrap();
         check_setup(&c, &terrain, &setup, 2);
         assert_eq!(world.tick(), 0);
@@ -1338,7 +1352,7 @@ mod tests {
     #[test]
     fn build_match_gives_a_steppable_world() {
         let cfg = MatchConfig::paint_the_void(code(5));
-        let (mut world, mut terrain) = build_match(&cfg).unwrap();
+        let (mut world, mut terrain) = build_match_lazy(&cfg).unwrap();
         let p0 = world.add_player(None, ls_sim::ShipType::Tinker).unwrap();
         let p1 = world.add_player(None, ls_sim::ShipType::Tinker).unwrap();
         assert_ne!(world.ship(p0).unwrap().team, world.ship(p1).unwrap().team);

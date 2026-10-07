@@ -21,7 +21,7 @@ the game's data files, so those pages always match the build.
 - [Weapons](#weapons)
 - [Surviving a Tectonic Charge](#surviving-a-tectonic-charge)
 - [Gadgets](#gadgets)
-- [The level fights back](#the-level-fights-back)
+- [The level fights back](#the-level-fights-back) ([comedy events](#comedy-events))
 - [Pickups and wrecks](#pickups-and-wrecks)
 - [Game modes](#game-modes): [Paint the Void](#paint-the-void), [Team Brawl](#team-brawl),
   [The Squeeze](#the-squeeze), [Heist](#heist), [Hot Reactor](#hot-reactor),
@@ -35,7 +35,8 @@ the game's data files, so those pages always match the build.
 - [Not in this build yet](#not-in-this-build-yet)
 
 Reference tables: [weapons](reference/weapons.md), [ships](reference/ships.md),
-[gadgets](reference/gadgets.md), [modes](reference/modes.md).
+[gadgets](reference/gadgets.md), [modes](reference/modes.md),
+[comedy events](reference/events.md).
 
 ## What Loose Screws is
 
@@ -599,6 +600,65 @@ The HUD's gadget line shows "on", "off", "ready" or the cooldown in seconds.
 
 Every hit leaves a mark that lasts, so a long fight visibly carves up the arena.
 
+### Comedy events
+
+The level has moods, and now and then it plays a joke on everyone: a cat paw sweeps through the
+wall, a tax drone hunts the leader, rubber ducks parade through the tunnels, hats rain down,
+the game turns into a side-scroller for ten seconds. How often depends on the world's
+**Absurdity** slider (a server's rules can cap it; 0 means none). Every event is announced
+3 seconds ahead with a banner, the announcer's line and a tell in the world, and nothing an
+event does gives anyone kill credit. Nothing happens in a match's first 45 seconds or its last
+20. The [comedy event reference](reference/events.md) lists all 18 with their numbers.
+
+To try one without waiting, start practice with `?event=<id>` in the address, for example
+`?event=duck_parade` (two seconds after you spawn), `?event=hat_rain@10` (after ten
+seconds) or `?event=all` (every event in turn). The ids are in the reference.
+
+### Comedy events: the level's own jokes
+
+Every event is announced 3 seconds before it starts: a card under the score bar with its name and
+icon (and the pilot it aims at, if any), the announcer's line and a fanfare. While it runs, a
+small pill under the score bar shows its name and a ring of the time left. Eight of the jokes are
+the level itself:
+
+| Event | What happens | What you see and hear |
+| --- | --- | --- |
+| **Bored level** | The level's "up" turns 90 degrees over 5 s and stays turned | Sleepy Z's drift over the screen while it is announced, then a long yawn and the stone creaking; the sky, sun and shadows turn, horizon assist rolls you with them, grit slides toward the new down, and an arrow around the crosshair shows where "down" is now |
+| **Level hiccups** | For 15 s, every 3 s or so, the level lifts everything about 2 u | "HIC!" pops on the screen, the view dips and nods, dust and pebbles shake off the ceilings and bubbles rise from every ship |
+| **Gravity coffee break** | Every gravity well switches off for 20 s | A coffee mug drops onto each well's core stone, the wells dim and stop swirling, the mugs steam and take a sip now and then, lounge music plays; when the break is over the mugs lift off |
+| **Wrong genre** | For 10 s every ship is locked to a flat plane, facing left or right | The game turns into an 80s side-scroller: the camera swings out to the side with the rock in front cut away (bricks), the picture drops to big pixels in 16 colours, everyone is drawn in your plane (shots hit by their position on the screen), a chiptune plays, then a 1-UP jingle |
+| **Big head day** | For 15 s every ship is three times as easy to hit with shots | Every ship wears a balloon head of exactly that size with googly eyes that follow you; hits honk and make it wobble; at the end they all pop |
+| **Rubber chickens** | For 12 s every new shot is a rubber chicken (same speed, damage and craters) | Shots fly as squeaking rubber chickens (the Tectonic Charge as a giant egg) and burst into feathers where they hit |
+| **Moving day** | Every pickup moves to another pickup point; for 2 s nothing can be taken | The pickups are packed into taped cardboard boxes that hop to their new places, land with a thump and pop open |
+| **Everything is cake** | For 20 s craters are bigger and debris repairs twice as much hull | The rock turns into a layer cake in a wave (sponge, cream, jam, pink frosting with sprinkles) after a party horn; shots throw cake crumbs |
+
+### Comedy events: visitors
+
+Some comedy events send a visitor into the level. Each one is announced 3 seconds ahead, and
+the announcer names the pilot it is after.
+
+| Visitor | What you see | What to do |
+| --- | --- | --- |
+| **Tax drone** | A beige box drone with a frowning visor, a red tie and a red-and-blue siren waits at a cavern entrance, then chases the leader | Every touch takes 10% of the leader's energy (you see it streaming into the drone's receipt printer; up to 5 touches, and the receipt gets longer). Shoot it down (40 hp) for a scrap pile of what it took |
+| **Pizza delivery** | A red delivery drone with a steaming pizza box rings the doorbell next to a hurt pilot | The recipient holds still near it for 3 seconds in total: a pizza assembles slice by slice under the ship (and a ring fills around the crosshair), then the hull is full. Anyone else can shoot the drone (30 hp) and the pizza becomes 50 scrap |
+| **Customer survey** | A teal call-centre drone holds a five-star panel right in front of the leader's view ("How was your match today?") | Shoot a star: the star the destroying shot goes through is the leader's rating, shown to everyone and listed in the match results. Unanswered, it floats off after 12 seconds |
+| **Mimic pickups** | Some weapon and upgrade crates tremble and peek, then grow teeth, a tongue and googly eyes and hop at the nearest pilot | They bite (12 damage). Shoot one (25 hp) and its loot drops where it died, real again; the survivors hop home after 20 seconds |
+| **Gossip wall** | A stone face pushes out of the rock nearest the pilots and starts whispering | For 15 seconds everyone is revealed to everyone, cloaked pilots too: pink eye markers with names show through the rock, and the face tells you where people are ("Psst. Ana is 40 u below you. Again.") |
+
+Damage from visitors gives nobody a kill.
+
+### Comedy events: spectacles
+
+The last five are big shows:
+
+| Event | What you see and hear | What to do |
+| --- | --- | --- |
+| **Duck parade** | Five giant rubber ducks waddle along the tunnels to a kazoo march, trailing soap bubbles. The first wears a top hat, the last wears sunglasses. In tight tunnels they squeeze thin and long, and they pop back into shape after. They squeak when they swallow a shot or shove a ship. | Get out of the way: ducks push ships aside and soak up shots. They do no damage. |
+| **Hat rain** | Hats flutter down and land on the rock: top hats, cowboy hats, party cones, chef's hats, crowns, propeller beanies, fezzes and viking helmets. Fly through one and it pops onto your hull. Your stack sways when you turn, and the HUD shows your count. | Collect them. With three or more, a gold glint above your stack shows where you are, and the HUD says "Everyone sees you". Whoever wears the most hats at the end is named the **Hat Baron**. |
+| **Cat paw** | The boundary wall near a group of ships glows with the paw's print, and three red-hot claws poke through. Then a giant ginger paw with pink toe beans bursts through and swipes along. Rock sprays where its claws rake, and ginger fur drifts down after it. | Leave when the wall starts to glow. The paw hits for 30 and throws you hard. |
+| **Disco inferno** | The sun, sky and cave light drop to almost nothing, and your headlight dims too. A mirror ball comes down over the fight with eight coloured spotlights. Every ship leaves a glowing trail in its side's colour, even in black-and-white levels, and a four-on-the-floor beat plays. | Use the trails to find the others, and remember they can see yours. |
+| **Tired announcer** | For 30 seconds, every kill plays as a 3-second replay from behind the killer in a small "Kill-cam" window at the top left, with a deadpan line from the announcer. While the event is being announced, the window shows static and "Zzz". | Nothing. Enjoy the replays. |
+
 ### Craters and rock strength
 
 Explosions blast craters (up to 6 u across for a Heavy Rocket, a 35 u cave-in for a Tectonic
@@ -657,59 +717,6 @@ table; blue paint on the walls of a tunnel lets you scrape along at full speed.
 
 A Tectonic Charge leaves a dust cloud 35 u in radius (70 u across) for 20 s. Inside it, the fog closes in and you
 see much less, and so does everyone else inside it.
-
-### Comedy events
-
-With **Absurdity** above 0 the level now and then plays a joke on everyone. Every event is
-announced 3 seconds before it starts: a card under the score bar with its name and icon (and the
-pilot it aims at, if any), the announcer's line and a fanfare. While it runs, a small pill under
-the score bar shows its name and a ring of the time left.
-
-| Event | What happens | What you see and hear |
-| --- | --- | --- |
-| **Bored level** | The level's "up" turns 90 degrees over 5 s and stays turned | Sleepy Z's drift over the screen while it is announced, then a long yawn and the stone creaking; the sky, sun and shadows turn, horizon assist rolls you with them, grit slides toward the new down, and an arrow around the crosshair shows where "down" is now |
-| **Level hiccups** | For 15 s, every 3 s or so, the level lifts everything about 2 u | "HIC!" pops on the screen, the view dips and nods, dust and pebbles shake off the ceilings and bubbles rise from every ship |
-| **Gravity coffee break** | Every gravity well switches off for 20 s | A coffee mug drops onto each well's core stone, the wells dim and stop swirling, the mugs steam and take a sip now and then, lounge music plays; when the break is over the mugs lift off |
-| **Wrong genre** | For 10 s every ship is locked to a flat plane, facing left or right | The game turns into an 80s side-scroller: the camera swings out to the side with the rock in front cut away (bricks), the picture drops to big pixels in 16 colours, everyone is drawn in your plane (shots hit by their position on the screen), a chiptune plays, then a 1-UP jingle |
-| **Big head day** | For 15 s every ship is three times as easy to hit with shots | Every ship wears a balloon head of exactly that size with googly eyes that follow you; hits honk and make it wobble; at the end they all pop |
-| **Rubber chickens** | For 12 s every new shot is a rubber chicken (same speed, damage and craters) | Shots fly as squeaking rubber chickens (the Tectonic Charge as a giant egg) and burst into feathers where they hit |
-| **Moving day** | Every pickup moves to another pickup point; for 2 s nothing can be taken | The pickups are packed into taped cardboard boxes that hop to their new places, land with a thump and pop open |
-| **Everything is cake** | For 20 s craters are bigger and debris repairs twice as much hull | The rock turns into a layer cake in a wave (sponge, cream, jam, pink frosting with sprinkles) after a party horn; shots throw cake crumbs |
-
-The other comedy events of the design (tax drone, pizza, cat paw and more) already happen in
-matches; their own looks come with the next builds.
-
-### Visitors (comedy events)
-
-Some comedy events send a visitor into the level. Each one is announced 3 seconds ahead, and
-the announcer names the pilot it is after.
-
-| Visitor | What you see | What to do |
-| --- | --- | --- |
-| **Tax drone** | A beige box drone with a frowning visor, a red tie and a red-and-blue siren waits at a cavern entrance, then chases the leader | Every touch takes 10% of the leader's energy (you see it streaming into the drone's receipt printer; up to 5 touches, and the receipt gets longer). Shoot it down (40 hp) for a scrap pile of what it took |
-| **Pizza delivery** | A red delivery drone with a steaming pizza box rings the doorbell next to a hurt pilot | The recipient holds still near it for 3 seconds in total: a pizza assembles slice by slice under the ship (and a ring fills around the crosshair), then the hull is full. Anyone else can shoot the drone (30 hp) and the pizza becomes 50 scrap |
-| **Customer survey** | A teal call-centre drone holds a five-star panel right in front of the leader's view ("How was your match today?") | Shoot a star: the star the destroying shot goes through is the leader's rating, shown to everyone and listed in the match results. Unanswered, it floats off after 12 seconds |
-| **Mimic pickups** | Some weapon and upgrade crates tremble and peek, then grow teeth, a tongue and googly eyes and hop at the nearest pilot | They bite (12 damage). Shoot one (25 hp) and its loot drops where it died, real again; the survivors hop home after 20 seconds |
-| **Gossip wall** | A stone face pushes out of the rock nearest the pilots and starts whispering | For 15 seconds everyone is revealed to everyone, cloaked pilots too: pink eye markers with names show through the rock, and the face tells you where people are ("Psst. Ana is 40 u below you. Again.") |
-
-Damage from visitors gives nobody a kill.
-
-### Comedy events you will see
-
-Now and then the level plays a joke on everyone. The announcer names it three seconds before it
-starts. Five of them have their full look and sound in this build:
-
-| Event | What you see and hear | What to do |
-| --- | --- | --- |
-| **Duck parade** | Five giant rubber ducks waddle along the tunnels to a kazoo march, trailing soap bubbles. The first wears a top hat, the last wears sunglasses. In tight tunnels they squeeze thin and long, and they pop back into shape after. They squeak when they swallow a shot or shove a ship. | Get out of the way: ducks push ships aside and soak up shots. They do no damage. |
-| **Hat rain** | Hats flutter down and land on the rock: top hats, cowboy hats, party cones, chef's hats, crowns, propeller beanies, fezzes and viking helmets. Fly through one and it pops onto your hull. Your stack sways when you turn, and the HUD shows your count. | Collect them. With three or more, a gold glint above your stack shows where you are, and the HUD says "Everyone sees you". Whoever wears the most hats at the end is named the **Hat Baron**. |
-| **Cat paw** | The boundary wall near a group of ships glows with the paw's print, and three red-hot claws poke through. Then a giant ginger paw with pink toe beans bursts through and swipes along. Rock sprays where its claws rake, and ginger fur drifts down after it. | Leave when the wall starts to glow. The paw hits for 30 and throws you hard. |
-| **Disco inferno** | The sun, sky and cave light drop to almost nothing, and your headlight dims too. A mirror ball comes down over the fight with eight coloured spotlights. Every ship leaves a glowing trail in its side's colour, even in black-and-white levels, and a four-on-the-floor beat plays. | Use the trails to find the others, and remember they can see yours. |
-| **Tired announcer** | For 30 seconds, every kill plays as a 3-second replay from behind the killer in a small "Kill-cam" window at the top left, with a deadpan line from the announcer. While the event is being announced, the window shows static and "Zzz". | Nothing. Enjoy the replays. |
-
-To try an event in practice, add `?event=<id>` to the page address (for example
-`?event=duck_parade`, `hat_rain`, `cat_paw`, `disco_inferno`, `tired_announcer`). That event
-then starts five seconds after you begin.
 
 ## Pickups and wrecks
 
@@ -1340,11 +1347,6 @@ These are part of the game design but aren't in the Milestone 3 build:
 - **Co-op modes** (Deep Dig, Tethered, Escort the Intern).
 - **Pigment pickups** that give colour back in Last Color Standing, and black-and-white levels
   as a general feature (the Palette slider only drains the colour of the picture).
-- **World sliders:** Absurdity's events are only partly drawn (see Comedy events),
-  and gravity wells, cave-ins and radiation are felt but not yet drawn or heard.
-- **Comedy events:** eight of the eighteen have their own looks and sounds (see Comedy events); the visitors and spectacles (drones, the cat paw, ducks, hats and the rest) still look like plain rock or crates.
-- **Comedy events** ("the level has moods"): only the five listed under
-  [Comedy events you will see](#comedy-events-you-will-see) have their full look and sound so far.
 - **Voting for the next mode:** servers play their rotation in order.
 - **Sound:** no music yet, and no recorded voices: the announcer speaks in made-up robot
   speech with captions.

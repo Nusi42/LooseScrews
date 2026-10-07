@@ -101,9 +101,10 @@ import { showAudioDemo, wantsAudioDemo } from "./audio/demo.ts";
 import { emptyOutput, EventVisuals, fxFromMood, parseEventFx, wantsEventFx, wellPoints } from "./game/events/index.ts";
 import { EventHud } from "./ui/eventBanner.ts";
 import { SpectacleVisuals } from "./game/events/spectacles.ts";
-import { forcedEvent } from "./game/events/forceEvent.ts";
 import { ArchitectClient } from "./game/architect/index.ts";
 import { RaceClient } from "./game/race/index.ts";
+import { applyEventParam } from "./game/eventParam.ts";
+import { installGameHooks } from "./game/debugHooks.ts";
 
 /** Largest frame time passed to the simulation; longer stalls (tab switch) are clamped. */
 const MAX_FRAME_DT = 0.1;
@@ -233,6 +234,8 @@ async function start(): Promise<void> {
   }
   loading.remove();
   intro.stop();
+  // M4 C6: `?event=<id>` forces comedy events in practice (and `window.__lsEvents` for scripts).
+  if (options.mode !== "online") applyEventParam(session.game, location.search, api.eventIds?.() ?? []);
   if (renderer.isLost) {
     // Lost while connecting: the `lost` handler shows the error; leave the server at once.
     session.dispose();
@@ -247,6 +250,7 @@ async function start(): Promise<void> {
       return;
     }
     active = session;
+    installGameHooks(session);
     const end = await runGame(canvas, ui, renderer, session, options, prefs, weaponNames);
     active = null;
     if (end.kind === "stopped") return;
@@ -345,9 +349,6 @@ function runGame(
     // M4 C3: Duck parade, Hat rain, Cat paw, Disco inferno, the Tired announcer's kill-cams.
     const spectacles = new SpectacleVisuals(ui, particles, wantsWorldFx(location), audioEngine(), (t, v) => audio.announcer.say(t, v));
     let spectacleShake = 0;
-    // Practice: `?event=<id>` forces a comedy event a few seconds in (C3; tests and review).
-    const forced = session.isOnline ? null : forcedEvent(location);
-    if (forced !== null) game.practiceEvent?.(forced, 300);
     // The Architect (M4 C4): the architect's god camera and strokes, the exit and stroke looks, its HUD.
     const architect = new ArchitectClient(ui, game, (p) => (session.link?.isOpen ? (session.link.send(p, false), true) : false), particles, audioEngine());
     let mono = 0;

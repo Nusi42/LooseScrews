@@ -734,6 +734,27 @@ faintly and a thin rim and travelling bands shimmer in its team colour (`CLOAK_R
 `cloak` (`?cloak=flat` for the old look). Cost: the copy plus one draw per cloaked hull,
 timed in `objects` (0.01 ms with two cloaked hulls at 1080p on an RTX 5080).
 
+## Forcing comedy events and script hooks (M4 C6)
+
+Event looks are reviewed in the real client, not only in synthetic gallery scenes:
+
+- `?event=<id>[@<secs>][,...]` (or `?event=all`) forces comedy events in offline practice
+  (`web/src/game/eventParam.ts`, ls-wasm `Game.practiceEvent`; default 2 s after the start). Online
+  the server decides; hosts force events with ls-server's testing flag `--event-schedule`.
+- `window.__lsEvents` (practice): `ids`, `schedule(id, delaySecs)`, `warp(secs)` (ls-wasm
+  `Game.practiceWarp`: runs the simulation ahead at once with the own ship idle, so the middle and
+  the end of a 45 s event are reached in a frame) and `mood()`.
+- `window.__lsGame` (every session, `web/src/game/debugHooks.ts`): `playerId()`, `modeState()`,
+  `pose()`, `belt()`, `entities()` (event props by kind: `drone`, `duck`, `hat`, `catPaw`,
+  `gossipFace`, `discoBall`, `mimic`), `raycast()` and `architectStroke()` (the Architect's
+  `ArchitectAction`, validated by the server).
+
+The browser smoke's `moods` phase (`tools/browser-smoke/moods.mjs`) uses them for a three-frame
+strip per event (tell, peak, aftermath): it turns the pilot to the most open view (64 rays), then to
+the event's nearest prop (`tools/browser-smoke/steer.mjs`, mouse look as synthetic `mousemove`
+events with `movementX/Y` under the fake pointer lock), warps to each event's peak and fires for
+the shot-based events. Screenshots: `target/browser-smoke/event-<id>-{1-tell,2-peak,3-after}.png`.
+
 ## Quality presets
 
 `quality.ts`: one `RenderQuality` object per level; later packages add their switches to it.

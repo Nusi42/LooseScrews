@@ -6,14 +6,18 @@
 //   (sdf, surface_nets, dual_contouring, edited), and
 // - modeReplayHashes(): one scripted 40 s, 8-ship replay per built-in rule set
 //   (every mode, Instagib, duel; ls_sim::golden) with the native fixture
-//   crates/ls-sim/tests/fixtures/mode_replays.txt.
+//   crates/ls-sim/tests/fixtures/mode_replays.txt, and
+// - moodReplayHashes(): the M4 mood replays (world physics, every comedy
+//   event, The Architect, Belt Up; ls_sim::golden::mood_replay_hashes) with
+//   crates/ls-sim/tests/fixtures/mood_replays.txt.
 // Exits non-zero on any mismatch or if the package is missing.
 //
-// Usage: node tools/determinism-check.mjs [--pkg <dir>] [--fixture <file>] [--mode-fixture <file>]
+// Usage: node tools/determinism-check.mjs [--pkg <dir>] [--fixture <file>] [--mode-fixture <file>] [--mood-fixture <file>]
 //   --pkg           wasm-bindgen output directory (default web/src/wasm/pkg;
 //                   build it with `cd web && npm run build:wasm`)
 //   --fixture       worldgen golden hash fixture (default: the ls-worldgen fixture)
 //   --mode-fixture  per-mode replay fixture (default: the ls-sim fixture)
+//   --mood-fixture  mood replay fixture (default: the ls-sim fixture)
 //
 // The ls-sim unit-test replay goldens (REPLAY_GOLDEN_HASH and the per-mode
 // constants in modes/*) are cross-checked by the wasm32 unit tests in tools/ci.*.
@@ -29,6 +33,7 @@ function parseArgs(argv) {
     pkg: join(repoRoot, "web", "src", "wasm", "pkg"),
     fixture: join(repoRoot, "crates", "ls-worldgen", "tests", "fixtures", "golden_hashes.txt"),
     modeFixture: join(repoRoot, "crates", "ls-sim", "tests", "fixtures", "mode_replays.txt"),
+    moodFixture: join(repoRoot, "crates", "ls-sim", "tests", "fixtures", "mood_replays.txt"),
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -40,8 +45,9 @@ function parseArgs(argv) {
     if (a === "--pkg") opts.pkg = next();
     else if (a === "--fixture") opts.fixture = next();
     else if (a === "--mode-fixture") opts.modeFixture = next();
+    else if (a === "--mood-fixture") opts.moodFixture = next();
     else if (a === "--help" || a === "-h") {
-      console.log("usage: node tools/determinism-check.mjs [--pkg <dir>] [--fixture <file>] [--mode-fixture <file>]");
+      console.log("usage: node tools/determinism-check.mjs [--pkg <dir>] [--fixture <file>] [--mode-fixture <file>] [--mood-fixture <file>]");
       process.exit(0);
     } else fail(`unknown argument ${a}`);
   }
@@ -162,7 +168,26 @@ async function main() {
   } else {
     console.log(`determinism-check: all ${modeRows.length} mode replays match the native hashes (${ms} ms)`);
   }
-  if (mismatches > 0 || problems.length > 0) process.exit(1);
+
+  // Mood replays (M4: world physics, events, The Architect, Belt Up).
+  if (typeof pkg.moodReplayHashes !== "function") fail("package has no moodReplayHashes export (rebuild it: cd web && npm run build:wasm)");
+  if (!existsSync(opts.moodFixture)) fail(`mood replay fixture not found: ${opts.moodFixture}`);
+  const moodRows = parseModeFixture(readFileSync(opts.moodFixture, "utf8"));
+  if (moodRows.length === 0) fail("mood replay fixture has no entries");
+  const m0 = performance.now();
+  const moodGot = pkg.moodReplayHashes();
+  const moodMs = (performance.now() - m0).toFixed(0);
+  const moodProblems = compareModeReplays(moodGot, moodRows);
+  for (const { file, hash } of moodRows) {
+    if (!moodProblems.some((p) => p.startsWith(`${file}:`))) console.log(`ok   ${file} ${hash}`);
+  }
+  for (const p of moodProblems) console.error(`FAIL ${p}`);
+  if (moodProblems.length > 0) {
+    console.error(`determinism-check: ${moodProblems.length} mood replay(s) differ between WASM and native (${moodMs} ms)`);
+  } else {
+    console.log(`determinism-check: all ${moodRows.length} mood replays match the native hashes (${moodMs} ms)`);
+  }
+  if (mismatches > 0 || problems.length > 0 || moodProblems.length > 0) process.exit(1);
 }
 
 // Run only as a script (the parsers are imported by tools/test).

@@ -194,6 +194,15 @@ pub fn mode_replay_hashes() -> Vec<String> {
     ls_sim::golden::mode_replay_hashes()
 }
 
+/// M4 mood replay hashes (`ls_sim::golden::mood_replay_hashes`): one line
+/// `<name> <0x hash>` per world physics, event, Architect and Belt Up
+/// replay. Compare with `crates/ls-sim/tests/fixtures/mood_replays.txt`
+/// (`tools/determinism-check.mjs`).
+#[wasm_bindgen(js_name = moodReplayHashes)]
+pub fn mood_replay_hashes() -> Vec<String> {
+    ls_sim::golden::mood_replay_hashes()
+}
+
 /// The first packet to send after the WebSocket opens (`Hello`).
 /// `preferred_team` < 0 lets the server choose.
 #[wasm_bindgen(js_name = helloPacket)]
@@ -1388,14 +1397,6 @@ impl Game {
         self.core.practice_edit(edit)
     }
 
-    /// Practice only (M4 C3, `?event=<id>`): forces the comedy event with
-    /// `EventKind` index `event` (see [`event_ids`]) `delay` ticks from now.
-    /// Returns false online or for an unknown index.
-    #[wasm_bindgen(js_name = practiceEvent)]
-    pub fn practice_event(&mut self, event: u8, delay: u32) -> bool {
-        self.core.practice_force_event(event, delay)
-    }
-
     /// Practice only (the visual gallery's Squeeze scenes, M3 C1): puts The
     /// Squeeze's shell on the terrain (solid outside the sphere; a radius
     /// below 0 removes it) outside the simulation, so the next meshes show
@@ -1408,6 +1409,34 @@ impl Game {
             radius,
         });
         self.core.practice_shell(shell)
+    }
+
+    /// Practice only (`?event=<id>`, M4 plan §3.1): forces the comedy event
+    /// `id` (an `eventIds()` entry) `delay_secs` from now, or as soon as the
+    /// running one ended. Returns false online or for an unknown id.
+    #[wasm_bindgen(js_name = practiceEvent)]
+    pub fn practice_event(&mut self, id: &str, delay_secs: f32) -> bool {
+        let Some(kind) = ls_sim::EventKind::from_id(id) else {
+            return false;
+        };
+        let delay = if delay_secs.is_finite() {
+            (delay_secs.max(0.0) * ls_math::TICK_HZ as f32).round() as u64
+        } else {
+            0
+        };
+        self.core.practice_schedule_event(kind, delay)
+    }
+
+    /// Practice only (the browser smoke's moods phase): runs `secs` of
+    /// simulation at once with the own ship idle (at most 120 s). Returns
+    /// the ticks run (0 online).
+    #[wasm_bindgen(js_name = practiceWarp)]
+    pub fn practice_warp(&mut self, secs: f32) -> u32 {
+        if !secs.is_finite() || secs <= 0.0 {
+            return 0;
+        }
+        let ticks = (secs.min(120.0) * ls_math::TICK_HZ as f32).round() as u32;
+        self.core.practice_warp(ticks)
     }
 }
 

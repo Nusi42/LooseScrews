@@ -20,6 +20,9 @@
 //   --fly-secs <s>          online flight time [10]
 //   --mech-secs <s>         extra settle time in the mechanics phase [1]
 //   --directory-bin <path>  ls-directory for the social phase [next to --server-bin]
+//   --only <phases>         run only these phases (comma-separated: practice, online,
+//                           mechanics, lobby, fit, social, editor, audio, workshop, moods,
+//                           architect, race) [all]
 //   --require-browser       fail (exit 1) instead of skipping (exit 0) when no
 //                           Chrome/Edge is found
 //   --allow-fallback        accept a software (fallback) WebGPU adapter
@@ -56,9 +59,13 @@
 // cap under a 64-sound burst and speaks an announcer line; the world workshop (workshop.mjs,
 // M4 A8): Make a world, two sliders and the seed changed, the preview
 // regenerates, Save copies a code that decodes to them, Fly it practises on it
-// (and once more as an asteroid belt when the build has belts); The Architect (architect.mjs, M4 C4): an
-// architect page and a runner page on a server with the_architect.ron, a stroke placed, telegraphed
-// on the runner's page, acting, the budget spent, the map view. Fails on console errors, page
+// (and once more as an asteroid belt when the build has belts); moods (moods.mjs, M4 C6): every
+// comedy event forced once in practice (`?event=` and `window.__lsEvents`) with a tell, peak and
+// aftermath screenshot each; architect (architect.mjs, M4 C4): an architect page and a runner page
+// on a server with the_architect.ron, a stroke placed through the architect's HUD, telegraphed on
+// the runner's page, acting, the budget spent, the map view and free flight; race (race.mjs, M4
+// C6): two pages race Belt Up on a belt (shortened heats) with a scripted autopilot: start lights,
+// gates, heat results, the next heat, the match results. Fails on console errors, page
 // errors, WebGPU validation or uncaptured errors, error screens, blank frames,
 // no confirmed shots online, or server errors. Screenshots go to --out-dir.
 // Exit codes: 0 passed (or skipped: no browser), 1 failed, 2 usage error,
@@ -68,12 +75,14 @@ import { spawn } from "node:child_process";
 import { createWriteStream, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { fakePointerLock } from "./fake-pointer-lock.mjs";
 import { audioProbe } from "./audio-probe.mjs";
 import { socialPhase } from "./social.mjs";
 import { workshopPhase } from "./workshop.mjs";
+import { moodsPhase } from "./moods.mjs";
 import { architectPhase } from "./architect.mjs";
+import { racePhase } from "./race.mjs";
 
 import { assertWorkFolder } from "../lib/work-folder.mjs";
 
@@ -102,7 +111,11 @@ const defaults = {
   "fly-secs": "10",
   "mech-secs": "1",
   "directory-bin": "",
+  only: "",
 };
+
+/** Every phase, in run order (`--only`). */
+export const PHASES = ["practice", "online", "mechanics", "lobby", "fit", "social", "editor", "audio", "workshop", "moods", "architect", "race"];
 
 function die(msg) {
   console.error(`browser-smoke: ${msg}`);
@@ -136,6 +149,9 @@ function parseArgs(argv) {
     o[key] = v;
   }
   if (!["ws", "wt", "auto"].includes(o.transport)) die("--transport must be ws, wt or auto");
+  for (const p of o.only ? o.only.split(",").map((x) => x.trim()).filter(Boolean) : []) {
+    if (!PHASES.includes(p)) die(`--only: unknown phase ${p} (${PHASES.join(", ")})`);
+  }
   if (!["auto", "headless", "headful"].includes(o.mode)) die("--mode must be auto, headless or headful");
   const secs = (k) => {
     const n = Number(o[k]);
@@ -156,6 +172,7 @@ function parseArgs(argv) {
     directoryBin: o["directory-bin"]
       ? resolve(o["directory-bin"])
       : join(dirname(resolve(o["server-bin"])), `ls-directory${exe}`),
+    only: o.only ? o.only.split(",").map((x) => x.trim()).filter(Boolean) : PHASES,
     requireBrowser: o["require-browser"],
     allowFallback: o["allow-fallback"],
     findOnly: o["find-browser"],
@@ -410,6 +427,17 @@ async function imageStats(page, png) {
   }, b64);
 }
 
+/** ls-wasm under Node (web/src/wasm/pkg; share codes for the race phase), or null when it is not built. */
+async function loadCore() {
+  const dir = join(repoRoot, "web", "src", "wasm", "pkg");
+  const js = join(dir, "ls_wasm.js");
+  const wasm = join(dir, "ls_wasm_bg.wasm");
+  if (!existsSync(js) || !existsSync(wasm)) return null;
+  const pkg = await import(pathToFileURL(js).href);
+  pkg.initSync({ module: readFileSync(wasm) });
+  return pkg;
+}
+
 // ----- main ----------------------------------------------------------------------------
 
 async function main() {
@@ -446,6 +474,7 @@ async function main() {
   const summary = { browser: browserPath, mode: null, adapter: null, results, console: [], screenshots: [] };
   const consoleLog = [];
   let phase = "startup";
+  const want = (name) => opts.only.includes(name);
   let server = null;
   let browser = null;
 
@@ -655,7 +684,7 @@ async function main() {
 
     // --- 1: practice ---
     phase = "practice";
-    {
+    if (want("practice")) {
       const page = await newGamePage();
       const err = await startGame(page, "practice", "SmokePractice");
       if (check("practice: game starts (HUD shown, no error screen)", err === null, err ?? "")) {
@@ -685,7 +714,7 @@ async function main() {
 
     // --- 2: online ---
     phase = "online";
-    {
+    if (want("online")) {
       const page = await newGamePage();
       const err = await startGame(page, "online", "SmokeOnline");
       if (check("online: joins the server (HUD shown, no error screen)", err === null, err ?? "")) {
@@ -732,7 +761,7 @@ async function main() {
 
     // --- 3: wave C mechanics (second server with the mechanics rule set) ---
     phase = "mechanics";
-    {
+    if (want("mechanics")) {
       const mport = await freePort();
       const mbase = `http://127.0.0.1:${mport}`;
       const margs = ["--bind", `127.0.0.1:${mport}`, "--warmup", "0", "--countdown", "0", "--web-root", opts.webRoot, "--code", opts.code, "--ruleset", join(here, "mechanics.ron")];
@@ -762,7 +791,7 @@ async function main() {
 
     // --- 4: lobby -> match -> results -> next match without a reload (M3, B6) ---
     phase = "lobby";
-    {
+    if (want("lobby")) {
       const lport = await freePort();
       const lbase = `http://127.0.0.1:${lport}`;
       // The rotation (M3 C1): two Paint the Void matches, then Heist and a four-team Instagib Brawl.
@@ -806,7 +835,7 @@ async function main() {
 
     // --- 5: fit ring (VQ1): the gallery's fixed pose before a 1.2 u tunnel ---
     phase = "fit";
-    {
+    if (want("fit")) {
       const page = await newGamePage();
       await page.goto(`${base}/?gallery=fit-tunnel`, { waitUntil: "load" });
       const ready = await page
@@ -829,7 +858,9 @@ async function main() {
 
     // --- 6: social: server list, invite links, party, duel (M3, B7/C3) ---
     phase = "social";
-    if (!existsSync(opts.directoryBin)) {
+    if (!want("social")) {
+      // skipped (--only)
+    } else if (!existsSync(opts.directoryBin)) {
       check("social: ls-directory binary present", false, `${opts.directoryBin} missing (cargo build --release -p ls-directory)`);
     } else {
       await socialPhase({
@@ -854,11 +885,11 @@ async function main() {
         fakePointerLock,
       });
     }
-    consoleCheck("social", "social");
+    if (want("social")) consoleCheck("social", "social");
 
     // --- 7: rule set editor ---
     phase = "editor";
-    {
+    if (want("editor")) {
       const page = await browser.newPage();
       if (summary.mode === "headful") await page.setViewport({ width: 1280, height: 900 });
       await page.evaluateOnNewDocument(fakePointerLock); // never lock the OS cursor
@@ -911,7 +942,7 @@ async function main() {
 
     // --- 8: sound check page (M4 A6) ---
     phase = "audio";
-    {
+    if (want("audio")) {
       const page = await browser.newPage();
       if (summary.mode === "headful") await page.setViewport({ width: 1280, height: 900 });
       await page.evaluateOnNewDocument(fakePointerLock); // never lock the OS cursor
@@ -945,34 +976,67 @@ async function main() {
     }
     // --- 9: world workshop (M4 A8) ---
     phase = "workshop";
-    await workshopPhase({ opts, base, query, newPage: newGamePage, check, note, sleep, shot, gpuReport, sceneCheck, waitLoaded, overlayText });
-    consoleCheck("workshop", "workshop");
-    // --- 10: The Architect (M4 C4): an architect page and a runner page ---
-    phase = "architect";
-    await architectPhase({
+    if (want("workshop")) {
+      await workshopPhase({ opts, base, query, newPage: newGamePage, check, note, sleep, shot, gpuReport, sceneCheck, waitLoaded, overlayText });
+      consoleCheck("workshop", "workshop");
+    }
+
+    // --- 10: comedy events in practice (M4 C6) ---
+    phase = "moods";
+    if (want("moods")) {
+      await moodsPhase({ opts, base, query, newPage: newGamePage, check, note, sleep, shot, gpuReport, sceneCheck, waitLoaded, lockPointer });
+      consoleCheck("moods", "moods");
+    }
+
+    // Helpers of the multi-player phases (each with its own server and browser contexts).
+    const multi = {
       opts,
-      query,
-      newPage: newGamePage,
-      startGame,
+      browser,
+      serverBin: opts.serverBin,
+      run,
+      stop,
+      waitForLine,
+      freePort,
       check,
       note,
       sleep,
       shot,
       gpuReport,
-      waitLoaded,
-      lockPointer,
-      startServer: async (args, logName) => {
-        const port = await freePort();
-        const sargs = ["--bind", `127.0.0.1:${port}`, "--web-root", opts.webRoot, ...args];
-        if (opts.transport === "ws") sargs.push("--no-webtransport");
-        const proc = run(opts.serverBin, sargs, join(opts.outDir, logName));
-        if (await waitForLine(proc, /listening \(http \+ websocket/, 60_000)) return { base: `http://127.0.0.1:${port}`, proc };
-        await stop(proc);
-        return null;
-      },
-      stopServer: stop,
-    });
-    consoleCheck("architect", "architect");
+      gpuInstrumentation,
+      fakePointerLock,
+      audioProbe,
+      watchPage,
+      consoleLog,
+    };
+    // --- 11: The Architect (M4 C4): an architect page and a runner page, the stroke placed through the HUD ---
+    phase = "architect";
+    if (want("architect")) {
+      await architectPhase({
+        ...multi,
+        query,
+        newPage: newGamePage,
+        startGame,
+        waitLoaded,
+        lockPointer,
+        startServer: async (args, logName) => {
+          const port = await freePort();
+          const sargs = ["--bind", `127.0.0.1:${port}`, "--web-root", opts.webRoot, ...args];
+          if (opts.transport === "ws") sargs.push("--no-webtransport");
+          const proc = run(opts.serverBin, sargs, join(opts.outDir, logName));
+          if (await waitForLine(proc, /listening \(http \+ websocket/, 60_000)) return { base: `http://127.0.0.1:${port}`, proc };
+          await stop(proc);
+          return null;
+        },
+        stopServer: stop,
+      });
+      consoleCheck("architect", "architect");
+    }
+    // --- 12: Belt Up: two pages race (M4 C6) ---
+    phase = "race";
+    if (want("race")) {
+      await racePhase({ ...multi, waitLoaded, core: await loadCore() });
+      consoleCheck("race", "race");
+    }
 
     // Server health over the whole run.
     const serverText = server.text;

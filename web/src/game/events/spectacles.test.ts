@@ -26,7 +26,6 @@ import { axisDir, clawExtension, clawTips, CLAW_GAP, findWall, PAW_PHASE, pawFra
 import { beamDirection, BEAM_RANGE, DiscoInfernoFx, SPECKS, speckDirections, TRAIL_SECS } from "./discoInferno.ts";
 import { hash01, hatCounts, LoopVoice, slerp, type SpectacleInput, type SpectacleSoundEngine } from "./spectacleCommon.ts";
 import { SPECTACLE_EVENTS, SPECTACLE_KINDS, SpectacleVisuals } from "./spectacles.ts";
-import { forcedEvent } from "./forceEvent.ts";
 import {
   AFTER_KILL,
   blastAt,
@@ -515,14 +514,6 @@ test("spectacles: no announce lines (the C1 hub says them), props kept from the 
   assert.equal(off.skipKinds.size, 0, "off: the props draw as before");
   const f = off.update(input({ entities: [ent(1, "discoBall", { x: 0, y: 0, z: 0 }, [8, 255, 0, 0])] }));
   assert.equal(f.lightLevel, 1);
-});
-
-test("?event=<id> forces that event's EventKind index; unknown ids and none give null", () => {
-  assert.equal(forcedEvent({ search: "?event=duck_parade" }), 10);
-  assert.equal(forcedEvent({ search: "?event=bored_level" }), 0);
-  assert.equal(forcedEvent({ search: "?event=nope" }), null);
-  assert.equal(forcedEvent({ search: "" }), null);
-  assert.equal(forcedEvent(undefined), null);
 });
 
 test("small helpers: slerp ends and stays unit, loop voices stop when silent, hashes are in [0, 1)", () => {

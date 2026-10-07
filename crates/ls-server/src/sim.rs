@@ -125,6 +125,8 @@ pub struct SimParams {
     pub build_delay: Duration,
     /// The server's parties (member counts; `None` in tests without them).
     pub parties: Option<Arc<Parties>>,
+    /// Comedy events forced in every match room (`--event-schedule`).
+    pub event_schedule: crate::event_schedule::SharedSchedule,
 }
 
 /// Why a client is removed (for the log and the counters).
@@ -296,6 +298,8 @@ struct Sim {
     past_matches: RoomStats,
     past_ticks: u64,
     past_edits: u64,
+    /// The comedy event and phase last logged (`log_event`).
+    event_seen: Option<(ls_sim::EventKind, ls_sim::EventPhase)>,
 }
 
 /// A Team Brawl fallback (no playlist entry fits the player count, plan
@@ -439,7 +443,9 @@ impl Sim {
             past_matches: RoomStats::default(),
             past_ticks: 0,
             past_edits: 0,
+            event_seen: None,
         };
+        sim.force_events();
         sim.label_room();
         if kind == RoomKind::Warmup {
             sim.build_next(RoomKind::Match, sim.current.clone());
@@ -450,6 +456,48 @@ impl Sim {
 
     /// A private room's code goes into every `Welcome` (the client's party
     /// panel and invite links use it); the public room has none.
+    /// `--event-schedule`: forces its events in a new match room.
+    fn force_events(&mut self) {
+        let Some(schedule) = self.params.event_schedule.clone() else {
+            return;
+        };
+        if self.kind != RoomKind::Match {
+            return;
+        }
+        let forced = schedule.apply(self.room.world_mut());
+        let list: Vec<String> = forced
+            .iter()
+            .map(|(t, k)| format!("{}@{:.1}s", k.id(), *t as f64 / TICK_HZ as f64))
+            .collect();
+        info!(room = %self.params.label, events = %list.join(","), "event schedule: events forced in this match");
+    }
+
+    /// Logs every comedy event phase change (announce, active, ending,
+    /// over), for end-to-end checks and soaks.
+    fn log_event(&mut self) {
+        let v = self.room.world().mood_view();
+        let now = v.event.map(|e| (e, v.phase));
+        if now == self.event_seen {
+            return;
+        }
+        match now {
+            Some((event, phase)) => info!(
+                room = %self.params.label,
+                event = event.id(),
+                phase = ?phase,
+                target = v.target.map_or(-1, |p| p.0 as i32),
+                tick = self.room.tick(),
+                "comedy event"
+            ),
+            None => {
+                if let Some((event, _)) = self.event_seen {
+                    info!(room = %self.params.label, event = event.id(), phase = "Over", tick = self.room.tick(), "comedy event");
+                }
+            }
+        }
+        self.event_seen = now;
+    }
+
     fn label_room(&mut self) {
         if self.params.close_when_empty {
             self.room.set_room_code(self.params.label.clone());
@@ -514,6 +562,7 @@ impl Sim {
                 lobby::extend_warmup_clock(self.room.world_mut());
             }
             self.room.step();
+            self.log_event();
             let debris = self.debris_count();
             self.window_debris_peak = self.window_debris_peak.max(debris);
         }
@@ -881,6 +930,8 @@ impl Sim {
             .spawn(move || drop(old));
         self.kind = kind;
         self.current = planned;
+        self.event_seen = None;
+        self.force_events();
         self.ready.clear();
         let mut moved = std::mem::take(&mut self.clients);
         let count = moved.len();
@@ -1436,6 +1487,7 @@ mod tests {
             close_when_empty: false,
             build_delay: Duration::ZERO,
             parties: None,
+            event_schedule: None,
         }
     }
 
@@ -1466,6 +1518,32 @@ mod tests {
             SharedStatus::default(),
         );
         (s, tx)
+    }
+
+    /// `--event-schedule`: the match room gets the forced event, and the
+    /// sim logs its phases.
+    #[test]
+    fn event_schedule_forces_events_in_match_rooms() {
+        let playlist = Playlist::new(vec![entry(RuleSet::paint_the_void(), 1, 32)]).unwrap();
+        let mut p = params(4, playlist);
+        p.event_schedule = Some(Arc::new(
+            crate::event_schedule::EventSchedule::parse("0.2 disco_inferno").unwrap(),
+        ));
+        let (mut s, _tx) = sim_with(p);
+        let _peer = join(&mut s, 1, LinkConfig::default());
+        // Below tick 30 (`params`: no pregeneration).
+        for _ in 0..20 {
+            s.tick();
+        }
+        let v = s.room.world().mood_view();
+        assert_eq!(v.event, Some(ls_sim::EventKind::DiscoInferno));
+        assert_eq!(
+            s.event_seen,
+            Some((
+                ls_sim::EventKind::DiscoInferno,
+                ls_sim::EventPhase::Announce
+            ))
+        );
     }
 
     fn sim(max_players: u8) -> (Sim, mpsc::Sender<SimCommand>) {

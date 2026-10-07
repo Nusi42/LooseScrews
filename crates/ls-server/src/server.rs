@@ -86,6 +86,9 @@ pub struct ServerConfig {
     /// (`--public-address`; default: the bound address, `localhost` for an
     /// unspecified one). See [`crate::directory`].
     pub listing: Listing,
+    /// Comedy events forced in every match (`--event-schedule`, end-to-end
+    /// runs and the browser smoke only; `None`: the director decides).
+    pub event_schedule: crate::event_schedule::SharedSchedule,
 }
 
 /// How the server presents itself in the server list and in invites.
@@ -122,6 +125,7 @@ impl ServerConfig {
             private_rooms: crate::rooms::DEFAULT_PRIVATE_ROOMS,
             build_delay: Duration::ZERO,
             listing: Listing::default(),
+            event_schedule: None,
         }
     }
 
@@ -256,6 +260,7 @@ impl Server {
             close_when_empty: false,
             build_delay: config.build_delay,
             parties: Some(parties.clone()),
+            event_schedule: config.event_schedule.clone(),
         };
         let (entry, ready_rx) = start_room(params, stats.clone())?;
         let room = match ready_rx.await {
@@ -411,6 +416,7 @@ impl RoomFactory {
                     close_when_empty: true,
                     build_delay: self.config.build_delay,
                     parties: Some(self.parties.clone()),
+                    event_schedule: self.config.event_schedule.clone(),
                 };
                 let stats = Arc::new(SharedStats {
                     links: self.stats.links.clone(),

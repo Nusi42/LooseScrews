@@ -152,6 +152,7 @@ Verified against `ls-server --help` of this build (`ls-server 0.1.0`).
 | `--region <TAG>` | empty | Region tag in the server list, e.g. `eu-west` (up to 16 characters) |
 | `--public-address <HOST:PORT>` | the `--bind` address | The address players reach this server at, as listed in the directory and put into invite links. Set it whenever `--bind` is `0.0.0.0` (then the default is `localhost:<port>`, which only works on this computer) or players come through a router or a domain name. |
 | `--exit-when-empty` | off | Shut down about 2 seconds after the last player leaves (only after at least one player joined). Meant for scripted test runs. |
+| `--event-schedule <FILE\|SPEC>` | none | Testing only: forces comedy events in every match, ignoring the Absurdity, the rule set's cap and bans and the mode's vetoes (the server logs a warning). A file or a list of `<seconds> <event id>` items, e.g. `"5 duck_parade, 40 next"` (`next` takes the events in turn across matches; ids in the [event reference](reference/events.md)). Every event phase is logged as a `comedy event` line. Not for public servers. |
 | `-h`, `--help` | | Print help |
 | `-V`, `--version` | | Print the version |
 

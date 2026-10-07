@@ -226,8 +226,8 @@ Commands and details: [dev-guide.md](dev-guide.md#4-tests) and [architecture/det
 | M1 Vertical slice | Done | See sections 1–5 |
 | M2 Arsenal and physics | Done | All weapons from the design doc, Tectonic Charge, debris physics, surface states, ship types, gadgets (Shield, Cloak, Decoy), rule set editor — see [milestone-2-plan.md](milestone-2-plan.md) |
 | M3 Modes and lobby | Done with exceptions (soak tick p99 on a quiet machine, private rooms' tick budget under load, the Tectonic collapse tick) — [milestone-3-plan.md](milestone-3-plan.md#milestone-summary) | Team Brawl, The Squeeze, Instagib, Heist, Hot Reactor, Last Color Standing, duels; lobby in `ls-server` with match rotation, optional directory service for the server list, invites, party codes ([modes-and-lobby.md](architecture/modes-and-lobby.md)) |
-| M4 The level has moods | In progress: waves A-C integrated on `main`, wave D (reviews, docs, soak, visual polish and review) running — [milestone-4-plan.md](milestone-4-plan.md) | Comedy director with moods and all 18 events, remaining sliders (verticality, gravity chaos, palette, instability), monochrome levels and pigment, The Architect, the asteroid belt and the racing mode Belt Up, the Paperweight, world workshop, audio foundation ([moods-and-world.md](architecture/moods-and-world.md)); carried over: Tectonic collapse tick, dual contouring in play; M3 leftovers: thin-rock jaggies, bore-rim folds, reference mid-GPU timings, teams 3/4 spawn zones, quiet-machine soak (status below) |
-| M5 Platforms and ops | Planned | Tauri app with UDP, WebRTC fallback, WebGL2 fallback, regional deployment with Agones or Nomad, bandwidth optimization |
+| M4 The level has moods | Done with exceptions (review sign-off of the gallery and Belt Up looks pending; thin-rock steps and the cave-in remesh budget partly met; soak: bot-process stalls caused 6 server input-starvation warnings, tick p99 met outside load bursts) — [milestone-4-plan.md](milestone-4-plan.md#milestone-summary) | Comedy director with moods and all 18 events, remaining sliders (verticality, gravity chaos, palette, instability), monochrome levels and pigment, The Architect, the asteroid belt and the racing mode Belt Up, the Paperweight, world workshop, audio foundation ([moods-and-world.md](architecture/moods-and-world.md)); carried over: Tectonic collapse tick, dual contouring in play; M3 leftovers: thin-rock jaggies, bore-rim folds, reference mid-GPU timings, teams 3/4 spawn zones, quiet-machine soak (status below) |
+| M5 Platforms and ops | Next (plan to be written with the owner) | Tauri app with UDP, WebRTC fallback, WebGL2 fallback, regional deployment with Agones or Nomad, bandwidth optimization |
 | M6 Coop and business | Planned | Deep Dig, Tethered, Escort the Intern; cosmetics store, creator economy |
 
 ### Carried-over items
@@ -311,8 +311,9 @@ M3 leftovers taken into M4 ([milestone-4-plan.md](milestone-4-plan.md) §1, §3.
   review in M4 D5 (accept, or a wider thin-rock threshold with its mesh cost).
 - **Quiet-machine soak.** **Closed:** the M3 soak re-run on a quiet machine (see
   milestone-3-plan.md "Soak re-run") met tick p99 < 4 ms per room and the 12:04 stall did not
-  recur; its cause stays unattributed (no per-tick log of slow steps exists yet). The M4 soak is
-  wave D's D4.
+  recur; its cause stays unattributed (no per-tick log of slow steps exists yet). The M4 soak
+  (wave D's D4) met tick p99 < 4 ms per room outside load bursts again; its open
+  items (bot-process stalls) are in milestone-4-plan.md "Milestone soak".
 - **Reference mid-GPU timings.** **Open, rescheduled:** no GTX 1660 / RX 6600 / M1 class machine
   was available; every M4 package recorded its GPU cost on an RTX 5080 with an estimate for the
   reference class (decision §8 question 11: measure the development machine's integrated

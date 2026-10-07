@@ -27,10 +27,10 @@ event/gossip_wall 0x65662aed6d49213e
 event/pizza_delivery 0xc524cea6beb4c7fc
 event/customer_survey 0x02be6d04f80d9df7
 event/mimic_pickups 0x36736ce95e657fab
-event/cat_paw 0x7dbb9d7e00feb0fd
+event/cat_paw 0xdfe6eda614526234
 event/tired_announcer 0xf9b752ea6bf7b101
 event/duck_parade 0xc44e4328bf6519e2
 event/hat_rain 0xf14f20a77b66c09e
 event/disco_inferno 0x352668e2313e195d
-mode/the_architect 0x70547b6b3626e613
+mode/the_architect 0x5e92befc3774fac1
 mode/belt_up 0xa80e8abe8a55efac

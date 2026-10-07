@@ -8,9 +8,10 @@
 //! group (2 s) and withdraws (0.5 s). Ships it touches take 30 damage
 //! (environment: no kill credit, "the level" kills) and 25 u/s knockback,
 //! once per ship; debris is swept along; its three claws carve grooves
-//! (chains of `SubtractSphere` of radius 2.5, scaled by rock strength, at
+//! (chains of `SubtractSphere` of radius 3, scaled by rock strength, at
 //! most 36 edits, spread over the sweep where the claw tips scrape a rock
-//! surface), never in spawn zones, the Heist chamber or near extraction
+//! surface, each sphere `groove_inset` inside it, the claws `claw_gap`
+//! apart so a ridge stays between the grooves), never in spawn zones, the Heist chamber or near extraction
 //! zones. The paw itself passes through rock.
 //!
 //! - **Eligible**: a living ship within `ship_range` (60 u) of a face of
@@ -21,14 +22,16 @@
 //!   `C` (outward normal `n`).
 //! - **Claws** go toward the rock nearest `C`: the wall the paw comes
 //!   through (when it is at most `pad_radius + 8` u away: the pad then
-//!   sweeps 1 u off the wall and the claws rake the wall), or either side
+//!   sweeps 1 u off the first rock toward the face, generated rock or the
+//!   uncarvable sealing wall, and the claws rake it), or either side
 //!   of the sweep plane (raycasts across it; the plane shifts up to 6 u
 //!   toward that rock).
 //! - **Arc**: a circle in the plane of `n` and a tangent `t` (the face
 //!   axis along which the box is longer, seeded sign) about a shoulder
 //!   outside the wall. Its depth inside the wall at the middle is the
-//!   centroid's distance from the face clamped to 12-60 u (11 u when the
-//!   claws rake the wall); its radius is at least `depth + shoulder` and
+//!   centroid's distance from the face clamped to 12-60 u (11 u plus the
+//!   rock's height above the face when the claws rake the wall); its
+//!   radius is at least `depth + shoulder` and
 //!   at least `sweep_length^2 / (4 depth)`, so the sweep's ends are still
 //!   half that deep: a flat swipe along the wall for groups near it, a
 //!   rounder one deeper in. It passes through the (shifted) centroid
@@ -197,14 +200,24 @@ impl Sweep {
     /// rim toward the claw side).
     pub fn claws(&self, theta: f32, gap: f32) -> [Vec3; 3] {
         let p = self.arc(theta);
-        let outward = (self.shoulder - p) / self.radius;
-        let (dir, spread) = match self.claw_mode {
+        let (dir, spread) = self.claw_frame(theta);
+        let base = p + dir * self.pad_radius;
+        [base - spread * gap, base, base + spread * gap]
+    }
+
+    /// The way the claws point at arc angle `theta` (toward the rock they rake).
+    pub fn claw_dir(&self, theta: f32) -> Vec3 {
+        self.claw_frame(theta).0
+    }
+
+    /// `(claw direction, claw row)` at arc angle `theta`.
+    fn claw_frame(&self, theta: f32) -> (Vec3, Vec3) {
+        let outward = (self.shoulder - self.arc(theta)) / self.radius;
+        match self.claw_mode {
             claw_mode::WALL => (outward, self.b),
             claw_mode::OTHER_SIDE => (-self.b, outward),
             _ => (self.b, outward),
-        };
-        let base = p + dir * self.pad_radius;
-        [base - spread * gap, base, base + spread * gap]
+        }
     }
 }
 
@@ -317,7 +330,11 @@ impl EventModule for CatPaw {
         let (plus, minus) = (hit(bvec), hit(-bvec));
         let wall = dist <= pad + 8.0 && dist <= plus.min(minus);
         let (mode, depth, shift) = if wall {
-            (claw_mode::WALL, pad + 1.0, Vec3::ZERO)
+            // The claws rake the first rock toward the face: generated rock
+            // in front of the face, else the face itself (D5: the sealing
+            // walls inside the level box cannot be carved).
+            let rock = hit(n).min(dist);
+            (claw_mode::WALL, dist - rock + pad + 1.0, Vec3::ZERO)
         } else {
             let (mode, rock, side) = if minus < plus {
                 (claw_mode::OTHER_SIDE, minus, -bvec)
@@ -436,10 +453,11 @@ impl EventModule for CatPaw {
         // pad passed this tick.
         if phase == 2 {
             let reach = ((active - sweep_t.min(active)) / 2).max(1);
-            let groove_r = def.param("groove_radius", 2.5);
-            let gap = def.param("claw_gap", 2.5);
+            let groove_r = def.param("groove_radius", 3.0);
+            let gap = def.param("claw_gap", 7.0);
             let per_claw = (def.param("groove_edits", 36.0) / 3.0).max(0.0) as i64;
             let spacing = def.param("groove_spacing", 3.5).max(0.5);
+            let inset = def.param("groove_inset", 0.6);
             let samples = ((def.param("sweep_length", 90.0) / spacing) as u64).max(2);
             let u0 = (k - reach) as f32 / sweep_t as f32;
             let u1 = (k + 1 - reach) as f32 / sweep_t as f32;
@@ -449,17 +467,22 @@ impl EventModule for CatPaw {
                     continue;
                 }
                 let theta = (uj - 0.5) * sweep.span;
+                let dir = sweep.claw_dir(theta);
                 for (c, tip) in sweep.claws(theta, gap).into_iter().enumerate() {
                     let d = e.ctx.view.terrain.sdf(tip);
+                    // The groove's sphere sits `groove_inset` inside the rock
+                    // the tip scrapes (along the claws' direction), so every
+                    // groove has the same depth and width (D5).
+                    let at = tip + dir * (d + inset);
                     if e.event.vars[c] >= per_claw
                         || d >= groove_r
                         || d <= -0.6 * groove_r
-                        || !groove_allowed(def, e.setup, tip, groove_r)
+                        || !groove_allowed(def, e.setup, at, groove_r)
                     {
                         continue;
                     }
                     e.event.vars[c] += 1;
-                    e.ctx.crater_material(tip, groove_r);
+                    e.ctx.crater_material(at, groove_r);
                 }
             }
         }

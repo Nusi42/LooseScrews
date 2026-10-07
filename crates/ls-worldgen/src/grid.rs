@@ -139,6 +139,11 @@ impl SampleGrid {
     }
 
     /// All corner values, halo included (x fastest, then y, then z).
+    /// Corner values for in-crate display fixes (paint and states stay).
+    pub(crate) fn values_mut(&mut self) -> &mut [f32] {
+        &mut self.values
+    }
+
     pub fn values(&self) -> &[f32] {
         &self.values
     }

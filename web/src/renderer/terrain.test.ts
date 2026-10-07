@@ -5,6 +5,7 @@ import { QUALITY_PRESETS } from "./quality.ts";
 import { hashSeed, MAX_STRATA_TILT, mipLevelCount, ROCK_GEN_WGSL, ROCK_MIP_WGSL, terrainParams, TERRAIN_PARAM_FLOATS } from "./rockTextures.ts";
 import { FRAME_WGSL, ROOM_CLIP, ROOM_FADE, TEAM_SLOTS } from "./shaders/frame.ts";
 import { MATERIAL_EDGE_SHARPNESS, TERRAIN_WGSL } from "./shaders/terrain.ts";
+import { CAKE_DETAIL_FADE_U, CAKE_DETAIL_NEAR_U, CAKE_WGSL } from "./shaders/cake.ts";
 import { BLUR_PASSES, nearChunkFace, PIN_MARGIN, terrainVertexData } from "./terrainBlend.ts";
 
 /**
@@ -251,6 +252,26 @@ test("material borders: one material wins by a steep soft-max; rock is cut at hi
   // Rock within ROOM_CLIP of a hidden wall is cut along a smooth line (no stripped-wall sawtooth).
   assert.ok(FRAME_WGSL.includes(`* step(${ROOM_CLIP}, d);`));
   assert.ok(ROOM_CLIP > 0.5 && ROOM_CLIP < ROOM_FADE);
+});
+
+test("terrain cost (D5): clipped rock is discarded before shading, cut faces have their own entry, cake detail stops far away", () => {
+  // The early clip is room_fade's ROOM_CLIP step, and it comes before the first texture sample.
+  assert.ok(FRAME_WGSL.includes(`return d < ${ROOM_CLIP};`));
+  const main = TERRAIN_WGSL.slice(TERRAIN_WGSL.indexOf("fn fs_main("));
+  const clip = main.indexOf("if (room_clipped(p)) { discard; }");
+  assert.ok(clip > 0 && clip < main.indexOf("tri(p, w,"), "clip before the rock shading");
+  // Wrong genre's back faces: a cheap entry point instead of a branch at the end of the full shading.
+  assert.match(TERRAIN_WGSL, /fn fs_cut\(in: VsOut\) -> @location\(0\) vec4f \{\s*return vec4f\(cut_fill\(in\.world_pos\), 1\.0\);/);
+  assert.doesNotMatch(main, /front_facing/);
+  // The cake's wave depth is evaluated once per fragment and its fine detail only near the camera.
+  assert.equal((main.match(/cake_depth\(p\)/g) ?? []).length, 1);
+  assert.doesNotMatch(CAKE_WGSL.slice(CAKE_WGSL.indexOf("fn cake_look(")), /cake_depth\(/);
+  assert.ok(CAKE_DETAIL_NEAR_U >= 20 && CAKE_DETAIL_FADE_U > 0);
+  for (const scale of ["p * 7.0", "p * 15.0", "p * 1.66", "p * 4.0"]) {
+    const at = CAKE_WGSL.indexOf(scale);
+    const gate = CAKE_WGSL.lastIndexOf("near > 0.0", at);
+    assert.ok(at > 0 && gate > 0 && at - gate < 400, `${scale} only near the camera`);
+  }
 });
 
 test("quality: only low drops the terrain detail", () => {

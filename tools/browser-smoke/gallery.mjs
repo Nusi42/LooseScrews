@@ -22,6 +22,10 @@
 //                         auto = headless (no automatic headful fallback:
 //                         a visible window takes the desktop mouse) [auto]
 //   --power high|low      GPU on two-GPU machines (low = integrated, ?gpu=low-power) [high]
+//   --adapter-luid <h,l>  pin Chrome's GPU (--use-adapter-luid; chrome://gpu lists the
+//                         LUIDs). With --power low and no LUID, an integrated GPU that
+//                         Chrome does not hand out by power preference (it keeps WebGPU
+//                         on the GPU process's GPU) is looked up in chrome://gpu [none]
 //   --quality <level>     render preset high|medium|low (?quality=; no automatic pick) [high]
 //   --grade <preset>      colour grade from post.ts GRADE_PRESETS (?grade=) [none]
 //   --lights on|off       dynamic lights (VQ6; off = ?lights=0, the same frame unlit, for cost comparisons) [on]
@@ -68,6 +72,7 @@ const defaults = {
   browser: process.env.LS_BROWSER ?? "",
   mode: "auto",
   power: "high",
+  "adapter-luid": "",
   quality: "high",
   grade: "",
   lights: "on",
@@ -110,6 +115,7 @@ function parseArgs(argv) {
   if (!size) die("--size must be WxH");
   if (!["auto", "headless", "headful"].includes(o.mode)) die("--mode must be auto, headless or headful");
   if (!["high", "low"].includes(o.power)) die("--power must be high or low");
+  if (o["adapter-luid"] && !/^-?\d+,\d+$/.test(o["adapter-luid"])) die("--adapter-luid must be <high>,<low> (decimal, as chrome://gpu shows it)");
   if (!["high", "medium", "low"].includes(o.quality)) die("--quality must be high, medium or low");
   if (!["on", "off"].includes(o.lights)) die("--lights must be on or off");
   if (!["on", "off"].includes(o.vfx)) die("--vfx must be on or off");
@@ -132,6 +138,7 @@ function parseArgs(argv) {
     browser: o.browser ? resolve(o.browser) : "",
     mode: o.mode,
     power: o.power,
+    adapterLuid: o["adapter-luid"],
     quality: o.quality,
     grade: o.grade,
     lights: o.lights,
@@ -143,6 +150,44 @@ function parseArgs(argv) {
     noAtmosphere: o["no-atmosphere"],
     indexOnly: o["index-only"],
   };
+}
+
+/**
+ * The LUID (`high,low`) of the integrated GPU in chrome://gpu: the name after
+ * Dawn's "<Integrated GPU> D3D12 backend - " header, matched to the "GPUn"
+ * line that carries its LUID. Null if there is none.
+ */
+export function integratedLuidFromGpuPage(text) {
+  const t = text.replace(/\s+/g, " ");
+  const name = /<Integrated GPU> D3D12 backend - (.+?) -{3,}/.exec(t)?.[1]?.trim();
+  if (!name) return null;
+  for (const m of t.matchAll(/GPU\d+ : VENDOR= ?0x[0-9a-f]+, DEVICE=0x[0-9a-f]+ \[([^\]]+)\][^{]*LUID=\{(-?\d+),(\d+)\}/gi)) {
+    if (m[1].trim() === name) return `${m[2]},${m[3]}`;
+  }
+  return null;
+}
+
+async function integratedLuid(browser) {
+  const page = await browser.newPage();
+  await page.evaluateOnNewDocument(fakePointerLock); // never lock the OS cursor
+  try {
+    await page.goto("chrome://gpu", { waitUntil: "load" });
+    // The page fills in its sections after load.
+    for (let i = 0; i < 60; i++) {
+      const text = await page.evaluate(() => {
+        const walk = (n) => (n.shadowRoot ? walk(n.shadowRoot) : "") + [...n.childNodes].map((c) => (c.nodeType === 3 ? c.textContent : walk(c))).join(" ");
+        return walk(document.body);
+      });
+      const luid = integratedLuidFromGpuPage(text);
+      if (luid || /D3D12 backend/.test(text)) return luid;
+      await new Promise((r) => setTimeout(r, 250));
+    }
+    return null;
+  } catch {
+    return null;
+  } finally {
+    await page.close();
+  }
 }
 
 // ----- browser discovery (same search as smoke.mjs) ------------------------------------
@@ -318,7 +363,7 @@ async function main() {
   const labelDir = join(opts.outDir, opts.label);
   mkdirSync(labelDir, { recursive: true });
   const power = `&quality=${opts.quality}${opts.grade ? `&grade=${encodeURIComponent(opts.grade)}` : ""}${opts.power === "low" ? "&gpu=low-power" : ""}${opts.lights === "off" ? "&lights=0" : ""}${opts.vfx === "off" ? "&vfx=off" : ""}${opts.noAtmosphere ? "&atmosphere=off" : ""}${opts.query ? `&${opts.query}` : ""}`;
-  const launch = (headless) =>
+  const launch = (headless, luid = opts.adapterLuid) =>
     puppeteer.launch({
       executablePath: browserPath,
       headless,
@@ -335,6 +380,8 @@ async function main() {
         `--window-size=${opts.width},${opts.height + 120}`,
         // Chrome on Windows ignores requestAdapter's powerPreference by default.
         ...(opts.power === "low" ? ["--use-webgpu-power-preference=force-low-power"] : []),
+        // Chrome hands WebGPU only the adapter of its GPU process; this picks that GPU.
+        ...(luid ? [`--use-adapter-luid=${luid}`] : []),
         ...(process.platform === "linux" ? ["--enable-features=Vulkan", "--use-angle=vulkan"] : []),
       ],
       defaultViewport: null,
@@ -379,6 +426,33 @@ async function main() {
       if (adapter) break;
       await browser.close();
       browser = null;
+    }
+    if (!adapter && opts.power === "low" && !opts.adapterLuid && opts.mode !== "headful") {
+      // M4 D5: the integrated GPU is listed (Dawn info) but not handed out by
+      // power preference; pin it by its LUID from chrome://gpu.
+      const probe = await launch(true);
+      const luid = await integratedLuid(probe);
+      await probe.close();
+      if (luid) {
+        console.log(`gallery: integrated GPU by LUID ${luid} (--use-adapter-luid)`);
+        browser = await launch(true, luid);
+        const page = await browser.newPage();
+        await page.evaluateOnNewDocument(fakePointerLock); // never lock the OS cursor
+        await page.goto(`${base}/__probe`, { waitUntil: "load" });
+        adapter = await page.evaluate(async () => {
+          const a = await navigator.gpu?.requestAdapter({ powerPreference: "low-power" });
+          if (!a) return null;
+          const i = a.info ?? {};
+          return { text: `${i.vendor ?? ""} ${i.architecture ?? ""} ${i.description ?? ""}`.trim(), fallback: Boolean(i.isFallbackAdapter ?? a.isFallbackAdapter), timestamps: a.features.has("timestamp-query") };
+        });
+        await page.close();
+        manifest.mode = "headless";
+        manifest.adapterLuid = luid;
+        if (!adapter) {
+          await browser.close();
+          browser = null;
+        }
+      }
     }
     if (!adapter) {
       console.error("gallery: FAIL - no WebGPU adapter (headless or headful)");

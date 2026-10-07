@@ -1076,8 +1076,10 @@ one pass timed as `scene`. The F3 overlay shows the line `gpu <total> ms (worst 
 (`PASS_BUDGETS_MS`, 1080p "high" on the reference mid GPU) by more than 25 %, or whose frame
 exceeds 8 ms by more than 25 %. `--budget-scale 1.75` checks the integrated-GPU "medium"
 target (14 ms), `--power low` asks for the integrated GPU (`?gpu=low-power`; Chrome needs
-`--use-webgpu-power-preference=force-low-power`, which the script passes, and fails when that
-GPU is not available to WebGPU), `--no-budget` records without failing, `--quality high|medium|low` renders another preset
+`--use-webgpu-power-preference=force-low-power`, which the script passes; Chrome on Windows still
+hands WebGPU only its GPU process's adapter, so when that yields none the script looks up the
+integrated GPU's LUID in `chrome://gpu` and relaunches with `--use-adapter-luid`, or pin one with
+`--adapter-luid <high>,<low>`; it fails when no such GPU is available to WebGPU), `--no-budget` records without failing, `--quality high|medium|low` renders another preset
 (default high, `?quality=`; no automatic pick in the gallery), `--grade <preset>` previews a
 colour grade (`GRADE_PRESETS` in `web/src/renderer/post.ts`, `?grade=`; it replaces the world's
 grade), `--no-atmosphere` renders without the per-world sky, fog and grade (`?atmosphere=off`,

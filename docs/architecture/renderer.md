@@ -20,7 +20,7 @@ Wave D of M3 extends it into the full renderer reference.
 | Belt Up's look (M4 C7; only on belt levels, `Renderer.setBelt`): the dust band, aurora and the exit cocoon marched at a quarter of the resolution per axis into their own target, then one fullscreen pass at full resolution that adds them (a tent of four bilinear taps), the 8 gates, the exit portal and the sign's glow, and ice glints; then the EXIT sign as an opaque quad. See "Belt Up (M4 C7)" | a `rgba16float` quarter-resolution target, then the resolved HDR scene texture | `belt.ts`, `shaders/belt.ts` |
 | Cloak refraction (only while a cloaked ship is in view): a copy of the scene, then the cloaked hulls drawn into the scene sampling the copy through their surface (no depth attachment; each fragment reads the scene depth) | the HDR scene texture (needs `COPY_SRC`) | `cloak.ts`, `shaders/cloak.ts` |
 | Particles: sprites at least `halfResPx` wide into a half-resolution `rgba16float` target, composited onto the resolved scene; then dust motes and the smaller sprites at full resolution. No depth attachment: each fragment reads the scene depth (soft particles, occlusion) | the resolved HDR scene texture | `particles.ts`, `shaders/particles.ts`, `spriteAtlas.ts` |
-| Screen-edge radiation (M4 C7; only while the own ship takes a dose): a copy of the scene, then a fullscreen pass pulling red and blue apart toward the edges and laying green static over them | the HDR scene texture (needs `COPY_SRC`) | `belt.ts` `encodeRadiation`, `shaders/belt.ts` `RADIATION_WGSL` |
+| Screen-edge radiation (M4 C7; only while the own ship takes a dose): a copy of the scene, then a fullscreen pass that burns the screen's rim: red and blue pulled apart, darkened, a pulsing toxic glow and sparse flecks there, the middle untouched | the HDR scene texture (needs `COPY_SRC`) | `belt.ts` `encodeRadiation`, `shaders/belt.ts` `RADIATION_WGSL` |
 | Ink lines (M4 A7; only from Palette 50, `needsLinePass`): outlines from the scene depth and world-space hatching from the scene's tone, see "Ink look" | `rgba8unorm` full resolution (r outline, g hatch, b fog fade, a sky) | `ink.ts`, `shaders/ink.ts` |
 | Bloom down: 13-tap filter, the first step with a Karis average and a soft-knee threshold | up to 6 half-size `rgba16float` mips | `post.ts`, `shaders/post.ts` `BLOOM_DOWN_WGSL` |
 | Bloom up: 3x3 tent, added onto the next larger mip | the same mips | `BLOOM_UP_WGSL` |
@@ -431,16 +431,22 @@ event gets the pill but no line.
   4x4 Bayer dither, matched by luma and colour difference (blues stay blue); a
   faint scanline on each cell's last row. `pixelLookAt` steps the cell in whole
   pixels as it eases in.
-- *Cutaway terrain* (`Renderer.terrainCutaway`): a terrain pipeline variant
-  without back-face culling; the terrain shader paints back faces (rock seen
-  from inside) with `cut_fill` (bricks in the x/y plane, lit top edges).
-  Front faces are unchanged, so the normal pipeline needs no branch.
+- *Cutaway terrain* (`Renderer.terrainCutaway`): a second terrain pipeline
+  (`terrainCut`, front faces culled) draws the back faces (rock seen from
+  inside) with the terrain shader's `fs_cut` entry point: `cut_fill` (bricks in
+  the x/y plane, lit top edges) and nothing else. It draws before the normal
+  pipeline, so rock shading behind the fill fails the depth test (D5; before,
+  one pipeline without culling ran the whole rock shading for every back face
+  and then painted the fill).
 - *Cake* (`RenderSettings.cake`, `CakeWave`): two more vec4 in `TerrainParams`
   (origin and radius, up and amount; `TerrainMaterial.setCake` uploads on
   change). The terrain shader's cake branch (`shaders/cake.ts`, arithmetic
   only): sponge with pores, cream and jam layers along the up, pink frosting on
   faces turned up with round-ended drips down walls, capsule sprinkles in six
-  colours, a bright band with twinkles at the front.
+  colours, a bright band with twinkles at the front. The wave's depth is
+  evaluated once per fragment, and the fine detail (pores, sprinkles,
+  twinkles: 0.1-0.6 u features) fades out from `CAKE_DETAIL_NEAR_U` (30 u) over
+  `CAKE_DETAIL_FADE_U` (15 u) and is skipped beyond (D5).
 
 **Cost** (gallery, RTX 5080, 1920x1080, "high", label `c1-final`): see the
 milestone plan's C1 note; every strip is within budget. The side view's
@@ -530,7 +536,12 @@ C1's hub for all 18 events (wave C merge: C3's own line was dropped so it is sai
 event has a strip `event-<id>-a|b|c` (announce, peak, aftermath), plus `event-hat-sheet`. The
 props are synthetic, driven through the real modules over the scene's last seconds. The cat
 paw scenes find a stretch of boundary wall with room in front of it using the exact terrain
-ray (`findPawWall`). The kill-cam window's GPU time is reported as its own pass, `killcam`.
+ray (`findPawWall`), on generated rock (not the bare sealing wall, which no crater opens; D5);
+the aftermath frame carves the three grooves `CLAW_GAP` apart on the rock the claws meet
+(`grooveEdits`, mirroring the sim) and looks down the scored wall. The spectacle and visitor
+strips show the event card or pill over the frame as C1's hub draws it in play
+(`gallery/eventCard.ts`, from the strip's scripted mood; D5). The kill-cam window's GPU time
+is reported as its own pass, `killcam`.
 
 **Cost** (gallery, RTX 5080, 1920x1080, "high"): objects 0.01-0.06 ms, particles 0.02-0.03 ms
 and the kill-cam window 0.04-0.05 ms in every strip. Whole frames are 0.27-0.60 ms, all within
@@ -554,7 +565,7 @@ game side is `game/race/` (`RaceClient` in `index.ts`: one object `main.ts` call
 | EXIT sign | A 46 x 13.8 u emergency-exit light box over the portal (`drawExitSign`: a green panel, the running man through a door, "EXIT", an arrow down; painted into an `rgba8unorm-srgb` texture once), turned toward the viewer (upright, tilting halfway toward a viewer above or below), drawn opaque over the scene with a hand depth test, a soft green glow around it, the odd flicker; readable from every start slot | `SIGN_WGSL` (`signWgsl`), `belt.ts` `signCorners` |
 | Ice glints | Sparse sparkles on sunlit rock in the belt within 120 u: one candidate per 0.55 u cell, a facet near the surface normal that flashes when it mirrors the sun into the eye, at least a pixel wide | `beltWgsl` |
 | Keep mask | Gates, the portal and the sign raise the scene alpha to the colour keep mask (alpha blended with `max`), so they stay in colour in ink levels (Palette 80+) like paint | `beltWgsl`, `signWgsl` |
-| Screen-edge radiation | With the own dose (eased, from 0.25 at a dose of 0.25 hull/s to full at 7.5): red and blue pulled apart toward the screen edges, green snow that changes every frame and torn lines, a sickly tint; nothing in the middle of the view | `RADIATION_WGSL` |
+| Screen-edge radiation | With the own dose (eased, from 0.25 at a dose of 0.25 hull/s to full at 7.5): the rim of the view burns, so any dose reads at once while the course stays clear (D5, review finding: heavy colour static over the whole view hid the course): from about half-way out (a little further in as the dose rises) the picture darkens and turns sickly, red and blue split by a few pixels, a toxic green glow breathes with a pulse that quickens with the dose (with the Geiger crackle), and sparse 3 px flecks jump at the very edge 20 times a second. No snow or torn lines over the view | `RADIATION_WGSL` |
 | Rock | Belt levels use a sooty rock colour (`BELT_ROCK`, the terrain's base albedo) | `game/race/index.ts` |
 | Boulders, pebbles, start lights | Drifting boulders from ls-wasm `boulderPoses` (the simulation's orbit functions, tumbling), mesh kind `boulder` (a lumpy, cratered rock); 9000 client-only pebbles (mesh kind `pebble`, faceted chips 0.1-0.9 u) denser toward the inner edge and the belt plane, drifting and tumbling, the nearest 2600 within 70 u drawn (none closer than 3.5 u); over every racer's slot during the start lights a gantry (mesh kind `gantry`) with five lamps (glowing `orb` instances) coming on one by one and flashing green at the go, with red point lights | `models/raceProps.ts`, `raceFx.ts` |
 | Irradiated hulls | A crackling green glow and sparks off every ship taking a dose (more with the dose) | `raceFx.ts` `sizzleShips` |
@@ -638,7 +649,10 @@ them on (one `ArchitectClient.update` per frame).
   clipped (`step(ROOM_CLIP, d)`) with a `fade`-wide ragged edge, so a slab one storey deep
   (`SLAB_DEPTH` 34 u under a cut 6 u above the view's target, `game/architect/camera.ts`)
   shows the tunnel floors from above; back faces stay culled, so solid rock reads as black
-  between them. No new pass, shader or uniform. The map view multiplies the headlight by
+  between them. No new pass or uniform. Rock the cut removes is discarded at the top of the
+  terrain fragment shader (`room_clipped`, the same `ROOM_CLIP` step) before any shading, chunks
+  draw front to back (for every view), and the map view's terrain pipeline drops the fine
+  detail (`DETAIL` 0; D5, cost below). The map view multiplies the headlight by
   `OVERVIEW_HEADLIGHT` (55; the headlight falls off as 1 / (1 + 0.004 d²), about 1 at the floor
   120 u below) and the fog by `OVERVIEW_FOG` (0.25).
 - **Volumes** (mode effects pass, `game/architect/visuals.ts` `architectVolumes`, placed before
@@ -667,7 +681,10 @@ Cost (gallery `architect-*`, RTX 5080, 1080p "high"): `mode` 0.03-0.09 ms, `part
 0.02-0.06 ms (the ink at its thickest 0.05 ms); the map view draws far more terrain (`terrain`
 1.0-1.3 ms for 1.8-2.0 M triangles over a whole cave level against 0.2 ms in a tunnel), still
 well inside the 4 ms terrain share. Estimated on the reference mid GPU (factor about 10):
-mode and particles 0.3-0.9 ms together, within the 1.0 ms event-visuals share.
+mode and particles 0.3-0.9 ms together, within the 1.0 ms event-visuals share. On this machine's
+integrated GPU (D5, `--power low`) the early clip, the front-to-back order and the map view's
+`DETAIL` 0 took `architect-overview` from 58.2 to 47.9 ms (terrain 53.7 to 43.4 ms); the
+integrated GPU is about 69x slower than the RTX 5080 there (milestone plan, D5).
 
 ## Particles (VQ5)
 

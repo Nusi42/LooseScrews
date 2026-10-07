@@ -30,7 +30,7 @@ import { clamp01, hash01, LoopVoice, phaseSecsLeft, pushInstance, smoothstep, ty
 /** Ginger tabby (display). */
 export const PAW_FUR: Rgb = [0.86, 0.5, 0.22];
 /** data/events/cat_paw.ron `claw_gap` (u). */
-export const CLAW_GAP = 2.5;
+export const CLAW_GAP = 7;
 /** Paw phases (state[0]). */
 export const PAW_PHASE = { tell: 0, reach: 1, sweep: 2, withdraw: 3 } as const;
 

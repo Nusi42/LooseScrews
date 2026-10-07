@@ -188,9 +188,20 @@ fn ggx(n: vec3f, v: vec3f, l: vec3f, rough: f32, f0: f32) -> f32 {
   return d * g * f / (4.0 * nv * max(nl, 1e-3)) * nl;
 }
 
+// Wrong genre's cutaway (M4 C1): rock opened by the near plane shows a flat
+// brick fill. Its own pipeline draws the back faces with this entry point
+// (D5: before, every back face ran the whole rock shading first).
 @fragment
-fn fs_main(in: VsOut, @builtin(front_facing) front: bool) -> @location(0) vec4f {
+fn fs_cut(in: VsOut) -> @location(0) vec4f {
+  return vec4f(cut_fill(in.world_pos), 1.0);
+}
+
+@fragment
+fn fs_main(in: VsOut) -> @location(0) vec4f {
   let p = in.world_pos;
+  // Rock room_fade cuts off (the hidden walls, The Architect's map cut) is
+  // discarded before any shading (D5; discard keeps derivatives valid).
+  if (room_clipped(p)) { discard; }
   let n0 = normalize(in.normal);
   let t = frame.camera_pos.w;
   // Triplanar weights from the smooth normal, but a projection whose plane
@@ -248,9 +259,15 @@ fn fs_main(in: VsOut, @builtin(front_facing) front: bool) -> @location(0) vec4f 
   // Paint keeps its colour through a monochrome look (M4 A7 ink, Last Color Standing).
   var keep = 0.0;
   // Everything is cake (M4 C1): the rock inside the wave is a layer cake.
-  let cake_w = cake_amount(p);
+  // The wave's depth once (cake_look reads it too; D5).
+  var cake_d = -1e6;
+  var cake_w = 0.0;
+  if (tp.cake_up.w > 0.0) {
+    cake_d = cake_depth(p);
+    cake_w = cake_amount_at(cake_d);
+  }
   if (cake_w > 0.0) {
-    let ck = cake_look(p, n0, noise);
+    let ck = cake_look(p, n0, noise, cake_d);
     albedo = mix(albedo, ck.albedo, cake_w);
     rough = mix(rough, ck.rough, cake_w);
     f0 = mix(f0, ck.f0, cake_w);
@@ -345,8 +362,6 @@ fn fs_main(in: VsOut, @builtin(front_facing) front: bool) -> @location(0) vec4f 
   let color = albedo * lit * occl + (spec + dyn_gloss) * occl + emissive;
   // Open levels: rock fades into the sky before a hidden wall (premultiplied;
   // the sky is drawn under the scene by its alpha). VQP.
-  // Wrong genre's cutaway (M4 C1): rock opened by the near plane shows a flat brick fill.
-  if (!front) { return vec4f(cut_fill(p), 1.0); }
   let cover = room_fade(p);
   if (cover < 0.01) { discard; }
   // Alpha above 1 marks colour a monochrome look keeps (shaders/post.ts KEEP_ALPHA): painted rock.

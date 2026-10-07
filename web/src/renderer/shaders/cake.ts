@@ -31,6 +31,14 @@ export const SPRINKLES: readonly (readonly [number, number, number])[] = [
 export const CAKE_FRONT_U = 2.2;
 /** Height (u) of one sponge-cream-jam repeat along the up. */
 export const CAKE_LAYER_U = 2.6;
+/**
+ * Beyond this distance (u) from the camera the cake's fine detail (pores,
+ * sprinkles, the front's twinkles: features of 0.1-0.6 u, under a pixel
+ * there) fades out over CAKE_DETAIL_FADE_U and is not computed (D5: the
+ * cake frame filled the screen with it).
+ */
+export const CAKE_DETAIL_NEAR_U = 30;
+export const CAKE_DETAIL_FADE_U = 15;
 
 const v = (c: readonly number[]): string => `vec3f(${c.map((x) => x.toFixed(4)).join(", ")})`;
 
@@ -68,13 +76,21 @@ fn cake_depth(p: vec3f) -> f32 {
   return tp.cake.w - length(p - tp.cake.xyz) + wobble;
 }
 
-fn cake_amount(p: vec3f) -> f32 {
-  if (tp.cake_up.w <= 0.0) { return 0.0; }
-  return smoothstep(-0.6, 0.6, cake_depth(p)) * tp.cake_up.w;
+// The cake's amount from cake_depth (0 outside the wave, 1 inside; the front blends).
+fn cake_amount_at(d: f32) -> f32 {
+  return smoothstep(-0.6, 0.6, d) * tp.cake_up.w;
 }
 
-fn cake_look(p: vec3f, n: vec3f, noise: f32) -> CakeLook {
+fn cake_amount(p: vec3f) -> f32 {
+  if (tp.cake_up.w <= 0.0) { return 0.0; }
+  return cake_amount_at(cake_depth(p));
+}
+
+// \`d\` = cake_depth(p) (the caller has it).
+fn cake_look(p: vec3f, n: vec3f, noise: f32, d: f32) -> CakeLook {
   var out: CakeLook;
+  // Fine detail only near the camera (CAKE_DETAIL_NEAR_U).
+  let near = 1.0 - smoothstep(${CAKE_DETAIL_NEAR_U}.0, ${CAKE_DETAIL_NEAR_U + CAKE_DETAIL_FADE_U}.0, distance(p, frame.camera_pos.xyz));
   let up = tp.cake_up.xyz;
   let h = dot(p, up);
   let facing = dot(n, up);
@@ -87,8 +103,12 @@ fn cake_look(p: vec3f, n: vec3f, noise: f32) -> CakeLook {
   let f = fract(lh);
   let cream = smoothstep(0.02, 0.05, f) * (1.0 - smoothstep(0.12, 0.15, f));
   let jam = smoothstep(0.15, 0.17, f) * (1.0 - smoothstep(0.21, 0.23, f));
-  // Sponge pores: little dark pits.
-  let pore = smoothstep(0.62, 0.8, cake_noise(p * 7.0)) * 0.5 + smoothstep(0.7, 0.85, cake_noise(p * 15.0 + vec3f(3.1))) * 0.35;
+  // Sponge pores: little dark pits (their average tone far away).
+  var pore = 0.1;
+  if (near > 0.0) {
+    let pits = smoothstep(0.62, 0.8, cake_noise(p * 7.0)) * 0.5 + smoothstep(0.7, 0.85, cake_noise(p * 15.0 + vec3f(3.1))) * 0.35;
+    pore = mix(pore, pits, near);
+  }
   let sponge = mix(srgb_to_linear(${v(CAKE_COLORS.sponge)}), srgb_to_linear(${v(CAKE_COLORS.crumb)}), pore + noise * 0.3);
   var alb = mix(sponge, srgb_to_linear(${v(CAKE_COLORS.cream)}), cream);
   alb = mix(alb, srgb_to_linear(${v(CAKE_COLORS.jam)}), jam);
@@ -106,20 +126,24 @@ fn cake_look(p: vec3f, n: vec3f, noise: f32) -> CakeLook {
   let gloss_tone = smoothstep(0.6, 0.95, cake_noise(p * 2.3));
   let frost_col = mix(srgb_to_linear(${v(CAKE_COLORS.frosting)}), srgb_to_linear(${v(CAKE_COLORS.frostingLight)}), gloss_tone * 0.6);
   // Sprinkles: a short capsule in a random place and direction per 0.6 u cell, in one of six colours.
-  let sp = p * 1.66;
-  let cell = floor(sp);
-  let local = sp - cell - vec3f(cake_hash(cell), cake_hash(cell + vec3f(5.1)), cake_hash(cell + vec3f(9.7))) * 0.5 - vec3f(0.25);
-  let dir = normalize(vec3f(cake_hash(cell + vec3f(1.3)), cake_hash(cell + vec3f(2.9)), cake_hash(cell + vec3f(4.4))) - 0.5);
-  let t_along = clamp(dot(local, dir), -0.2, 0.2);
-  let dist = length(local - dir * t_along);
-  let sprinkle = (1.0 - smoothstep(0.08, 0.11, dist)) * step(0.4, cake_hash(cell + vec3f(7.7))) * frost;
-  let k = u32(cake_hash(cell + vec3f(3.3)) * 5.99);
-  var sc = srgb_to_linear(${v(SPRINKLES[0]!)});
-  if (k == 1u) { sc = srgb_to_linear(${v(SPRINKLES[1]!)}); }
-  else if (k == 2u) { sc = srgb_to_linear(${v(SPRINKLES[2]!)}); }
-  else if (k == 3u) { sc = srgb_to_linear(${v(SPRINKLES[3]!)}); }
-  else if (k == 4u) { sc = srgb_to_linear(${v(SPRINKLES[4]!)}); }
-  else if (k == 5u) { sc = srgb_to_linear(${v(SPRINKLES[5]!)}); }
+  var sprinkle = 0.0;
+  var sc = vec3f(0.0);
+  if (frost > 0.0 && near > 0.0) {
+    let sp = p * 1.66;
+    let cell = floor(sp);
+    let local = sp - cell - vec3f(cake_hash(cell), cake_hash(cell + vec3f(5.1)), cake_hash(cell + vec3f(9.7))) * 0.5 - vec3f(0.25);
+    let dir = normalize(vec3f(cake_hash(cell + vec3f(1.3)), cake_hash(cell + vec3f(2.9)), cake_hash(cell + vec3f(4.4))) - 0.5);
+    let t_along = clamp(dot(local, dir), -0.2, 0.2);
+    let dist = length(local - dir * t_along);
+    sprinkle = (1.0 - smoothstep(0.08, 0.11, dist)) * step(0.4, cake_hash(cell + vec3f(7.7))) * frost * near;
+    let k = u32(cake_hash(cell + vec3f(3.3)) * 5.99);
+    sc = srgb_to_linear(${v(SPRINKLES[0]!)});
+    if (k == 1u) { sc = srgb_to_linear(${v(SPRINKLES[1]!)}); }
+    else if (k == 2u) { sc = srgb_to_linear(${v(SPRINKLES[2]!)}); }
+    else if (k == 3u) { sc = srgb_to_linear(${v(SPRINKLES[3]!)}); }
+    else if (k == 4u) { sc = srgb_to_linear(${v(SPRINKLES[4]!)}); }
+    else if (k == 5u) { sc = srgb_to_linear(${v(SPRINKLES[5]!)}); }
+  }
   alb = mix(alb, frost_col, frost);
   alb = mix(alb, sc, sprinkle);
   rough = mix(rough, 0.28, frost);
@@ -127,13 +151,15 @@ fn cake_look(p: vec3f, n: vec3f, noise: f32) -> CakeLook {
   out.rough = rough;
   out.f0 = mix(0.03, 0.05, frost);
   // The wave front: a bright band of frosting foam with sparkles.
-  let d = cake_depth(p);
   let band = (1.0 - smoothstep(0.0, ${CAKE_FRONT_U}, abs(d - ${CAKE_FRONT_U * 0.5}))) * tp.cake_up.w;
   // Round twinkles in the band (a random point per 0.25 u cell, blinking).
-  let gp = p * 4.0;
-  let gc = floor(gp);
-  let gd = length(gp - gc - vec3f(cake_hash(gc + vec3f(1.7)), cake_hash(gc + vec3f(8.3)), cake_hash(gc + vec3f(4.1))));
-  let twinkle = (1.0 - smoothstep(0.06, 0.16, gd)) * step(0.82, cake_hash(gc + vec3f(floor(frame.camera_pos.w * 8.0)))) * band;
+  var twinkle = 0.0;
+  if (band > 0.0 && near > 0.0) {
+    let gp = p * 4.0;
+    let gc = floor(gp);
+    let gd = length(gp - gc - vec3f(cake_hash(gc + vec3f(1.7)), cake_hash(gc + vec3f(8.3)), cake_hash(gc + vec3f(4.1))));
+    twinkle = (1.0 - smoothstep(0.06, 0.16, gd)) * step(0.82, cake_hash(gc + vec3f(floor(frame.camera_pos.w * 8.0)))) * band * near;
+  }
   out.emissive = srgb_to_linear(${v(CAKE_COLORS.frostingLight)}) * (band * 0.45 + twinkle * 4.0) + sc * sprinkle * 0.12;
   return out;
 }

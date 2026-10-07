@@ -475,13 +475,14 @@ fn fs_main(in: VsOut) -> @location(0) vec4f {
   let c = bu.center.xyz;
   let sun = bu.sun.xyz;
   // The dust, aurora and cocoon from the volume pass: a tent of four
-  // bilinear taps a volume texel apart (smooth, hides the march jitter).
+  // bilinear taps 1.5 volume texels apart (smooth, hides the march jitter's
+  // mottle; D5 widened it from 1 texel).
   let vt = 1.0 / vec2f(textureDimensions(volume_tex));
   let vuv = in.clip.xy / size;
-  var acc = 0.25 * (textureSampleLevel(volume_tex, lin_sampler, vuv + vec2f(-0.5, -0.5) * vt, 0.0).rgb
-    + textureSampleLevel(volume_tex, lin_sampler, vuv + vec2f(0.5, -0.5) * vt, 0.0).rgb
-    + textureSampleLevel(volume_tex, lin_sampler, vuv + vec2f(-0.5, 0.5) * vt, 0.0).rgb
-    + textureSampleLevel(volume_tex, lin_sampler, vuv + vec2f(0.5, 0.5) * vt, 0.0).rgb);
+  var acc = 0.25 * (textureSampleLevel(volume_tex, lin_sampler, vuv + vec2f(-0.75, -0.75) * vt, 0.0).rgb
+    + textureSampleLevel(volume_tex, lin_sampler, vuv + vec2f(0.75, -0.75) * vt, 0.0).rgb
+    + textureSampleLevel(volume_tex, lin_sampler, vuv + vec2f(-0.75, 0.75) * vt, 0.0).rgb
+    + textureSampleLevel(volume_tex, lin_sampler, vuv + vec2f(0.75, 0.75) * vt, 0.0).rgb);
 
   // Gates, portal and sign glow are race markers: they keep their colour in ink levels.
   var marks = vec3f(0.0);
@@ -692,25 +693,33 @@ fn fs_main(in: VsOut) -> @location(0) vec4f {
   let ctr = uv - 0.5;
   let aspect = size.x / max(size.y, 1.0);
   let e = length(vec2f(ctr.x * aspect, ctr.y)) / length(vec2f(0.5 * aspect, 0.5));
-  // Edge weight: nothing in the middle of the view.
-  let edge = smoothstep(0.55, 1.05, e) * k;
-  // Chromatic fringe: red and blue pulled apart along the radius.
-  let off = ctr * (0.004 + 0.022 * edge);
+  // The rim: nothing in the middle of the view (the course stays readable);
+  // any dose shows there at once and the band widens a little with it (D5:
+  // danger at the edges, no colour static over the view).
+  let rim = smoothstep(0.5 - 0.12 * k, 1.0, e);
+  let s = 0.4 + 0.6 * k;
+  let edge = rim * s;
+  // The radiation's pulse, quicker the hotter it is (with the Geiger crackle).
+  let pulse = 0.5 + 0.5 * sin(t * (3.0 + 7.0 * k));
+  // Chromatic fringe: red and blue pulled apart along the radius, a few
+  // pixels at the rim (a wide split doubles every star and edge).
+  let off = ctr * 0.008 * edge;
   let base = textureSampleLevel(scene, lin_sampler, uv, 0.0);
   let r = textureSampleLevel(scene, lin_sampler, uv + off, 0.0).r;
   let bl = textureSampleLevel(scene, lin_sampler, uv - off, 0.0).b;
-  var col = vec3f(mix(base.r, r, min(1.0, edge * 3.0)), base.g, mix(base.b, bl, min(1.0, edge * 3.0)));
-  // Static: snow that jumps every frame, and torn bright lines.
-  let frame = floor(t * 30.0);
-  let px = floor(in.clip.xy * 0.5);
-  let snow = hash31(vec3f(px, frame));
-  let line = step(0.988 - 0.02 * k, hash21(vec2f(floor(in.clip.y * 0.25), frame))) * edge;
-  let flick = 0.8 + 0.2 * hash21(vec2f(frame, 1.0));
-  let glow = vec3f(0.35, 1.0, 0.45);
-  let lum = dot(col, vec3f(0.2126, 0.7152, 0.0722));
-  col += glow * (pow(snow, 10.0) * 1.2 + line * 0.18) * edge * flick * (0.4 + 0.6 * clamp(lum * 4.0, 0.0, 1.0));
-  // A sickly tint creeping in from the edges.
-  col = mix(col, col * vec3f(0.8, 1.15, 0.85) + glow * 0.02 * edge, edge * 0.6);
+  let split = min(1.0, edge * 2.0);
+  var col = vec3f(mix(base.r, r, split), base.g, mix(base.b, bl, split));
+  // Burnt edges: the picture darkens and turns sickly toward the rim ...
+  col = mix(col, col * vec3f(0.5, 0.7, 0.42), edge * 0.7);
+  // ... under a toxic glow that breathes with the pulse.
+  let glow = vec3f(0.55, 1.0, 0.18);
+  col += glow * edge * edge * (0.08 + 0.14 * pulse);
+  // Sparse static: a few 3 px flecks right at the rim (not snow over the
+  // view), jumping 20 times a second.
+  let frame = floor(t * 20.0);
+  let cell = floor(in.clip.xy / 3.0);
+  let fleck = step(1.0 - 0.02 * edge * edge * edge, hash31(vec3f(cell, frame)));
+  col += glow * fleck * 0.35;
   return vec4f(col, base.a);
 }
 `;

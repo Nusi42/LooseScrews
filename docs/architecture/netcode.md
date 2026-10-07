@@ -104,6 +104,16 @@ server. Tolerances, smoothing and snap rules:
 The predicted movement includes everything `simulate_movement` models: paint colours under
 the ship (red rebounds, blue keeps speed, yellow slows; the client's terrain has the same paint
 from the edit log), charged-rock contact, and the freeze while guiding an Eyeball (below).
+Since protocol 6 (M4) it also includes everything the server's movement stage adds that is a
+pure function of replicated state, the match seed and the share code: the clamped pull of the
+static wells (from the share code) and the dynamic wells (from well entities, with their exact
+start and end ticks), the level's up, the running comedy event's movement effects with the mood
+view advanced to the predicted tick (`MoodView::advanced`), the pushes of kinematic obstacles
+(Duck parade's ducks, a belt's drifting boulders) and mode limits read from replicated flags
+(Belt Up's `HELD`). Server-side changes that are not (bumps, knockback, cave-in rubble) are
+corrected like any knockback. Details and measured reconciliation errors:
+[game-glue.md, Client core](game-glue.md#client-core) and
+[moods-and-world.md](moods-and-world.md).
 
 Shots: the browser also predicts its own projectiles (`crates/ls-wasm/src/shots.rs`,
 `ShotPredictor`) with the simulation's firing rules, draws them at once, and hands over to the
@@ -251,6 +261,11 @@ presence mask of the next delta (so it is no longer drawn) and reappears as a ne
 ship. Lag compensation works on the server's world, not on what a
 client was sent.
 
+Comedy events (M4) can reveal ships: while an event's `reveal` hook says so (Gossip wall: every
+ship; Hat rain: ships wearing 3 or more hats), `World::ship_visible_to` keeps the ship for every
+viewer, cloaked or not. Monochrome levels change only what the client draws (grey ships' name
+tags), not what the server sends.
+
 ## Events, cues and other messages
 
 Events (hits, kills, respawns, match end, and game cues) are batched per snapshot
@@ -260,7 +275,9 @@ filter: level-wide cues such as `TectonicLaunch` and `Shockwave` rely on it). A 
 position and a 16-bit value; the kinds are Polite warning, blinding, charge start, Tectonic
 launch and armed, shockwave, Leech beam, swap, rewind, muzzle flash, gadget, decoy return,
 overcharge and paint colour (`crates/ls-sim/src/behavior.rs`; values in
-[arsenal-framework.md](arsenal-framework.md#replication-ls-net-protocol-4)). The browser turns
+[arsenal-framework.md](arsenal-framework.md#replication-ls-net-protocol-4)), and since
+protocol 6 cave-in warning, pigment, event announce, stroke telegraph, event outcome, kill-cam
+and event hit ([Protocol 6](#protocol-6-moods-the-architect-belt-up)). The browser turns
 them into effects and HUD state (`web/src/game/mechanics.ts`); some also correct client
 guesses: the `PaintColor` cue confirms the colour the client guessed on V, and the `Gadget`
 cue's value (`ls_sim::gadget_cue`: on, off by key, out of energy, instant use) starts the
@@ -278,8 +295,9 @@ client's cooldown estimate only for a key-press off or an instant use. Bots use 
 | `SelectShip` | reliable | client to server | ship type for the next respawn |
 | `Inventory` | reliable | server to client | the own ship's weapons, ammo, levels, shot counts, module state bytes, selection and gadget, when they change |
 | `LobbyState` | reliable | server to client | lobby phase and its ticks left, room code, next mode, rule set and world, player range, teams, players (team pick, ready, spectator) |
-| `MatchResults` | reliable | server to client | once when the mode ends (and to players joining afterwards): winner side, team scores, rows (kills, deaths, score, name) |
+| `MatchResults` | reliable | server to client | once when the mode ends (and to players joining afterwards): winner side, team scores, rows (kills, deaths, score, name); protocol 6: comedy event awards (Hat Baron, Customer rating) |
 | `Ready` / `PickTeam` / `Spectate` | reliable | client to server | lobby requests (ready for the next match, team for the next match or auto, spectate from the next match on), queued for the host's lobby (`Room::take_lobby_requests`) |
+| `ArchitectAction` | reliable | client to server | protocol 6: The Architect's stroke (kind, centre, radius), queued per player and validated by the world before the next tick |
 | `Disconnect` | reliable | both | reason |
 
 ## Match transitions, lobby and mode state (protocol 5)
@@ -382,8 +400,11 @@ where the shooter saw the target (up to 250 ms / 15 ticks). The room keeps a sho
 ship positions, estimates from each command which tick the shooter was looking at, and gives
 every projectile the rewind of the input that fired it. When a projectile would hit a rewound
 target, the target is displaced for that one step so `World::step` applies its normal hit
-rules, then moved back. The view-tick estimate, guards and caveats are in
-[game-glue.md, Lag compensation](game-glue.md#lag-compensation).
+rules, then moved back. Since M4 the displaced target is moved exactly as the coming step will
+move it (`World::preview_movement`: mode limits, event movement effects, static and dynamic
+wells, the level's up), and each history tick keeps the comedy event's hit rules of its tick
+(Big head day's hit scale, Wrong genre's depth-free hits). The view-tick estimate, guards and
+caveats are in [game-glue.md, Lag compensation](game-glue.md#lag-compensation).
 
 ## Transports
 

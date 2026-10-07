@@ -9,11 +9,14 @@
 //   data/events/*.ron   -> userDocs/reference/events.md (the comedy director's cadence, every
 //                          event with its numbers, moods and weight, each rule set's Absurdity
 //                          cap and event bans)
+//   data/world/*.ron    -> userDocs/reference/world.md (gravity wells, Instability and cave-ins,
+//                          pigment, radiation and drifting boulders; with the weapons' `gravity`
+//                          flags, the ships' thrust and the rule sets' pigment pickups)
 // The default rule set (data/rulesets/paint_the_void.ron) supplies the weapon order (the
 // design doc's) and the "default rules" columns.
 //
 // Usage: node tools/gen-weapon-docs.mjs [--check]
-//   (no flag)  write the five files
+//   (no flag)  write the six files
 //   --check    write nothing; exit 1 if a file is missing or differs from what the data
 //              gives (CI runs this: after a data change, regenerate and commit the tables)
 //
@@ -1093,6 +1096,195 @@ function eventsDoc(events, director, rulesets) {
 }
 
 // ---------------------------------------------------------------------------
+// World physics (data/world/*.ron, M4)
+
+/** Radiation dose rate (hull/s) at signed distance `d` (u) from the shelter; mirrors ls_sim::radiation::dose_rate. */
+export function doseRate(r, d) {
+  if (d <= -r.deep) return 0;
+  if (d <= 0) return r.surface_rate * (1 + d / r.deep);
+  return Math.min(r.surface_rate + r.slope * Math.min(d, r.knee) + r.far_slope * Math.max(d - r.knee, 0), r.cap);
+}
+
+/** Distance (u) outside the shelter where the dose reaches its cap. */
+export function capDistance(r) {
+  const atKnee = r.surface_rate + r.slope * r.knee;
+  if (atKnee >= r.cap) return r.slope > 0 ? (r.cap - r.surface_rate) / r.slope : 0;
+  return r.far_slope > 0 ? r.knee + (r.cap - atKnee) / r.far_slope : Infinity;
+}
+
+/** Instability cave-in threshold (strain in u^3) at slider value `i`; mirrors ls_sim::instability. */
+export function caveInThreshold(s, i) {
+  return i <= 0 ? Infinity : s.threshold_at_100 * Math.pow(100 / i, s.threshold_exponent);
+}
+
+function worldDoc(world, weapons, ships, rulesets) {
+  const get = (id) => world.find((w) => w.id === id)?.def ?? {};
+  const g = get("gravity");
+  const inst = get("instability");
+  const pig = get("pigment");
+  const rad = get("radiation");
+  const bould = get("boulders");
+  const tinker = ships.find((s) => s.id === "tinker")?.def ?? {};
+  const tinkerThrust = tinker.thrust_accel ?? 30;
+  const tinkerHull = tinker.hull_max ?? 100;
+  const rank = (id) => (SHIP_ORDER.indexOf(id) < 0 ? 99 : SHIP_ORDER.indexOf(id));
+  const shipList = [...ships].sort((a, b) => rank(a.id) - rank(b.id) || a.id.localeCompare(b.id));
+  const shipName = (id) => id.charAt(0).toUpperCase() + id.slice(1);
+  const wname = (w) => w.def.name ?? w.id;
+  const bent = weapons.filter((w) => w.def.gravity === true).map(wname).sort();
+  const straight = weapons.filter((w) => w.def.gravity !== true).map(wname).sort();
+  const pw = weapons.find((w) => w.id === "paperweight")?.def;
+  const boltRadius = weapons.find((w) => w.id === "bolt_rocket")?.def?.terrain?.crater_radius ?? 1;
+  const beltUp = rulesets.find((r) => r.id === "belt_up")?.def;
+  const beltScale = beltUp?.mode instanceof Enum ? beltUp.mode.args[0]?.radiation_scale : undefined;
+  const sphere = (r) => (4 / 3) * Math.PI * r * r * r;
+  const growth = (i) => 1 + (inst.crater_scale_at_100 ?? 0) * (i / 100);
+
+  const levels = [10, 30, 60, 100];
+  const [wf, rf, hf] = Array.isArray(inst.material_factor) ? inst.material_factor : [1.5, 1, 0.5];
+  const range = (pair, digits = 2) => (Array.isArray(pair) ? `${num(pair[0], digits)}-${num(pair[1], digits)}` : "–");
+
+  const radPoints = [-rad.deep, -rad.deep / 2, 0, rad.knee / 2, rad.knee, rad.knee + 2, rad.knee + 4, capDistance(rad)];
+  const where = (d) => {
+    if (d <= -rad.deep) return `${num(-d)} u or deeper inside the belt (or in the dust round the EXIT)`;
+    if (d < 0) return `${num(-d)} u inside the belt`;
+    if (d === 0) return "at the belt's surface";
+    return `${num(d)} u outside`;
+  };
+
+  const withPigment = rulesets.filter((r) => r.def.pigment_pickup);
+  const noPigment = rulesets.filter((r) => !r.def.pigment_pickup).map((r) => `\`${r.id}\``);
+
+  const out = [
+    header(
+      "World physics reference",
+      "data/world/*.ron, data/weapons/*.ron, data/ships/*.ron and data/rulesets/*.ron",
+      [
+        "The numbers behind the world sliders and the asteroid belt: gravity wells (Gravity Chaos),",
+        "cave-ins (Instability), pigment on black-and-white levels (Palette 80 and above), and the",
+        "belt's radiation and drifting boulders. How they feel is in the",
+        "[player manual](../player-manual.md#the-level-fights-back); a server's rule set changes only",
+        "the pigment pickups and Belt Up's radiation scale.",
+      ].join("\n"),
+    ),
+    "## Gravity wells",
+    "",
+    "The world generator places 1 + Gravity Chaos / 15 wells (at most 7, none at 0); each pulls",
+    "within its range (20 u, growing to 40 u at Gravity Chaos 100) with a strength of Gravity",
+    "Chaos / 100 of the strongest pull. Asteroid belts have a shepherd moon per sector from Gravity",
+    "Chaos 20.",
+    "",
+    table(
+      ["Rule", "Value"],
+      [
+        ["Strongest pull of a level's well (Gravity Chaos 100)", `${num(g.max_peak_accel)} u/s² (${pct(g.max_peak_accel / tinkerThrust)} of a Tinker's thrust)`],
+        ["Where the pull is strongest", `${num(g.softening / Math.SQRT2, 1)} u from the core's centre; it fades to 0 at the well's range`],
+        ["Most pull on a ship, however many wells overlap", `${pct(g.ship_clamp)} of its thrust, so every ship can thrust out`],
+        ["Most pull on debris and missiles", `${num(g.body_clamp)} u/s²`],
+        ["A ship that does not thrust", `drifts toward the well at its pull x ${num(g.drift_secs)} s (u/s)`],
+        ...(pw
+          ? [["Paperweight well", `${num(param(pw, "well_secs"))} s, ${num(param(pw, "well_range"))} u range, up to ${pct(param(pw, "well_pull"))} of a Tinker's thrust (${num(param(pw, "well_pull") * tinkerThrust, 1)} u/s²)`]]
+          : []),
+        ["The Architect's Gravity Chaos+ stroke", "a well for the rule set's `well_secs` (see the [mode reference](modes.md#the-architect))"],
+      ],
+    ),
+    "",
+    table(
+      ["Ship", "Thrust (u/s² per axis)", "Most pull from wells (u/s²)"],
+      shipList.map((s) => [shipName(s.id), num(s.def.thrust_accel), num(s.def.thrust_accel * g.ship_clamp, 1)]),
+    ),
+    "",
+    `**Bent by wells:** ships, debris, mines and ${bent.join(", ")}.`,
+    "",
+    `**Fly straight:** ${straight.join(", ")}.`,
+    "",
+    "## Instability and cave-ins",
+    "",
+    table(
+      ["Instability", ...levels.map((i) => String(i))],
+      [
+        ["Craters", ...levels.map((i) => `${num(growth(i))}x as wide`)],
+        [
+          "Bolt Rocket craters in one spot that cave a tunnel in (ordinary rock, fired together)",
+          ...levels.map((i) => String(Math.ceil(caveInThreshold(inst, i) / sphere(boltRadius * growth(i))))),
+        ],
+      ],
+    ),
+    "",
+    `At Instability 0 craters keep their size and tunnels never cave in. Every crater strains the rock`,
+    `of its ${num(inst.cell_size)} u region by its volume (weak rock ${num(wf)}x, ordinary ${num(rf)}x, hard`,
+    `${num(hf)}x); the strain fades by ${pct(inst.decay_per_sec)} per second, so craters spread over time need more.`,
+    "",
+    table(
+      ["Cave-in", "Value"],
+      [
+        ["Warning (cracks, dust, rumble)", `${num(inst.warning_secs)} s`],
+        ["Rubble", `${range(inst.rubble_count, 0)} spheres of weak rock, ${range(inst.rubble_radius)} u, from a hollow in the rock up to ${num(inst.ceiling_search)} u above`],
+        ["Debris", `${range(inst.debris_count, 0)} pieces with ${range(inst.debris_scrap)} scrap each`],
+        ["Damage", `${num(inst.damage)} to ships within ${num(inst.damage_radius)} u of the rubble (no kill credit)`],
+        ["How often", `at most one cave-in per ${num(inst.min_interval_secs)} s per level`],
+        ["Never", `within ${num(inst.spawn_clearance)} u of a spawn point, in the Heist core chamber, within ${num(inst.extraction_clearance)} u of an extraction zone, or sealing a ship in (every ship near it keeps a way out ${num(inst.escape_reach)} u long)`],
+      ],
+    ),
+    "",
+    "## Pigment",
+    "",
+    "Black-and-white levels (Palette 80 and above) and every Last Color Standing level have pigment",
+    "pickups at the pickup points.",
+    "",
+    table(
+      ["Rule", "Value"],
+      [
+        ["Pigmented", `${num(pig.duration_secs)} s (another pickup starts it again)`],
+        ["Damage bonus", `+${pct(pig.damage_bonus)} with every weapon`],
+        ["Splash when a pigmented ship dies", `a pickup for ${num(pig.splash_secs)} s`],
+        ["Last Color Standing", `a pickup restores ${num(pig.restore_colour)} colour instead (no damage bonus)`],
+      ],
+    ),
+    "",
+    table(
+      ["Rule set (id)", "Pigment pickups", "Respawn"],
+      withPigment.map((r) => {
+        const p = r.def.pigment_pickup;
+        return [`**${r.def.name ?? r.id}** (\`${r.id}\`)`, `1 per ${num(p.players_per_pickup)} players, at least ${num(p.min_on_map)}`, `${num(p.respawn_secs)} s`];
+      }),
+    ),
+    "",
+    noPigment.length ? `No pigment pickups: ${noPigment.join(", ")}.` : "Every built-in rule set has pigment pickups.",
+    "",
+    "## Radiation (asteroid belts)",
+    "",
+    "Outside the belt radiation burns hull, past any Shield or gadget, and gives nobody the kill.",
+    `Belt Up scales it by its rule set's \`radiation_scale\`${beltScale !== undefined ? ` (built-in: ${num(beltScale)}x)` : ""} while racing and turns it off during the start lights and heat results.`,
+    "",
+    table(
+      ["Where", "Hull per second", `A full Tinker (${num(tinkerHull)} hull) lasts`],
+      radPoints.map((d) => {
+        const rate = doseRate(rad, d);
+        return [where(d), num(rate), rate > 0 ? `${num(tinkerHull / rate, 0)} s` : "–"];
+      }),
+    ),
+    "",
+    `The rate rises by ${num(rad.slope)} per u out to ${num(rad.knee)} u, then by ${num(rad.far_slope)} per u, up to ${num(rad.cap)} per second.`,
+    "",
+    "## Drifting boulders (asteroid belts)",
+    "",
+    "Boulders (2-4 u) orbit through the belt at 2-4 u/s on fixed circles. They cannot be destroyed,",
+    "swallow shots (missiles go off on them without a crater) and push ships aside.",
+    "",
+    table(
+      ["Rule", "Value"],
+      [
+        ["Damage", `${num(bould.damage)} on a contact faster than ${num(bould.damage_speed)} u/s (no kill credit)`],
+        ["Bounce", `a ship keeps ${pct(bould.restitution)} of its speed into the boulder, reversed`],
+      ],
+    ),
+    "",
+  ];
+  return out.join("\n");
+}
+
+// ---------------------------------------------------------------------------
 
 export function generate() {
   const weapons = loadDir("weapons");
@@ -1112,6 +1304,7 @@ export function generate() {
     "gadgets.md": gadgetsDoc(gadgets, weapons, rules),
     "modes.md": modesDoc(rulesets, weapons, gadgets, catalog),
     "events.md": eventsDoc(events, director, rulesets),
+    "world.md": worldDoc(loadDir("world"), weapons, ships, rulesets),
   };
 }
 

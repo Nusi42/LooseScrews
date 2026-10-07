@@ -65,3 +65,8 @@ test("checks skip build output; reports stay short", () => {
   const long = shortReport([{ name: "x", code: 1, output: Array.from({ length: 50 }, (_, i) => `l${i}`).join("\n") }]);
   assert.equal(long.split("\n").length, MAX_LINES);
 });
+
+test("every data folder the reference pages read triggers the generated-docs check", () => {
+  const files = ["weapons", "ships", "gadgets", "rulesets", "events", "world"].map((d) => `data/${d}/x.ron`);
+  assert.deepEqual(plan([...files, "data/other/x.ron"]).data, files);
+});

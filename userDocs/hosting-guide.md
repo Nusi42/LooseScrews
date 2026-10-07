@@ -2,8 +2,10 @@
 
 How to run a Loose Screws game server (`ls-server`), set its world and rules, fill it with bots
 (`ls-bots`), run a server directory (`ls-directory`) and keep it all healthy. It covers the
-current build (Milestone 3: every player-versus-player mode, a lobby and match rotation,
-private rooms, parties, duels and the server list). Features from the design that the server
+current build (Milestone 4: comedy events with Absurdity caps and event bans, all seven world
+sliders, asteroid belt worlds and the Belt Up race, The Architect, on top of Milestone 3's
+player-versus-player modes, lobby and match rotation, private rooms, parties, duels and the
+server list). Features from the design that the server
 doesn't have yet are listed under [Not in this build yet](#not-in-this-build-yet).
 
 ## Contents
@@ -42,8 +44,10 @@ and parties. It:
   WebTransport when it can and falls back to WebSocket.
 - enforces its rule set: banned weapons, gadgets and ship types never spawn and can't be used
 - runs a lobby between matches: warm-up flying with weapons off, a countdown, the match, its
-  result; then the next match of the rotation (by default every mode in turn), with players
-  staying connected
+  result; then the next match of the rotation (by default every mode but Belt Up in turn), with
+  players staying connected
+- runs the level's comedy director: events, moods, gravity wells, cave-ins and pigment act on
+  the server and every player sees the same
 - opens private rooms for custom matches, parties and duels on request, and serves a small
   JSON API for them at `/api/…`
 - optionally lists itself in a **server directory** (`--directory`) so players find it in the
@@ -98,16 +102,17 @@ cargo run --release -p ls-server
 ```
 
 or run the built program directly (`target/release/ls-server`, on Windows
-`target\release\ls-server.exe`). The server starts the default rotation of all six modes on
+`target\release\ls-server.exe`). The server starts the default rotation of seven modes on
 random worlds, beginning with a warm-up for Team Brawl, and prints (shortened):
 
 ```
 INFO ls_server::sim: match ready room=public entry=team_brawl share_code=LS0G-APFE-9ZGE-BSJN-5C58-T2XM-57KF ruleset=Team Brawl warmup=true build_ms=496
-INFO ls_server::sim: rules: Team Brawl LRAW-7422-ZQ00-002W-M (banned weapons: paint_thrower) room=public
+INFO ls_server::sim: rules: Team Brawl LRAW-7422-ZQ00-002W-M (banned weapons: paint_thrower, paperweight) room=public
 INFO ls_server: share code LS0G-APFE-9ZGE-BSJN-5C58-T2XM-57KF - open http://localhost:7777 to play
 ```
 
-("banned weapons: paint_thrower" is normal: only Paint the Void hands out the Paint Thrower.)
+("banned weapons: paint_thrower, paperweight" is normal: only Paint the Void hands out the Paint
+Thrower, and only Belt Up and the sandbox rules hand out the Paperweight.)
 
 Open `http://localhost:7777`, enter a pilot name, pick a ship and click **Play online**. You
 arrive in the warm-up. Team Brawl needs 4 players: alone, the warm-up runs its 30 seconds and
@@ -135,8 +140,8 @@ Verified against `ls-server --help` of this build (`ls-server 0.1.0`).
 | `--bind <ADDR>` | `0.0.0.0:7777` | TCP address and port for HTTP (web client, `/cert-hash`) and the WebSocket at `/ws`. `0.0.0.0` accepts connections on every network interface. Use `127.0.0.1:7777` to allow only this computer. `[::]:7777` listens on IPv6 (on Windows IPv6 only, so IPv4 players can't connect). |
 | `--wt-bind <ADDR>` | same as `--bind` | UDP address and port for WebTransport. By default it uses the same port number as `--bind`, but over UDP. Can't be combined with `--no-webtransport`. |
 | `--no-webtransport` | off | Don't start WebTransport. Everyone connects over WebSocket, and `/cert-hash` answers 404. |
-| `--code <CODE>` | a random world | Share code of the world to host; with the default rotation every match plays on it. Without it, the server picks a random seed with the default sliders (Enclosure 50, Density 40, Instability 30): once with `--ruleset`, for every match with the default rotation. |
-| `--ruleset <FILE\|CODE\|ID>` | the default rotation | A rule set file (RON), a built-in rule set id (`team_brawl`, `squeeze`, `heist`, `hot_reactor`, `last_color_standing`, `paint_the_void`, `instagib_brawl`, `duel`, `sandbox_all_weapons`) or an `LR…` rule set code (see [Rule sets](#rule-sets)), played in every match on one world. An existing file wins, then built-in ids; text that looks like a code is decoded. Read once at startup. Can't be combined with `--playlist`. |
+| `--code <CODE>` | a random world | Share code of the world to host; with the default rotation every match plays on it. Without it, the default rotation picks a new random world for every match (the [playlist's](#playlists) classic slider ranges), and `--ruleset` picks one random world at startup with the default sliders (Enclosure 50, Density 40, Verticality 50, Gravity Chaos 0, Palette 0, Absurdity 20, Instability 30), or a random asteroid belt for Belt Up rules. With Belt Up rules a classic code is played as a belt on the same seed and sliders. |
+| `--ruleset <FILE\|CODE\|ID>` | the default rotation | A rule set file (RON), a built-in rule set id (`team_brawl`, `squeeze`, `heist`, `hot_reactor`, `last_color_standing`, `the_architect`, `belt_up`, `paint_the_void`, `instagib_brawl`, `duel`, `sandbox_all_weapons`) or an `LR…` rule set code (see [Rule sets](#rule-sets)), played in every match on one world. An existing file wins, then built-in ids; text that looks like a code is decoded. Read once at startup. Can't be combined with `--playlist`. |
 | `--playlist <FILE>` | the default rotation | A playlist file: the matches to rotate through, each with a rule set, a world and a player range (see [Playlists](#playlists)). Can't be combined with `--ruleset` or `--code`. |
 | `--ban <WEAPON_ID>` | none | Bans a weapon on top of the rule set. Repeat it for more weapons (`--ban railspike --ban tectonic_charge`). Weapon ids are listed in [Rule sets](#weapon-gadget-and-ship-ids). |
 | `--balance-list <FILE>` | none | A balance list file: weapons and gadgets banned or retuned server-wide, applied on top of the rule set and **re-read before every match** (see [Banning and balancing weapons](#banning-and-balancing-weapons)). |
@@ -184,6 +189,12 @@ ls-server --bind 0.0.0.0:7777 --wt-bind 0.0.0.0:7778
 # One mode only: Instagib Brawl in every match, 16 players
 ls-server --ruleset instagib_brawl --max-players 16
 
+# Belt Up races on a random asteroid belt (at most 8 racers)
+ls-server --ruleset belt_up
+
+# The Architect on a world made in the workshop
+ls-server --ruleset the_architect --code LS0G-C4GD-KYZH-1HJ5-BC58-T2XM-57NT
+
 # Your own rotation with short warm-ups, and room for 8 duels or custom matches
 ls-server --playlist playlist.ron --warmup 15 --countdown 5 --private-rooms 8
 
@@ -200,14 +211,23 @@ level (a classic level or an asteroid belt) and the world generator version. Thi
 generator (version 4) makes codes starting `LS0G` and carves a network of caverns and tunnels
 that links both teams' ends into every classic level, plus a cavern at each of the other two
 ends for teams 3 and 4, the Heist core vein at the bottom and the extraction caverns at the
-top (every classic level has them; only Heist uses them). Of the sliders, **Enclosure** and
-**Density** shape the world, **Verticality** picks the level's shape (from 320 x 64 x 320 u,
-flat and wide, to 192 x 224 x 192 u, tall and narrow, with the caverns stretched to match),
-**Gravity Chaos** places up to seven gravity wells (rock cores in hollows; their pull arrives
-in a later build), **Instability** sets how far a Tectonic Charge's cracks spread, and
-**Palette** only changes the look in the browser (desaturated colours); Absurdity has no
-effect yet. An **asteroid belt** level is a ring of asteroids around an open centre, the same
-from every one of its 8 start slots, made for the Belt Up racing mode.
+top (every classic level has them; only Heist uses them). All seven sliders act:
+
+| Slider | Classic level | Asteroid belt |
+| --- | --- | --- |
+| Enclosure | open sky and islands (0) to caverns to mine shafts (100) | asteroid size (big ones hollow from 60) |
+| Density | pillars, boulders, floating rock | asteroids and drifting boulders per sector |
+| Verticality | the level's shape, from 320 x 64 x 320 u (flat and wide) to 192 x 224 x 192 u (tall and narrow), caverns stretched to match | belt thickness |
+| Gravity Chaos | up to seven gravity wells that pull ships, debris and missiles (none at 0) | shepherd moons (from 20) |
+| Palette | colours fade, then ink outlines; 80 and above is a black-and-white ink level with pigment pickups | the same |
+| Absurdity | how often comedy events happen (capped by the rule set's `absurdity`; 0 = none) | the same |
+| Instability | wider craters and cave-ins (none at 0), Tectonic Charge crack reach | the same |
+
+The numbers (well pull, cave-in thresholds, pigment, radiation) are in the
+[world physics reference](reference/world.md), the comedy events in the
+[event reference](reference/events.md). An **asteroid belt** level is a ring of asteroids around
+an open centre, the same from every one of its 8 start slots, made for the [Belt Up](#playlists) racing mode (other modes are not meant
+for belts in this build).
 
 - **Keep a level:** start with `--code <code>`. Without `--code`, every server start builds a
   new random world. The server logs the code at startup ("match ready share_code=…").
@@ -223,7 +243,12 @@ from every one of its 8 start slots, made for the Belt Up racing mode.
 - Players always play the world the server runs. A code a player types on the start screen is
   only used for practice mode.
 
-There's no tool yet for making a code with chosen slider values.
+- **Make a world with chosen sliders:** the **world workshop** in the web client ("Make a
+  world" on the start screen, or `http://<server>/?workshop`) sets the seed, all seven sliders
+  and the kind of level with a live preview. **Save** copies the code; **Host it** shows an
+  invite link and the `ls-server --code …` command (on a belt with Belt Up's `--ruleset`).
+- **Random worlds per match:** a [playlist](#playlists) entry with `RandomSliders(...)` draws new
+  slider values within ranges for every match.
 
 ## Rule sets
 
@@ -233,10 +258,12 @@ friendly fire. The server sends its rules to every browser when it joins, so pla
 to rebuild or download anything.
 
 The mode is part of the rule set: Team Brawl, The Squeeze, Heist, Hot Reactor, Last Color
-Standing and Paint the Void each have their own. You can give the server its rules these ways:
+Standing, The Architect, Belt Up and Paint the Void each have their own. The rule set also caps
+the comedy events (`absurdity`) and can ban single events. You can give the server its rules
+these ways:
 
-1. **Nothing:** the default rotation of the six modes' built-in rule sets (see
-   [Playlists](#playlists)).
+1. **Nothing:** the default rotation of seven modes' built-in rule sets (every mode except Belt
+   Up; see [Playlists](#playlists)).
 2. **A built-in rule set by id:** `--ruleset team_brawl`, played in every match.
 3. **A rule set code** made in the [rule set editor](#rule-set-codes-the-editor-and-invite-links):
    `--ruleset LRAW-740M-8S00-01JD-4`. Nothing to copy around.
@@ -256,14 +283,21 @@ the [mode reference](reference/modes.md)):
 | `hot_reactor` | Hot Reactor: free-for-all, 3 lives, 20 s fuse |
 | `last_color_standing` | Last Color Standing: free-for-all, 100 colour, 34 per death, stalemate drain after 8 minutes |
 | `the_architect` | The Architect: 2-8 players, up to 3 rounds of 4 minutes; one architect reshapes the level with strokes, the others race for the exit |
+| `belt_up` | Belt Up: a race of 2-8 ships around an asteroid belt, 3 heats, points per place; always played on a belt world |
 | `paint_the_void` | Paint the Void: 2 teams, 5 minutes; the only rule set with the Paint Thrower |
 | `instagib_brawl` | Team Brawl with the Instagib mutator: Railspike only, any hit kills |
 | `duel` | The duel rules: free-for-all Team Brawl, first to 10 kills or 5 minutes |
 | `sandbox_all_weapons` | Paint the Void with every weapon and gadget as a pickup at even weights and 15 s respawns (Tectonic Charge 60 s, 1 per map), so a 5-minute match sees the whole arsenal |
 
-All but Instagib Brawl start with the Scrap Laser, 3 Bolt Rockets and a Shield, have every other
-weapon and gadget as a pickup, the Tectonic Charge 1 per map with a 90 s respawn, all four ship
-types, and friendly fire 50% (off in the free-for-all-only modes).
+The classic modes (all but Instagib Brawl, The Architect and Belt Up) start with the Scrap
+Laser, 3 Bolt Rockets and a Shield, have every other weapon and gadget except the Paperweight as
+a pickup, the Tectonic Charge 1 per map with a 90 s respawn, all four ship types, and friendly
+fire 50% (off in the free-for-all-only modes). The Architect's runners start with the Scrap Laser
+and 4 Bolt Rockets and no gadget. Belt Up starts with the Scrap Laser and 3 Bolt Rockets and has
+a racing arsenal of pickups (the path changers: Magnet Sneeze, Swap Harpoon, Paperweight, mines,
+Seeker and more; no Tectonic Charge). The sandbox has every weapon, the Paperweight included.
+Every built-in rule set caps Absurdity at 100 ("the world decides"), the duel at 50, and bans no
+comedy events.
 
 ### The rule set file
 
@@ -337,11 +371,23 @@ Other modes have their own `mode:` block with the mode's settings, for example:
     )),
 ```
 
-The mode names are `PaintTheVoid`, `TeamBrawl`, `TheSqueeze`, `Heist`, `HotReactor` and
-`LastColorStanding`; every setting of each is listed and explained in the
-[mode reference](reference/modes.md). Leaving a setting out takes its default. The only mutator
-is `Instagib`: it reduces any rule set to the Railspike (loadout only, free to fire), removes
-secondaries, gadgets and pickups, makes any enemy hit kill and respawns instant.
+The mode names are `PaintTheVoid`, `TeamBrawl`, `TheSqueeze`, `Heist`, `HotReactor`,
+`LastColorStanding`, `TheArchitect` and `BeltUp`; every setting of each is listed and explained
+in the [mode reference](reference/modes.md) (The Architect: rounds, budget, stroke costs and
+sizes; Belt Up: heats, heat limit, finish grace, start lights, hold, hull floor,
+`radiation_scale`, points per place, bumps). Leaving a setting out takes its default. The only
+mutator is `Instagib`: it reduces any rule set to the Railspike (loadout only, free to fire),
+removes secondaries, gadgets and pickups, makes any enemy hit kill and respawns instant (it also
+leaves out the Tax drone and Pizza delivery events).
+
+**Comedy events.** `absurdity` (0 to 100) caps the events: they run at the world's Absurdity
+slider, at most this value, so 0 turns them off (a "serious" server) and 100 lets every world
+decide. `events` bans single events by id (`events: { "cat_paw": Banned }`; the ids and every
+event's numbers are in the [comedy event reference](reference/events.md)); events not listed may
+run. Modes leave out events that would break them (The Architect has no random events; The
+Squeeze no Cat paw or Duck parade from phase 4; Belt Up no Bored level, Wrong genre or Moving
+day). Warm-ups never have events. **Pigment pickups** (`pigment_pickup`) appear on black-and-white
+levels (Palette 80 and above) and in Last Color Standing; `None` turns them off.
 
 Availability values:
 
@@ -383,7 +429,7 @@ example:
   allowed, `match_secs` is above 0, `respawn_secs` and every mode setting at least 0, a mutator
   is listed once.
 - The team count fits the mode: Paint the Void 2 to 4; Team Brawl 0 (free-for-all) or 2 to 4;
-  Heist 0 or 2; The Squeeze, Hot Reactor, Last Color Standing and The Architect 0 only.
+  Heist 0 or 2; The Squeeze, Hot Reactor, Last Color Standing, The Architect and Belt Up 0 only.
 - Mode settings make sense, for example Heist needs at least 1 delivery and a carrier speed of
   1 to 100%, Hot Reactor at least 1 life and a fuse above 0, The Squeeze at least one phase.
 
@@ -394,7 +440,8 @@ example:
 | Energy primaries | `scrap_laser`, `scatter_laser`, `plasma_repeater`, `fusion_charger`, `corkscrew`, `ricochet_arc`, `leech_arc` |
 | Kinetic primaries | `rivet_gun`, `railspike`, `scrap_shotgun` |
 | Ordnance (secondaries) | `bolt_rocket`, `seeker`, `quicksilver`, `eyeball`, `swarm_pod`, `heavy_rocket`, `flash_pod`, `prox_mine`, `stalker_mine`, `tectonic_charge` |
-| Specials | `echo_cannon` (primary), `swap_harpoon` (secondary), `paint_thrower` (primary), `borrowed_time` (secondary), `magnet_sneeze` (secondary), `polite_laser` (primary), `seed_grenade` (secondary) |
+| Specials | `echo_cannon` (primary), `swap_harpoon` (secondary), `paint_thrower` (primary), `borrowed_time` (secondary), `magnet_sneeze` (secondary), `polite_laser` (primary), `seed_grenade` (secondary), `paperweight` (secondary) |
+| Comedy events (`events`) | `bored_level`, `tax_drone`, `gravity_coffee_break`, `rubber_chickens`, `cat_paw`, `tired_announcer`, `wrong_genre`, `gossip_wall`, `pizza_delivery`, `everything_is_cake`, `duck_parade`, `hat_rain`, `customer_survey`, `disco_inferno`, `big_head_day`, `moving_day`, `mimic_pickups`, `level_hiccups` |
 | Gadgets | `shield`, `cloak`, `decoy` |
 | Ship types | `Skitter`, `Tinker`, `Hauler`, `Tug` |
 
@@ -436,7 +483,7 @@ The server logs the code of the rules it actually plays (the rule set with the b
 bans applied) at startup, and again whenever a changed balance list changes them:
 
 ```
-INFO ls_server::sim: rules: Paint the Void LR8V-6097-G084-VMY0-6DXC (banned weapons: eyeball, tectonic_charge)
+INFO ls_server::sim: rules: Paint the Void LRAW-740M-8S08-4VMY-014A-2 (banned weapons: eyeball, paperweight, tectonic_charge)
 ```
 
 Paste that code into `--ruleset` on another server, or into the editor, to get the same rules.
@@ -451,13 +498,14 @@ weapons added since then banned.
 The web client has a rule set editor: open the game page and click **Rule set editor** on the
 start screen, or open `http://<server>/?editor=rules` directly. It edits every rule described
 above (availability, loadout, pickups, the Tectonic Charge's per-map limit, tuning, Shield
-settings, friendly fire, ship types, scrap piles, match and respawn times), lists anything the
+settings, friendly fire, ship types, scrap piles, match and respawn times, the Absurdity cap,
+pigment pickups and comedy event bans), lists anything the
 server would refuse in red, and, once the rules are valid, shows:
 
 - the **rule set code**,
 - a **World** field (an optional share code),
 - an **invite link** (`http://<server>/?world=LS…&rules=LR…`),
-- the **host command**, for example `ls-server --code LS0G-C4GD-KYZH-1HJ5-BC58-T2XM-57NT --ruleset LR8V-…`.
+- the **host command**, for example `ls-server --code LS0G-C4GD-KYZH-1HJ5-BC58-T2XM-57NT --ruleset LRAW-…`.
 
 Copy the host command, add your other flags, and start the server. The editor needs no GPU
 and no game connection, and it remembers the last code it made. `?editor=rules&rules=LR…`
@@ -733,6 +781,8 @@ Important lines:
 | `match over; building the next room … next=… next_share_code=…` | The match ended; the result shows while the next room is built |
 | `next room swapped in room=… warmup=… entry=… share_code=… players=… matches=…` | Everyone moved to the next room (warm-up or match) without reconnecting |
 | `private room open room=R-…` / `private room closed` | A private room started or closed (its last player left) |
+| `comedy event room=… event=… phase=… target=… tick=…` | A comedy event changed phase: `Announce` (the 3 s warning), `Active`, `Ending`, then `Over`; `target` is the player it aims at (-1 for none) |
+| `event schedule: events forced in this match room=… events=…` | Only with `--event-schedule`: the events forced in this match and when |
 | `final stats …` | Totals at shutdown |
 
 Warnings to watch:
@@ -745,6 +795,7 @@ Warnings to watch:
 | `could not reload the rules; keeping the previous ones` | The balance list couldn't be read or is invalid at a match start. Fix the file; the next match reads it again. |
 | `player not accepted by the next room` | A player could not move to the next match (for example a smaller `max_players`); they are disconnected with the reason |
 | `web root not found; serving a placeholder page` | The `--web-root` folder is missing. Build the web client or fix the path. |
+| `--event-schedule is a testing flag: comedy events are forced in every match` | The server runs with `--event-schedule`. Remove the flag on a public server. |
 
 ### Tick stats fields
 
@@ -769,6 +820,7 @@ Every room writes its own `tick stats` line.
 | `dropped_inputs` | Inputs that arrived too far ahead and were dropped |
 | `compensated_hits` | Hits checked with lag compensation |
 | `encode_errors` | Messages that couldn't be sent. Anything above 0 is a bug worth reporting. |
+| `full_snapshots` | Full (non-delta) snapshots sent in this window: one per join or match transition is normal; many more mean players keep losing their baseline (a bad connection) |
 | `snapshot_kib_s` | Game state data sent to all players, in KiB per second |
 | `unreliable_dropped` | Time-critical packets dropped because a player's connection was backed up |
 | `edits`, `total_edits` | Terrain changes (paint, craters, surface states, grown rock) in this match, and since startup |
@@ -833,7 +885,13 @@ Playlist(
         (rules: "my_rules.ron", world: Code("LS0G-0000-0000-0000-1001-6RFX-250V")),
         // A rule set code (here: Team Brawl with 3 teams, no Railspike), a random world with
         // slider ranges, at most 8 players.
-        (rules: "LR8V-63T6-XB09-C1W0-0GG1-3038-2C", world: RandomSliders(enclosure: (20, 60), density: (30, 70)), max_players: 8),
+        (rules: "LRAW-7422-ZQB0-9C1W-00GG-1300-KX20", world: RandomSliders(enclosure: (20, 60), density: (30, 70)), max_players: 8),
+        // Maximum Absurdity: a comedy event every minute or so (the built-in rules cap at 100).
+        (rules: "team_brawl", world: RandomSliders(absurdity: (100, 100), gravity_chaos: (40, 80)), min_players: 4),
+        // The Architect: one architect against 1-7 runners.
+        (rules: "the_architect", min_players: 2, max_players: 8),
+        // Belt Up on a random asteroid belt with shepherd moons.
+        (rules: "belt_up", world: RandomSliders(archetype: Belt, gravity_chaos: (20, 50)), min_players: 2),
     ],
 )
 ```
@@ -858,7 +916,13 @@ Playlist(
   `archetype: Belt`) is played as a belt with the same seed and sliders (the lobby shows the
   rewritten code). A Belt Up entry takes at most 8 players (one per start slot; `max_players`
   above 8 is lowered to 8). All heats of a race are one match. `--ruleset belt_up` without
-  `--code` races on a random belt. Belt Up is not in the default rotation yet.
+  `--code` races on a random belt. Belt Up is not in the default rotation yet: add a
+  `belt_up` entry to your playlist (or run `--ruleset belt_up`).
+- **No comedy events:** a rule set with `absurdity: 0` (a file, or a code made in the editor
+  with the Absurdity cap at 0), or worlds with `absurdity: (0, 0)`. Single events are banned
+  in the rule set (`events: { ... }`, see [The rule set file](#the-rule-set-file)).
+- **Black-and-white worlds:** `palette: (80, 100)` makes every world of the entry a monochrome
+  ink level with pigment pickups (the default range 0-50 never does).
 
 The server checks the whole playlist at startup and refuses to start if an entry is invalid.
 
@@ -1026,19 +1090,17 @@ the server list and invites over plain HTTP on one machine, not a TLS proxy.
 
 ## Not in this build yet
 
-- **Co-op modes**, and a vote for the next mode (the rotation plays in order). The Architect
-  plays (rules, rounds, strokes; the server refuses and counts invalid strokes), but the
-  architect's stroke controls in the browser come with a later build.
+- **Co-op modes** (and a co-op Architect), and a vote for the next mode (the rotation plays in
+  order). Belt Up is not in the default rotation (add it to a playlist); team races and other
+  modes on asteroid belts come later.
 - **No accounts, friends lists or ranked play.** Players are known by a random id their browser
   keeps; parties exist on one server only. A public directory is not run for you: host your own
   `ls-directory` (behind an HTTPS proxy for `https://` pages).
 - **No admin commands** while running (kick, change world or rule set, end match). Restart the
   server with new flags; bans and tuning can change between matches through the balance list.
 - **Server bans in private rooms:** custom matches and duels ignore `--ban` and the balance list.
-- **No slider tool:** you can't create a share code with chosen slider values yet (playlists can
-  pick random worlds within Enclosure and Density ranges), and only Enclosure, Density,
-  Instability and (visually) Palette have an effect. The comedy director rolls events by the
-  rule set's `absurdity` cap, but every event is still a placeholder that only announces itself.
+- **No server-side Absurdity override:** to keep comedy events off, use rule sets with
+  `absurdity: 0` (or worlds with Absurdity 0); `--event-schedule` is for tests only.
 - **No custom TLS certificate** for WebTransport and no built-in HTTPS for the web page or the
   directory (use a reverse proxy).
 - **No WebRTC fallback, desktop app, regional hosting or orchestration** (the design mentions

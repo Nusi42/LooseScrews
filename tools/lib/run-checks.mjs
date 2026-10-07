@@ -32,7 +32,7 @@ export function plan(files) {
   const ts = f.filter((x) => /^web\/.*\.ts$/.test(x));
   const text = f.filter((x) => !/\.(png|wasm|ico|jpg|gif|ps1|cmd|bat)$/.test(x));
   const data = f.filter(
-    (x) => /^data\/(weapons|ships|gadgets|rulesets)\//.test(x) || x === "web/src/rules/catalog.ts" || x === "tools/gen-weapon-docs.mjs",
+    (x) => /^data\/(weapons|ships|gadgets|rulesets|events|world)\//.test(x) || x === "web/src/rules/catalog.ts" || x === "tools/gen-weapon-docs.mjs",
   );
   return { rs, ts, text, data };
 }

@@ -1,12 +1,14 @@
 # Loose Screws: player manual
 
-This manual covers the current build (Milestone 3: every player-versus-player mode, the
-Instagib mutator, duels, a lobby between matches, a server list, invite links and parties, on
-top of Milestone 2's full arsenal, four ship types, gadgets and a level that fights back).
-Features from the game design that this build doesn't have yet are listed under
+This manual covers the current build (Milestone 4, "the level has moods": comedy events and
+the level's moods, all seven world sliders with gravity wells, cave-ins and black-and-white ink
+levels with pigment, The Architect, the Belt Up race on asteroid belts, the Paperweight, the
+world workshop and sound, on top of Milestone 3's modes, lobby, server list, invites and
+parties and Milestone 2's full arsenal, four ship types and gadgets). Features from the game
+design that this build doesn't have yet are listed under
 [Not in this build yet](#not-in-this-build-yet). Every number in the
-weapon, ship, gadget and mode tables of the [reference pages](reference/) is generated from
-the game's data files, so those pages always match the build.
+weapon, ship, gadget, mode and comedy event tables of the [reference pages](reference/) is
+generated from the game's data files, so those pages always match the build.
 
 ## Contents
 
@@ -21,7 +23,9 @@ the game's data files, so those pages always match the build.
 - [Weapons](#weapons)
 - [Surviving a Tectonic Charge](#surviving-a-tectonic-charge)
 - [Gadgets](#gadgets)
-- [The level fights back](#the-level-fights-back) ([comedy events](#comedy-events))
+- [The level fights back](#the-level-fights-back) ([comedy events](#comedy-events),
+  [moods](#the-levels-mood), [gravity wells](#gravity-wells), [cave-ins](#instability-and-cave-ins),
+  [black-and-white levels and pigment](#black-and-white-levels-and-pigment))
 - [Pickups and wrecks](#pickups-and-wrecks)
 - [Game modes](#game-modes): [Paint the Void](#paint-the-void), [Team Brawl](#team-brawl),
   [The Squeeze](#the-squeeze), [Heist](#heist), [Hot Reactor](#hot-reactor),
@@ -36,7 +40,7 @@ the game's data files, so those pages always match the build.
 
 Reference tables: [weapons](reference/weapons.md), [ships](reference/ships.md),
 [gadgets](reference/gadgets.md), [modes](reference/modes.md),
-[comedy events](reference/events.md).
+[comedy events](reference/events.md), [world physics](reference/world.md).
 
 ## What Loose Screws is
 
@@ -44,11 +48,15 @@ You pilot a Scrapling, a palm-sized ship built from junk, through a procedurally
 world of caverns, tunnels and floating rock. You can fly in any direction and turn any way you
 like, with no fixed "up". The level is part of the fight: weapons blast craters, melt
 channels, scorch and charge the rock, knock debris loose and even grow new rock, and all of it
-stays for the rest of the match. Servers rotate through six modes: paint the level in your team's
+stays for the rest of the match. And the level has moods of its own: now and then it plays a
+joke on everyone (a cat paw through the wall, a duck parade, a tax drone after the leader).
+Servers rotate through seven modes: paint the level in your team's
 colour (**Paint the Void**), team deathmatch (**Team Brawl**), survive the closing walls (**The
-Squeeze**), dig out and steal the core (**Heist**), pass on a bomb (**Hot Reactor**) or keep
-your colour in a black-and-white world (**Last Color Standing**), plus one-hit-kill
-**Instagib** matches and one-on-one **duels**.
+Squeeze**), dig out and steal the core (**Heist**), pass on a bomb (**Hot Reactor**), keep
+your colour in a black-and-white world (**Last Color Standing**) or race for the exit while one
+pilot reshapes the level against you (**The Architect**), plus one-hit-kill **Instagib**
+matches and one-on-one **duels**. Hosts can also run **Belt Up**, a race around an asteroid
+belt.
 
 Every world comes from a **share code**, a short text such as
 `LS0G-C4GD-KYZH-1HJ5-BC58-T2XM-57NT`. The same code always builds the same world.
@@ -102,8 +110,11 @@ Then choose one of the two buttons:
   world if the field is empty, with the default Paint the Void rules. You fly for the Orange
   team against three target dummies ("Dummy 1" to "Dummy 3") on the Blue team. The dummies
   float in place and never move or shoot. Pickups spawn as in a real match, so practice is the
-  place to try every weapon you find. A practice round lasts the full 5 minutes. When it ends,
-  reload the page for another round.
+  place to try every weapon you find. The level's moods and comedy events run as in a real
+  match, as often as the world's Absurdity says (random practice worlds have the default
+  Absurdity of 20, about one event per round; make a livelier world in the
+  [workshop](#the-world-workshop), or force one, see [Comedy events](#comedy-events)). A
+  practice round lasts the full 5 minutes. When it ends, reload the page for another round.
 
 Below the buttons, **Make a world** opens the [world workshop](#the-world-workshop).
 
@@ -125,7 +136,7 @@ blurs while the new one is built, "Building the preview… n %" in the top right
 
 | Part | What it does |
 | --- | --- |
-| **Classic / Asteroid belt** | The kind of level. Classic is the cave, mine and open-sky world of every mode. An asteroid belt is a ring of asteroids around an open centre, built for the Belt Up race (it shows greyed out until this build can generate belts). |
+| **Classic / Asteroid belt** | The kind of level. Classic is the cave, mine and open-sky world of every mode. An asteroid belt is a ring of asteroids around an open centre with the EXIT in the middle, the same from all 8 start slots, built for the [Belt Up](#belt-up) race. The sliders below then describe the belt. |
 | **Seed** | Any whole number. The same seed with the same sliders always makes the same world. The dice rolls a new one. |
 | **Enclosure** | Open space and sky islands at 0, caverns in the middle, mine shafts at 100. On a belt: the size of the asteroids (the biggest are hollow from 60 up). |
 | **Density** | How much rock fills the space: pillars, boulders and floating rock. On a belt: asteroids and drifting boulders per sector. |
@@ -206,7 +217,11 @@ rebinding yet.
 | Upper middle, below the timer | **Warning banners** (see below) and mode alerts with an icon: "Walls close in 0:09: reach the next zone", "The wall is crushing you!", "You carry the core", "<name> has the core: stop them", "Core dropped", "You hold the reactor!", "Too close to the reactor", "Last of your colour" |
 | Above the crosshair | Status messages: "Waiting for the server", "Syncing with the server", "Destroyed, respawning", "Match over: Orange wins (your team)" |
 | Top right (kill feed) | The last few events, for example "bot3 destroyed You", "You self-destructed", or the match result. Lines fade after about 6 seconds. |
-| Over ships | Pilot names: teammates within 90 u, enemies within 45 u |
+| Over ships | Pilot names: teammates within 90 u, enemies within 45 u (on black-and-white levels grey enemies only within 20 u, see [pigment](#black-and-white-levels-and-pigment)) |
+| Top left | The **announcer** (a little broadcast robot with captions) and the level's **mood** badge, a small face (calm, bored, grumpy, giddy) that shows the mood's line for a moment when it changes |
+| Under the scoreline | A **comedy event**'s card while it is announced (name, icon and the pilot it aims at), then a small pill with its name and a ring of the time left |
+| Around the crosshair | The **pull indicator** near a gravity well: a violet arc pointing where you are pulled, thicker the harder, with "PULL n%" (of your thrust) under the crosshair |
+| Belt Up | The race HUD and the radiation meter, see [Belt Up](#belt-up) |
 
 **Warning banners** appear for a few seconds when something happens to you:
 
@@ -518,6 +533,14 @@ The comedy weapons: rarer pickups, each with its own trick.
 - **Seed Grenade (secondary):** grows a small rock structure where it hits: block a tunnel or
   build cover. In mid-air it grows floating cover. There's a 2% chance it grows a giant rubber
   duck instead. The rock is ordinary terrain and blocks your shots too.
+- **Paperweight (secondary):** a lobbed stone (25 u/s, 3 per pickup, one every 2 s) that stops
+  where it hits rock, or in mid-air after 1.2 s, and stays there. For 6 seconds it is a small
+  **gravity well** (a violet glow): it pulls ships within 16 u (up to 30% of a Tinker's thrust),
+  debris, mines and missiles toward it, **you included**; laser bolts and kinetic rounds fly
+  straight. It does no damage. When it runs out, the debris it gathered fuses with it into a
+  floating lump of weak rock. *Tip:* throw it into a rival's racing line or just past a
+  corner they have to take. In the built-in rules it is a pickup only in Belt Up and the sandbox
+  rules.
 
 ### Damage rules
 
@@ -659,6 +682,83 @@ The last five are big shows:
 | **Disco inferno** | The sun, sky and cave light drop to almost nothing, and your headlight dims too. A mirror ball comes down over the fight with eight coloured spotlights. Every ship leaves a glowing trail in its side's colour, even in black-and-white levels, and a four-on-the-floor beat plays. | Use the trails to find the others, and remember they can see yours. |
 | **Tired announcer** | For 30 seconds, every kill plays as a 3-second replay from behind the killer in a small "Kill-cam" window at the top left, with a deadpan line from the announcer. While the event is being announced, the window shows static and "Zzz". | Nothing. Enjoy the replays. |
 
+Some modes leave events out where they would break the mode: The Architect has no random
+events (the architect starts them), The Squeeze has no Cat paw or Duck parade once the walls are
+in phase 4, Belt Up has no Bored level, Wrong genre or Moving day, and Instagib has no Tax
+drone or Pizza delivery. A host's rules can ban single events.
+
+### The level's mood
+
+The level is always in one of four **moods**: calm, bored, grumpy or giddy. The mood changes
+every 60 to 90 seconds; a small face at the top left shows it (with a line for a moment when it
+changes), and the level's light, the colour of the floating dust and the background hum follow
+it. A mood never changes how you fly or fight, but it makes its own jokes twice as likely:
+
+| Mood | Its events |
+| --- | --- |
+| Calm | none; the breaks between events are half again as long |
+| Bored | Bored level, Level hiccups, Moving day |
+| Grumpy | Cat paw, Tax drone, Customer survey |
+| Giddy | Duck parade, Rubber chickens, Disco inferno, Hat rain, Pizza delivery |
+
+### Gravity wells
+
+Worlds with **Gravity Chaos** above 0 have up to seven gravity wells: a dark core stone floating
+in a round hollow, glowing violet, with motes and rock chips swirling around it and the view
+bending around it like a lens. A well pulls everything within 20 to 40 u toward its core
+(stronger and farther the higher the slider): your ship, debris, mines and every missile and
+grenade (the Seed Grenade and the Paperweight too). **Laser bolts and kinetic rounds fly
+straight.** The pull on a ship is capped at 40% of its thrust, however many wells overlap, so you
+can always thrust out; a ship that just drifts slowly falls in. Near a well the **pull indicator**
+around the crosshair shows where and how hard it pulls.
+
+*Tips:* curve rockets around a well into a target behind it; don't park next to one; a fight in
+a well's swirl favours whoever keeps thrusting. During the **Gravity coffee break** event every
+well rests for 20 s. The [Paperweight](#specials) and The Architect's Gravity Chaos stroke make
+temporary wells, and asteroid belts can have **shepherd moons** that pull like wells. All
+numbers, and which weapons wells bend: [world physics reference](reference/world.md#gravity-wells).
+
+### Instability and cave-ins
+
+**Instability** makes the rock give way: every crater is up to 40% wider (at Instability 100;
+none at 0), and blasting the same spot again and again strains the rock until the tunnel
+**caves in**. Roughly, at Instability 30 it takes about ten rocket craters in one place within
+20 seconds, at 100 about four; at 0 tunnels never cave in.
+
+1. **Warning (1.5 s):** glowing cracks open in the ceiling, dust and pebbles trickle down, the
+   view shakes, the stone rumbles and the announcer may say something about it.
+2. **Cave-in:** a hollow opens in the ceiling and its rock comes down as **rubble** in the tunnel
+   below, with debris full of scrap. Ships within 3 u of the rubble take 20 damage (nobody gets
+   the kill).
+
+Rubble is **weak rock**: two or three rockets clear it. A cave-in never seals a ship in (rubble
+that would is left out), never happens near the team spawns, the Heist core chamber or an
+extraction zone, and at most once every 8 seconds per level. *Tip:* when the ceiling cracks,
+leave the tunnel, then come back for the scrap. Numbers per Instability value:
+[world physics reference](reference/world.md#instability-and-cave-ins).
+
+### Black-and-white levels and pigment
+
+The **Palette** slider drains the colour from a world: up to 49 the colours fade to half; from
+50 ink outlines, banded light and paper grain fade in; from **80** the level is a black-and-white
+**ink world** with hatched shadows and an ink-wash sky. Paint always keeps its colour (it is
+Paint the Void's score).
+
+Black-and-white levels (Palette 80 and above) have **pigment pickups**: three drops of paint
+circling a glowing core, at the pickup points (with the built-in rules one per 4 players, at
+least 2, back 30 s after they are taken).
+
+- **Pigmented:** touching one paints your ship in your side's colour for **40 seconds** (another
+  pickup restarts the time): every weapon does **25% more damage**, but you fly in full colour,
+  drip paint and **everyone sees a marker on you through walls**. If you are destroyed, your
+  pigment drops as a splash that anyone can take for 15 seconds.
+- **Grey:** without pigment your ship is ink grey and blends in: enemies see your name only within
+  20 u and never through walls. Teammates still see you in a tint of your team colour.
+
+Pick your moment: pigment wins fights but tells everyone where you are. In **Last Color Standing**
+pigment pickups give back **17 colour** instead (half a death's worth; no damage bonus there,
+45 s respawn). Each rule set's pigment pickups: [world physics reference](reference/world.md#pigment).
+
 ### Craters and rock strength
 
 Explosions blast craters (up to 6 u across for a Heavy Rocket, a 35 u cave-in for a Tectonic
@@ -667,7 +767,8 @@ unpainted. **Rock strength** varies by region: **weak rock** (lighter, sandy, cr
 1.4 times wider, and kinetic rounds and the Magnet Sneeze knock chunks off it; **hard rock**
 (darker, cooler, with glinting specks) only 0.6 times. Other marks: Fusion Charger channels,
 Railspike and Polite Laser holes through thin walls, Corkscrew spirals, Plasma pits, Ricochet
-chips, and new rock from Seed Grenades.
+chips, new rock from Seed Grenades, and on worlds with **Instability** wider craters and
+cave-ins (see [below](#instability-and-cave-ins)).
 
 ### Surface states
 
@@ -720,7 +821,7 @@ see much less, and so does everyone else inside it.
 
 ## Pickups and wrecks
 
-Each level has **12 pickup points** in open space, spread across the level and away from the team
+Each classic level has **12 pickup points** in open space, spread across the level and away from the team
 spawn points. Each point holds one item at a time: a weapon, a weapon upgrade, a gadget or a scrap
 pile. Pickups float, bob and spin, tinted like their weapon's shots; scrap piles and wrecks are
 heaps of junk that shrink as they are scavenged.
@@ -735,6 +836,11 @@ the [weapon reference](reference/weapons.md) lists how much ammo each pickup giv
 You collect a weapon, upgrade or gadget pickup by flying within about a ship length of it. A
 pickup that would do nothing for you (a full ammo count, a Scrap Laser at level 6, the gadget you
 already have) stays for someone else. Scrap piles and wrecks are scavenged with **R**.
+
+On black-and-white levels (and in Last Color Standing) the pickup points also hold **pigment
+pickups** (see [Black-and-white levels and pigment](#black-and-white-levels-and-pigment)). In
+Belt Up every one of the belt's 8 sectors has 3 pickup points, and the same point in every sector
+holds the same item (rolled again each heat), so no start slot is luckier than another.
 
 ## Game modes
 
@@ -871,6 +977,8 @@ Every pilot for themselves on a **black-and-white level**.
   **34**; damage alone takes nothing. At 0 colour you are out and spectate.
 - Ships keep the share of their colour their meter has left, so a pale ship is one death from
   being out, and colourful ships are easy to spot. Your own meter is on the left of the HUD.
+- **Pigment pickups** (paint drops at the pickup points, one per 4 pilots, at least 2) give back
+  **17 colour**, up to the 100 you started with; they are back 45 seconds after they are taken.
 - After **8 minutes** a stalemate drain starts: every pilot still in loses 1 colour every
   2 seconds, so the match always ends.
 - The **last pilot with colour** wins; nobody left (the last two out at once) is a draw.
@@ -992,7 +1100,8 @@ centre with the **EXIT** in the middle. A match is **three heats** on the same b
   far they got); the heat results show between heats, and after the third heat the podium.
   Most points wins; kills score nothing.
 
-**Radiation** by where you fly:
+**Radiation** by where you fly (more rows in the
+[world physics reference](reference/world.md#radiation-asteroid-belts)):
 
 | Where | Hull per second |
 | --- | --- |
@@ -1047,8 +1156,15 @@ Every mode marks its objectives in the world, not only on the HUD:
   meter has left, so a pale ship is one death from being out.
 - **Instagib:** the scoreline says "Instagib", the hull and energy bars are hidden and the shot
   count reads "∞": the Railspike fires for free and any hit kills.
+- **The Architect:** every stroke glows as a sphere in its colour for 2 seconds before it acts,
+  with a beam of light over it; the exit is a green glowing gate with a beam. The architect sees
+  the level from above with the rock cut away.
+- **Belt Up:** a glowing dust band marks the belt, aurora curtains above and below it show where
+  radiation burns, holographic arches are the gates, and a giant green EXIT sign over a swirling
+  portal marks the finish in the middle.
 - **Four teams:** Orange, Blue, Lime and Magenta show on the ships' liveries, the paint, the
-  paint shots and the respawn flash.
+  paint shots and the respawn flash. Three- and four-team matches start each team at its own end
+  of the level.
 
 ## Between matches: the lobby
 
@@ -1119,13 +1235,16 @@ world generator (version 4) start with `LS0G`.
 - **Sliders:** the code stores all seven sliders from the design (Enclosure, Density,
   Verticality, Gravity Chaos, Palette, Absurdity, Instability) and the kind of level: a
   classic level or an **asteroid belt** (a ring of asteroids around an open centre, the same
-  from all of its 8 start slots, for the Belt Up racing mode). In this build **Enclosure** (open
-  sky to dense mine shafts) and **Density** (few to many pillars and floating rocks) shape the
-  world, **Verticality** sets its shape (flat and wide with low chambers at 0, the usual box at
-  50, tall and narrow with chimneys and islands stacked in tiers at 100), **Gravity Chaos**
-  places up to seven gravity wells (a rock core floating in a round hollow; they don't pull
-  yet), **Instability** sets how far a Tectonic Charge's cracks spread, and **Palette** drains
-  the colour from the picture (100 is nearly black and white). The seed also picks the sky:
+  from all of its 8 start slots, for the Belt Up racing mode). Every slider does something:
+  **Enclosure** (open sky to dense mine shafts) and **Density** (few to many pillars and
+  floating rocks) shape the world, **Verticality** sets its shape (flat and wide with low
+  chambers at 0, the usual box at 50, tall and narrow with chimneys and islands stacked in tiers
+  at 100), **Gravity Chaos** places up to seven [gravity wells](#gravity-wells), **Palette**
+  turns the world from full colour to a [black-and-white ink world](#black-and-white-levels-and-pigment)
+  with pigment pickups (80 and above), **Absurdity** sets how often [comedy events](#comedy-events)
+  happen, and **Instability** makes craters wider, lets tunnels [cave in](#instability-and-cave-ins)
+  and sets how far a Tectonic Charge's cracks spread. On an asteroid belt the first four mean
+  other things (see [the world workshop](#the-world-workshop)). The seed also picks the sky:
   open worlds float in space with stars, a nebula, a sun and a planet. Rock blocks the sun:
   it casts shadows, and where caverns open to the sky, sunlight falls through the openings in
   visible shafts. Inside the rock, and in closed worlds (Enclosure 50 and above, which have no
@@ -1141,8 +1260,10 @@ world generator (version 4) start with `LS0G`.
 A server's **rule set** decides the mode and its settings (teams, kill target, lives and so
 on), mutators such as Instagib, the match length, respawn time, which weapons, gadgets and ship
 types are allowed, the starting loadout, the pickups, per-weapon tuning and friendly fire. A rule
-set fits into a short **rule set code** that starts with `LR`, for example `LR8V-6097-G000-TMBG`
-(the default Paint the Void rules). Each mode's default rules have a short code of their own.
+set fits into a short **rule set code** that starts with `LR`, for example `LRAW-740M-8S00-01JD-4`
+(the default Paint the Void rules). Rules also set the **Absurdity cap** (comedy events run at the
+world's Absurdity, at most this; 0 means none), which comedy events are banned, and the pigment
+pickups of black-and-white levels. Each mode's default rules have a short code of their own.
 You don't need one to play: the server sends its rules when you join. Codes are for hosts, for
 custom matches and duels, and for sharing rule ideas.
 
@@ -1152,7 +1273,8 @@ Click **Rule set editor** on the start screen (or open the game page with `?edit
 can change every rule: weapon and gadget availability (loadout and pickup, pickup only, loadout
 only, banned), the starting loadout, pickup weights, respawn times and ammo, the Tectonic
 Charge's per-map limit, damage, fire rate and ammo multipliers per weapon, how each weapon meets a
-Shield, friendly fire, the allowed ship types, scrap piles, match and respawn times. It edits the
+Shield, friendly fire, the allowed ship types, scrap piles, match and respawn times, the
+Absurdity cap, pigment pickups and comedy event bans (a box per event). It edits the
 rules of the mode the loaded code has (open a code of another mode with `?editor=rules&rules=LR…`);
 it has no mode picker and no fields for the mode's own settings (teams, kill target, lives and
 so on) yet. Problems the server would refuse are listed in red. When the rules are valid, the **Share** section gives you:
@@ -1160,7 +1282,7 @@ so on) yet. Problems the server would refuse are listed in red. When the rules a
 - the **rule set code**,
 - an optional **World** field for a share code,
 - an **invite link** with both codes (`…/?world=LS…&rules=LR…`),
-- the **host command** (for example `ls-server --code LS0F-… --ruleset LR8V-…`), which the host
+- the **host command** (for example `ls-server --code LS0G-… --ruleset LRAW-…`), which the host
   runs to play those rules.
 
 The editor remembers the last code you made. Opening it with `?editor=rules&rules=LR…` loads that
@@ -1240,12 +1362,18 @@ Everything is on the start screen under **Options**, and the page remembers it p
 
 **Sound** starts with your first click or key press on the page (browsers don't allow sound
 before that). Every sound is made in your browser while you play: weapons by family, impacts,
-explosions, the Tectonic Charge's rumble and blast, the Polite Laser's chime, boost, pickups.
-Sounds come from where they happen (headphones help). The **announcer**, a little broadcast
-robot at the top left, calls first blood, multi-kills and the match start in made-up robot
-speech with captions; each match gets one of three announcers: Doug (tired), Sparky
-(overexcited) or Brenda (passive-aggressive). `?audio=demo` after the page address opens the
-sound check page, where you can play every sound and hear every announcer.
+explosions, the Tectonic Charge's rumble and blast, the Polite Laser's chime, boost, pickups,
+gravity wells humming, cave-ins rumbling, pigment splashes, every comedy event's sounds (a
+honk, a hiccup, a squeak, a "mrrp"), The Architect's strokes and Belt Up's start lights, gates
+and Geiger counter. Sounds come from where they happen (headphones help). The **music** slider
+sets the level's background hum (it follows the mood) and the events' tunes (the side-scroller's
+chiptune, the lounge music, the kazoo march, the disco beat). The **announcer**, a little
+broadcast robot at the top left, announces every comedy event, calls the match start, first
+blood, multi-kills, cave-ins and "Belt up!", and narrates the Tired announcer's kill-cams,
+in made-up robot speech with captions; each match gets one of three announcers: Doug (tired),
+Sparky (overexcited) or Brenda (passive-aggressive). Volumes and mute are saved in the browser.
+`?audio=demo` after the page address opens the sound check page, where you can play every sound
+and hear every announcer.
 
 The pilot name, share code and ship are remembered too. **Graphics quality** is picked
 automatically after the first seconds of play (low, medium or high, by your GPU's speed); add
@@ -1339,17 +1467,24 @@ Advanced page options, added to the address (combine them with `&`):
 | `?quality=low`, `medium` or `high` | Force a graphics quality instead of the automatic pick |
 | `?shipshadows=off` | Ships near you cast no shadows (the rock's shadows stay) |
 | `?eventfx=off` | Comedy events show only their card and the announcer, without their looks |
+| `?visitors=off`, `?worldfx=off` | Leave out the visitor events' drones, mimics and face, or the world effects (wells, cave-ins, pigment, moods); for bug reports |
+| `?event=<id>`, `?event=<id>@<seconds>`, `?event=all` | Practice only: force comedy events (see [Comedy events](#comedy-events)) |
+| `?workshop`, `?workshop=<share code>` | Open the [world workshop](#the-world-workshop) |
+| `?audio=demo` | The sound check page: every sound and every announcer |
 
 ## Not in this build yet
 
-These are part of the game design but aren't in the Milestone 3 build:
+These are part of the game design but aren't in the Milestone 4 build:
 
-- **Co-op modes** (Deep Dig, Tethered, Escort the Intern).
-- **Pigment pickups** that give colour back in Last Color Standing, and black-and-white levels
-  as a general feature (the Palette slider only drains the colour of the picture).
+- **Co-op modes** (Deep Dig, Tethered, Escort the Intern), and a co-op Architect who helps the
+  runners.
+- **Belt Up variants:** team races, time trials against ghosts, and other modes on asteroid
+  belts. Belt Up is not in the default rotation of servers yet (hosts add it).
+- **Kill-cam after your own death:** the replay window only plays during the Tired announcer
+  event.
 - **Voting for the next mode:** servers play their rotation in order.
-- **Sound:** no music yet, and no recorded voices: the announcer speaks in made-up robot
-  speech with captions.
+- **Sound:** no soundtrack and no recorded voices: the music bus carries the level's hum and the
+  events' tunes, and the announcer speaks in made-up robot speech with captions.
 - **Scorch fading and cosmetic chips:** scorch marks stay for the whole match; there are no
   client-only decals or small cosmetic debris chips.
 - **Accounts, friends lists, ranked play and matchmaking by skill:** parties live on one

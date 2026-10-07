@@ -285,20 +285,25 @@ before handing in a change. It honours `CARGO_TARGET_DIR`. Note that it rebuilds
 
 ### Generated player reference
 
-`userDocs/reference/{weapons,ships,gadgets,modes}.md` are generated from `data/weapons`,
-`data/ships`, `data/gadgets` and `data/rulesets` (plus the mode list of the generated
-`web/src/rules/catalog.ts` for the team counts each mode allows) by `tools/gen-weapon-docs.mjs`
-(its own RON reader, no build needed). Never edit them by hand:
+`userDocs/reference/{weapons,ships,gadgets,modes,events,world}.md` are generated from
+`data/weapons`, `data/ships`, `data/gadgets`, `data/rulesets`, `data/events` (the comedy
+director and every event) and `data/world` (gravity, Instability, pigment, radiation,
+boulders), plus the mode list of the generated `web/src/rules/catalog.ts` for the team counts
+each mode allows, by `tools/gen-weapon-docs.mjs` (its own RON reader, no build needed). Never
+edit them by hand:
 
 ```sh
-node tools/gen-weapon-docs.mjs           # rewrite the four pages after a data change
+node tools/gen-weapon-docs.mjs           # rewrite the six pages after a data change
 node tools/gen-weapon-docs.mjs --check   # CI: exit 1 if a page is missing or stale
 ```
 
 Descriptions a table cell needs (the notes under each weapon family, parameter units) live in
 the generator, and so do the mode texts of `modes.md` (`MODES`, and `MODE_FIELDS`: one meaning
 per mode setting; `tools/test/gen-weapon-docs.test.mjs` fails when a new `ModeRules` field has
-none); what a weapon or a mode does in prose belongs in the
+none), the event texts of `events.md` (`EVENT_TEXT`, built from each event's `params`) and the
+world laws `world.md` evaluates (`doseRate`, `caveInThreshold`, mirrors of `ls_sim::radiation`
+and `ls_sim::instability`, tested against the simulation's values; a new `data/world` file
+needs a section); what a weapon or a mode does in prose belongs in the
 [player manual](../userDocs/player-manual.md#weapons), which links to the tables. The
 pre-commit and post-edit checks run `--check` after edits in those `data/` folders, the
 catalog or the generator.
@@ -904,7 +909,9 @@ rolls every 20 s, announces an event for 3 s, runs it and keeps the gaps. Each o
 events is a module `crates/ls-sim/src/events/<id>.rs` (`EventModule`) with a data file
 `data/events/<id>.ron` (`EventDef`: name, `enabled`, `weight`, `active_secs`, `ending_secs`,
 `moods`, `targeted`, `params`), registered in `events::MODULES` in `EventKind` order (append
-only). Wave A ships announce-only stubs; to build one, replace its stub body:
+only). All 18 are built (`implemented()`); the overview, the families and the steps for adding
+an event are in [moods-and-world.md](architecture/moods-and-world.md#comedy-director). The
+rules for writing or changing one:
 
 - lifecycle hooks `eligible`, `on_announce` (target, `params` bytes), `on_start`, `on_tick`,
   `on_end` get an `EventCtx` (the hook `Ctx` for damage, entities, edits and cues, the

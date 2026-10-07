@@ -226,7 +226,7 @@ Commands and details: [dev-guide.md](dev-guide.md#4-tests) and [architecture/det
 | M1 Vertical slice | Done | See sections 1–5 |
 | M2 Arsenal and physics | Done | All weapons from the design doc, Tectonic Charge, debris physics, surface states, ship types, gadgets (Shield, Cloak, Decoy), rule set editor — see [milestone-2-plan.md](milestone-2-plan.md) |
 | M3 Modes and lobby | Done with exceptions (soak tick p99 on a quiet machine, private rooms' tick budget under load, the Tectonic collapse tick) — [milestone-3-plan.md](milestone-3-plan.md#milestone-summary) | Team Brawl, The Squeeze, Instagib, Heist, Hot Reactor, Last Color Standing, duels; lobby in `ls-server` with match rotation, optional directory service for the server list, invites, party codes ([modes-and-lobby.md](architecture/modes-and-lobby.md)) |
-| M4 The level has moods | Next — approved, planned in [milestone-4-plan.md](milestone-4-plan.md) | Comedy director with moods and all 18 events, remaining sliders (verticality, gravity chaos, palette, instability), monochrome levels and pigment, The Architect, world workshop, audio foundation; carried over: Tectonic collapse tick, dual contouring in play; M3 leftovers: thin-rock jaggies, bore-rim folds, reference mid-GPU timings, teams 3/4 spawn zones, quiet-machine soak |
+| M4 The level has moods | In progress: waves A-C integrated on `main`, wave D (reviews, docs, soak, visual polish and review) running — [milestone-4-plan.md](milestone-4-plan.md) | Comedy director with moods and all 18 events, remaining sliders (verticality, gravity chaos, palette, instability), monochrome levels and pigment, The Architect, the asteroid belt and the racing mode Belt Up, the Paperweight, world workshop, audio foundation ([moods-and-world.md](architecture/moods-and-world.md)); carried over: Tectonic collapse tick, dual contouring in play; M3 leftovers: thin-rock jaggies, bore-rim folds, reference mid-GPU timings, teams 3/4 spawn zones, quiet-machine soak (status below) |
 | M5 Platforms and ops | Planned | Tauri app with UDP, WebRTC fallback, WebGL2 fallback, regional deployment with Agones or Nomad, bandwidth optimization |
 | M6 Coop and business | Planned | Deep Dig, Tethered, Escort the Intern; cosmetics store, creator economy |
 
@@ -268,20 +268,63 @@ four closed, one partly closed and its rest moved to M4)
   `second_acquire_reuses_the_build`, `tests/nav_cache.rs` (release, 8 bots on one world: 3.7-5.7 s
   of navigation time per bot before, 0.44-0.63 s after, 8.4-9.1x).
 
-**M4 The level has moods**
+**M4 The level has moods** (both items taken into [milestone-4-plan.md](milestone-4-plan.md) §1
+and §3.6; both closed, see below; the M3 leftovers M4 also took over are listed after them)
 - **Tectonic collapse tick (rest of the M2 item).** The collapse tick's single 35 u crater still
   costs about 3.5-5 ms in release (target: under 2 ms; p99 is unaffected). Make the big crater's
   bake cheaper in `ls-worldgen` (skip `room_open` for corners the edit leaves unchanged, or bake
   big craters lazily per chunk); `crates/ls-game/tests/tectonic_tick.rs` holds the collapse tick
   to 8 ms until then. A worldgen job, so it goes with the M4 worldgen work. *From M2, via M3.*
-  **M4 A2:** the bake evaluates only corners within the reach (vectorized, bit-exact); the
-  collapse tick is held to 2 ms (see milestone-4-plan.md "A2 as built").
+  **Closed in M4 A2:** `ChunkStore::bake_edit` evaluates only the corner rows within the
+  crater's reach with a vectorized, bit-exact row kernel (35 u crater over 48 chunks: bake
+  0.6-1.0 ms, was 2.2-2.5 ms; whole `apply` 1.1-1.6 ms, was 4.0 ms;
+  `bake_matches_the_reference_bake` checks every corner bit for bit), and
+  `tectonic_tick.rs` now asserts the collapse tick under 2 ms (best of three). Evidence: 1.36 ms
+  on a quiet machine (A2), 1.96-2.01 ms on a busy one (C6), 1.89 ms in a wave D re-run
+  (other packages building: `cargo test -p ls-game --release --test tectonic_tick`,
+  the six crack ticks after it 0.32-0.45 ms). The assertion is load-sensitive: on a saturated
+  machine it can exceed 2 ms (C7 saw 2.3 ms), which is the hosted-CI item under M5.
 - **Dual contouring in play.** The sharp-edged mesher is golden-hashed and seam-free but costs
   4–13 ms per busy chunk against 0.5–0.8 ms for surface nets, so gameplay still meshes with
   surface nets. Make it fit the per-frame remesh budget (or remesh with it in the background)
-  to get the crisp mine look from the design doc. *From M1.* **M4 A2:** surface nets place
-  sharp-feature vertices by dual contouring's QEF (mine corner error p95 0.025 u); the mesh
-  time is over the planned +20 % (milestone-4-plan.md "A2 as built"), decision open.
+  to get the crisp mine look from the design doc. *From M1.* **Closed in M4 A2** (the approach of
+  milestone-4-plan.md §3.6, open question 10): the surface-nets mesher places the vertex of
+  sharp-feature cells by dual contouring's QEF (`feature_vertex`), so mine shafts get true
+  edges and corners while AO, material weights, thin passes and seams stay; mine-shaft corner
+  error at feature cells p95 0.400 -> 0.025 u (0.041 u on generator version 4;
+  `mesh_quality`'s `mine_shaft_corners_are_sharp` bounds it at 0.045 u). The mesh time rose
+  25-47 % against the planned +20 %; **Decision: that cost is accepted**
+  (milestone-4-plan.md §8.2), with The Squeeze remesh benchmark's p99 limit at the 4 ms client
+  frame budget (`crates/ls-game/tests/squeeze.rs` passes in a re-run). The standalone
+  `dual_contouring` mesher stays as a golden-hashed reference.
+
+M3 leftovers taken into M4 ([milestone-4-plan.md](milestone-4-plan.md) §1, §3.6):
+- **Teams 3 and 4 spawn zones.** **Closed in M4 A1:** generator version 4 adds a cavern at each
+  z end; `ls_game::setup` spawns teams 2 and 3 there with 3 and 4 teams (the setup sweep and a
+  4-team spawn test).
+- **Bore-rim folds.** **Closed in M4 A2:** lid quads across a bore mouth are left out, 9 of 560
+  -> 4 of 552 folded triangles at the gallery bore mouth; `tests/thin_tunnels.rs` now allows
+  1 in 100 (was 1 in 50).
+- **Thin-rock jaggies.** **Partly closed in M4 A2:** blades of 0.4 and 0.6 u are drawn whole
+  (no holes, faces within 0.001 u; `thin_rock_blades_are_drawn_whole`), but the `cave-sunbeam`
+  left-edge jaggies sit on 0.85-0.9 u shells and are unchanged; open for
+  review in M4 D5 (accept, or a wider thin-rock threshold with its mesh cost).
+- **Quiet-machine soak.** **Closed:** the M3 soak re-run on a quiet machine (see
+  milestone-3-plan.md "Soak re-run") met tick p99 < 4 ms per room and the 12:04 stall did not
+  recur; its cause stays unattributed (no per-tick log of slow steps exists yet). The M4 soak is
+  wave D's D4.
+- **Reference mid-GPU timings.** **Open, rescheduled:** no GTX 1660 / RX 6600 / M1 class machine
+  was available; every M4 package recorded its GPU cost on an RTX 5080 with an estimate for the
+  reference class (decision §8 question 11: measure the development machine's integrated
+  GPU as a floor in M4 D5, keep the criterion "estimated"). The measured run moves to M5 (with
+  the hosted CI runner below) unless hardware turns up during D5.
+
+Open at the end of wave C, not built in M4 and moved with the cut order of
+milestone-4-plan.md §7 (to be confirmed when M4 closes):
+- **Kill-cam after your own death** (§3.7, open question 13): the kill-cam window exists for the
+  Tired announcer event only (`web/src/game/killcam.ts`); the setting "after your own death in
+  modes with respawns" is the first item of the §7 cut order. Moves to M5 (client work, no
+  protocol change).
 
 **M5 Platforms and ops**
 - **Bandwidth worst case (accepted for now).** Busy 32-ship fights average within
@@ -301,3 +344,8 @@ four closed, one partly closed and its rest moved to M4)
 - **Chrome/Edge console warning** "powerPreference option is currently ignored" on Windows
   (crbug 369219127); drop the option on Windows once the renderer targets more platforms.
   *From M2.*
+- **Reference mid-GPU gallery timings.** One gallery run on a GTX 1660 / RX 6600 / Apple M1
+  class machine (`gallery.mjs --label refgpu-<wave>`) to replace the estimates of the VQ
+  packages and M4 (ink, wells, events, belt, the Architect's map view). *From M3, via M4.*
+- **Kill-cam after your own death** (setting, default on in respawn modes, skipped by any key).
+  *From M4 (§3.7), pending confirmation of the cut.*

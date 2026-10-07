@@ -11,8 +11,8 @@ them, and what to do when you change generator or simulation output on purpose.
 | Crate | Deterministic | Notes |
 | --- | --- | --- |
 | `ls-math` | yes | Geometry, `det`, RNGs, terrain contracts |
-| `ls-worldgen` | yes | SDF, chunk store, edits, paint, surface states, material field, meshers |
-| `ls-sim` | yes | `World::step`, `simulate_movement` (incl. paint effects), every weapon and gadget module, entities and debris, rule sets and rule set codes |
+| `ls-worldgen` | yes | SDF (classic levels and asteroid belts), well sites, chunk store, edits, paint, surface states, material field, meshers |
+| `ls-sim` | yes | `World::step`, `simulate_movement` (incl. paint effects and, M4, the well pull and the level's up), every weapon and gadget module, entities and debris, the comedy director and its events, world physics (gravity, Instability, pigment, radiation, obstacles), every mode incl. The Architect and Belt Up, rule sets and rule set codes |
 | `ls-net` | encoding only | Integer bit packing; clients quantize inputs exactly as the server decodes them |
 | `ls-game` | by construction | Pure logic on top of the above, no clocks or threads; match setup reads only the pristine level |
 | `ls-server`, `ls-bots`, `ls-wasm`, `web/` | no | Hosts: wall-clock time, sockets, threads; `ls-server` seeds random worlds from the clock on purpose |
@@ -52,9 +52,19 @@ the simulation):
   lives in the hashed fields `Projectile::vars`, `Entity::vars` / `state`,
   `ShipState::weapon_state`); and changes only through queued commands, which the world
   applies in a fixed order ([hook order](arsenal-framework.md#hook-order-per-tick)).
-- **Registries are append-only:** `weapons::registry::MODULES` and `gadgets::MODULES` order is
-  part of the rule set code format, so codes decode the same on every build that knows the
-  weapon.
+- **The comedy director and event modules** (M4, `crates/ls-sim/src/director/`, `events/`)
+  follow the module rules: randomness only from `director::mood_rng` (`EventCtx::rng`), state
+  only in the hashed `DirectorState` / `EventState`, world changes only through `Ctx`
+  commands. Their effect hooks (movement, hit scale and plane, projectile flags, crater and
+  scavenge scale, well scale, the up, reveal, pickups, obstacles) must be pure functions of the
+  replicated `MoodView`, the match seed and the tick, because the client predictor evaluates
+  them too ([moods-and-world.md](moods-and-world.md#comedy-director)). World physics
+  (`gravity.rs`, `instability.rs`, `pigment.rs`, `radiation.rs`, `obstacle.rs`) use only
+  `sqrt` among the non-trivial operations and draw from `Ctx::rng` with fixed keys.
+- **Registries are append-only:** `weapons::registry::MODULES`, `gadgets::MODULES`,
+  `events::MODULES` (`EventKind`), `ModeKind`, `Archetype` and the stroke kinds are part of the
+  rule set code, wire or share code formats, so codes decode the same on every build that knows
+  the entry.
 
 Reviewers check these rules; the tests below catch what slips through.
 
@@ -115,23 +125,25 @@ not materials, so the golden meshes are unaffected by both layers.
 (`crates/ls-sim/src/hash.rs`). `crates/ls-sim/src/tests.rs` replays a scripted 4-player match
 (one ship of each type, debris in the arena) for 1800 ticks (firing with random weapon
 selection, damage, craters, kills, respawns, pickups, gadget use) and compares the final hash
-with `REPLAY_GOLDEN_HASH`:
+with `REPLAY_GOLDEN_HASH` (currently `0x6d20_19b0_f52b_3f3f`, re-blessed by M4 B7):
 
 ```sh
 cargo test -p ls-sim replay_golden_hash
 ```
 
-Each mode also has a tailored replay golden next to its module (M3 wave B), a 60 s scripted
+Each M3 mode also has a tailored replay golden next to its module (M3 wave B), a 60 s scripted
 match that exercises its rules, checked on native and wasm32 (each test prints the new value
-after a deliberate change):
+after a deliberate change). The values below are the ones after M4 B7's weapon id shift; The
+Architect and Belt Up have their tailored replays in the mood fixture
+([below](#comedy-event-replay-hashes-m4-wave-b)):
 
 | Rule set | Constant | Test module | Value |
 | --- | --- | --- | --- |
-| Team Brawl, Instagib Brawl, duel | `TEAM_BRAWL_REPLAY_GOLDEN`, `INSTAGIB_BRAWL_REPLAY_GOLDEN`, `DUEL_REPLAY_GOLDEN` | `modes::team_brawl::tests` (8 ships, kill target 255) | `0x4324_af1e_2f87_4773`, `0x61ed_c96b_b3c7_4e0a`, `0xbf16_09a8_44fe_9b5c` |
-| The Squeeze | `SQUEEZE_REPLAY_GOLDEN_HASH` | `modes::the_squeeze::tests` (4 ships, all five phases closing) | `0xb7d4_e8da_9cd6_639a` |
-| Heist | `HEIST_REPLAY_GOLDEN_HASH` | `modes::heist::tests` (8 bots in a box room with a vein: mining, collapse, carrying, deliveries) | `0x9aa1_4ec8_8a94_291b` |
-| Hot Reactor | `HOT_REACTOR_REPLAY_GOLDEN_HASH` | `modes::hot_reactor::tests` | `0xa94b_6f50_7b53_d4f3` |
-| Last Color Standing | `LCS_REPLAY_GOLDEN_HASH` | `modes::last_color_standing::tests` (stalemate shortened to 30 s) | `0x7bcd_a0fc_22ef_666a` |
+| Team Brawl, Instagib Brawl, duel | `TEAM_BRAWL_REPLAY_GOLDEN`, `INSTAGIB_BRAWL_REPLAY_GOLDEN`, `DUEL_REPLAY_GOLDEN` | `modes::team_brawl::tests` (8 ships, kill target 255) | `0xad28_1b20_7184_f03b`, `0x4df4_eb61_9a88_9d7a`, `0x1de3_0604_a6ce_bee5` |
+| The Squeeze | `SQUEEZE_REPLAY_GOLDEN_HASH` | `modes::the_squeeze::tests` (4 ships, all five phases closing) | `0xe621_da2d_5ace_169b` |
+| Heist | `HEIST_REPLAY_GOLDEN_HASH` | `modes::heist::tests` (8 bots in a box room with a vein: mining, collapse, carrying, deliveries) | `0x4348_368f_eb4b_1f43` |
+| Hot Reactor | `HOT_REACTOR_REPLAY_GOLDEN_HASH` | `modes::hot_reactor::tests` | `0x7bd7_5722_fc7f_5a7c` |
+| Last Color Standing | `LCS_REPLAY_GOLDEN_HASH` | `modes::last_color_standing::tests` (stalemate shortened to 30 s; pigment pickups since M4 A4) | `0xd7b1_0ad9_c4c0_35e9` |
 
 When a behaviour change re-blesses `REPLAY_GOLDEN_HASH` without a `data/` change, also bump
 `ls_sim::SIM_BEHAVIOR_VERSION` (see [below](#data-hash-and-behaviour-version)).
@@ -139,7 +151,8 @@ When a behaviour change re-blesses `REPLAY_GOLDEN_HASH` without a `data/` change
 ### Per-mode replay hashes
 
 `ls_sim::golden` (M3, C3) plays one 40 s scripted match per built-in rule set (every mode,
-Instagib Brawl, the duel, the sandbox): 8 ships with pseudo-random inputs aiming at the nearest
+Instagib Brawl, the duel, the sandbox; eleven lines since M4 added The Architect and Belt Up,
+both played on the golden arena without strokes or a belt): 8 ships with pseudo-random inputs aiming at the nearest
 enemy, in a box arena with a rock knot and Heist extraction zones, under a `ShelledTerrain`
 (The Squeeze's walls); The Squeeze's phases, the Last Color Standing stalemate and the reactor
 fuse are shortened so their rules run inside the 40 s. The hashes (the per-second state hashes
@@ -272,15 +285,23 @@ What M3 changed deliberately (plan [§4](../milestone-3-plan.md#4-determinism-an
 
 ### Milestone 4 record
 
-What M4 changed deliberately (plan [§4](../milestone-4-plan.md#4-determinism-and-handshake-impacts)); wave D (D3) completes it.
+What M4 changed deliberately (plan [§4](../milestone-4-plan.md#4-determinism-and-handshake-impacts)),
+as integrated through wave C (wave D packages that re-bless anything add their row here).
 
 | Item | Change | Why |
 | --- | --- | --- |
-| `SIM_BEHAVIOR_VERSION` | 5 -> 6 (wave A, assigned by A3) | the comedy director as the last stage of `World::step`, plus wave A's gravity, Instability cave-ins, pigment, radiation and dynamic wells; D1's review fixes (Belt Up: spectating mid-heat leaves the heat, an emptied heat restarts with the waiting players, a round reset ends the running event; The Architect: a dud stroke holds the next one back 6 ticks; `mode/the_architect` re-blessed) did not bump it again: version 6 was never released and clients predict none of it |
+| `GENERATOR_VERSION` | 3 -> 4 (A1, once for the milestone) | Verticality's five level boxes and inner structure, gravity well sites and hollows, team 2/3 caverns, the upper hub layer, the archetype field and the asteroid belt (8-fold rotation and plane mirror). Worldgen goldens re-blessed: thirteen worlds (one per other box shape, a default box with seven wells, two belts added), equal on native, wasm32 and the WASM package; share codes re-encoded everywhere (`LS0G...`); version 1-3 codes are refused |
+| Share code layout | version 4 layout (A1): version u8, archetype 3 bits, seed u64, sliders base-101 in 47 bits, CRC-8; still 26 symbols | frees the bits for the archetype without longer codes; the version field picks the layout, so old codes still decode far enough to be refused by version (contracts.md, "Share codes") |
+| Worldgen mesh goldens | re-blessed by A2 on version 3 and once more on version 4 (only `surface_nets` and `edited`) | QEF vertex placement at sharp features, thin-rock pass, bore-rim lid removal: mesher changes only, `sdf` unchanged; A2's cost accepted in review |
+| `ls_net::PROTOCOL_VERSION` | 5 -> 6 (A5; B2, B3, B6 and B7 added items inside 6) | mood view, ship `ext`, chicken bit, `ArchitectAction`, entity kinds 10-18, cues 14-20, race section, results awards ([netcode.md](netcode.md#protocol-6-moods-the-architect-belt-up)) |
+| `SIM_BEHAVIOR_VERSION` | 5 -> 6 (wave A, assigned by A3) | the comedy director as the last stage of `World::step`, plus wave A's gravity, Instability cave-ins, pigment, radiation and dynamic wells; waves B and C, D1's review fixes (Belt Up: spectating mid-heat leaves the heat, an emptied heat restarts with the waiting players, a round reset ends the running event; The Architect: a dud stroke holds the next one back 6 ticks) and D5's cat paw changed no released behaviour (version 6 is first released with M4), so no further bump; clients predict none of the D1 changes |
 | `REPLAY_GOLDEN_HASH` and the nine mode replays | unchanged through wave A; re-blessed by B7 (`0x6d20_19b0_f52b_3f3f`, the module goldens, `mode_replays.txt`, the `world/` lines) | wave A: the scripted replays run with `MatchSetup::absurdity` 0 (and Instability 0, no wells): the director stays off and its pristine state is not hashed (`director::tests::inert_director_leaves_the_hash_alone`). B7: the id `paperweight` shifts every `WeaponId` sorted after it (a relabel: the scripted match plays out identically), and `world/gravity` plays the sandbox, which now has Paperweight pickups. Every replay blessed before B7 is re-blessed once it merges |
+| Mood replays (new fixture) | `crates/ls-sim/tests/fixtures/mood_replays.txt`, 25 lines: `world/{gravity, cave_in, pigment, radiation}` (A4), `world/paperweight` (B7), `event/<id>` for all 18 events (B1, B2, B3), `mode/the_architect` (B4), `mode/belt_up` (B6) | each new system and event gets a replay golden on native, wasm32 and the WASM package (`moodReplayHashes`, C6). Re-blessed for stated reasons only: every `event/` and `mode/` line after B7's id shift (wave B integration); `mode/the_architect` after B1-B3 built the events its strokes force; the Belt Up lines after the `HELD` flag moved to bit 5; `event/customer_survey` for C2's rating award (`0x1d33_0e49_ae74_6f55` -> `0x02be_6d04_f80d_9df7`); `world/radiation` and `mode/belt_up` for C5's radiation knee. C7's fold of the boulders into `obstacle.rs` was bit-identical; `mode/the_architect` for D1's dud-stroke hold-back, `event/cat_paw` and `mode/the_architect` for D5's cat paw grooves, and `mode/the_architect` once more at the wave D integration (both together: `0xb219_4579_0b2c_35cd`) |
 | Paperweight replay | new: `world/paperweight` in `mood_replays.txt` (B7) | the golden arena, sandbox rules with 3 Paperweights as the secondary loadout: landings on rock and mid-air, wells, 22 fused lumps; native = wasm32 |
+| Per-mode replays | `rulesets/the_architect.ron` and `rulesets/belt_up.ron` added (eleven lines); every line re-blessed by B7 | new built-in rule sets; B7's weapon id shift |
 | Director state | hashed once it did anything (`DirectorState::is_pristine`) | mood, roll grid, gap, the running event's state and the forced schedule |
-| Data hash | `data/events/*.ron` (18 events and `director.ron`), built-in rule set Absurdity 20 -> 100 (duel 50), `pigment_pickup` lines; B7: `data/weapons/paperweight.ron` and its sandbox lines | embedded files change the hash automatically |
+| Data hash | `data/events/*.ron` (18 events and `director.ron`), `data/world/{gravity, instability, pigment, radiation, boulders}.ron`, built-in rule set Absurdity 20 -> 100 (duel 50), `pigment_pickup` lines, `the_architect.ron`, `belt_up.ron`, ship `mass` lines; B7: `data/weapons/paperweight.ron` and its sandbox and Belt Up pickup lines; C5: the radiation knee; D5: `cat_paw.ron` (`claw_gap`, `groove_radius`, `groove_inset`) | embedded files change the hash automatically |
+| Race progress fixture | new: `crates/ls-sim/tests/fixtures/race_progress.txt` (C7; `LS_BLESS_RACE_PROGRESS=1 cargo test -p ls-sim --test race_progress`) | 96 positions through the sim's race progress function; the web HUD's mirror (`web/src/game/race/course.test.ts`) is checked against it |
 | Cat paw (D5) | `event/cat_paw` and `mode/the_architect` in `mood_replays.txt` re-blessed; `data/events/cat_paw.ron` (`claw_gap` 2.5 -> 7, `groove_radius` 2.5 -> 3, new `groove_inset` 0.6) changes the data hash, so `SIM_BEHAVIOR_VERSION` stays 6 | the claws rake the first rock toward the face (before: the face itself, inside the uncarvable sealing walls or deep in rock, so most grooves carved nothing), each groove sphere sits `groove_inset` inside the rock it scrapes, three separate grooves. The paw's path moves with the rock, so the cat paw replay changed (its grooves themselves stay out of the golden arena's spawn clearance); the Architect replay's director rolls a cat paw whose grooves now open rock next to a ship. `REPLAY_GOLDEN_HASH` and the per-mode replays unchanged (Absurdity 0) |
 | Wave D integration | `mode/the_architect` re-blessed once more to `0xb21945790b2c35cd` | D1's dud-stroke hold-back (`0xd8f8c42173861a3f` alone) and D5's cat paw (`0x5e92befc3774fac1` alone) both change the Architect replay; the merged sim combines them. No other line changed |
 | Worldgen meshes (D5) | no golden change | open slivers under 1.5 u between rock and a sealing side wall are drawn closed (`ChunkStore::display_with`, display only: field, collisions and edits keep them); the golden worlds have none, so the `surface_nets` and `edited` hashes stay |
@@ -297,7 +318,8 @@ What M4 changed deliberately (plan [§4](../milestone-4-plan.md#4-determinism-an
 ### Data hash and behaviour version
 
 `ls_sim::data_hash()` hashes every embedded `data/` file by path and content (weapons,
-gadgets, ships, the built-in rule sets) plus `ls_sim::SIM_BEHAVIOR_VERSION` (currently 6).
+gadgets, ships, the built-in rule sets, and since M4 the comedy events with `director.ron` and
+the world physics files in `data/world/`) plus `ls_sim::SIM_BEHAVIOR_VERSION` (currently 6).
 `Hello` carries it and the server rejects a different hash with `DataMismatch`, so a browser
 that cached an old build, or a bot built from other data, is refused with a clear message
 instead of predicting with other numbers. Consequences:
@@ -352,8 +374,10 @@ wasm32 too.
 | --- | --- |
 | Generator, SDF, mesher, edit application | `GENERATOR_VERSION`, worldgen golden fixture, hard-coded share codes |
 | Rock material field | `material_field_hash_is_pinned` |
-| Sim behaviour without data change | `REPLAY_GOLDEN_HASH`, the per-mode replay fixture (`LS_BLESS_MODE_REPLAYS=1`) and `SIM_BEHAVIOR_VERSION` |
-| Data file (numbers, new weapon or gadget) | `REPLAY_GOLDEN_HASH`, the per-mode replay fixture; the web catalog if names, slots, costs, levels, registries or the default rule set changed |
+| Sim behaviour without data change | `REPLAY_GOLDEN_HASH`, the per-mode replay fixture (`LS_BLESS_MODE_REPLAYS=1`), the mood replay fixture where its lines change (`LS_BLESS_MOOD_REPLAYS=1`, one cargo run per harness, filters in the fixture header) and `SIM_BEHAVIOR_VERSION` |
+| Data file (numbers, new weapon or gadget) | `REPLAY_GOLDEN_HASH`, the per-mode and mood replay fixtures; the web catalog if names, slots, costs, levels, registries or the default rule set changed |
+| Comedy event, world physics, The Architect or Belt Up | its line in `mood_replays.txt` (`LS_BLESS_MOOD_REPLAYS=1`); a new event adds its `event/<id>` line |
+| Belt Up progress function | `race_progress.txt` (`LS_BLESS_RACE_PROGRESS=1`) |
 | Wire format | `ls_net::PROTOCOL_VERSION` (not a hash, but the same idea: old clients are refused) |
 
 Never re-bless to make an unexplained mismatch go away: first find out why the output changed.
@@ -385,7 +409,9 @@ Two independent checks run the same code on wasm32 under Node:
 2. **The shipped package against the native fixture.** `tools/determinism-check.mjs` loads
    the real browser build of `ls-wasm` in Node, calls `goldenHashes(code)` for every code in the
    native fixture and compares all four digests, then `modeReplayHashes()` against
-   `crates/ls-sim/tests/fixtures/mode_replays.txt` (the [per-mode replays](#per-mode-replay-hashes)):
+   `crates/ls-sim/tests/fixtures/mode_replays.txt` (the [per-mode replays](#per-mode-replay-hashes))
+   and `moodReplayHashes()` against `crates/ls-sim/tests/fixtures/mood_replays.txt` (M4: world
+   physics, all 18 events, The Architect, Belt Up; `ls_sim::golden::mood_replay_hashes`):
 
    ```sh
    cd web && npm run build:wasm && cd ..
@@ -394,11 +420,12 @@ Two independent checks run the same code on wasm32 under Node:
 
    `--pkg <dir>` points it at another wasm-bindgen output directory (for example one you built
    with your own `CARGO_TARGET_DIR`), `--fixture <file>` at another worldgen fixture,
-   `--mode-fixture <file>` at another mode replay fixture.
+   `--mode-fixture <file>` at another mode replay fixture, `--mood-fixture <file>` at another
+   mood replay fixture.
 
 Both run in `tools/ci.ps1` / `tools/ci.sh`. `REPLAY_GOLDEN_HASH` and the tailored per-mode
 goldens in `modes/*` are only covered by the first (`ls-wasm` does not export them); the
-per-mode replay fixture by both.
+per-mode and mood replay fixtures by both.
 
 ## When a cross-check fails
 

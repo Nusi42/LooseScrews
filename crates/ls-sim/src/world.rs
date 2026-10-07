@@ -10,7 +10,7 @@
 //! 1. respawns (with the ship type chosen for the next life);
 //! 2. per ship in id order: weapon selection, gadget key, movement (frozen
 //!    while the ship guides a projectile; belt levels: drifting boulders
-//!    push it, [`crate::boulders`]), scavenging (and Tug scrap passing),
+//!    push it, [`crate::obstacle`]), scavenging (and Tug scrap passing),
 //!    gadget drain, then firing (primary, secondary); then boulder contact
 //!    damage and touching ships (the mode's `ship_contact` hook, Belt Up's
 //!    bumps);

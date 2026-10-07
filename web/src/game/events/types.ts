@@ -74,6 +74,21 @@ export interface EventInput {
   quiet: boolean;
   /** Drawing buffer height (px; the pixel look's cell size). */
   screenHeight: number;
+  /** What the visitor events (C2, visitors.ts) need beyond this; absent = the hub runs no visitors this frame. */
+  visitors?: VisitorExtras | undefined;
+}
+
+/** The visitor events' extra input (main.ts; the hub hands it to `VisitorVisuals`). */
+export interface VisitorExtras {
+  /** The local player's id (also while spectating or guiding a missile). */
+  own: number;
+  /** The own ship's position while it flies (gossip directions), else null. */
+  ownPosition: Vec3 | null;
+  /** Remote ships plus the own one (pizza recipient, mimic prey, the leader's touches). */
+  ships: readonly { id: number; alive: boolean; position: Vec3 }[];
+  names: ReadonlyMap<number, string>;
+  /** ls-wasm `Game.pickupPoints()`. */
+  pickupPoints: ArrayLike<number> | undefined;
 }
 
 /** Everything the event visuals change this frame (merged over the running modules). */

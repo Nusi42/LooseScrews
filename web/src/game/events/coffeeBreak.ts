@@ -72,6 +72,7 @@ class CoffeeBreak implements EventVisual {
   private readonly env: EventEnv;
   private clinked = false;
   private music: { stop(f?: number): void } | null = null;
+  private musicDone = false;
   private steamAt = 0;
   private lastSip = -1;
 
@@ -127,11 +128,15 @@ class CoffeeBreak implements EventVisual {
       this.clinked = true;
       sound?.play("coffee.clink", { position: near.pos });
     }
-    if (clock.t >= 0 && clock.over === null && !this.music) this.music = sound?.loop("coffee.lounge", { gain: 0.9 }) ?? null;
+    // Once, for the active phase: the ending stops it (a start there would restart it every frame).
+    if (clock.t >= 0 && clock.over === null && clock.phase === "active" && !this.music && !this.musicDone) {
+      this.music = sound?.loop("coffee.lounge", { gain: 0.9 }) ?? null;
+    }
     if ((clock.over !== null || clock.phase === "ending") && this.music) {
       this.music.stop(1.2);
       this.music = null;
     }
+    if (clock.over !== null || clock.phase === "ending") this.musicDone = true;
     const sip = clock.t > 1 ? Math.floor((clock.t - 1) / SIP_EVERY) : -1;
     if (sip !== this.lastSip && sip >= 0 && clock.over === null && near && near.d < 70) sound?.play("coffee.slurp", { position: near.pos });
     this.lastSip = sip;

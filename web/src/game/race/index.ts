@@ -81,6 +81,7 @@ export class RaceClient {
     this.belt = null;
     this.autoFollow = true;
     this.followHeat = -1;
+    this.wrong.reset();
   }
 
   /**
@@ -95,7 +96,10 @@ export class RaceClient {
     const own = game.player;
     const ownPose = i.pose && i.pose.alive && !i.spectating ? { position: i.pose.position, velocity: i.pose.velocity } : null;
     const racer = race?.racers.find((r) => r.id === own) ?? null;
-    this.visuals.wrongWay = belt !== null && race?.phase === "racing" && this.wrong.update(belt, racer, ownPose?.position ?? null, ownPose?.velocity ?? null, i.time);
+    const racing = belt !== null && race?.phase === "racing";
+    // Outside a running heat the hold starts over (no stale "wrong way" when the next heat starts).
+    if (!racing) this.wrong.reset();
+    this.visuals.wrongWay = racing && this.wrong.update(belt, racer, ownPose?.position ?? null, ownPose?.velocity ?? null, i.time);
     const rf = this.visuals.update({
       time: i.time,
       dt: i.dt,

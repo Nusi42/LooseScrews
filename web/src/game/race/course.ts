@@ -280,6 +280,11 @@ export function averageSpeed(b: Belt, left: number, startTick: number, nowTick: 
 export class WrongWay {
   private since = -1;
 
+  /** Forgets the hold (outside a running heat, a new match). */
+  reset(): void {
+    this.since = -1;
+  }
+
   /** True while the own ship has flown backwards faster than `minSpeed` for `holdSecs`. */
   update(b: Belt, r: RacerProgress | null, pos: Vec3 | null, vel: Vec3 | null, time: number, minSpeed = 3, holdSecs = 0.8): boolean {
     if (!r || !pos || !vel || r.gates >= LAP_GATES) {

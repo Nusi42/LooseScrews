@@ -693,3 +693,19 @@
     display: none;
   }
 }
+
+/* Phones (D2): the mode HUD's second row (scores, round line) takes the top 100 px at this width. */
+@media (max-width: 520px) {
+  .arch-plate {
+    top: 108px;
+    left: 12px;
+    max-width: calc(100% - 24px);
+  }
+}
+
+/* Reduced motion (D2): no endless wiggles, blinks and pulses; the states still show. */
+@media (prefers-reduced-motion: reduce) {
+  .arch-hud[data-role="architect"] .arch-badge-icon {
+    animation: none;
+  }
+}

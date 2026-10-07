@@ -14,7 +14,7 @@ import { EVENT_IDS } from "../../audio/announcer/lines.ts";
 import { emptyMood, type MoodState } from "../modeState.ts";
 import type { Cue } from "../mechanics.ts";
 import type { EntityState, VisualDef } from "../views.ts";
-import { markerSpot } from "../../ui/visitorHud.ts";
+import { labelShift, LABEL_MARGIN, markerSpot } from "../../ui/visitorHud.ts";
 import { PANEL, ratingSound, starsText, starWave, starX, SURVEY_EVENT } from "./customerSurvey.ts";
 import { faceGrowth, gossipLine, GROW_SECS, LINE_SECS, SINK_SECS, whereFrom } from "./gossipWall.ts";
 import { HOP_HEIGHT, hopShape, lidAngle, MIMIC_FLAG, peekAngle, pickedPickups, pickedPoints } from "./mimicPickups.ts";
@@ -286,4 +286,17 @@ test("sound definitions: unique ids, the loops loop", () => {
   for (const id of ["visitor.siren", "visitor.rotor", "visitor.snarl", "visitor.mumble"]) assert.equal(VISITOR_SOUNDS.find((s) => s.id === id)?.loop, true, id);
   const unused: SoundCall[] = [];
   assert.equal(unused.length, 0);
+});
+
+test("gossip marker labels stay on a narrow screen (pinned at the edge, or near it)", () => {
+  // 360 px phone: a marker pinned to the left edge (x = 28) with a 110 px label.
+  const left = markerSpot({ x: -20, y: 0, w: 5 }, 360, 740);
+  const dl = labelShift(left.x, 110, 360);
+  assert.ok(left.x + dl - 55 >= LABEL_MARGIN - 1e-9, `left edge ${left.x + dl - 55}`);
+  const right = markerSpot({ x: 20, y: 0, w: 5 }, 360, 740);
+  const dr = labelShift(right.x, 110, 360);
+  assert.ok(right.x + dr + 55 <= 360 - LABEL_MARGIN + 1e-9, `right edge ${right.x + dr + 55}`);
+  // In the middle nothing moves; a label wider than the screen is centred on it.
+  assert.equal(labelShift(180, 110, 360), 0);
+  assert.equal(100 + labelShift(100, 500, 360), 180);
 });

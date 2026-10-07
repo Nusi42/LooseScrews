@@ -322,3 +322,19 @@ test("effects give off short lights for VQ6: explosions bright and wide, muzzle 
   vfx.reset();
   assert.equal(vfx.lights(1.3).length, 0);
 });
+
+test("beginsFrame = false keeps immediate sprites emitted before the update (the event hub, the architect's ink eyes)", () => {
+  const sink = new Recorder();
+  const vfx = new Vfx(sink, mulberry32(3));
+  // Default: the update starts the frame and drops earlier immediates.
+  sink.immediate({ pos: ORIGIN, life: 1, sprite: SPRITE.glow, color: [1, 1, 1], size: 1 });
+  vfx.update(frame(0));
+  assert.equal(sink.immediates.filter((p) => p.size === 1 && p.pos === ORIGIN).length, 0);
+  // main.ts starts the frame itself, then the hub emits, then the effect library runs.
+  vfx.beginsFrame = false;
+  sink.beginFrame();
+  const early = { pos: ORIGIN, life: 1, sprite: SPRITE.glow, color: [1, 1, 1] as [number, number, number], size: 1 };
+  sink.immediate(early);
+  vfx.update(frame(1 / 60));
+  assert.ok(sink.immediates.includes(early), "the hub's sprite survives the effect library's update");
+});

@@ -141,8 +141,11 @@ export class Announcer {
   sayText(trigger: Trigger, text: string): void {
     if (this.disposed) return;
     const item = { trigger, text };
-    if (trigger.startsWith("event.")) this.queue.unshift(item);
-    else this.queue.push(item);
+    if (trigger.startsWith("event.")) {
+      // A newer event's line replaces one still waiting (back-to-back events would otherwise trail behind).
+      this.queue = this.queue.filter((q) => !q.trigger.startsWith("event."));
+      this.queue.unshift(item);
+    } else this.queue.push(item);
     if (this.queue.length > MAX_QUEUE) this.queue.length = MAX_QUEUE;
     if (!this.busy) this.next();
   }
@@ -170,7 +173,12 @@ export class Announcer {
   }
 
   private later(ms: number, fn: () => void): void {
-    this.timers.push(setTimeout(fn, ms));
+    // Forget fired timers, so a long match does not pile up handles.
+    const t = setTimeout(() => {
+      this.timers = this.timers.filter((x) => x !== t);
+      fn();
+    }, ms);
+    this.timers.push(t);
   }
 
   private next(): void {

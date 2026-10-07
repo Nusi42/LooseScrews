@@ -800,6 +800,8 @@ export function showWorkshop(parent: HTMLElement, deps: WorkshopDeps): WorkshopH
       root.remove();
     },
   };
+  // Keyboard focus moves into the workshop (the start screen's button that opened it is hidden now).
+  (root.querySelector<HTMLElement>(".arch.selected") ?? root.querySelector<HTMLElement>(".slider-panel input"))?.focus({ preventScroll: true });
   // The first preview without waiting for a change.
   if (deps.preview && code) {
     previewed = code;

@@ -177,6 +177,11 @@ export class SpectacleVisuals {
     }
     const w = this.window;
     if (!w) return;
+    // Results or lobby: no kill-cam over them (a kill just before the end would play on top).
+    if (i.quiet) {
+      w.show(false);
+      return;
+    }
     const p = this.playing;
     if (!p) {
       if (i.mood.eventId === "tired_announcer" && i.mood.phase === "announce") w.standby("Kill-cams for everyone");

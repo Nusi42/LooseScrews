@@ -55,6 +55,22 @@ export function markerSpot(clip: { x: number; y: number; w: number }, width: num
   return { x: width / 2 + (dx / len) * k, y: height / 2 + (dy / len) * k, edge: true, angle: Math.atan2(dy, dx) };
 }
 
+/** Label margin from the screen edge (px). */
+export const LABEL_MARGIN = 4;
+
+/**
+ * Horizontal shift (px) of a label `labelWidth` wide centred on `x` that keeps
+ * it on a `width` wide screen (the eye and arrow stay on the spot; a name
+ * pinned to the left or right edge would otherwise be cut off).
+ */
+export function labelShift(x: number, labelWidth: number, width: number, margin = LABEL_MARGIN): number {
+  const half = labelWidth / 2;
+  const lo = margin + half - x;
+  const hi = width - margin - half - x;
+  if (lo > hi) return (lo + hi) / 2; // wider than the screen: centred
+  return Math.max(lo, Math.min(hi, 0));
+}
+
 interface LiveToast {
   toast: Toast;
   born: number;
@@ -110,6 +126,8 @@ export class VisitorHud {
         const label = `${k.name} · ${Math.round(k.distance)} u`;
         const text = node.querySelector(".visitor-marker-name") as HTMLElement;
         if (text.textContent !== label) text.textContent = label;
+        const shift = labelShift(spot.x, text.offsetWidth, width);
+        text.style.transform = shift !== 0 ? `translateX(${shift.toFixed(1)}px)` : "";
       }
     }
     for (let k = 0; k < this.pool.length; k++) this.pool[k]!.classList.toggle("hidden", k >= used);

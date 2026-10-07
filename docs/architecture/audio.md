@@ -45,7 +45,10 @@ cosmetic: nothing here is hashed or replicated.
 - **Listener.** `setListener(position, forward, up)` once per frame from the camera; sounds with a
   `position` (world units) are positional, the rest (own ship, UI, announcer) play centred.
 - **Loops.** `loop(id)` returns a handle (`setGain`, `setRate`, `setPosition`, `stop`); a loop
-  can be stolen like any voice (`playing` turns false).
+  can be stolen like any voice (`playing` turns false). `setGain(g)` sets the loop to `g` times
+  the sound's mix gain: it replaces the start's `gain` option, so a loop started silent (the
+  boost) can be faded up. A positional loop that starts below `CULL_GAIN` is not started at
+  all, so start loops at the gain they should have (M4 D2).
 - The context suspends while the tab is hidden.
 
 ## Game sounds (`GameAudio`)

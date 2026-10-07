@@ -119,6 +119,10 @@ test("next gate and target, wrong way", () => {
   // Turning around clears it; after the lap any direction is fine.
   assert.equal(ww.update(BELT, { slot: 0, gates: 0 }, pos, { x: -back.x, y: 0, z: -back.z }, 11), false);
   assert.equal(ww.update(BELT, { slot: 0, gates: 8 }, pos, back, 20), false);
+  // A hold left over from the last heat does not carry into the next one (RaceClient resets it between heats).
+  assert.equal(ww.update(BELT, { slot: 0, gates: 0 }, pos, back, 30), false);
+  ww.reset();
+  assert.equal(ww.update(BELT, { slot: 0, gates: 0 }, pos, back, 40), false, "the hold starts over after a reset");
 });
 
 test("race clock remembers the lights' end", () => {

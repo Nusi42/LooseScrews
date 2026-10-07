@@ -100,8 +100,11 @@ class FakeContext {
     return Promise.resolve();
   }
   addEventListener(): void {}
+  gains: { gain: FakeParam }[] = [];
   createGain(): unknown {
-    return Object.assign(new FakeNode(), { gain: new FakeParam(1) });
+    const g = Object.assign(new FakeNode(), { gain: new FakeParam(1) });
+    this.gains.push(g);
+    return g;
   }
   createBiquadFilter(): unknown {
     return Object.assign(new FakeNode(), { type: "lowpass", frequency: new FakeParam(350), Q: new FakeParam(1) });
@@ -378,6 +381,32 @@ test("background pre-rendering finishes every variant of every sound in small sl
   const s = e.stats();
   assert.equal(s.rendered, s.total);
   assert.ok(slices > 1, `${slices} slices`);
+  e.dispose();
+});
+
+test("a loop's setGain is relative to the sound's mix gain, not to its start gain", () => {
+  const { env, contexts } = fakeEnv(true);
+  const e = new AudioEngine(env, DEFAULT_AUDIO);
+  const ctx = contexts[0] as FakeContext;
+  const mix = mixOf(soundDef("boost.loop") ?? assert.fail("boost.loop")).gain;
+  // Started silent (the boost loop): fading it up must be audible.
+  let before = ctx.gains.length;
+  const h = e.loop("boost.loop", { gain: 0 });
+  assert.ok(h);
+  const voiceGain = ctx.gains[before] as { gain: FakeParam };
+  assert.equal(voiceGain.gain.value, 0);
+  h.setGain(0.7);
+  assert.ok(Math.abs(voiceGain.gain.value - mix * 0.7) < 1e-9, `${voiceGain.gain.value} vs ${mix * 0.7}`);
+  h.stop(0.01);
+  // Started at 0.35 (the Tectonic rumble): setGain(0.35) keeps that level.
+  before = ctx.gains.length;
+  const r = e.loop("tectonic.rumble", { gain: 0.35 });
+  assert.ok(r);
+  const rumbleGain = ctx.gains[before] as { gain: FakeParam };
+  const rumbleMix = mixOf(soundDef("tectonic.rumble") ?? assert.fail("tectonic.rumble")).gain;
+  assert.ok(Math.abs(rumbleGain.gain.value - rumbleMix * 0.35) < 1e-9);
+  r.setGain(0.35);
+  assert.ok(Math.abs(rumbleGain.gain.value - rumbleMix * 0.35) < 1e-9);
   e.dispose();
 });
 

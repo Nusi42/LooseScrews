@@ -514,6 +514,8 @@ export class RaceHud {
     }
     if (this.changed("results", m.results)) {
       this.resultsEl.classList.toggle("hidden", m.results === null);
+      // Phones: the heat table covers the place card (raceHud.css hides the card under it).
+      this.root.classList.toggle("with-results", m.results !== null);
       if (m.results) {
         this.resultsEl.replaceChildren();
         const h = document.createElement("div");

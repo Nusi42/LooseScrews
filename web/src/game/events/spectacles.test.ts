@@ -145,7 +145,7 @@ test("spectacle props build as valid meshes within a triangle budget, in spectac
 
 test("the model shader routes every spectacle part to shade_spectacle before the plain fallback", () => {
   const route = MODEL_SHADING_WGSL.indexOf("return shade_spectacle(");
-  const plain = MODEL_SHADING_WGSL.indexOf("if (part > PART_LAMP)");
+  const plain = MODEL_SHADING_WGSL.indexOf("if (part > PART_LAMP");
   assert.ok(route > 0 && plain > route, "the spectacle branch comes first");
   assert.match(MODEL_SHADING_WGSL, new RegExp(`const SPECTACLE_PART_MIN = ${SPECTACLE_PART_MIN}u;`));
   assert.match(MODEL_SHADING_WGSL, new RegExp(`const SPECTACLE_PART_MAX = ${SPECTACLE_PART_MAX}u;`));

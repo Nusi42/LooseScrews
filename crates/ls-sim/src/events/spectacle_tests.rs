@@ -661,18 +661,75 @@ fn the_cat_paw_swipes_the_densest_group() {
         debris.pos.distance(Vec3::new(29.0, -12.0, 1.0)) > 3.0,
         "swept"
     );
-    // Claw grooves: at most 36 spheres of 2.5 u, spread over the sweep.
+    // Claw grooves: at most 36 spheres of 3 u, spread over the sweep.
     assert!(!edits.is_empty(), "the claws scraped the wall");
     assert!(edits.len() <= 36, "{} edits", edits.len());
-    assert!(edits.iter().all(|(_, r)| (*r - 2.5).abs() < 1e-5));
+    assert!(edits.iter().all(|(_, r)| (*r - 3.0).abs() < 1e-5));
     assert!(edit_ticks.len() * 3 >= edits.len(), "at most 3 a tick");
     assert!(edit_ticks.len() >= 4, "spread over ticks: {edit_ticks:?}");
     for (c, _) in &edits {
         // Grooves in the floor under the group (the claws rake the wall the
-        // paw came through).
-        assert!(c.y > -23.0 && c.y < -18.0, "{c:?}");
+        // paw came through), every sphere `groove_inset` (0.6 u) inside it
+        // (D5: even grooves).
+        assert!((c.y + 20.6).abs() < 0.3, "{c:?}");
+    }
+    // Three separate grooves (D5): the sweep runs along z here and the claws
+    // spread along x, in lanes `claw_gap` apart, more than a groove's width,
+    // so a ridge of rock stays between them.
+    let mut lanes: Vec<f32> = edits.iter().map(|(c, _)| c.x).collect();
+    lanes.sort_by(|x, y| x.total_cmp(y));
+    let mut centres = vec![vec![lanes[0]]];
+    for x in &lanes[1..] {
+        if x - centres.last().unwrap().last().unwrap() > 2.0 {
+            centres.push(vec![*x]);
+        } else {
+            centres.last_mut().unwrap().push(*x);
+        }
+    }
+    let mid: Vec<f32> = centres
+        .iter()
+        .map(|l| l.iter().sum::<f32>() / l.len() as f32)
+        .collect();
+    assert_eq!(mid.len(), 3, "three grooves: {lanes:?}");
+    for pair in mid.windows(2) {
+        assert!(pair[1] - pair[0] > 6.5, "grooves apart: {mid:?}");
     }
     assert!(props(&w, ReplicatedKind::CatPaw).is_empty(), "the paw left");
+}
+
+/// D5: rock rising above the face the paw comes through (here a 4 u slab
+/// on the floor, the top at y = -16) is what the claws rake. Before, they
+/// raked the face itself, inside the slab, and carved nothing; on a level
+/// the face is the sealing wall, which no crater can open.
+#[test]
+fn the_cat_paw_rakes_the_rock_in_front_of_the_face() {
+    let (mut w, _ids, mut t) = paw_world();
+    // A nearly flat slab: the top of a 1000 u sphere at y = -16.
+    t.apply(TerrainEdit::AddSphere {
+        center: Vec3::new(30.0, -1016.0, 0.0),
+        radius: 1000.0,
+    });
+    w.schedule_event(10, EventKind::CatPaw);
+    let mut edits = Vec::new();
+    for _ in 0..(10 * 60) {
+        for e in w.step(&mut t, &[]) {
+            if let Event::TerrainEdit(TerrainEdit::SubtractSphere { center, .. }) = e {
+                edits.push(center);
+            }
+        }
+    }
+    assert!(edits.len() >= 12, "grooves in the slab: {edits:?}");
+    for c in &edits {
+        // Just under the slab's top there: `groove_inset` (0.6 u), a little
+        // more where the groove before it already opened the rock.
+        let (dx, dz) = (c.x - 30.0, c.z);
+        let top = -1016.0 + (1000.0f32 * 1000.0 - dx * dx - dz * dz).sqrt();
+        assert!(c.y < top - 0.3 && c.y > top - 1.5, "{c:?} under {top}");
+    }
+    // The grooves are open now: their bottoms lie below the slab's top.
+    assert!(edits
+        .iter()
+        .all(|c| t.sdf(*c + Vec3::new(0.0, 1.0, 0.0)) > 0.5));
 }
 
 #[test]

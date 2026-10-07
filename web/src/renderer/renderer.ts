@@ -248,6 +248,8 @@ const INSTANCE_LAYOUT: GPUVertexBufferLayout = {
 
 interface ScenePipelines {
   terrain: GPURenderPipeline;
+  /** Wrong genre's cutaway (M4 C1): the terrain's back faces as the brick fill (`fs_cut`), drawn before the front faces. */
+  terrainCut: GPURenderPipeline | null;
   instanced: GPURenderPipeline;
   translucent: GPURenderPipeline;
 }
@@ -507,7 +509,10 @@ export class Renderer {
   private scenePipelinesFor(quality: RenderQuality): ScenePipelines {
     const samples = quality.msaa;
     const cut = this.terrainCutaway;
-    const key = `${samples}:${quality.terrainDetail ? 1 : 0}:${cut ? 1 : 0}`;
+    // The Architect's map view (a cut) looks at the rock from afar: no fine
+    // terrain detail there (D5; a tenth of its terrain cost on an integrated GPU).
+    const detail = quality.terrainDetail && !this.cutaway;
+    const key = `${samples}:${detail ? 1 : 0}:${cut ? 1 : 0}`;
     const cached = this.scenePipelines.get(key);
     if (cached) return cached;
     const device = this.device;
@@ -524,13 +529,24 @@ export class Renderer {
           module: terrain,
           entryPoint: "fs_main",
           targets: [{ format: HDR_FORMAT }],
-          constants: { DETAIL: quality.terrainDetail ? 1 : 0 },
+          constants: { DETAIL: detail ? 1 : 0 },
         },
-        // Wrong genre's cutaway (M4 C1) draws back faces too: rock opened by the near plane shows its fill.
-        primitive: { topology: "triangle-list", cullMode: cut ? "none" : TERRAIN_CULL_MODE, frontFace: "ccw" },
+        primitive: { topology: "triangle-list", cullMode: TERRAIN_CULL_MODE, frontFace: "ccw" },
         depthStencil,
         multisample,
       }),
+      // Wrong genre's cutaway (M4 C1) draws the back faces too: rock opened by the near plane shows its fill.
+      terrainCut: cut
+        ? device.createRenderPipeline({
+            label: "terrain cutaway",
+            layout: this.terrainLayout,
+            vertex: { module: terrain, entryPoint: "vs_main", buffers: [POSITION_LAYOUT, NORMAL_LAYOUT, TEAM_LAYOUT, EXTRA_LAYOUT] },
+            fragment: { module: terrain, entryPoint: "fs_cut", targets: [{ format: HDR_FORMAT }], constants: { DETAIL: detail ? 1 : 0 } },
+            primitive: { topology: "triangle-list", cullMode: "front", frontFace: "ccw" },
+            depthStencil,
+            multisample,
+          })
+        : null,
       instanced: device.createRenderPipeline({
         label: "instanced",
         layout,
@@ -858,19 +874,44 @@ export class Renderer {
 
     const stats: FrameStats = { chunksTotal: this.chunks.size, chunksDrawn: 0, triangles: 0, instances: 0 };
     let pass = beginPass(split ? "terrain" : "scene", true, !split);
-    pass.setPipeline(pipelines.terrain);
     pass.setBindGroup(1, this.terrainMaterial.bindGroup);
     const cut = this.cutaway;
+    const drawn: GpuMesh[] = [];
     for (const mesh of this.chunks.values()) {
       if (!mesh.extraBuffer || (mesh.aabb && !this.frustum.intersectsAabb(mesh.aabb))) continue;
       // The Architect's map view: chunks wholly outside the cut draw nothing.
       if (cut && mesh.aabb && (mesh.aabb.min.y > cut.max.y || mesh.aabb.max.y < cut.min.y)) continue;
-      pass.setVertexBuffer(0, mesh.positionBuffer);
-      pass.setVertexBuffer(1, mesh.normalBuffer);
-      pass.setVertexBuffer(2, mesh.teamBuffer);
-      pass.setVertexBuffer(3, mesh.extraBuffer);
-      pass.setIndexBuffer(mesh.indexBuffer, "uint32");
-      pass.drawIndexed(mesh.indexCount);
+      drawn.push(mesh);
+    }
+    // Front to back (D5): nearer rock fills the depth first, so hidden rock
+    // behind it fails the depth test before its shading (the map view looks
+    // down on many storeys of it).
+    const eye = camera.position;
+    const dist2 = (m: GpuMesh): number => {
+      const b = m.aabb;
+      if (!b) return 0;
+      const dx = (b.min.x + b.max.x) * 0.5 - eye.x;
+      const dy = (b.min.y + b.max.y) * 0.5 - eye.y;
+      const dz = (b.min.z + b.max.z) * 0.5 - eye.z;
+      return dx * dx + dy * dy + dz * dz;
+    };
+    const order = drawn.map((m) => [dist2(m), m] as const).sort((a, b) => a[0] - b[0]);
+    drawn.length = 0;
+    for (const [, m] of order) drawn.push(m);
+    // The cutaway's cheap back faces first, so the rock shading behind them fails the depth test.
+    for (const pipeline of [pipelines.terrainCut, pipelines.terrain]) {
+      if (!pipeline) continue;
+      pass.setPipeline(pipeline);
+      for (const mesh of drawn) {
+        pass.setVertexBuffer(0, mesh.positionBuffer);
+        pass.setVertexBuffer(1, mesh.normalBuffer);
+        pass.setVertexBuffer(2, mesh.teamBuffer);
+        pass.setVertexBuffer(3, mesh.extraBuffer!);
+        pass.setIndexBuffer(mesh.indexBuffer, "uint32");
+        pass.drawIndexed(mesh.indexCount);
+      }
+    }
+    for (const mesh of drawn) {
       stats.chunksDrawn++;
       stats.triangles += mesh.indexCount / 3;
     }

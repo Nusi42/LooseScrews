@@ -78,6 +78,28 @@ pub const SDF_CLAMP: f32 = 6.0;
 pub const EXTRA_THIN_CLEARANCE: f32 = 2.5;
 /// Corners stored per axis in a chunk (`0..=32`).
 pub const CHUNK_CORNERS: usize = CHUNK_CELLS as usize + 1;
+
+/// Open slivers narrower than this (u) between generated rock and the
+/// sealing side walls are drawn closed (display only, M4 D5): the mesher's
+/// grid cannot resolve them, so they showed as jagged stair-steps along
+/// the walls (`cave-sunbeam`). The field, collisions and edits keep them.
+/// Floor and ceiling keep their slivers: the sun shines in through the gaps
+/// between rock and the ceiling.
+pub const WALL_SLIVER: f32 = 1.5;
+/// Corners within this distance of a sealing side wall (u) read the closed
+/// field ([`WALL_SLIVER`] plus a cell, so the closed field stays
+/// continuous near its surface); everywhere else the mesh is unchanged.
+const WALL_SLIVER_BAND: f32 = WALL_SLIVER + 1.0;
+
+/// The closing term of [`ChunkStore::display_with`]: negative where rock
+/// (`terrain`) and the side wall (`side`) are both nearer than
+/// [`WALL_SLIVER`] (a gap narrower than that; rock meeting the wall gets a
+/// collar that deep along it). A plain sum (a fillet) would close less than
+/// the 1 u grid resolves, so the stair-steps would stay.
+#[inline]
+fn sliver_closed(terrain: f32, side: f32) -> f32 {
+    (terrain.max(side) - WALL_SLIVER).clamp(-SDF_CLAMP, SDF_CLAMP)
+}
 /// A geometry edit can change the mesh only within this distance of its
 /// bounds (two cell diagonals; see `apply`). The surface-nets halo (smooth
 /// normals, occlusion probes) reads further, but only values the edit
@@ -478,6 +500,86 @@ impl ChunkStore {
     #[inline]
     fn eval_with(&self, p: Vec3, terrain: impl Fn(Vec3) -> f32) -> f32 {
         let room = self.gen.room_open(p);
+        self.edited_terrain_with(p, terrain)
+            .min(room)
+            .clamp(-SDF_CLAMP, SDF_CLAMP)
+            + 0.0
+    }
+
+    /// The displayed field (meshes): [`ChunkStore::eval_with`] with open
+    /// slivers narrower than [`WALL_SLIVER`] between rock and a sealing side
+    /// wall closed, `min(field, max(terrain, side) - WALL_SLIVER)` within
+    /// [`WALL_SLIVER_BAND`] of the side walls (`side`: the distance to the
+    /// nearest of them); elsewhere the same bits.
+    #[inline]
+    fn display_with(&self, p: Vec3, terrain: impl Fn(Vec3) -> f32) -> f32 {
+        let room = self.gen.room_open(p);
+        let side = self.side_open(p);
+        let d = self.edited_terrain_with(p, terrain);
+        let full = d.min(room).clamp(-SDF_CLAMP, SDF_CLAMP) + 0.0;
+        if room > 0.0 && side < WALL_SLIVER_BAND {
+            full.min(sliver_closed(d, side)) + 0.0
+        } else {
+            full
+        }
+    }
+
+    /// Distance from `p` to the nearest sealing side wall (x and z faces of
+    /// the room), positive inside.
+    #[inline]
+    fn side_open(&self, p: Vec3) -> f32 {
+        let r = self.gen.room();
+        (p.x - r.min.x)
+            .min(r.max.x - p.x)
+            .min(p.z - r.min.z)
+            .min(r.max.z - p.z)
+    }
+
+    /// Closes the wall slivers of [`ChunkStore::display_with`] in a sample
+    /// grid of chunk `c` (only chunks near the sealing walls change).
+    fn close_wall_slivers(&self, grid: &mut SampleGrid, terrain: impl Fn(Vec3) -> f32) {
+        let o = grid.origin;
+        let room = self.gen.room();
+        let m = (GRID_HALO + 1) as f32 + WALL_SLIVER_BAND;
+        let near = [0usize, 2].into_iter().any(|a| {
+            (o[a] as f32 - m) < room.min[a] + WALL_SLIVER_BAND
+                || (o[a] as f32 + CHUNK_CELLS as f32 + m) > room.max[a] - WALL_SLIVER_BAND
+        });
+        if !near {
+            return;
+        }
+        let (lo, hi) = (-GRID_HALO, CHUNK_CELLS + GRID_HALO);
+        let n = HALO_CORNERS;
+        let values = grid.values_mut();
+        for k in lo..=hi {
+            for j in lo..=hi {
+                for i in lo..=hi {
+                    let p = SampleGrid::corner_pos(o, i, j, k);
+                    let side = self.side_open(p);
+                    let room = self.gen.room_open(p);
+                    if side < WALL_SLIVER_BAND && room > 0.0 {
+                        let idx = (i + GRID_HALO) as usize
+                            + n * ((j + GRID_HALO) as usize + n * (k + GRID_HALO) as usize);
+                        let v = values[idx];
+                        // Below the wall's value the corner holds the edited
+                        // terrain itself; only where the wall wins is the
+                        // terrain evaluated.
+                        let t = if v < room.min(SDF_CLAMP) {
+                            v
+                        } else {
+                            self.edited_terrain_with(p, &terrain)
+                        };
+                        values[idx] = v.min(sliver_closed(t, side)) + 0.0;
+                    }
+                }
+            }
+        }
+    }
+
+    /// The generated terrain at `p` with the logged edits applied (no
+    /// sealing walls, no clamp).
+    #[inline]
+    fn edited_terrain_with(&self, p: Vec3, terrain: impl Fn(Vec3) -> f32) -> f32 {
         let mut d = terrain(p);
         if let Some(c) = self.chunk_at(p) {
             let edits = &self.chunk_edits[self.chunk_slot(c).expect("in level")];
@@ -490,7 +592,7 @@ impl ChunkStore {
                 }
             }
         }
-        d.min(room).clamp(-SDF_CLAMP, SDF_CLAMP) + 0.0
+        d
     }
 
     /// A generator sampler with tables covering chunk `c`'s padded corners
@@ -759,13 +861,15 @@ impl ChunkStore {
         if !self.contains_chunk(c) || self.is_uniform(c) {
             return Mesh::default();
         }
-        let grid = self.sample_grid(c);
+        let mut grid = self.sample_grid(c);
         // The exact field at creases, feature cells and thin features: a
         // few thousand evaluations in a busy mine chunk, so the sampler
         // with per-block candidate lists (about 0.03 ms to build, evaluations
         // up to twice as fast as the sparse one).
         let sampler = self.chunk_sampler(c);
-        let mut mesh = surface_nets_with_sdf(&grid, &|p| self.eval_with(p, |q| sampler.terrain(q)));
+        self.close_wall_slivers(&mut grid, |q| sampler.terrain(q));
+        let mut mesh =
+            surface_nets_with_sdf(&grid, &|p| self.display_with(p, |q| sampler.terrain(q)));
         self.mesh_materials(c, &mut mesh);
         mesh
     }
@@ -790,12 +894,14 @@ impl ChunkStore {
             return Mesh::default();
         }
         let sampler = self.chunk_sampler(c);
+        let mut grid = grid.clone();
+        self.close_wall_slivers(&mut grid, |q| sampler.terrain(q));
         // No thin features where `extra` comes near (the moving shell's
         // slivers against the rock); elsewhere the same mesh as
         // `mesh_surface_nets`.
         let mut mesh = surface_nets_with_sdf_thin_where(
-            grid,
-            &|p| self.eval_with(p, |q| sampler.terrain(q)).min(extra(p)),
+            &grid,
+            &|p| self.display_with(p, |q| sampler.terrain(q)).min(extra(p)),
             &|p| extra(p) > EXTRA_THIN_CLEARANCE,
         );
         self.mesh_materials(c, &mut mesh);
@@ -2324,6 +2430,56 @@ mod tests {
     /// neighbours (generated on demand) and `eval` next to the level; beyond
     /// one corner outside the level, the sealing walls alone (rock either
     /// way).
+    /// M4 D5: an open sliver narrower than [`WALL_SLIVER`] between rock and
+    /// a sealing side wall is drawn closed (the grid cannot resolve it: it
+    /// showed as stair-steps along the wall), while the field keeps it;
+    /// away from the side walls the displayed field is the field, bit for
+    /// bit, and the ceiling keeps its slivers (the sun shines through them).
+    #[test]
+    fn wall_slivers_are_drawn_closed() {
+        let mut s = store(50, 50);
+        let (y, z) = (64.0, 128.0);
+        // Open a room against the x = 2 wall, then a boulder 0.7 u off it.
+        s.apply(TerrainEdit::SubtractSphere {
+            center: Vec3::new(10.0, y, z),
+            radius: 9.0,
+        });
+        s.apply(TerrainEdit::AddSphere {
+            center: Vec3::new(5.7, y, z),
+            radius: 3.0,
+        });
+        let t = |p: Vec3| s.gen.terrain(p);
+        for x in [2.1, 2.35, 2.6] {
+            let p = Vec3::new(x, y, z);
+            assert!(s.eval(p) > 0.0, "the sliver is open space: {x}");
+            assert!(s.display_with(p, t) < 0.0, "drawn closed: {x}");
+        }
+        // Wider than WALL_SLIVER: open in the mesh too.
+        assert!(s.display_with(Vec3::new(4.0, y + 4.5, z), t) > 0.0);
+        // Away from the side walls: the same bits.
+        let mut rng = 7u32;
+        for _ in 0..500 {
+            let mut r = || {
+                rng = rng.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                (rng >> 8) as f32 / (1u32 << 24) as f32
+            };
+            let p = Vec3::new(4.0 + 248.0 * r(), 128.0 * r(), 4.0 + 248.0 * r());
+            if s.side_open(p) >= WALL_SLIVER_BAND {
+                assert_eq!(s.display_with(p, t).to_bits(), s.eval(p).to_bits(), "{p:?}");
+            }
+        }
+        // Ceiling slivers stay open.
+        let c = Vec3::new(128.0, 125.6, 128.0);
+        assert_eq!(s.display_with(c, t).to_bits(), s.eval(c).to_bits());
+        // The chunk's mesh has no surface inside the sliver.
+        let chunk = s.chunk_at(Vec3::new(2.35, y, z)).unwrap();
+        let m = s.mesh_surface_nets(chunk);
+        assert!(!m.positions.is_empty());
+        assert!(!m.positions.iter().any(|q| {
+            q[0] > 2.15 && q[0] < 2.55 && (q[1] - y).abs() < 0.5 && (q[2] - z).abs() < 0.5
+        }));
+    }
+
     #[test]
     fn sample_grid_halo_matches_eval() {
         let mut s = store(50, 50);

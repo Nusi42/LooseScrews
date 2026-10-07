@@ -6,6 +6,7 @@
 // hops have a history, and puts the scene, its lights and the HUD on the
 // page. `?visitors=off` draws the same states without C2 (plain shapes).
 
+import { showStripCard } from "./eventCard.ts";
 import * as q from "../math/quat.ts";
 import type { Quat } from "../math/quat.ts";
 import * as v3 from "../math/vec3.ts";
@@ -332,6 +333,8 @@ export function runVisitorScene(ctx: VisitorSceneContext): number | null {
   ctx.lights.push(...last.lights);
   renderer.setScene(scene);
   if (particles) particles.now = time;
+  // The event card or pill, as C1's hub draws it in play (M4 D5).
+  showStripCard(ctx.ui, moment0.mood, Math.round(time * HZ), moment0.mood.target >= 0 ? (NAMES.get(moment0.mood.target) ?? "") : "");
   if (!ctx.enabled) return particles?.liveCount() ?? null;
   const vp = renderer.viewProjection({ position: cam.position, orientation: cam.orientation, ...DEFAULT_CAMERA });
   const w = ctx.canvas.clientWidth || ctx.canvas.width;

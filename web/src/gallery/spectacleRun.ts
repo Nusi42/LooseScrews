@@ -7,6 +7,7 @@
 // then the frame goes to the renderer and the page (the hat chip, the
 // kill-cam window). `?worldfx=off` draws the same moment without C3.
 
+import { showStripCard } from "./eventCard.ts";
 import * as q from "../math/quat.ts";
 import type { Quat } from "../math/quat.ts";
 import * as v3 from "../math/vec3.ts";
@@ -18,7 +19,7 @@ import type { EntityState, ProjectileState, ShipState, VisualDef } from "../game
 import { SpectacleVisuals } from "../game/events/spectacles.ts";
 import { lookAlong, type OwnShip, type SpectacleInput } from "../game/events/spectacleCommon.ts";
 import { DUCK_RADIUS } from "../game/events/duckParade.ts";
-import { axisDir } from "../game/events/catPaw.ts";
+import { axisDir, CLAW_GAP } from "../game/events/catPaw.ts";
 import { hatMeshKind } from "../renderer/models/index.ts";
 import { HAT_COLORS } from "../renderer/models/spectacleProps.ts";
 import type { PointLight } from "../renderer/lights.ts";
@@ -82,6 +83,8 @@ export function findPawWall(bounds: ArrayLike<number>, ray: Ray): PawWall | null
           const from = { x: p[0]!, y: p[1]!, z: p[2]! };
           const hit = ray(from, n, depth + 6);
           if (hit < 0 || depth + 0.5 - hit > 12) continue;
+          // Generated rock, not the bare sealing wall (2 u inside the box), which no crater can open (D5).
+          if (depth - hit < 3) continue;
           const wall = v3.addScaled(from, n, hit);
           const front = ray(v3.addScaled(wall, n, -0.6), v3.scale(n, -1), 40);
           if (front >= 0 && front < 22) continue;
@@ -121,13 +124,27 @@ export interface SpectaclePrep {
   wall: PawWall | null;
 }
 
-/** Groove carving of the aftermath frame: three chains of craters along the sweep (like the sim's). */
-export function grooveEdits(w: PawWall, gap = 2.5, radius = 2.5): Array<{ center: Vec3; radius: number }> {
+/** data/events/cat_paw.ron `groove_radius` (u). */
+export const GROOVE_RADIUS = 3;
+/** data/events/cat_paw.ron `groove_inset` (u): a groove sphere's centre inside the rock its claw scrapes. */
+export const GROOVE_INSET = 0.6;
+
+/**
+ * Groove carving of the aftermath frame: three chains of craters along the
+ * sweep, `gap` apart, each sphere `GROOVE_INSET` inside the rock its claw
+ * meets (found with `ray` along the wall's normal, like the sim's claws;
+ * without a ray the wall is taken as flat).
+ */
+export function grooveEdits(w: PawWall, ray?: Ray, gap = CLAW_GAP, radius = GROOVE_RADIUS): Array<{ center: Vec3; radius: number }> {
   const out: Array<{ center: Vec3; radius: number }> = [];
   for (const k of [-1, 0, 1]) {
     for (let s = -26; s <= 12; s += 3.5) {
-      const wob = Math.sin(s * 0.13 + k) * 0.6;
-      out.push({ center: v3.add(v3.add(w.wall, v3.scale(w.b, k * gap + wob * 0.3)), v3.add(v3.scale(w.t, s), v3.scale(w.n, 0.4 + 0.3 * Math.cos(s * 0.2)))), radius });
+      const wob = Math.sin(s * 0.13 + k) * 0.3;
+      const lane = v3.add(v3.add(w.wall, v3.scale(w.b, k * gap + wob)), v3.scale(w.t, s));
+      const from = v3.addScaled(lane, w.n, -6);
+      const hit = ray ? ray(from, w.n, 12) : 6;
+      if (hit < 0) continue;
+      out.push({ center: v3.addScaled(from, w.n, hit + GROOVE_INSET), radius });
     }
   }
   return out;
@@ -144,15 +161,16 @@ export function prepareSpectacleScene(kind: SpectacleSceneKind, pose: Pose, boun
         const cam = v3.add(v3.addScaled(w.wall, w.n, -21), v3.add(v3.scale(w.t, 4), v3.scale(UP, 2)));
         prep.pose = { position: cam, orientation: look(cam, w.wall) };
       } else {
-        // Along the wall: the paw swipes toward the camera, beans first.
+        // Along the wall: the paw swipes toward the camera, beans first; the
+        // aftermath looks down the scored wall from the same side (D5).
         const cam = kind === "cat_paw-c"
-          ? v3.add(v3.addScaled(w.wall, w.n, -9), v3.add(v3.scale(w.t, 24), v3.scale(UP, 4)))
+          ? v3.add(v3.addScaled(w.wall, w.n, -15), v3.add(v3.scale(w.t, 24), v3.scale(UP, 6)))
           : v3.add(v3.addScaled(w.wall, w.n, -15), v3.add(v3.scale(w.t, 30), v3.scale(UP, 7.5)));
-        const target = kind === "cat_paw-c" ? v3.add(v3.addScaled(w.wall, w.n, -1), v3.scale(w.t, -4)) : v3.add(v3.addScaled(w.wall, w.n, -7.5), v3.scale(w.t, 2));
+        const target = kind === "cat_paw-c" ? v3.add(v3.addScaled(w.wall, w.n, -2), v3.scale(w.t, -6)) : v3.add(v3.addScaled(w.wall, w.n, -7.5), v3.scale(w.t, 2));
         prep.pose = { position: cam, orientation: look(cam, target) };
       }
       if (kind === "cat_paw-c") {
-        for (const e of grooveEdits(w)) prep.edited = edit(false, e.center, e.radius) || prep.edited;
+        for (const e of grooveEdits(w, exactRay)) prep.edited = edit(false, e.center, e.radius) || prep.edited;
       }
     }
   } else if (kind === "duck_parade-b") {
@@ -504,6 +522,8 @@ export function runSpectacleScene(ctx: SpectacleSceneContext): SpectacleRunResul
   // Engines and shots light the cave a little, as in play.
   for (const s of m.ships) if (s.alive) ctx.lights.push({ position: s.position, color: [0.55, 0.75, 1], intensity: 3, range: 8 });
   if (particles) particles.now = time;
+  // The event card or pill, as C1's hub draws it in play (M4 D5).
+  if (kind !== "hat-sheet") showStripCard(ctx.ui, m.mood, Math.round(time * 60), m.mood.target >= 0 ? (NAMES[m.mood.target % 5] ?? "") : "");
   const visuals = ctx.visuals;
   const afterRender = kind.startsWith("tired_announcer") && ctx.enabled
     ? () =>

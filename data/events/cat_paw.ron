@@ -1,7 +1,7 @@
 // Cat paw: After the tell on the boundary wall nearest the densest group of ships, a paw (10 u
 // pad) reaches in (0.5 s), sweeps 90 u along an arc in 2 s and withdraws (0.5 s): 30 damage and
 // 25 u/s knockback to ships touched (no kill credit), debris swept along, three claw grooves
-// carved where the claws scrape rock (at most 36 `SubtractSphere` r 2.5, scaled by rock
+// carved where the claws scrape rock (at most 36 `SubtractSphere` r 3, scaled by rock
 // strength, spread over the sweep), never in spawn zones or the Heist vein. Needs a living ship
 // within 60 u of a face of the level box.
 // Behaviour: crates/ls-sim/src/events/cat_paw.rs (B3). Schema: `ls_sim::events::EventDef`.
@@ -18,16 +18,19 @@ EventDef(
         "sweep_secs": 2.0,
         "damage": 30.0,
         "knockback": 25.0,
-        "groove_radius": 2.5,
+        "groove_radius": 3.0,
         "groove_edits": 36.0,
         "ship_range": 60.0,
         // Ships within this distance of each other form a group (u).
         "group_radius": 30.0,
         // The arc's centre (the cat's shoulder) sits this far outside the wall (u).
         "shoulder": 30.0,
-        // Distance between neighbouring claws (u), and between the spheres of a groove.
-        "claw_gap": 2.5,
+        // Distance between neighbouring claws (u; more than twice `groove_radius`, so the three grooves
+        // stay apart with a rock ridge between them, D5), and between the spheres of a groove.
+        "claw_gap": 7.0,
         "groove_spacing": 3.5,
+        // A groove sphere's centre sits this far inside the rock its claw scrapes (u; D5: even grooves).
+        "groove_inset": 0.6,
         // No grooves within this distance of a spawn point (as cave-ins) ...
         "spawn_clearance": 24.0,
         // ... or this far beyond an extraction zone (u).

@@ -90,6 +90,17 @@ fn room_fade(world_pos: vec3f) -> f32 {
   return mix(1.0, fade, far) * step(${ROOM_CLIP}, d);
 }
 
+// Whether room_fade cuts \`world_pos\` off entirely (its ROOM_CLIP step): the
+// terrain discards such fragments before shading them (M4 D5: The
+// Architect's map view cuts most of the level away).
+fn room_clipped(world_pos: vec3f) -> bool {
+  if (frame.room_min.w <= 0.0) { return false; }
+  let lo = world_pos - frame.room_min.xyz;
+  let hi = frame.room_max.xyz - world_pos;
+  let d = min(min(min(lo.x, hi.x), min(lo.y, hi.y)), min(lo.z, hi.z));
+  return d < ${ROOM_CLIP};
+}
+
 // World direction to the sky's frame (the environment cube was baked with +Y up).
 fn sky_dir(d: vec3f) -> vec3f {
   let q = frame.sky_turn;

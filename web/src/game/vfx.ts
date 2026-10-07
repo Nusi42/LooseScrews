@@ -341,6 +341,13 @@ export class Vfx {
   private now = 0;
   /** Dynamic-light pulses of muzzle flashes, impacts, explosions and deaths (VQ6); null = none. */
   lightSink: LightEmitter | null = null;
+  /**
+   * `update` starts the sink's frame (drops the last frame's immediate
+   * sprites). False when the caller starts it earlier because other effects
+   * emit immediate sprites before this update (main.ts: the event hub and the
+   * architect's ink eyes run first).
+   */
+  beginsFrame = true;
   /** Impacts, muzzle flashes and explosions spawned so far (tests, debug). */
   readonly counts = { muzzles: 0, impacts: 0, explosions: 0, deaths: 0, ripples: 0 };
 
@@ -393,7 +400,7 @@ export class Vfx {
     const sink = this.sink;
     this.now = f.time;
     sink.now = f.time;
-    sink.beginFrame?.();
+    if (this.beginsFrame) sink.beginFrame?.();
     this.teamColorOf = f.teamColorOf;
     this.shakes = this.shakes.filter((s) => s.end > f.time);
     this.flashLights = this.flashLights.filter((l) => l.end > f.time);

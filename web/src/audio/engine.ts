@@ -51,6 +51,7 @@ export interface PlayOptions {
 export interface LoopHandle {
   /** False once stopped or stolen. */
   readonly playing: boolean;
+  /** Gain relative to the sound's mix gain (replaces the start's `gain` option). */
   setGain(gain: number, ramp?: number): void;
   setRate(rate: number, ramp?: number): void;
   setPosition(p: Vec3): void;
@@ -270,8 +271,10 @@ export class AudioEngine {
     const v = this.start(id, o, true);
     if (!v) return null;
     const ctx = this.ctx as AudioContext;
-    // A loop's gain node holds the base gain; the handle scales it.
-    const base = v.gain.gain.value;
+    // `setGain(g)` sets the loop to g times the sound's own mix gain: it
+    // replaces the start gain (`o.gain`) rather than scaling it, so a loop
+    // started silent (`gain: 0`, the boost) or quiet can be faded up.
+    const base = mixOf(v.def).gain;
     return {
       get playing() {
         return !v.stopped;

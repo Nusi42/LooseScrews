@@ -228,3 +228,10 @@
     transform: scale(0.8);
   }
 }
+
+/* Reduced motion (D2): no endless wiggles, blinks and pulses; the states still show. */
+@media (prefers-reduced-motion: reduce) {
+  .mood-badge .mood-face {
+    animation: none;
+  }
+}

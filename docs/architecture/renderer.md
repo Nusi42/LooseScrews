@@ -459,10 +459,14 @@ props (`ReplicatedKind::{Drone, Mimic, GossipFace}`), the mood view and the
 file per event in `web/src/game/events/` (`taxDrone.ts`, `pizzaDelivery.ts`,
 `customerSurvey.ts`, `mimicPickups.ts`, `gossipWall.ts`), shared pieces in
 `visitorKit.ts` (cue decoding, attached-part poses, the drones' hover and bank,
-damage smoke) and `visitors.ts` (`VisitorVisuals`: one `update` per frame from
-`main.ts` before the scene is built, `addToScene` after; the scene builder
-skips the three entity kinds, `SceneExtras.skipKinds`, and main leaves out the
-pickups it hides). HUD in `ui/visitorHud.ts`, sounds in
+damage smoke) and `visitors.ts` (`VisitorVisuals`: one `update` per frame,
+`addToScene` after; the scene builder skips the three entity kinds,
+`SceneExtras.skipKinds`, and main leaves out the pickups it hides). Since M4 D2
+C1's event hub runs it (`EventVisuals` option `visitors`, `EventInput.visitors`):
+the hub's `update` updates it with the final camera, puts its hidden pickups in
+`hideEntities` and its lights in `lights`, and forwards `addToScene`,
+`updateHud`, `skipKinds`, `reset` and `dispose`; the gallery's `visitorRun.ts`
+still drives it directly. HUD in `ui/visitorHud.ts`, sounds in
 `audio/sounds/visitors.ts`, models in `renderer/models/visitors.ts` (built at
 their size in the sim, in u; moving parts are their own meshes, posed per
 frame). `?visitors=off` draws the props as before (debris rocks, the pickup's
@@ -680,7 +684,10 @@ mode and particles 0.3-0.9 ms together, within the 1.0 ms event-visuals share.
   0.7 s, and longer-lived ones (30 % of the slots), so a flood of sparks never evicts smoke;
   then up to 4096 **immediate** sprites rebuilt every frame (projectile cores, engine flames,
   beams, soft glows). The CPU writes a particle once, at spawn, and uploads only the slots
-  written since the last frame.
+  written since the last frame. `beginFrame()` drops the last frame's immediate sprites: in
+  the game `main.ts` calls it at the top of the frame (`Vfx.beginsFrame = false`), because the
+  event hub and the architect's client emit theirs before the effect library runs (M4 D2;
+  before that their glows and the ink cloud's eyes were dropped in play).
 - **Motion is analytic** (position and velocity at any age from the spawn state and an
   exponential drag), so there is no update pass; dead and unborn slots collapse to a degenerate
   quad in the vertex shader. Spawns may be in the future (`t0` > now: smoke after fire).

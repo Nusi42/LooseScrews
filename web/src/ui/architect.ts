@@ -225,6 +225,7 @@ export class ArchitectHud {
   private readonly dock: HTMLElement;
   private readonly budget: HTMLElement;
   private readonly cards: HTMLElement;
+  private readonly cardEls: HTMLButtonElement[] = [];
   private readonly reticle: HTMLElement;
   private readonly radial: HTMLElement;
   private readonly banner: HTMLElement;
@@ -323,26 +324,7 @@ export class ArchitectHud {
         spend.style.width = `${Math.max(0, (m.affordable ? m.budgetFill : m.budgetFill) - lo).toFixed(1)}%`;
       }
       for (let t = 50; t < m.budgetMax; t += 50) el("span", "arch-budget-tick", bar).style.left = `${((100 * t) / m.budgetMax).toFixed(1)}%`;
-      this.cards.replaceChildren(
-        ...m.cards.map((c) => {
-          const b = el("button", `arch-card ${c.state}`);
-          b.type = "button";
-          b.style.setProperty("--stroke", c.css);
-          b.title = `${c.name}: ${c.verb}. ${c.blurb}.`;
-          el("span", "arch-card-key", b).textContent = String(c.key);
-          const icon = el("span", "arch-card-icon", b);
-          icon.innerHTML = SLIDER_ICONS[c.slider];
-          if (c.sign) el("span", "arch-card-sign", icon).textContent = c.sign;
-          el("span", "arch-card-name", b).textContent = c.name;
-          el("span", "arch-card-verb", b).textContent = c.note || c.verb;
-          el("span", "arch-card-cost", b).textContent = String(c.cost);
-          b.addEventListener("click", (e) => {
-            e.stopPropagation();
-            this.handlers.arm(c.index);
-          });
-          return b;
-        }),
-      );
+      this.updateCards(m.cards);
       for (const item of Array.from(this.radial.querySelectorAll<HTMLElement>(".arch-radial-item"))) {
         const c = m.cards[Number(item.dataset["index"])];
         if (!c) continue;
@@ -405,6 +387,53 @@ export class ArchitectHud {
     });
     this.panelBox.appendChild(panel.root);
     this.panel = panel;
+  }
+
+  /**
+   * The stroke cards, updated in place: the HUD model changes several times a
+   * second (budget accrual), and rebuilding the buttons then would swallow a
+   * click whose press and release fall on either side of a rebuild.
+   */
+  private updateCards(cards: readonly StrokeCard[]): void {
+    while (this.cardEls.length < cards.length) {
+      const b = el("button", "arch-card");
+      b.type = "button";
+      el("span", "arch-card-key", b);
+      el("span", "arch-card-icon", b);
+      el("span", "arch-card-name", b);
+      el("span", "arch-card-verb", b);
+      el("span", "arch-card-cost", b);
+      b.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const index = Number(b.dataset["index"]);
+        if (Number.isFinite(index)) this.handlers.arm(index);
+      });
+      this.cardEls.push(b);
+    }
+    this.cardEls.forEach((b, n) => {
+      const c = cards[n];
+      if (!c) {
+        b.remove();
+        return;
+      }
+      if (b.parentElement !== this.cards || this.cards.children[n] !== b) this.cards.insertBefore(b, this.cards.children[n] ?? null);
+      b.dataset["index"] = String(c.index);
+      b.className = `arch-card ${c.state}`;
+      b.setAttribute("aria-pressed", String(c.state === "armed"));
+      b.style.setProperty("--stroke", c.css);
+      b.title = `${c.name}: ${c.verb}. ${c.blurb}.`;
+      const [key, icon, name, verb, cost] = Array.from(b.children) as HTMLElement[];
+      if (key) key.textContent = String(c.key);
+      const iconKey = `${c.slider}|${c.sign}`;
+      if (icon && icon.dataset["key"] !== iconKey) {
+        icon.dataset["key"] = iconKey;
+        icon.innerHTML = SLIDER_ICONS[c.slider];
+        if (c.sign) el("span", "arch-card-sign", icon).textContent = c.sign;
+      }
+      if (name) name.textContent = c.name;
+      if (verb) verb.textContent = c.note || c.verb;
+      if (cost) cost.textContent = String(c.cost);
+    });
   }
 
   show(visible: boolean): void {

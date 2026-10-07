@@ -301,3 +301,93 @@ test("elastic pop overshoots and settles", () => {
   assert.equal(elasticOut(1), 1);
   assert.ok(Math.max(...[0.1, 0.15, 0.2, 0.25].map(elasticOut)) > 1);
 });
+
+test("every event module starts each looping sound once per run and stops it (announce, active, ending, over)", () => {
+  for (const id of Object.keys(EVENT_VISUALS)) {
+    const starts: string[] = [];
+    const live = new Set<{ id: string; stopped: boolean }>();
+    const hub = new EventVisuals({
+      particles: { spawn: () => {}, immediate: () => {} },
+      sound: {
+        play: () => true,
+        loop: (sid) => {
+          starts.push(sid);
+          const l = { id: sid, stopped: false };
+          live.add(l);
+          return {
+            get playing() {
+              return !l.stopped;
+            },
+            setGain: () => {},
+            setRate: () => {},
+            setPosition: () => {},
+            stop: () => {
+              l.stopped = true;
+              live.delete(l);
+            },
+          };
+        },
+      },
+      hud: null,
+      announcer: null,
+      enabled: true,
+    });
+    const wells = [{ center: { x: 0, y: 0, z: -20 }, core: 2, range: 30, dynamic: false }];
+    const own = { id: 1, team: 0, position: { x: 0, y: 0, z: 0 }, orientation: q.identity(), velocity: { x: 0, y: 0, z: 0 }, shipType: 1, radius: 0.5 };
+    const base: EventFx = { ...NO_EVENT_FX, event: id, activeTick: 180 };
+    let time = 0;
+    for (let tick = 0; tick < 1200; tick++) {
+      time += 1 / 60;
+      const fx: EventFx =
+        tick < 180
+          ? { ...base, phase: "announce", phaseEndTick: 180, now: tick }
+          : tick < 780
+            ? { ...base, phase: "active", phaseEndTick: 780, now: tick }
+            : tick < 840
+              ? { ...base, phase: "ending", phaseEndTick: 840, now: tick }
+              : { ...NO_EVENT_FX, now: tick };
+      hub.update(input(fx, time, { tick, wells, own }));
+    }
+    const counts = new Map<string, number>();
+    for (const s of starts) counts.set(s, (counts.get(s) ?? 0) + 1);
+    for (const [sid, n] of counts) assert.equal(n, 1, `${id}: ${sid} started ${n} times`);
+    assert.equal(live.size, 0, `${id}: loops still playing after the event: ${[...live].map((l) => l.id).join(", ")}`);
+    hub.dispose();
+  }
+});
+
+test("the hub runs C2's visitors: hidden pickups and lights in its output, props, HUD, skip kinds, reset and dispose", () => {
+  const calls: string[] = [];
+  let seen: { camera: unknown; own: number; ships: number } | null = null;
+  const light = { position: { x: 1, y: 2, z: 3 }, color: [1, 0, 0] as [number, number, number], intensity: 1, range: 5 };
+  const hud = { markers: [], bubble: null, survey: false, pizza: null, toasts: [] };
+  const stub = {
+    skipKinds: new Set(["drone", "mimic", "gossipFace"]),
+    update: (f: { camera: unknown; own: number; ships: readonly unknown[] }) => {
+      calls.push("update");
+      seen = { camera: f.camera, own: f.own, ships: f.ships.length };
+      return { hidden: new Set([42]), lights: [light], hud };
+    },
+    updateHud: (m: unknown) => void calls.push(m === hud ? "hud" : "hud?"),
+    addToScene: () => void calls.push("scene"),
+    reset: () => void calls.push("reset"),
+    dispose: () => void calls.push("dispose"),
+  };
+  const hub = new EventVisuals({ particles: null, sound: null, hud: null, announcer: null, enabled: true, visitors: stub as unknown as import("./visitors.ts").VisitorVisuals });
+  assert.deepEqual([...(hub.skipKinds ?? [])].sort(), ["drone", "gossipFace", "mimic"]);
+  // Without the visitors' extras (the gallery's synthetic runs) the hub leaves them alone.
+  hub.update(input(NO_EVENT_FX, 0));
+  assert.deepEqual(calls, []);
+  const extras = { own: 3, ownPosition: null, ships: [{ id: 3, alive: true, position: { x: 0, y: 0, z: 0 } }], names: new Map([[3, "Rivet"]]), pickupPoints: undefined };
+  const out = hub.update(input(NO_EVENT_FX, 1, { visitors: extras }));
+  assert.ok(out.hideEntities.has(42));
+  assert.ok(out.lights.includes(light));
+  assert.deepEqual(seen, { camera: { x: 0, y: 0, z: 0 }, own: 3, ships: 1 });
+  const lights: typeof out.lights = [];
+  hub.addToScene({ opaque: {}, translucent: {}, refract: {} } as never, lights, out);
+  assert.ok(lights.includes(light));
+  hub.updateHud(null, 800, 600, 1);
+  hub.reset();
+  hub.dispose();
+  assert.deepEqual(calls, ["update", "scene", "hud", "reset", "dispose"]);
+});

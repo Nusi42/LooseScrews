@@ -11,6 +11,13 @@
 // For C2 and C3: add `<event id>: <factory>` to EVENT_VISUALS, the props to
 // renderer/models, the sounds to audio/sounds/events*.ts and the gallery
 // strip to gallery/eventScenes.ts.
+//
+// C2's five visitor events (visitors.ts, `VisitorVisuals`: entity-driven, not
+// EVENT_VISUALS modules) run through the hub too when main.ts passes them
+// (`visitors` option, `EventInput.visitors`): one `update` with the hub's final
+// camera, their hidden pickups in `hideEntities`, their lights in `lights`,
+// their props in `addToScene`, their HUD in `updateHud`, `skipKinds`, `reset`
+// and `dispose` (D2).
 
 import type { Trigger } from "../../audio/announcer/lines.ts";
 import { NO_PIXEL } from "../../renderer/pixelPost.ts";
@@ -21,6 +28,8 @@ import * as q from "../../math/quat.ts";
 import type { EventHud, EventBannerModel } from "../../ui/eventBanner.ts";
 import type { ProjectileState, ShipState } from "../views.ts";
 import { parseWells } from "../worldFx.ts";
+import type { Project } from "../../ui/visitorHud.ts";
+import type { VisitorVisuals } from "./visitors.ts";
 import { bigHeadDay } from "./bigHeadDay.ts";
 import { boredLevel } from "./boredLevel.ts";
 import { everythingIsCake } from "./cake.ts";
@@ -83,6 +92,8 @@ export interface EventVisualsOptions {
   announcer: EventAnnouncer | null;
   /** False: no event visuals (banner, line and sting still). */
   enabled: boolean;
+  /** C2's visitors, run by the hub (their own `?visitors=off` switch stays theirs). */
+  visitors?: VisitorVisuals | null;
 }
 
 /** The run key of an event (stable from its announcement to its end). */
@@ -106,6 +117,8 @@ export class EventVisuals {
   private readonly hud: EventHud | null;
   private readonly announcer: EventAnnouncer | null;
   private readonly enabled: boolean;
+  private readonly visitors: VisitorVisuals | null;
+  private visitorFrame: ReturnType<VisitorVisuals["update"]> | null = null;
   private runs: Run[] = [];
   private last: EventOutput = emptyOutput();
 
@@ -114,6 +127,12 @@ export class EventVisuals {
     this.hud = o.hud;
     this.announcer = o.announcer;
     this.enabled = o.enabled;
+    this.visitors = o.visitors ?? null;
+  }
+
+  /** Entity kinds the hub's visitors draw themselves (the scene builder skips them). */
+  get skipKinds(): ReadonlySet<string> | undefined {
+    return this.visitors?.skipKinds;
   }
 
   /** One frame: runs the modules and returns what changes (also kept for `apply` and `addToScene`). */
@@ -150,9 +169,48 @@ export class EventVisuals {
       }
     }
     this.runs = this.runs.filter((r) => r.visual !== null || r.key === key);
+    this.updateVisitors(i, out);
     this.hud?.update({ banner: i.quiet ? null : bannerModel(fx, i.tick, target), hints: out.hud, sideView: out.thirdPerson });
     this.last = out;
     return out;
+  }
+
+  /** C2's visitors with the frame's final camera: their hidden pickups and lights join the output. */
+  private updateVisitors(i: EventInput, out: EventOutput): void {
+    const v = this.visitors;
+    const x = i.visitors;
+    if (!v || !x) {
+      this.visitorFrame = null;
+      return;
+    }
+    const view = out.view ?? i.camera;
+    const f = v.update({
+      time: i.time,
+      dt: i.dt,
+      nowTick: i.tick,
+      camera: view.position,
+      orientation: view.orientation,
+      up: i.up,
+      mood: i.mood,
+      cues: i.cues,
+      entities: i.entities,
+      ships: x.ships,
+      own: x.own,
+      ownPosition: x.ownPosition,
+      names: x.names,
+      visuals: i.visuals,
+      pickupPoints: x.pickupPoints,
+      quiet: i.quiet,
+    });
+    for (const id of f.hidden) out.hideEntities.add(id);
+    out.lights.push(...f.lights);
+    this.visitorFrame = f;
+  }
+
+  /** The visitors' HUD for the last update (`project` maps world points to clip space). */
+  updateHud(project: Project | null, width: number, height: number, now: number): void {
+    const f = this.visitorFrame;
+    if (this.visitors && f) this.visitors.updateHud(f.hud, project, width, height, now);
   }
 
   /** Puts the frame's renderer settings in place: the pixel look, the cake wave, the cutaway terrain. */
@@ -182,6 +240,7 @@ export class EventVisuals {
       }
     }
     lights.push(...out.lights);
+    this.visitors?.addToScene(scene);
   }
 
   /** The ships to draw (the side view flattens them into its plane). */
@@ -206,9 +265,15 @@ export class EventVisuals {
     for (const r of this.runs) r.visual?.dispose?.();
     this.runs = [];
     this.last = emptyOutput();
+    this.visitors?.reset();
+    this.visitorFrame = null;
   }
 
   dispose(): void {
-    this.reset();
+    for (const r of this.runs) r.visual?.dispose?.();
+    this.runs = [];
+    this.last = emptyOutput();
+    this.visitorFrame = null;
+    this.visitors?.dispose();
   }
 }

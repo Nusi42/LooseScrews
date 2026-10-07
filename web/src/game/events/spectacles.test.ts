@@ -7,6 +7,7 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
 import * as q from "../../math/quat.ts";
+import { CULL_GAIN } from "../../audio/engine.ts";
 import * as v3 from "../../math/vec3.ts";
 import type { Vec3 } from "../../math/vec3.ts";
 import { emptyMood, type MoodState } from "../modeState.ts";
@@ -528,6 +529,21 @@ test("small helpers: slerp ends and stays unit, loop voices stop when silent, ha
   assert.equal(engine.loops.get("x.loop")!.gain, 1);
   v.update(engine, 0, null);
   assert.ok(engine.loops.get("x.loop")!.stopped);
+  // A positional loop starts at the wanted gain: the engine skips sounds that
+  // start below CULL_GAIN (the kazoo and the paw scrape never started at 0.001).
+  const starts: { gain: number; position: boolean }[] = [];
+  const culling: SpectacleSoundEngine = {
+    play: () => true,
+    loop: (_id, o) => {
+      starts.push({ gain: o?.gain ?? 1, position: !!o?.position });
+      return o?.position && (o.gain ?? 1) < CULL_GAIN ? null : engine.loop("y.loop");
+    },
+  };
+  const kazoo = new LoopVoice("duck.kazoo");
+  kazoo.update(culling, 0.8, { x: 1, y: 2, z: 3 });
+  assert.deepEqual(starts, [{ gain: 0.8, position: true }]);
+  kazoo.update(culling, 0.8, { x: 1, y: 2, z: 3 });
+  assert.equal(starts.length, 1, "started once, then follows");
   for (let i = 0; i < 50; i++) {
     const x = hash01(i, i * 3);
     assert.ok(x >= 0 && x < 1);

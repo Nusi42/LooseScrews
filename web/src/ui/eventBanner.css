@@ -360,3 +360,14 @@
     font-size: 21px;
   }
 }
+
+/* Reduced motion (D2): no endless wiggles, blinks and pulses; the states still show. */
+@media (prefers-reduced-motion: reduce) {
+  .event-card.announce .event-icon,
+  .event-zzz.drifting span {
+    animation: none;
+  }
+  .event-zzz.drifting span {
+    opacity: 0.7;
+  }
+}

@@ -161,7 +161,9 @@ export class LoopVoice {
       this.stop(0.6);
       return;
     }
-    if (!this.handle || !this.handle.playing) this.handle = engine.loop(this.id, { position, gain: 0.001 });
+    // Started at the wanted gain: the engine skips a positional sound that starts
+    // (nearly) silent, and `setGain` is relative to the sound's own mix gain.
+    if (!this.handle || !this.handle.playing) this.handle = engine.loop(this.id, { position, gain });
     this.handle?.setGain(gain, 0.25);
     if (position) this.handle?.setPosition(position);
   }

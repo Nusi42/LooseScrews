@@ -139,6 +139,8 @@ export class EventHud {
     } else {
       this.card.classList.remove("shown");
       this.shownStage = "";
+      // The next event pops in again, even when it is the same one.
+      this.shownId = "";
       delete this.ui.dataset["event"];
       delete this.ui.dataset["eventStage"];
     }

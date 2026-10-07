@@ -238,3 +238,13 @@
     width: min(62vw, 300px);
   }
 }
+
+/* Reduced motion (D2): no endless wiggles, blinks and pulses; the states still show. */
+@media (prefers-reduced-motion: reduce) {
+  .killcam-rec,
+  .killcam-scan::after,
+  .killcam.standby .killcam-screen,
+  .killcam.standby .killcam-stamp {
+    animation: none;
+  }
+}

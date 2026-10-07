@@ -558,8 +558,22 @@
     width: calc(100vw - 32px);
   }
 
+  /* The heat table sits over the place card at this width: show one, not both (D2). */
+  .race-hud.with-results .race-card {
+    display: none;
+  }
+
   .race-results-row {
     grid-template-columns: 36px 1fr 58px 36px 36px;
     font-size: 12px;
+  }
+}
+
+/* Reduced motion (D2): no endless wiggles, blinks and pulses; the states still show. */
+@media (prefers-reduced-motion: reduce) {
+  .race-wrong,
+  .race-rad-icon,
+  .race-rad.danger {
+    animation: none;
   }
 }

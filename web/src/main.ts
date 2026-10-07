@@ -325,6 +325,9 @@ function runGame(
     const particles = renderer.particles;
     const vfx = particles ? new Vfx(particles) : null;
     if (vfx) {
+      // The frame's immediate sprites start at the top of `frame` (the event hub and
+      // the architect emit theirs before the effect library runs).
+      vfx.beginsFrame = false;
       // VQ5 effects emit their own light pulses (muzzle, impacts, explosions, deaths) into VQ6.
       vfx.lightSink = lightFx;
       lightFx.watchProjectiles = false;
@@ -337,14 +340,14 @@ function runGame(
     const audio = new MatchAudio(ui, game.shareCode);
     // World visuals (M4 B5): gravity wells, cave-ins, pigment, the level's mood; `?worldfx=off` skips them.
     const world = new WorldVisuals(particles, wantsWorldFx(location), audioEngine());
-    // Visitor events (M4 C2): drones, mimics, the gossip face, their HUD; `?visitors=off` skips them.
-    const visitors = new VisitorVisuals(particles, wantsVisitors(location), audioEngine(), ui);
     // Belt Up (M4 C7): the belt's look on belt levels, the race HUD in Belt Up.
     const race = new RaceClient(ui, particles, audioEngine());
     let worldShake = 0;
     // Comedy event visuals (M4 C1; `?eventfx=off` keeps only the banner and the announcer).
     const eventHud = new EventHud(ui);
-    const events = new EventVisuals({ particles, sound: audioEngine(), hud: eventHud, announcer: audio.announcer, enabled: wantsEventFx(location) });
+    // Visitor events (M4 C2): drones, mimics, the gossip face, their HUD, run by the hub; `?visitors=off` skips them.
+    const visitors = new VisitorVisuals(particles, wantsVisitors(location), audioEngine(), ui);
+    const events = new EventVisuals({ particles, sound: audioEngine(), hud: eventHud, announcer: audio.announcer, enabled: wantsEventFx(location), visitors });
     let eventShake = 0;
     // M4 C3: Duck parade, Hat rain, Cat paw, Disco inferno, the Tired announcer's kill-cams.
     const spectacles = new SpectacleVisuals(ui, particles, wantsWorldFx(location), audioEngine(), (t, v) => audio.announcer.say(t, v));
@@ -414,7 +417,6 @@ function runGame(
       events.dispose();
       eventHud.dispose();
       if (!renderer.isLost) events.apply(renderer, emptyOutput());
-      visitors.dispose();
       spectacles.dispose();
       architect.dispose();
       renderer.cutaway = null;
@@ -497,7 +499,6 @@ function runGame(
         modeVfx?.reset();
         world.reset();
         events.reset();
-        visitors.reset();
         spectacles.reset();
         architect.reset();
         race.reset();
@@ -528,6 +529,10 @@ function runGame(
       dead = r.pose !== null && !r.pose.alive && !flow.spectating;
 
       const time = now / 1000;
+      if (particles) {
+        particles.now = time;
+        particles.beginFrame();
+      }
       const shipPos = shipPositionLookup(game.player, r.pose, r.ships);
       const fxCtx: EffectsContext = {
         player: game.player,
@@ -580,7 +585,11 @@ function runGame(
       camera.params.fovY = cine ? cinematic.fovY(renderer.aspect) : cues.fovY(cueFrame);
       const shake = Math.max(fx.shake, vfx?.shake(time) ?? 0, worldShake, eventShake, spectacleShake);
       const camView = camera.update(r.pose, arch.pose ?? (spectator ? spectator.view : (cine ?? ride)), shakeOffset(shake, time));
-      // Comedy events (M4 C1): what the running event does, its banner and visuals; the side view and the hiccup bump move the camera.
+      // Wrecks show the hull of the ship that died there (VQ4); the visitors follow the own ship too.
+      const own = r.players.find((p) => p.id === game.player);
+      const tracked = r.pose && own ? [...r.ships, { id: game.player, alive: r.pose.alive, position: r.pose.position, shipType: own.shipType }] : r.ships;
+      const ownAlive = r.pose && r.pose.alive && !flow.spectating ? r.pose : null;
+      // Comedy events (M4 C1, C2's visitors through the same hub): what the running event does, its banner and visuals; the side view and the hiccup bump move the camera.
       const evTick = game.nowTick?.() ?? 0;
       const evUp = game.up?.();
       const evTeams = session.teamOf(r.ships);
@@ -604,6 +613,7 @@ function runGame(
           raycast: game.raycast ? (o, d, max) => game.raycast?.(o.x, o.y, o.z, d.x, d.y, d.z, max) ?? -1 : undefined,
           quiet: flow.showResults || flow.showLobby,
           screenHeight: canvas.height,
+          visitors: { own: game.player, ownPosition: ownAlive ? ownAlive.position : null, ships: tracked, names, pickupPoints: game.pickupPoints?.() },
         },
         (id) => names.get(id) ?? "",
       );
@@ -613,9 +623,6 @@ function runGame(
       if (initialLoad && chunkStats.pending === 0) initialLoad = false;
 
       const players = r.players;
-      // Wrecks show the hull of the ship that died there (VQ4).
-      const own = players.find((p) => p.id === game.player);
-      const tracked = r.pose && own ? [...r.ships, { id: game.player, alive: r.pose.alive, position: r.pose.position, shipType: own.shipType }] : r.ships;
       wrecks.observe(tracked, r.entities, time);
       const gadgetOf = (id: number): string => {
         for (const p of players) if (p.id === id) return gadgetKey(session.gadgetIds, p.gadget);
@@ -671,8 +678,7 @@ function runGame(
         warmup: flow.stage === "warmup" || flow.stage === "countdown",
       };
       modeVfx?.update({ ...modeInput, dt });
-      // M4 B5 (after the effect library, which starts each frame's immediate sprites).
-      const ownAlive = r.pose && r.pose.alive && !flow.spectating ? r.pose : null;
+      // M4 B5 (the frame's immediate sprites started at the top of the frame).
       const wf = world.update(
         {
           time,
@@ -698,24 +704,6 @@ function runGame(
         (trigger) => audio.announcer.say(trigger),
       );
       worldShake = wf.shake;
-      const vf = visitors.update({
-        time,
-        dt,
-        nowTick: game.nowTick?.() ?? 0,
-        camera: view.position,
-        orientation: view.orientation,
-        up: wf.up,
-        mood: r.mode.mood,
-        cues: r.cues,
-        entities: r.entities,
-        ships: tracked,
-        own: game.player,
-        ownPosition: ownAlive ? ownAlive.position : null,
-        names,
-        visuals: session.visuals,
-        pickupPoints: game.pickupPoints?.(),
-        quiet: flow.showResults || flow.showLobby,
-      });
       const sf = spectacles.update({
         time,
         dt,
@@ -740,10 +728,10 @@ function runGame(
       // The cinematic camera sees the own ship too.
       // ...and so does an event's side view (M4 C1).
       const shownShips = (cine || ev.thirdPerson) && r.pose && own ? [...drawnShips, cinematic.ownShip(game.player, game.team, r.pose, own.shipType, game.shipRadius ?? TINKER_RADIUS)] : drawnShips;
-      // Event pickups hidden by C1 (Moving day) and C2 (real pickups under their mimics).
-      const shownEntities = ev.hideEntities.size > 0 || vf.hidden.size > 0 ? r.entities.filter((e) => !ev.hideEntities.has(e.id) && !vf.hidden.has(e.id)) : r.entities;
-      // Entity kinds whose looks the world, visitor and spectacle modules draw themselves.
-      const skipKinds = new Set([...(world.skipKinds ?? []), ...(visitors.skipKinds ?? []), ...spectacles.skipKinds]);
+      // Event pickups hidden by C1 (Moving day) and C2 (real pickups under their mimics; both in the hub's output).
+      const shownEntities = ev.hideEntities.size > 0 ? r.entities.filter((e) => !ev.hideEntities.has(e.id)) : r.entities;
+      // Entity kinds whose looks the world, visitor (hub) and spectacle modules draw themselves.
+      const skipKinds = new Set([...(world.skipKinds ?? []), ...(events.skipKinds ?? []), ...spectacles.skipKinds]);
       const scene = buildScene(shownShips, drawnShots, shownEntities, session.visuals, session.teamOf(r.ships), time, {
           gadgetOf,
           beams: fx.beams,
@@ -762,8 +750,6 @@ function runGame(
       const worldLights: PointLight[] = [...wf.lights];
       world.addToScene(scene, r.entities, time, r.mode.teams, worldLights);
       events.addToScene(scene, worldLights, ev);
-      visitors.addToScene(scene);
-      worldLights.push(...vf.lights);
       spectacles.addToScene(scene);
       worldLights.push(...sf.lights);
       renderer.settings.lightLevel = sf.lightLevel;
@@ -874,7 +860,7 @@ function runGame(
       );
       hud.pull.update(flow.showResults || flow.spectating ? null : wf.pull);
       const vp = renderer.viewProjection(view);
-      visitors.updateHud(vf.hud, (p) => {
+      events.updateHud((p) => {
         const [x, y, , w] = transformPoint(vp, p);
         return { x, y, w };
       }, canvas.clientWidth, canvas.clientHeight, time);

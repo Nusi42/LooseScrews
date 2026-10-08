@@ -21,6 +21,8 @@
 - Read `.claude/memory/next-steps.md` first (project memory, first line of `MEMORY.md`): state of every work package, open questions, next steps
 
 ## If you are the lead
+- Resume prompt (the owner starts every new session with it): "Continue where we left off: follow \"If you are the lead\" in CLAUDE.md and .claude/memory/next-steps.md". A session can be stopped at any moment: keep next-steps.md current after every step (what runs where, what is pending from the owner, what to do next), commit it on WIN1 and fast-forward `main`
+- On resume: `node tools/work-folders.mjs status`; a work folder with uncommitted package work belongs to an interrupted package — finish it from its diff, never `git reset` it; agents and workflows of an earlier session are gone, so restart unfinished ones from next-steps.md
 - Start: read `.claude/memory/next-steps.md`; `git -C <win1> fetch`; check the `WINn` branches (`node tools/work-folders.mjs status`)
 - Integrate in win1: merge `origin/WINn` into `WIN1`, run `pwsh tools/ci.ps1` there; only when green: `git push origin WIN1`, then `git -C <master> merge --ff-only WIN1`. `main` is always green
 - Update `.claude/memory/next-steps.md` after every finished step and before the maintainer closes a session, commit it on WIN1 and fast-forward `main` so the master's copy is current

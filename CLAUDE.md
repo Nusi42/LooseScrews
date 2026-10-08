@@ -74,6 +74,7 @@ Update CLAUDE.md in the same change whenever layout, commands, conventions or ru
 - Keep golden-hash tests passing; changing generator output requires bumping the generator version.
 
 ## Conventions
+- **SSOT, ODR, DRY are mandatory** for all code, existing and new: one source per fact (cross-language values generated, never hand-copied), one definition per type/command/helper/shader routine, no repeated logic. Rules and review checklist: `docs/code-quality.md`; every package and review checks them
 - Rust 2021, stable toolchain; workspace `rust-version = "1.85"` (also clippy's MSRV); only `ls-server` and `ls-bots` declare 1.88 (`wtransport`). `thiserror` for library errors, `anyhow` only in binaries.
 - Units: 1 u = one ship length; time in ticks at 60 Hz.
 - Tests next to code; every module spec in the plan has acceptance criteria — meet them.

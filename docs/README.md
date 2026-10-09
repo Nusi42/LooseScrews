@@ -55,8 +55,8 @@ Crate-level rustdoc (`//!` at the top of each `lib.rs`) summarises every crate's
 
 - Update the page that owns a topic instead of repeating it elsewhere; link to it.
 - Changing a cross-crate contract means updating [contracts.md](architecture/contracts.md) in the
-  same change; changing commands or layout means updating [`CLAUDE.md`](../CLAUDE.md) and
-  [dev-guide.md](dev-guide.md).
+  same change; changing commands means updating [dev-guide.md](dev-guide.md), changing rules or
+  layout also [`CLAUDE.md`](../CLAUDE.md) (rules and pointers only; it links here for the rest).
 - `docs/design/` is an export of the living design doc; change the living doc, then re-export.
 - `userDocs/reference/*.md` are generated from `data/` by `node tools/gen-weapon-docs.mjs`
   ([dev-guide](dev-guide.md#generated-player-reference)); CI fails while they are stale.

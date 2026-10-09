@@ -44,8 +44,8 @@ node tools/work-folders.mjs status                    # uncommitted / unpushed p
 `core.hooksPath=.githooks`:
 
 - **pre-commit** runs the per-file checks on the staged files (`tools/lib/run-checks.mjs`):
-  rustfmt, the web `tsc`, wildcard binds, LF line endings, and the generated reference docs
-  when `data/` changed. It reads the working-tree copy of each file, so stage the whole file
+  rustfmt, the web `tsc`, wildcard binds, LF line endings, private information, and the
+  generated reference docs when `data/` changed. It reads the working-tree copy of each file, so stage the whole file
   you fixed.
 - **pre-push** runs the fast CI subset; `node tools/hooks/pre-push.mjs --list` prints the steps.
   Each step's output is also kept in `target/pre-push/<n>-<step>.log` (overwritten by the next
@@ -71,6 +71,12 @@ In the master, `node <win1>/tools/work-folders.mjs guard-master` writes the giti
 `rustc-wrapper` (`.cargo/refuse-build.cmd`) makes every cargo build there fail. Machine-specific
 cargo settings go into a work folder's own `config.local.toml`. Cargo runs with `jobs = 4`
 (shared machine).
+
+**Private information.** No email address, OS user name, user-home path, name or other
+personal data goes into tracked files or commit messages: write `%USERPROFILE%` or `~` in docs
+and use `os.homedir()` in code. `node tools/check-private.mjs` enforces it in pre-commit,
+pre-push and CI; never bypass it. Commit author and committer identity come from the owner's
+git config.
 
 **Ports and binds.** The Vite dev server prefers 127.0.0.1:41873, takes any free port when that
 one is busy, and `LS_DEV_PORT` forces a port. Tests, bots, e2e and the smoke test bind
@@ -99,6 +105,10 @@ the master.
 | Node.js + npm | Node with built-in TypeScript type stripping (22.18+ or 23.6+); tested with Node 26.7, npm 11.19 | The web unit tests run `.ts` files directly with `node --test`. npm, not pnpm |
 | PowerShell 7 | optional | For `tools/*.ps1` on Windows; the `.sh` twins do the same in bash |
 | Browser | WebGPU (current Chrome or Edge) | Firefox/Safari only where WebGPU is enabled. WebTransport is used when available, WebSocket otherwise |
+
+Rust conventions: edition 2021 on stable; `thiserror` for library errors, `anyhow` only in
+binaries; units are 1 u = one ship length and time in ticks at 60 Hz
+([contracts](architecture/contracts.md)).
 
 No C toolchain beyond what Rust needs: `wtransport` uses the `ring` backend, so there is no
 cmake or NASM step.
@@ -157,6 +167,7 @@ hash at `/cert-hash`. Useful flags (`ls-server --help` lists all):
 | `--wt-bind` / `--no-webtransport` | same port as `--bind` over UDP | WebTransport endpoint |
 | `--stats-interval` | 10 | Seconds between `tick stats` log lines |
 | `--intermission` | 10 | Seconds the result shows before everyone moves to the next match (same connection) |
+| `--directory` / `--server-name` / `--region` / `--public-address` | none | Register with a server list ([below](#directory-service-server-list), [server.md](architecture/server.md)) |
 | `--exit-when-empty` | off | Exit 2 s after the last player leaves (scripts) |
 
 Logging follows `RUST_LOG` (default `info`), e.g. `RUST_LOG=ls_server=debug`.
@@ -232,13 +243,15 @@ Invites, parties and duels go through the game server's JSON API (`/api/...`,
 | What | Command | Notes |
 | --- | --- | --- |
 | All Rust tests | `cargo test --workspace` | Debug; `ls-game` alone takes about 40 s (level generation) |
-| Bot end-to-end tests | `cargo test -p ls-bots --release` | Ignored in debug builds (too slow); part of CI. Includes `tests/nav_sweep.rs` (10 worlds plus a 5-minute soak-world match) `tests/nav_cache.rs` (8 bots of one world start one grid build; navigation CPU per bot at least 5x lower than a build per bot) and `tests/arsenal_match.rs` (8 bots, 240 s of `sandbox_all_weapons`: at least 15 distinct combat weapons incl. a mine and the Tectonic Charge, 0 desyncs, reconciliation error under 1 u), `tests/mode_matches.rs` (every mode's built-in rule set played to a result by 8 bots playing its objective, about 60 s), `tests/race_match.rs` (Belt Up: 8 racing bots, 3 heats, every bot finishes 2 of 3; the time trials on 8 belt seeds that gate the radiation tuning; a few seconds), `tests/mood_matches.rs` (all 18 comedy events forced over an Absurdity 100 rotation with 8 bots, reconciliation near wells and ducks at most 0.1 u, about 90 s; The Architect with 6 bots) and `tests/social.rs` (lobby Ready, `--directory` join, duel acceptance against a real server); one file: `cargo test -p ls-bots --release --test arsenal_match -- --nocapture` |
+| Bot end-to-end tests | `cargo test -p ls-bots --release` | Ignored in debug builds (too slow); part of CI. Includes `tests/nav_sweep.rs` (10 worlds plus a 5-minute soak-world match) `tests/nav_cache.rs` (8 bots of one world start one grid build; navigation CPU per bot at least 5x lower than a build per bot) and `tests/arsenal_match.rs` (8 bots, 240 s of `sandbox_all_weapons`: at least 15 distinct combat weapons incl. a mine and the Tectonic Charge, 0 desyncs, reconciliation error under 1 u), `tests/match_transition.rs` (the in-place match transition), `tests/team_brawl_match.rs` (Team Brawl, Instagib Brawl and duel rule sets played to a result), `tests/last_color_standing_match.rs` (8 bots play Last Color Standing to a result), `tests/mode_matches.rs` (every mode's built-in rule set played to a result by 8 bots playing its objective, about 60 s), `tests/race_match.rs` (Belt Up: 8 racing bots, 3 heats, every bot finishes 2 of 3; the time trials on 8 belt seeds that gate the radiation tuning; a few seconds), `tests/mood_matches.rs` (all 18 comedy events forced over an Absurdity 100 rotation with 8 bots, reconciliation near wells and ducks at most 0.1 u, about 90 s; The Architect with 6 bots) and `tests/social.rs` (lobby Ready, `--directory` join, duel acceptance against a real server); one file: `cargo test -p ls-bots --release --test arsenal_match -- --nocapture` |
 | Weapon and gadget scenario tests | `cargo test -p ls-sim --lib weapons` / `cargo test -p ls-sim --lib gadgets` | One test module per weapon and gadget module (bonus, malus, lasting effect), plus the registry checks in `weapons::tests`; world-level framework tests in `tests_arsenal` |
 | Mode scenario tests | `cargo test -p ls-sim --lib modes` | Framework tests in `modes::tests`; one test module per implemented mode (Hot Reactor: `modes::hot_reactor::tests`, incl. a 60 s replay golden hash checked on wasm32 too). Headless 8-bot match: `cargo test -p ls-game --test hot_reactor_match` (short-fuse variant; the full default rule set match runs only with `--release`) |
 | Rule set codes and the web catalog | `cargo test -p ls-sim --lib rulecode` | Includes `web_catalog_is_current`; regenerate with `LS_BLESS_RULES_CATALOG=1` ([section 9](#rule-set-codes-and-the-editor)) |
 | Snapshot bandwidth | `cargo test -p ls-net --lib busy_fight_with_projectiles_fits_the_budget -- --nocapture` | Prints mean and worst delta size per seed and baseline age ([netcode](architecture/netcode.md#snapshots-and-deltas)); `cargo test -p ls-game --lib busy_fight_fits_the_bandwidth_budget` is the ship-physics variant |
 | Match setup sweep | `cargo test -p ls-game --release --lib setup` | 8 seeds x 25 slider mixes (1 seed in debug) |
 | ls-game in release | `cargo test -p ls-game --release` | Part of CI: the setup sweep, the Hot Reactor 8-bot match with the default rule set, The Squeeze's 8-seed shell remesh benchmark (`tests/squeeze.rs`, about 5 minutes), the match-start regression (`tests/match_start.rs`: no tick of a fresh `build_match` world or `Room` over 50 ms, every built-in rule set) |
+| The Squeeze on generated levels | `cargo test -p ls-game --release --test squeeze -- --nocapture` | 8 seeds, the shell remesh benchmark, a full 8-player match; release only |
+| Tectonic collapse tick timing | `cargo test -p ls-game --release --test tectonic_tick` | On a real level |
 | Visitor event replay hashes (M4 B2) | `cargo test -p ls-sim --lib visitor_replays` | Tax drone, Gossip wall, Pizza delivery, Customer survey and Mimic pickups forced in a 23 s replay each (`ls_sim::events::visitor_replays`) against their `event/` lines of `crates/ls-sim/tests/fixtures/mood_replays.txt`, native and wasm32. Re-bless: `LS_BLESS_MOOD_REPLAYS=1 cargo test -p ls-sim --lib visitor_replays`. Netplay and generated-level drone tests: `cargo test -p ls-game --release --test visitor_netplay` |
 | World physics replay hashes (M4) | `cargo test -p ls-sim --lib world_replays` | Gravity, cave-in, pigment and radiation replays (`ls_sim::world_replays`) against the `world/` lines of `crates/ls-sim/tests/fixtures/mood_replays.txt`, native and wasm32. Re-bless: `LS_BLESS_MOOD_REPLAYS=1 cargo test -p ls-sim --lib world_replays` |
 | Comedy event replay hashes (M4) | `cargo test -p ls-sim --lib event_replays` | One forced replay per spectacle event (`ls_sim::event_replays`, B3) and per other built event without its own replay (`ls_sim::events::replays`, B1) against their `event/` lines of the same fixture, native and wasm32. Re-bless: `LS_BLESS_MOOD_REPLAYS=1 cargo test -p ls-sim --lib event_replays` (both harnesses' tests match the filter) |
@@ -269,7 +282,8 @@ tools/ci.sh              # bash
 ```
 
 Steps, in order: `cargo fmt --check`; `node tools/gen-weapon-docs.mjs --check` (the generated
-player reference pages, [below](#generated-player-reference)); `node tools/check-binds.mjs` and
+player reference pages, [below](#generated-player-reference)); `node tools/check-private.mjs`;
+`node tools/check-binds.mjs` and
 the tools tests (`node --test "tools/test/*.test.mjs"`: hooks, guards, settings); clippy with `-D warnings`;
 `cargo test --workspace`;
 the strict `ls-server` timing test alone (`--ignored --test-threads=1`; the parallel run only
@@ -404,6 +418,7 @@ tell a stalled bot from a slow server when the server reports input starvation; 
 
   ```sh
   cargo run -p ls-worldgen --release --example worldgen_bench      # generation, remesh after craters, eval cost, dual contouring
+  cargo run -p ls-worldgen --release --example worldgen_bench -- --shapes  # only the level shapes, wells and belts vs the default level
   cargo run -p ls-worldgen --release --example mesh_bench [CODE]   # meshing timings for one share code
   cargo test -p ls-worldgen --release --test timing -- --nocapture # asserts < 2 ms per 32³ chunk (surface nets)
   cargo test -p ls-worldgen --release --test mesh_quality -- --nocapture # drawn rock vs collision surface, normals, occlusion, mine-corner error
@@ -1144,8 +1159,8 @@ fight frame.
 
 ## 13. Where things are documented
 
-- Rules for contributors and agents: [`CLAUDE.md`](../CLAUDE.md) (keep it in sync when commands
-  or layout change).
+- Rules for agents: [`CLAUDE.md`](../CLAUDE.md) (rules and pointers only; commands and their
+  options live in this guide).
 - Game rules: [design/game-design-doc.md](design/game-design-doc.md).
 - Scope, module specs and status: [implementation-plan.md](implementation-plan.md) (M1) and
   [milestone-2-plan.md](milestone-2-plan.md) (M2: design decisions, waves, acceptance status).

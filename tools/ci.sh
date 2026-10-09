@@ -18,6 +18,7 @@ node "$ROOT/tools/gen-weapon-docs.mjs" --check
 
 step "no wildcard binds outside the allowlist; tools tests (hooks, guards)"
 node "$ROOT/tools/check-binds.mjs"
+node "$ROOT/tools/check-private.mjs"
 node --test "tools/test/*.test.mjs"
 
 step "cargo clippy (workspace, all targets, -D warnings)"

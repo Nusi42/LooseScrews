@@ -31,6 +31,7 @@
 - "Can I close this session?": report running background tasks, uncommitted/unpushed work per winN and `main` vs `WIN1` (`node tools/work-folders.mjs status`)
 
 ## Gotchas
+- **No private information in git, ever:** no email address, OS user name, user-home paths (write `%USERPROFILE%`, `~` or use `os.homedir()`), names or other personal data in tracked files or commit messages. `tools/check-private.mjs` enforces it in pre-commit, pre-push and CI; never bypass it. (Commit author/committer identity is the owner's git config, as in the sister project another project.)
 - Never kill processes you didn't start
 - Cargo runs with `-j 4` (`.cargo/config.toml`; shared machine)
 - Python on Windows writes CRLF: open files with `newline=''`; write scripts to files, not heredocs with backslashes (the shell eats `\\`)

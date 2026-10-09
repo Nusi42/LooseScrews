@@ -25,6 +25,7 @@ try {
 
     Step 'no wildcard binds outside the allowlist; tools tests (hooks, guards)'
     Invoke-Checked node @((Join-Path $Root 'tools/check-binds.mjs'))
+    Invoke-Checked node @((Join-Path $Root 'tools/check-private.mjs'))
     Invoke-Checked node @('--test', 'tools/test/*.test.mjs')
 
     Step 'cargo clippy (workspace, all targets, -D warnings)'

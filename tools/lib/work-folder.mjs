@@ -6,13 +6,14 @@
 // `assertWorkFolder`; in the master Cargo refuses through a rustc wrapper
 // (`node tools/work-folders.mjs guard-master`). Tests: tools/test/work-folder.test.mjs.
 
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 /** Parent folder of the work folders. */
-export const WORK_BASE = "C:\\Users\\dev\\<work root>";
+export const WORK_BASE = path.join(os.homedir(), "<work root>");
 /** The master repository (OneDrive). */
-export const MASTER = "C:\\Users\\dev\\<master>";
+export const MASTER = path.join(os.homedir(), "master");
 
 /** Branch of work folder `n`. */
 export function branchOf(n) {

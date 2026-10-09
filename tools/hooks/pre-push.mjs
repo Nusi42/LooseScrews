@@ -18,6 +18,7 @@ export const STEPS = [
   ["cargo fmt --check", "cargo", ["fmt", "--all", "--", "--check"], "."],
   ["generated reference docs", "node", ["tools/gen-weapon-docs.mjs", "--check"], "."],
   ["wildcard binds", "node", ["tools/check-binds.mjs"], "."],
+  ["private information", "node", ["tools/check-private.mjs"], "."],
   ["tools tests", "node", ["--test", "tools/test/*.test.mjs"], "."],
   ["cargo clippy -D warnings", "cargo", ["clippy", "--workspace", "--all-targets", "--", "-D", "warnings"], "."],
   ["cargo test --workspace", "cargo", ["test", "--workspace"], "."],

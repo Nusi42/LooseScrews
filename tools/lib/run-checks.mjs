@@ -5,6 +5,7 @@
 //   tsc --noEmit (web)         web/**/*.ts (whole project; tsc 7 is fast)
 //   check-binds                code and config files
 //   line endings               no CR except *.ps1 (.gitattributes: LF)
+//   private information        no git email, OS user name or user-home paths (tools/check-private.mjs)
 //   generated reference docs   data/{weapons,ships,gadgets,rulesets}/*, web/src/rules/catalog.ts, the generator
 // Build output (target/, node_modules/, dist/, the wasm pkg) is never checked.
 
@@ -13,6 +14,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { SCANNED, findBinds } from "../check-binds.mjs";
+import { SCANNED as PRIVATE_SCANNED, findPrivate, privateValues } from "../check-private.mjs";
 
 /** Paths no check looks at. */
 export const IGNORED = /(^|\/)(target|node_modules|dist|pkg|\.codegraph|\.git)\//;
@@ -57,11 +59,14 @@ export async function runChecks(root, files) {
   }
   const binds = [];
   const crlf = [];
+  const priv = [];
+  const who = text.length ? privateValues(root) : {};
   for (const rel of text) {
     const abs = path.join(root, rel);
     if (!fs.existsSync(abs) || fs.statSync(abs).isDirectory()) continue;
     const content = fs.readFileSync(abs, "utf8");
     if (SCANNED.test(rel)) binds.push(...findBinds(rel, content));
+    if (PRIVATE_SCANNED.test(rel)) priv.push(...findPrivate(rel, content, who));
     if (content.includes("\r")) crlf.push(`${rel}: CRLF line endings (the repo uses LF; Python: open(..., newline=''))`);
   }
   if (text.length) {

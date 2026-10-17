@@ -1,0 +1,3 @@
+#!/bin/sh
+# Commit message and identity rules (tools/hooks/commit-msg.mjs).
+exec node "$(git rev-parse --show-toplevel)/tools/hooks/commit-msg.mjs" "$@"

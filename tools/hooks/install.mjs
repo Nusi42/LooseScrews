@@ -9,4 +9,4 @@ import { REPO_ROOT, assertWorkFolder } from "../lib/work-folder.mjs";
 assertWorkFolder("npm install / hook setup");
 const r = spawnSync("git", ["config", "core.hooksPath", ".githooks"], { cwd: REPO_ROOT, stdio: "inherit" });
 if (r.status !== 0) process.exit(r.status ?? 1);
-console.log("git hooks: core.hooksPath = .githooks (pre-commit: per-file checks, pre-push: fast CI subset)");
+console.log("git hooks: core.hooksPath = .githooks (pre-commit: per-file checks, commit-msg: message and identity, pre-push: pushed commits + fast CI subset)");

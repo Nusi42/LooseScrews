@@ -71,11 +71,8 @@
 // Exit codes: 0 passed (or skipped: no browser), 1 failed, 2 usage error,
 // 3 no browser (--find-browser only).
 
-import { spawn } from "node:child_process";
-import { createWriteStream, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { createServer } from "node:net";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
 import { fakePointerLock } from "./fake-pointer-lock.mjs";
 import { audioProbe } from "./audio-probe.mjs";
 import { socialPhase } from "./social.mjs";
@@ -83,14 +80,11 @@ import { workshopPhase } from "./workshop.mjs";
 import { moodsPhase } from "./moods.mjs";
 import { architectPhase } from "./architect.mjs";
 import { racePhase } from "./race.mjs";
+import { exe, findBrowser, freePort, headerHelp, loadCore, lockPointer, repoRoot, run, sleep, stop, waitForLine, waitLoaded, webgpuArgs } from "./harness.mjs";
 
 import { assertWorkFolder } from "../lib/work-folder.mjs";
 
 assertWorkFolder("tools/browser-smoke/smoke.mjs");
-
-const here = dirname(fileURLToPath(import.meta.url));
-const repoRoot = resolve(here, "..", "..");
-const exe = process.platform === "win32" ? ".exe" : "";
 
 // ----- arguments -------------------------------------------------------------------
 
@@ -127,7 +121,7 @@ function parseArgs(argv) {
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--help" || a === "-h") {
-      console.log(HELP_TEXT());
+      console.log(headerHelp(import.meta.url));
       process.exit(0);
     }
     if (a === "--find-browser") {
@@ -178,113 +172,6 @@ function parseArgs(argv) {
     findOnly: o["find-browser"],
   };
 }
-
-function HELP_TEXT() {
-  // The header comment of this file.
-  const src = readFileSync(fileURLToPath(import.meta.url), "utf8").split(/\r?\n/).slice(1);
-  const end = src.findIndex((l) => !l.startsWith("//"));
-  return src.slice(0, end).map((l) => l.replace(/^\/\/ ?/, "")).join("\n");
-}
-
-// ----- browser discovery -----------------------------------------------------------
-
-/** Installed Chrome/Edge candidates, most preferred first. */
-export function browserCandidates(env = process.env, platform = process.platform) {
-  if (platform === "win32") {
-    const roots = [env.ProgramFiles, env["ProgramFiles(x86)"], env.LOCALAPPDATA].filter(Boolean);
-    const out = [];
-    for (const r of roots) out.push(join(r, "Google", "Chrome", "Application", "chrome.exe"));
-    for (const r of roots) out.push(join(r, "Microsoft", "Edge", "Application", "msedge.exe"));
-    return out;
-  }
-  if (platform === "darwin") {
-    return [
-      "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-      "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
-    ];
-  }
-  const dirs = (env.PATH ?? "/usr/bin").split(":");
-  const names = ["google-chrome", "google-chrome-stable", "chromium", "chromium-browser", "microsoft-edge", "microsoft-edge-stable"];
-  return names.flatMap((n) => dirs.map((d) => join(d, n)));
-}
-
-function findBrowser(explicit) {
-  if (explicit) return existsSync(explicit) ? explicit : null;
-  return browserCandidates().find((p) => existsSync(p)) ?? null;
-}
-
-// ----- processes -------------------------------------------------------------------
-
-function freePort() {
-  return new Promise((res, rej) => {
-    const s = createServer();
-    s.once("error", rej);
-    s.listen(0, "127.0.0.1", () => {
-      const { port } = s.address();
-      s.close(() => res(port));
-    });
-  });
-}
-
-const ANSI = /\x1b\[[0-9;]*m/g;
-
-/** Spawns `bin`, tees its output to `logFile` and collects the text. */
-function run(bin, args, logFile) {
-  const log = createWriteStream(logFile);
-  const child = spawn(bin, args, {
-    cwd: repoRoot,
-    env: { ...process.env, NO_COLOR: "1", RUST_LOG: process.env.RUST_LOG ?? "info" },
-    stdio: ["ignore", "pipe", "pipe"],
-    windowsHide: true,
-  });
-  const proc = { child, text: "", listeners: [], exited: null };
-  const onData = (buf) => {
-    proc.text += buf.toString().replace(ANSI, "");
-    log.write(buf);
-    for (const f of proc.listeners) f();
-  };
-  child.stdout.on("data", onData);
-  child.stderr.on("data", onData);
-  proc.exited = new Promise((res) => {
-    child.on("error", (e) => {
-      proc.text += `\nspawn error: ${e.message}\n`;
-      log.end();
-      res({ code: -1 });
-    });
-    child.on("exit", (code, signal) =>
-      setTimeout(() => {
-        log.end();
-        res({ code, signal });
-      }, 100),
-    );
-  });
-  return proc;
-}
-
-function waitForLine(proc, re, ms) {
-  return new Promise((res) => {
-    const check = () => {
-      if (re.test(proc.text)) done(true);
-    };
-    const done = (v) => {
-      clearTimeout(timer);
-      proc.listeners = proc.listeners.filter((f) => f !== check);
-      res(v);
-    };
-    const timer = setTimeout(() => done(false), ms);
-    proc.listeners.push(check);
-    proc.exited.then(() => done(re.test(proc.text)));
-    check();
-  });
-}
-
-async function stop(proc) {
-  if (!proc || proc.child.exitCode !== null || proc.child.signalCode !== null) return;
-  proc.child.kill();
-  await Promise.race([proc.exited, sleep(5000)]);
-}
-
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // ----- checks ------------------------------------------------------------------------
 
@@ -427,17 +314,6 @@ async function imageStats(page, png) {
   }, b64);
 }
 
-/** ls-wasm under Node (web/src/wasm/pkg; share codes for the race phase), or null when it is not built. */
-async function loadCore() {
-  const dir = join(repoRoot, "web", "src", "wasm", "pkg");
-  const js = join(dir, "ls_wasm.js");
-  const wasm = join(dir, "ls_wasm_bg.wasm");
-  if (!existsSync(js) || !existsSync(wasm)) return null;
-  const pkg = await import(pathToFileURL(js).href);
-  pkg.initSync({ module: readFileSync(wasm) });
-  return pkg;
-}
-
 // ----- main ----------------------------------------------------------------------------
 
 async function main() {
@@ -488,22 +364,10 @@ async function main() {
   };
 
   const launch = async (headless) => {
-    const args = [
-      "--enable-unsafe-webgpu",
-      "--ignore-gpu-blocklist",
-      "--no-first-run",
-      "--no-default-browser-check",
-      "--disable-background-timer-throttling",
-      "--disable-renderer-backgrounding",
-      "--disable-backgrounding-occluded-windows",
-      "--window-size=1280,760",
-    ];
-    // Linux: WebGPU runs on Vulkan (Windows uses D3D12, macOS Metal by default).
-    if (process.platform === "linux") args.push("--enable-features=Vulkan", "--use-angle=vulkan");
     return puppeteer.launch({
       executablePath: browserPath,
       headless,
-      args,
+      args: webgpuArgs({ width: 1280, height: 760 }),
       defaultViewport: headless ? { width: 1280, height: 720 } : null,
       protocolTimeout: 120_000,
     });
@@ -593,23 +457,6 @@ async function main() {
       );
       const err = await page.$eval("#ui", (ui) => ui.querySelector(".error-screen")?.textContent ?? null);
       return err;
-    };
-
-    /** Waits for the initial terrain load ("Loading terrain" status) to finish. */
-    const waitLoaded = (page) =>
-      page
-        .waitForFunction(() => !/Loading terrain/.test(document.querySelector(".hud-status")?.textContent ?? ""), {
-          timeout: 60_000,
-        })
-        .then(() => true)
-        .catch(() => false);
-
-    const lockPointer = async (page) => {
-      await page.mouse.click(640, 360);
-      await page
-        .waitForFunction(() => document.pointerLockElement?.id === "game", { timeout: 5000 })
-        .catch(() => {});
-      return page.evaluate(() => document.pointerLockElement?.id === "game");
     };
 
     const overlayText = (page) => page.$eval(".debug-overlay", (e) => e.textContent ?? "").catch(() => "");

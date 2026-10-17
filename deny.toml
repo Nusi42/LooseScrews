@@ -1,0 +1,27 @@
+# cargo-deny: dependency license gate (`cargo deny check licenses`; tools/ci.*).
+# The project is AGPL-3.0-or-later and may also be offered under other terms by
+# its maintainer, so no dependency may be under GPL, LGPL or AGPL: only the
+# permissive licenses below are allowed. An expression passes when one of its
+# options is allowed ("MIT OR LGPL-2.1-or-later" passes through MIT).
+# docs/dev-guide.md, "Dependency licenses".
+
+[graph]
+all-features = true
+
+[licenses]
+confidence-threshold = 0.93
+allow = [
+  "MIT",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Zlib",
+  "Unicode-3.0",
+  "Unlicense",
+]
+
+# The workspace's own crates (AGPL-3.0-or-later, publish = false) are not dependencies.
+[licenses.private]
+ignore = true

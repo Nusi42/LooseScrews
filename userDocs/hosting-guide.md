@@ -133,7 +133,7 @@ from the current directory.
 
 ## Command line reference
 
-Verified against `ls-server --help` of this build (`ls-server 0.1.0`).
+Verified against `ls-server --help` of this build (`ls-server 0.4.0`).
 
 | Flag | Default | What it does |
 | --- | --- | --- |

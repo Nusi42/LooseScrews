@@ -1,4 +1,4 @@
-# Full local CI: formatting, generated docs, lints, tests (native + wasm32), WASM release build, web build,
+# Full local CI: formatting, generated docs, dependency licenses, lints, tests (native + wasm32), WASM release build, web build,
 # WASM-vs-native determinism cross-check. The end-to-end soak run is separate: tools/e2e.ps1.
 # Usage: pwsh tools/ci.ps1   (run from anywhere; honours CARGO_TARGET_DIR if set)
 $ErrorActionPreference = 'Stop'
@@ -23,9 +23,21 @@ try {
     Step 'generated reference docs are current (userDocs/reference from data/)'
     Invoke-Checked node @((Join-Path $Root 'tools/gen-weapon-docs.mjs'), '--check')
 
-    Step 'no wildcard binds outside the allowlist; tools tests (hooks, guards)'
+    Step 'no wildcard binds outside the allowlist; no private information'
     Invoke-Checked node @((Join-Path $Root 'tools/check-binds.mjs'))
     Invoke-Checked node @((Join-Path $Root 'tools/check-private.mjs'))
+
+    Step 'dependency licenses: no GPL, LGPL or AGPL (npm lockfiles; Rust: deny.toml)'
+    Invoke-Checked node @((Join-Path $Root 'tools/check-licenses.mjs'))
+    if (Get-Command cargo-deny -ErrorAction SilentlyContinue) {
+        Invoke-Checked cargo @('deny', 'check', 'licenses')
+    } else {
+        Write-Host 'skipped: cargo-deny not installed'
+    }
+
+    Step 'tools tests (hooks, guards, README recorder)'
+    # The README recorder's tests need its gifenc (tools/readme-media/package.json).
+    Invoke-Checked npm @('ci', '--prefix', (Join-Path $Root 'tools/readme-media'), '--no-audit', '--no-fund')
     Invoke-Checked node @('--test', 'tools/test/*.test.mjs')
 
     Step 'cargo clippy (workspace, all targets, -D warnings)'

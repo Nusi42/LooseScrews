@@ -49,9 +49,10 @@
 
 import { createReadStream, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
-import { dirname, extname, join, relative, resolve, sep } from "node:path";
+import { extname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { fakePointerLock } from "./fake-pointer-lock.mjs";
+import { findBrowser, headerHelp, repoRoot, sleep, webgpuArgs } from "./harness.mjs";
 import { execFileSync } from "node:child_process";
 
 import { assertWorkFolder } from "../lib/work-folder.mjs";
@@ -59,8 +60,6 @@ import { checkBudget, FRAME_BUDGET_MS, PASS_BUDGETS_MS, SCENES } from "../../web
 
 assertWorkFolder("tools/browser-smoke/gallery.mjs");
 
-const here = dirname(fileURLToPath(import.meta.url));
-const repoRoot = resolve(here, "..", "..");
 
 const defaults = {
   label: "current",
@@ -87,18 +86,12 @@ function die(msg) {
   process.exit(2);
 }
 
-function helpText() {
-  const src = readFileSync(fileURLToPath(import.meta.url), "utf8").split(/\r?\n/).slice(1);
-  const end = src.findIndex((l) => !l.startsWith("//"));
-  return src.slice(0, end).map((l) => l.replace(/^\/\/ ?/, "")).join("\n");
-}
-
 function parseArgs(argv) {
   const o = { ...defaults, "no-budget": false, "index-only": false, "no-atmosphere": false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--help" || a === "-h") {
-      console.log(helpText());
+      console.log(headerHelp(import.meta.url));
       process.exit(0);
     }
     const key = a.replace(/^--/, "");
@@ -188,29 +181,6 @@ async function integratedLuid(browser) {
   } finally {
     await page.close();
   }
-}
-
-// ----- browser discovery (same search as smoke.mjs) ------------------------------------
-
-function browserCandidates(env = process.env, platform = process.platform) {
-  if (platform === "win32") {
-    const roots = [env.ProgramFiles, env["ProgramFiles(x86)"], env.LOCALAPPDATA].filter(Boolean);
-    return [
-      ...roots.map((r) => join(r, "Google", "Chrome", "Application", "chrome.exe")),
-      ...roots.map((r) => join(r, "Microsoft", "Edge", "Application", "msedge.exe")),
-    ];
-  }
-  if (platform === "darwin") {
-    return ["/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"];
-  }
-  const dirs = (env.PATH ?? "/usr/bin").split(":");
-  const names = ["google-chrome", "google-chrome-stable", "chromium", "chromium-browser", "microsoft-edge", "microsoft-edge-stable"];
-  return names.flatMap((n) => dirs.map((d) => join(d, n)));
-}
-
-function findBrowser(explicit) {
-  if (explicit) return existsSync(explicit) ? explicit : null;
-  return browserCandidates().find((p) => existsSync(p)) ?? null;
 }
 
 // ----- static file server ----------------------------------------------------------------
@@ -327,8 +297,6 @@ ${rows}
 
 // ----- main ----------------------------------------------------------------------------
 
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
 function gitRev() {
   try {
     const rev = execFileSync("git", ["rev-parse", "--short", "HEAD"], { cwd: repoRoot }).toString().trim();
@@ -367,23 +335,18 @@ async function main() {
     puppeteer.launch({
       executablePath: browserPath,
       headless,
-      args: [
-        "--enable-unsafe-webgpu",
-        // Unquantised timestamps (Chrome rounds them to 100 µs otherwise).
-        "--enable-webgpu-developer-features",
-        "--ignore-gpu-blocklist",
-        "--no-first-run",
-        "--no-default-browser-check",
-        "--disable-background-timer-throttling",
-        "--disable-renderer-backgrounding",
-        "--disable-backgrounding-occluded-windows",
-        `--window-size=${opts.width},${opts.height + 120}`,
-        // Chrome on Windows ignores requestAdapter's powerPreference by default.
-        ...(opts.power === "low" ? ["--use-webgpu-power-preference=force-low-power"] : []),
-        // Chrome hands WebGPU only the adapter of its GPU process; this picks that GPU.
-        ...(luid ? [`--use-adapter-luid=${luid}`] : []),
-        ...(process.platform === "linux" ? ["--enable-features=Vulkan", "--use-angle=vulkan"] : []),
-      ],
+      args: webgpuArgs({
+        width: opts.width,
+        height: opts.height + 120,
+        extra: [
+          // Unquantised timestamps (Chrome rounds them to 100 µs otherwise).
+          "--enable-webgpu-developer-features",
+          // Chrome on Windows ignores requestAdapter's powerPreference by default.
+          ...(opts.power === "low" ? ["--use-webgpu-power-preference=force-low-power"] : []),
+          // Chrome hands WebGPU only the adapter of its GPU process; this picks that GPU.
+          ...(luid ? [`--use-adapter-luid=${luid}`] : []),
+        ],
+      }),
       defaultViewport: null,
       protocolTimeout: 180_000,
     });

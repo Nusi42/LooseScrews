@@ -10,28 +10,13 @@
 // Screenshots: workshop.png, workshop-building.png, workshop-preview.png, workshop-practice.png,
 // workshop-belt.png, workshop-belt-practice.png.
 
-import { existsSync, readFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
-
-const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
+import { loadCore } from "./harness.mjs";
 
 /** The two sliders the smoke moves and the seed it types. */
 export const WORKSHOP_EDITS = { seed: "4242", sliders: { enclosure: 72, density: 25 } };
 
 /** Share-code order of the sliders (ls-worldgen `Sliders::to_array`). */
 const ORDER = ["enclosure", "density", "verticality", "gravityChaos", "palette", "absurdity", "instability"];
-
-/** ls-wasm under Node (web/src/wasm/pkg), or null when it is not built. */
-async function loadCore() {
-  const dir = join(repoRoot, "web", "src", "wasm", "pkg");
-  const js = join(dir, "ls_wasm.js");
-  const wasm = join(dir, "ls_wasm_bg.wasm");
-  if (!existsSync(js) || !existsSync(wasm)) return null;
-  const pkg = await import(pathToFileURL(js).href);
-  pkg.initSync({ module: readFileSync(wasm) });
-  return pkg;
-}
 
 /** Decodes a code with the core: { seed, sliders[7], archetype } or { error }. */
 function decode(core, code) {

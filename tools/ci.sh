@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Full local CI: formatting, generated docs, lints, tests (native + wasm32), WASM release build, web build,
+# Full local CI: formatting, generated docs, dependency licenses, lints, tests (native + wasm32), WASM release build, web build,
 # WASM-vs-native determinism cross-check. The end-to-end soak run is separate: tools/e2e.sh.
 # Usage: tools/ci.sh   (run from anywhere; honours CARGO_TARGET_DIR if set)
 set -euo pipefail
@@ -16,9 +16,21 @@ cargo fmt --all -- --check
 step "generated reference docs are current (userDocs/reference from data/)"
 node "$ROOT/tools/gen-weapon-docs.mjs" --check
 
-step "no wildcard binds outside the allowlist; tools tests (hooks, guards)"
+step "no wildcard binds outside the allowlist; no private information"
 node "$ROOT/tools/check-binds.mjs"
 node "$ROOT/tools/check-private.mjs"
+
+step "dependency licenses: no GPL, LGPL or AGPL (npm lockfiles; Rust: deny.toml)"
+node "$ROOT/tools/check-licenses.mjs"
+if command -v cargo-deny >/dev/null 2>&1; then
+  cargo deny check licenses
+else
+  echo "skipped: cargo-deny not installed"
+fi
+
+step "tools tests (hooks, guards, README recorder)"
+# The README recorder's tests need its gifenc (tools/readme-media/package.json).
+npm ci --prefix "$ROOT/tools/readme-media" --no-audit --no-fund
 node --test "tools/test/*.test.mjs"
 
 step "cargo clippy (workspace, all targets, -D warnings)"

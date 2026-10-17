@@ -5,7 +5,7 @@
 //   tsc --noEmit (web)         web/**/*.ts (whole project; tsc 7 is fast)
 //   check-binds                code and config files
 //   line endings               no CR except *.ps1 (.gitattributes: LF)
-//   private information        no git email, OS user name or user-home paths (tools/check-private.mjs)
+//   private information        no git email, OS user name, user-home paths, session links or private-list values (tools/check-private.mjs)
 //   generated reference docs   data/{weapons,ships,gadgets,rulesets}/*, web/src/rules/catalog.ts, the generator
 // Build output (target/, node_modules/, dist/, the wasm pkg) is never checked.
 
@@ -72,6 +72,7 @@ export async function runChecks(root, files) {
   if (text.length) {
     results.push({ name: "wildcard binds", code: binds.length ? 1 : 0, output: binds.join("\n") });
     results.push({ name: "line endings", code: crlf.length ? 1 : 0, output: crlf.join("\n") });
+    results.push({ name: "private information", code: priv.length ? 1 : 0, output: priv.join("\n") });
   }
   if (data.length) {
     results.push({ name: "generated reference docs", ...run(root, "node", ["tools/gen-weapon-docs.mjs", "--check"]) });

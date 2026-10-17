@@ -657,7 +657,7 @@ checksum = "4050469837a6ff301cd14c1f8f24f88549e6d548f24f64e2148eb0f72cebc51f"
 
 [[package]]
 name = "ls-bots"
-version = "0.1.0"
+version = "0.4.0"
 dependencies = [
  "clap",
  "futures-util",
@@ -675,7 +675,7 @@ dependencies = [
 
 [[package]]
 name = "ls-directory"
-version = "0.1.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -690,7 +690,7 @@ dependencies = [
 
 [[package]]
 name = "ls-game"
-version = "0.1.0"
+version = "0.4.0"
 dependencies = [
  "ls-math",
  "ls-net",
@@ -703,7 +703,7 @@ dependencies = [
 
 [[package]]
 name = "ls-math"
-version = "0.1.0"
+version = "0.4.0"
 dependencies = [
  "libm",
  "ron",
@@ -713,7 +713,7 @@ dependencies = [
 
 [[package]]
 name = "ls-net"
-version = "0.1.0"
+version = "0.4.0"
 dependencies = [
  "ls-math",
  "thiserror",
@@ -722,7 +722,7 @@ dependencies = [
 
 [[package]]
 name = "ls-server"
-version = "0.1.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -746,7 +746,7 @@ dependencies = [
 
 [[package]]
 name = "ls-sim"
-version = "0.1.0"
+version = "0.4.0"
 dependencies = [
  "ls-math",
  "ron",
@@ -757,7 +757,7 @@ dependencies = [
 
 [[package]]
 name = "ls-wasm"
-version = "0.1.0"
+version = "0.4.0"
 dependencies = [
  "console_error_panic_hook",
  "js-sys",
@@ -771,7 +771,7 @@ dependencies = [
 
 [[package]]
 name = "ls-worldgen"
-version = "0.1.0"
+version = "0.4.0"
 dependencies = [
  "ls-math",
  "ron",

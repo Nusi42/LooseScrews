@@ -182,7 +182,7 @@ brackets and [milestone-2-plan.md](milestone-2-plan.md)):
   the remesh budget or keep surface nets for M1 and move sharp edges to a later milestone.
   [Scheduled: M4, see §8.]
 - **Soak test.** Passed manually: 3 bots for 60 minutes (12 matches, 0 protocol errors, 0 desyncs, 0 disconnects, max reconciliation error 0.134 u, server p99 about 0.06 ms). It is not part of `tools/ci.*`.
-- **No hosted CI.** `tools/ci.ps1` / `tools/ci.sh` run locally only. [Scheduled: M5, see §8.]
+- **No hosted CI.** `tools/ci.ps1` / `tools/ci.sh` run locally only. [Decided: no hosted CI; the pre-push hook runs the full check on pushes to the public remote, see §8.]
 - **Handshake does not check game data.** Weapons and ship tuning are compiled into every
   binary and are not compared in `Hello`/`Welcome`; a client built from different `data/` would
   desync silently. A data hash in the handshake (or bumping `PROTOCOL_VERSION` on data
@@ -317,8 +317,8 @@ M3 leftovers taken into M4 ([milestone-4-plan.md](milestone-4-plan.md) §1, §3.
 - **Reference mid-GPU timings.** **Open, rescheduled:** no GTX 1660 / RX 6600 / M1 class machine
   was available; every M4 package recorded its GPU cost on an RTX 5080 with an estimate for the
   reference class (decision §8 question 11: measure the development machine's integrated
-  GPU as a floor in M4 D5, keep the criterion "estimated"). The measured run moves to M5 (with
-  the hosted CI runner below) unless hardware turns up during D5.
+  GPU as a floor in M4 D5, keep the criterion "estimated"). The measured run moves to M5 unless hardware turns up
+  during D5.
 
 Open at the end of wave C, not built in M4 and moved with the cut order of
 milestone-4-plan.md §7 (to be confirmed when M4 closes):
@@ -337,12 +337,11 @@ review)
 - **Exact lag-compensation view tick.** The server estimates what the shooter saw from the
   acked snapshot (under one tick of error on average); sending the client's render tick in
   `InputMsg` makes it exact (protocol change). *From M1.*
-- **Hosted CI.** `tools/ci.*` runs locally only. Needs a runner with a GPU for the browser
-  smoke test (or `LS_SKIP_BROWSER_SMOKE` on GPU-less runners), and a dedicated quiet machine
-  for tick-time assertions. *From M1/M2.*
+- **Hosted CI.** **Declined:** verification stays local (`tools/ci.*`, run by the pre-push hook
+  on pushes to the public remote; [dev-guide](dev-guide.md#5-ci)). Releases are built, signed
+  and published locally. *From M1/M2.*
 - **Tick timing is wall-clock.** e2e p99 checks fail under outside load (parallel builds,
-  a file sync client syncing the checkout); stress and soak runs need a quiet machine, ideally the hosted
-  runner above, or a CPU-time based check. *From M2.*
+  a file sync client syncing the checkout); stress and soak runs need a quiet machine or a CPU-time based check. *From M2.*
 - **Chrome/Edge console warning** "powerPreference option is currently ignored" on Windows
   (crbug 369219127); drop the option on Windows once the renderer targets more platforms.
   *From M2.*

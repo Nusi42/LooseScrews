@@ -1,0 +1,15 @@
+{
+  "name": "loose-screws-readme-media",
+  "private": true,
+  "version": "0.4.0",
+  "license": "AGPL-3.0-or-later",
+  "type": "module",
+  "description": "Records the README's GIFs and stills: headless Chrome/Edge with WebGPU against a local ls-server",
+  "scripts": {
+    "record": "node record.mjs"
+  },
+  "devDependencies": {
+    "gifenc": "1.0.3",
+    "puppeteer-core": "25.12.0"
+  }
+}

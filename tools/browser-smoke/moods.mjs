@@ -9,13 +9,11 @@
 // Screenshots: event-<id>-1-tell.png, event-<id>-2-peak.png, event-<id>-3-after.png, and
 // moods-strip.json (event, phase and timing of every frame).
 
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 
 import { aimAt } from "./steer.mjs";
-
-const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
+import { loadCore, repoRoot } from "./harness.mjs";
 
 /**
  * The practice world: a default cave level with gravity wells (Gravity coffee break has
@@ -63,17 +61,6 @@ const SETTLE_SECS = 0.9;
  * director starts nothing once the match is over, so the events are split over pages.
  */
 const PAGE_SIM_SECS = 250;
-
-/** ls-wasm under Node (web/src/wasm/pkg), or null when it is not built. */
-async function loadCore() {
-  const dir = join(repoRoot, "web", "src", "wasm", "pkg");
-  const js = join(dir, "ls_wasm.js");
-  const wasm = join(dir, "ls_wasm_bg.wasm");
-  if (!existsSync(js) || !existsSync(wasm)) return null;
-  const pkg = await import(pathToFileURL(js).href);
-  pkg.initSync({ module: readFileSync(wasm) });
-  return pkg;
-}
 
 /** `data/events/<id>.ron` active and ending seconds. */
 function eventTimes(id) {

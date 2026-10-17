@@ -41,7 +41,7 @@ Out of scope (M4+): coop modes (Deep Dig, Tethered, Escort the Intern), The Arch
 
 ## 3. Design decisions for gaps in the design doc
 
-**Every row was accepted** (marked *Accepted*). Numbers live in `data/` (mode settings in rule sets) and are tuning starting points. Rows rejected or changed in review are updated here before the wave that needs them starts.
+**Every row was accepted** (marked *Accepted*). Numbers live in `data/` (mode settings in rule sets) and are tuning starting points. Rows that a later decision rejects or changes are updated here before the wave that needs them starts.
 
 ### 3.1 Framework and lobby
 

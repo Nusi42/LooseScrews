@@ -17,6 +17,7 @@ import { createServer } from "node:http";
 import { dirname, extname, join, normalize, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { fakePointerLock } from "./fake-pointer-lock.mjs";
+import { findBrowser, webgpuArgs } from "./harness.mjs";
 import puppeteer from "puppeteer-core";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -42,22 +43,6 @@ function parseArgs(argv) {
     }
   }
   return o;
-}
-
-function findBrowser(explicit) {
-  if (explicit) return existsSync(explicit) ? explicit : null;
-  const env = process.env;
-  const out = [];
-  if (process.platform === "win32") {
-    const roots = [env.ProgramFiles, env["ProgramFiles(x86)"], env.LOCALAPPDATA].filter(Boolean);
-    for (const r of roots) out.push(join(r, "Google", "Chrome", "Application", "chrome.exe"));
-    for (const r of roots) out.push(join(r, "Microsoft", "Edge", "Application", "msedge.exe"));
-  } else if (process.platform === "darwin") {
-    out.push("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge");
-  } else {
-    for (const d of (env.PATH ?? "/usr/bin").split(":")) for (const n of ["google-chrome", "google-chrome-stable", "chromium", "microsoft-edge"]) out.push(join(d, n));
-  }
-  return out.find((p) => existsSync(p)) ?? null;
 }
 
 const TYPES = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".wasm": "application/wasm", ".json": "application/json", ".png": "image/png", ".svg": "image/svg+xml", ".ico": "image/x-icon" };
@@ -111,7 +96,7 @@ async function main() {
   const browser = await puppeteer.launch({
     executablePath: browserPath,
     headless: !o.headful,
-    args: ["--enable-unsafe-webgpu", "--ignore-gpu-blocklist", "--no-first-run", "--no-default-browser-check", "--window-size=1280,760"],
+    args: webgpuArgs({ width: 1280, height: 760 }),
     defaultViewport: { width: 1280, height: 720 },
     protocolTimeout: 120_000,
   });
@@ -147,7 +132,7 @@ async function main() {
     const b2 = await puppeteer.launch({
       executablePath: browserPath,
       headless: !o.headful,
-      args: ["--enable-unsafe-webgpu", "--ignore-gpu-blocklist", "--no-first-run", "--no-default-browser-check", "--window-size=1920,1120"],
+      args: webgpuArgs({ width: 1920, height: 1120 }),
       defaultViewport: { width: 1920, height: 1080 },
       protocolTimeout: 120_000,
     });

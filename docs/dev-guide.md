@@ -6,36 +6,60 @@ Windows works); PowerShell differences are noted where they matter.
 
 ## Work folders
 
-Decision record: [adr/0001-master-repo-and-work-folders.md](adr/0001-master-repo-and-work-folders.md).
-`<master>` is the **master repository**. It holds `main` and only
-receives pushes and `git merge --ff-only WIN1`. Nothing is built, tested, installed, run or
-committed there. All work happens in clones outside OneDrive, with `origin` pointing to the
-master:
+Decision records: [adr/0001-master-repo-and-work-folders.md](adr/0001-master-repo-and-work-folders.md)
+(master and work folders) and [adr/0002-public-repository.md](adr/0002-public-repository.md)
+(checkout role, private list, commit rules). A plain clone needs none of this: without any
+local configuration it builds, tests and commits normally. The maintainer works with one
+**master** checkout and several **work folders**:
+
+- `<master>` is the maintainer's main checkout. It holds `main` and only receives pushes and
+  `git merge --ff-only WIN1`. Nothing is built, tested, installed, run or committed there.
+- The work folders are clones of the master (`origin` = `<master>`), side by side in
+  `<work root>`:
 
 | Folder | Branch | Use |
 | --- | --- | --- |
-| `<work root>/loosescrews.win1` | `WIN1` | the lead: integration, full CI, memory, CodeGraph index |
-| `loosescrews.win2`, `loosescrews.win3`, … | `WIN2`, `WIN3`, … | one per parallel work package |
+| `<work root>/loosescrews.win1` | `WIN1` | integration, full CI, project memory, CodeGraph index |
+| `<work root>/loosescrews.win2`, `.win3`, … | `WIN2`, `WIN3`, … | one per parallel change |
+
+The tooling takes the folder prefix from the current checkout's name (the part before
+`.win<N>`, default `loosescrews`), the work root from its parent folder and the master from its
+`origin` remote. Folders created under an earlier prefix keep working.
+
+**Checkout role.** A checkout is the master when the gitignored `.env.local` at its root
+contains `LS_CHECKOUT_ROLE=master`; the environment variable `LS_CHECKOUT_ROLE` overrides the
+file. Any other value, or none, is a normal checkout. Run once inside the master:
+
+```sh
+node tools/work-folders.mjs guard-master   # writes .env.local (the role) and the refusing .cargo/config.local.toml
+```
+
+The committed `.cargo/config.toml` includes `.cargo/config.local.toml`; in the master its
+`rustc-wrapper` (`.cargo/refuse-build.cmd`) makes every cargo build fail. Machine-specific cargo
+settings go into a work folder's own `config.local.toml`. Cargo runs with `jobs = 4` (shared
+machine).
 
 Setting up a fresh work folder (this is what `create` does, plus the build):
 
 ```sh
-node tools/work-folders.mjs create 3      # from a work folder: clone the master into loosescrews.win3 (branch WIN3),
-                                          # write .claude/settings.local.json, npm ci in web/ (installs the Git hooks)
+node tools/work-folders.mjs create 3      # from a work folder: clone the master into <work root>/loosescrews.win3
+                                          # (branch WIN3), copy the local user.name / user.email, set
+                                          # core.hooksPath, write .claude/settings.local.json, npm ci in web/
 cd <work root>/loosescrews.win3/web && npm run build   # WASM package (wasm-bindgen 0.2.129) + client
 ```
 
-By hand: `git clone <master> loosescrews.winN`, `git checkout -b WINN`,
-`cd web && npm ci && npm run build`. After that, pre-push passes in the new folder.
+By hand: `git clone <master> loosescrews.winN`, `git checkout -b WINN`, set `user.name` and
+`user.email`, `git config core.hooksPath .githooks`, `cd web && npm ci && npm run build`. After
+that, pre-push passes in the new folder.
 
 Day to day:
 
 ```sh
-git fetch origin && git reset --hard origin/main      # a package folder starts from main (clean tree first)
-git push --force-with-lease origin WIN3               # package done (pre-push runs the fast CI subset)
-# lead, in win1: merge origin/WIN3 into WIN1, run pwsh tools/ci.ps1; when green:
+git fetch origin && git reset --hard origin/main      # a work folder starts from main (clean tree first)
+git push --force-with-lease origin WIN3               # change done (pre-push checks the commits, then the fast CI subset)
+# in win1: git merge -m "Merge <what it brought>" origin/WIN3, run pwsh tools/ci.ps1; when green:
 git push origin WIN1 && git -C <master> merge --ff-only WIN1
-node tools/work-folders.mjs status                    # uncommitted / unpushed per winN, main vs WIN1
+node tools/work-folders.mjs status                    # uncommitted / unpushed per work folder, main vs WIN1 in the master
 ```
 
 `main` only ever moves to a `WIN1` commit whose full `tools/ci.*` passed.
@@ -45,38 +69,96 @@ node tools/work-folders.mjs status                    # uncommitted / unpushed p
 
 - **pre-commit** runs the per-file checks on the staged files (`tools/lib/run-checks.mjs`):
   rustfmt, the web `tsc`, wildcard binds, LF line endings, private information, and the
-  generated reference docs when `data/` changed. It reads the working-tree copy of each file, so stage the whole file
-  you fixed.
-- **pre-push** runs the fast CI subset; `node tools/hooks/pre-push.mjs --list` prints the steps.
-  Each step's output is also kept in `target/pre-push/<n>-<step>.log` (overwritten by the next
-  push); a failed step names its log, so a failure is readable even when the pushing terminal
-  cut the output short.
+  generated reference docs when `data/` changed. It reads the working-tree copy of each file,
+  so stage the whole file you fixed.
+- **commit-msg** checks the message and the author and committer identity
+  (`tools/hooks/commit-msg.mjs`, rules [below](#commit-messages-and-identity)).
+- **pre-push** first checks every pushed commit (message, author, committer; commits already on
+  the remote are skipped, deleted refs too), then the checks, chosen by the remote's URL: a
+  push to a local path (the master checkout) runs the fast CI subset
+  (`node tools/hooks/pre-push.mjs --list` prints its steps), a push to a network URL
+  (`https://...`, `git@host:...`: the public repository) runs the full check
+  (`pwsh tools/ci.ps1` on Windows, `bash tools/ci.sh` elsewhere). Each step's output is also
+  kept in `target/pre-push/<n>-<step>.log`, the full check's in `target/pre-push/full-check.log`
+  (overwritten by the next push); a failed step names its log, so a failure is readable even
+  when the pushing terminal cut the output short.
 - **Claude Code** runs the same per-file checks after every edit (`.claude/settings.json` →
-  `tools/post-edit.mjs`). It finds the clone from the edited file, not from the session folder
-  (a session may run in the master), and skips files of the master checkout. Findings go back
-  to the agent: exit 2, at most 20 lines.
+  `tools/post-edit.mjs`). It finds the checkout from the edited file, not from the session
+  folder (a session may run in the master and edit work folders), and skips files of a
+  checkout whose role is master. In memory notes (`.claude/memory/*.md`) it first removes the
+  bookkeeping lines Claude Code writes into the front matter (`originSessionId`, `modified`,
+  `node_type`). Findings go back to the agent: exit 2, at most 20 lines.
 
 No check looks at `target/`, `node_modules/`, `dist/` or the WASM `pkg/`.
 
-**Guards.** The following refuse to run inside any OneDrive folder, with a message that names
-the work folders:
+**Disk space.** Parallel packages build into `CARGO_TARGET_DIR=target/pkg` of their work folder
+(the same name every time, so the next package reuses it), never one folder per package: per-package
+target folders once grew to about 358 GB across eleven work folders. After an integration is green
+and on `main`, delete `target/` in the package folders (win2+); in win1 keep `target/debug` and
+`target/release` (the full check reuses them).
+
+**Guards.** The following refuse to run in the master, with a message that points to a work
+folder:
 
 - `tools/ci.*`, `tools/e2e.*`, `tools/browser-smoke.*`;
 - `npm run dev` / `build` / `typecheck` (through `build-wasm.mjs`);
 - `npm ci`'s `prepare`;
-- both Git hooks.
+- the pre-commit and pre-push hooks.
 
-In the master, `node <win1>/tools/work-folders.mjs guard-master` writes the gitignored
-`.cargo/config.local.toml`. The committed `.cargo/config.toml` includes it, and its
-`rustc-wrapper` (`.cargo/refuse-build.cmd`) makes every cargo build there fail. Machine-specific
-cargo settings go into a work folder's own `config.local.toml`. Cargo runs with `jobs = 4`
-(shared machine).
+### Private information
 
-**Private information.** No email address, OS user name, user-home path, name or other
-personal data goes into tracked files or commit messages: write `%USERPROFILE%` or `~` in docs
-and use `os.homedir()` in code. `node tools/check-private.mjs` enforces it in pre-commit,
-pre-push and CI; never bypass it. Commit author and committer identity come from the owner's
-git config.
+No email address, OS user name, user-home path, name or other personal data goes into tracked
+files or commit messages: write `%USERPROFILE%` or `~` in docs and use `os.homedir()` in code.
+`node tools/check-private.mjs` enforces it per file (pre-commit, Claude post-edit) and on all
+tracked files (pre-push, `tools/ci.*`); never bypass it. Built in, without any configuration:
+the git user email, the OS user name as a path segment, absolute user-home paths, `claude.ai`
+links, `Claude-Session` trailer lines and `originSessionId` front matter lines.
+
+The **private list** adds the values that must never appear. It lives outside the repository:
+`$LS_PRIVATE_LIST`, else `~/.config/loose-screws/private-list.json`; a missing file means only
+the built-in checks run. Format (all fields optional):
+
+```json
+{
+  "names": ["<full name>"],
+  "nameParts": ["<first or last name>"],
+  "emails": ["<address>"],
+  "accountNames": ["<login or account name>"],
+  "projects": ["<other project names>"],
+  "caseSensitive": ["<words matched with their case>"],
+  "handle": "<GitHub handle>",
+  "publicIdentity": { "name": "<public commit name>", "email": "<GitHub noreply address>" }
+}
+```
+
+Names, name parts, emails, account names and projects match as whole words, ignoring case;
+`caseSensitive` entries as whole words with their case. The handle may only appear as the
+GitHub noreply address (`<digits>+<handle>@users.noreply.github.com`) and in
+`github.com/<handle>/...` URLs. Findings name the kind of value and show it masked (first and
+last character), never the value itself.
+
+### Commit messages and identity
+
+Rules and reasons: [adr/0002-public-repository.md](adr/0002-public-repository.md); the checks
+are `tools/check-commit.mjs` (commit-msg and pre-push).
+
+- **Message:** Conventional Commits, `<type>(<scope>): <subject>` with the types `feat`, `fix`,
+  `perf`, `refactor`, `test`, `docs`, `build`, `ci`, `chore`, `style`, `revert`; the scope
+  (`[a-z0-9-]+`) is optional; the subject starts lowercase, has no trailing period, and the
+  first line has at most 72 characters. A blank line separates the optional body.
+- **Merges** need an explicit subject `Merge <what it brought>`: git's default "Merge branch
+  ..." names branches and is refused, so merge with `git merge -m "Merge ..." <branch>`. git's
+  `Revert "..."` and `fixup!` / `squash!` subjects are accepted.
+- **Trailers:** only `Co-Authored-By: Claude <model> <noreply@anthropic.com>` and
+  `Signed-off-by: <name> <email>` lines (`git commit -s`).
+- **Not in a message:** internal logistics (work-folder names and branches, remote-tracking
+  refs, "work in progress"), process jargon (internal package and milestone codes, agent and
+  session vocabulary), URLs other than `github.com/Nusi42/LooseScrews`, and anything from the
+  private list. The refusal names the offending term.
+- **Identity:** when the private list has a `publicIdentity`, author and committer must be
+  exactly that name and email; no identity may match the private list. Set it per checkout with
+  `git config user.name` / `git config user.email` (`create` copies them into a new work
+  folder). Without a private list only an empty email is refused.
 
 **Ports and binds.** The Vite dev server prefers 127.0.0.1:41873, takes any free port when that
 one is busy, and `LS_DEV_PORT` forces a port. Tests, bots, e2e and the smoke test bind
@@ -84,17 +166,11 @@ one is busy, and `LS_DEV_PORT` forces a port. Tests, bots, e2e and the smoke tes
 the firewall. `node tools/check-binds.mjs` (in CI and pre-push) fails on a new `0.0.0.0` /
 `[::]` bind; real exceptions go into its allowlist, with a reason.
 
-**The cloud-sync reparse-point fix (done once).** Git for Windows cannot check out
-into OneDrive cloud-file reparse points (`fsutil reparsepoint query crates` → `0x9000e01a`;
-`git merge --ff-only` fails with "unable to unlink"). The fix:
-
-1. Stop everything that uses the master.
-2. Move every folder except `.git` to `<work root>\colent.master-backup`.
-3. Run `git checkout HEAD -- .` in the master, and check that `fsutil` now reports error 4390
-   (not a reparse point).
-
-If it ever comes back, repeat these steps. Never `reset --hard` and never write files by hand in
-the master.
+**Cloud-synced folders.** Keep work folders out of cloud-synced folders: sync clients lock files
+during builds, and their placeholder folders (Windows reparse points) can make Git fail with
+"unable to unlink". If the master lives in such a folder and Git fails there, move every
+folder except `.git` aside and run `git checkout HEAD -- .`; never `reset --hard` and never
+write files by hand in the master.
 
 ## 1. Toolchain
 
@@ -274,17 +350,22 @@ new work should come with tests that show them.
 
 ## 5. CI
 
-There is no hosted CI yet; the full check is a local script that stops at the first failure:
+There is no hosted CI: verification is local. The full check is a script that stops at the
+first failure:
 
 ```sh
 pwsh tools/ci.ps1        # Windows
 tools/ci.sh              # bash
 ```
 
+It is the gate for `main` (win1 runs it before every fast-forward), and the pre-push hook runs
+it on every push to the public remote ([hooks](#work-folders)). A release is built, signed and
+published locally; the GitHub release is created by hand.
+
 Steps, in order: `cargo fmt --check`; `node tools/gen-weapon-docs.mjs --check` (the generated
-player reference pages, [below](#generated-player-reference)); `node tools/check-private.mjs`;
-`node tools/check-binds.mjs` and
-the tools tests (`node --test "tools/test/*.test.mjs"`: hooks, guards, settings); clippy with `-D warnings`;
+player reference pages, [below](#generated-player-reference)); `node tools/check-binds.mjs`
+and `node tools/check-private.mjs`; the dependency licenses
+([below](#dependency-licenses)); the tools tests (`node --test "tools/test/*.test.mjs"`: hooks, guards, settings); clippy with `-D warnings`;
 `cargo test --workspace`;
 the strict `ls-server` timing test alone (`--ignored --test-threads=1`; the parallel run only
 checks a loose bound); `cargo test -p ls-bots --release`; `cargo test -p ls-game --release`
@@ -296,6 +377,23 @@ browser without a WebGPU adapter fails it, so set the variable on such machines)
 `npm run dev` (Vite) first: on Windows it locks `web/node_modules` and `npm ci` fails. Run it
 before handing in a change. It honours `CARGO_TARGET_DIR`. Note that it rebuilds
 `web/src/wasm/pkg` and `web/dist`.
+
+### Dependency licenses
+
+The project is AGPL-3.0-or-later and may also be offered under other terms by its maintainer,
+so no dependency may be under GPL, LGPL or AGPL only. A license expression passes when one of
+its options avoids them (`MIT OR LGPL-2.1-or-later` passes); MPL-2.0 is fine.
+
+```sh
+cargo deny check licenses        # Rust: the allow list in deny.toml (the workspace's own crates are ignored)
+node tools/check-licenses.mjs    # npm: web/, tools/browser-smoke/, tools/readme-media/ lockfiles
+```
+
+`tools/ci.*` runs both (cargo-deny only when installed: `cargo install cargo-deny --locked`,
+else it prints "skipped"); the pre-push fast subset runs `check-licenses.mjs`. A new Rust
+license that is permissive goes into `deny.toml`'s `allow`; an npm package without a license
+field fails until it is reviewed and listed in `REVIEWED` in `tools/check-licenses.mjs` with a
+reason.
 
 ### Generated player reference
 
@@ -1140,6 +1238,28 @@ blocking time, the longest task, the backdrop's first frame and frame rate, and 
 `ls:*` performance measures (renderer creation, backdrop world); `startup.json` and a
 screenshot go to `target/startup/<label>/`. Run it against a before build (`--web-root` of a
 copy of its `web/dist`) for comparisons; `--query backdrop=off` measures without the flythrough.
+
+### README media
+
+`tools/readme-media/record.mjs` records the GIFs and stills of the top-level `README.md` into
+`docs/media/`: the start screen and the world workshop with a drawn pointer, the start screen's
+flythrough, craters and paint in practice, the Rubber chickens event, and four visual gallery
+scenes framed for GitHub's dark and light theme (`<name>-dark.png`, `<name>-light.png`). It
+starts an `ls-server` on a free 127.0.0.1 port and drives Chrome or Edge headless with the fake
+pointer lock; the pure frame code (PNG decoding, pointer, diffing GIF writer on `gifenc`) is in
+`media.mjs`, tested by `tools/test/readme-media.test.mjs`. Re-record after UI or look changes:
+
+```sh
+cd tools/readme-media && npm ci && cd ../..
+cd web && npm run build && cd ..
+cargo build --release -p ls-server
+node tools/readme-media/record.mjs                     # all; --only menus,fight to redo some
+node tools/readme-media/record.mjs --help
+```
+
+Each GIF should stay under 3 MB (the run prints the sizes; `--fps` and `--width` trade
+smoothness and size, `--debug` keeps every sampled frame under `target/readme-media/<clip>/`).
+The banner `docs/media/banner.svg` is drawn by hand.
 
 ### Sound check and sound previews
 

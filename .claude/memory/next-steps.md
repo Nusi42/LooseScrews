@@ -14,11 +14,11 @@ metadata:
 - Accepted but not built: kill-cam after your own death and the grumpy mood's extra cave-ins (decision pending: now or in milestone 5).
 - Code-quality audit: `docs/code-quality-audit.md` (105 findings, 8 fix packages, 10 open questions with recommendations); the maintainer has answered the questions on the review page.
 - Milestone 5 (platforms and ops): draft `docs/milestone-5-plan.md`; the maintainer has answered its 11 questions on the review page.
-- Public repository github.com/Nusi42/LooseScrews: prepared (`docs/adr/0002-public-repository.md`, `0003-licensing.md`, `0004-local-verification.md`); code AGPL-3.0-or-later, content CC BY-NC-SA 4.0, CLA in `CONTRIBUTING.md` (nothing commercial before a lawyer has reviewed it); no hosted CI. The history is rewritten once before the first push.
+- Public repository github.com/Nusi42/LooseScrews: prepared (`docs/adr/0002-public-repository.md`, `0003-licensing.md`, `0004-local-verification.md`); code AGPL-3.0-or-later, content CC BY-NC-SA 4.0, CLA in `CONTRIBUTING.md` (nothing commercial before a lawyer has reviewed it); no hosted CI (Actions are off for the repository). The history was rewritten once and `main` pushed (still a private repository); the old history is kept as bundles in the maintainer's config folder until the maintainer says they can go. Publishing: only from the master, `git -C <master> push github main`.
 - The pre-push fast subset was flaky under load (failed three times on doc-only commits, passed on retry); keep failed step logs to find the test.
 
 **Next steps, in order**
-1. Push to GitHub after the maintainer's "push"; switch Actions off for the repository first.
+1. Write the follow-up prompt for the sibling project so that it, too, publishes only from its master.
 2. Fold the answers from the audit and milestone 5 review pages into `docs/code-quality-audit.md` and `docs/milestone-5-plan.md`; run the 8 audit fix packages as one wave before milestone 5, then milestone 5 wave A.
 3. Maintainer: review comments, audio check (`?audio=demo`), the kill-cam and grumpy cave-ins decision.
 

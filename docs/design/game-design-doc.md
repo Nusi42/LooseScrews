@@ -314,34 +314,36 @@ A director AI rolls events, weighted by the Absurdity slider. Events stay rare i
 
 ## Tech architecture
 
-One Rust core (world gen, physics, simulation) builds to WASM for the browser and to native code for the server and the Tauri app, so worlds are identical everywhere.
+One Rust core (world gen, physics, simulation) builds to WASM for the browser and the Tauri app and to native code for the server, so worlds are identical everywhere.
 
 ```mermaid
 flowchart TD
     core["Shared Rust core<br/>World gen, physics, simulation<br/>Same seed and sliders, same world"]
-    browser["Browser client<br/>WebGPU renderer, WebGL2 fallback<br/>Prediction, 100 ms interpolation"]
-    tauri["Tauri desktop app<br/>Native build of the core<br/>Same prediction and interpolation"]
-    server["Authoritative server<br/>60 Hz tick, 30 Hz snapshots<br/>Lag compensation for hits<br/>Regional, via Agones or Nomad"]
+    browser["Browser client<br/>WebGPU renderer<br/>Prediction, 100 ms interpolation"]
+    tauri["Tauri desktop app (Windows)<br/>Same WASM core and renderer<br/>Same prediction and interpolation"]
+    server["Authoritative server<br/>60 Hz tick, 30 Hz snapshots<br/>Lag compensation for hits<br/>Regional, via Nomad"]
     core -- WASM --> browser
-    core -- native --> tauri
+    core -- WASM --> tauri
     core -- native --> server
-    browser <-- "WebTransport datagrams / WebRTC fallback" --> server
-    tauri <-- "Raw UDP" --> server
+    browser <-- "WebTransport datagrams / WebSocket fallback" --> server
+    tauri <-- "QUIC datagrams" --> server
 ```
 
-The browser runs the core as WASM; the server and the Tauri app run it natively, so a share code rebuilds the identical world on every build.
+The browser and the Tauri app run the core as WASM, the server runs it natively, so a share code rebuilds the identical world on every build.
 
 ### Rendering
 
 | Option | Strength | Trade-off |
 | --- | --- | --- |
-| WebGPU with a thin custom renderer (recommended) | Better performance for voxel meshing and compute-based SDF work | Needs a WebGL2 fallback; more to build |
+| WebGPU with a thin custom renderer (chosen) | Better performance for voxel meshing and compute-based SDF work | Browsers without WebGPU are not supported (they show a clear message); more to build |
 | Three.js or Babylon.js on WebGL2 | Widest reach, fastest start | Less headroom for compute-heavy terrain |
+
+Decision: WebGPU only, no WebGL2 renderer; current browsers support WebGPU.
 
 ### Networking
 
-- **Browser:** WebTransport datagrams over QUIC; fallback is WebRTC DataChannels (unreliable, unordered).
-- **Tauri app:** raw UDP through the Rust backend, for the lowest latency.
+- **Browser:** WebTransport datagrams over QUIC; fallback is a WebSocket. No WebRTC fallback: current browsers support WebTransport.
+- **Tauri app:** QUIC datagrams on the server's WebTransport endpoint, through the Rust backend.
 - **Server:** authoritative Rust server, 60 Hz simulation tick, 30 Hz snapshots.
 - **Client:** prediction for your own ship, about 100 ms interpolation buffer for others, server-side lag compensation (rewind) for hit validation.
 
@@ -351,7 +353,7 @@ A quantized ship state is about 18 B: position 6 B, smallest-three quaternion 4 
 
 ### Servers
 
-Regional instances orchestrated with Agones or Nomad; Frankfurt serves Berlin at under 15 ms ping. A lobby service (REST plus WebSocket) handles the server list, invites and party codes.
+Regional instances orchestrated with Nomad; Frankfurt serves Berlin at under 15 ms ping. A lobby service (REST plus WebSocket) handles the server list, invites and party codes.
 
 ### Determinism risk
 

@@ -5,7 +5,7 @@
 - Docs index: `docs/README.md` (every doc, crate and folder map). Building, running, testing, CI, e2e, smoke test, gallery, README media, profiling, adding weapons/gadgets/rule sets: `docs/dev-guide.md`
 - Design: `docs/design/game-design-doc.md` (exported from the living design doc; source of truth for game rules)
 - Plan and scope: `docs/implementation-plan.md` (read the relevant module spec before working on a crate)
-- Current milestone: M5 platforms and ops (draft `docs/milestone-5-plan.md`, pending decisions); previous: M4 done with exceptions (`docs/milestone-4-plan.md`), M3 (`docs/milestone-3-plan.md`); visual-quality track: `docs/visual-quality-plan.md`
+- Current milestone: M5 platforms and ops (`docs/milestone-5-plan.md`, decided; starts after the code-quality audit fix wave, `docs/code-quality-audit.md`); previous: M4 done with exceptions (`docs/milestone-4-plan.md`), M3 (`docs/milestone-3-plan.md`); visual-quality track: `docs/visual-quality-plan.md`
 - Cross-crate contracts: `docs/architecture/contracts.md`; types live in `ls_math::terrain` and `ls_math::level`. Changing them is a cross-crate change: update the doc and all users together
 - Content work stays inside its module and data file: one module per weapon, gadget, mode, mutator and comedy event (`docs/architecture/arsenal-framework.md`, `modes-and-lobby.md`, `moods-and-world.md`). Registries and `ModeRules` field lists are part of the code formats: append only
 - `userDocs/` is player-facing; `userDocs/reference/` is generated from `data/` (never edit by hand; `node tools/gen-weapon-docs.mjs` after data changes)

@@ -9,14 +9,17 @@ Status of every finding: **open**. A package that fixes a finding marks it `fixe
 the table; a finding the maintainer rejects is marked `won't fix: <reason>` (and, if it is a deliberate
 exception, the code gets the one-line comment `code-quality.md` asks for).
 
+The ten open questions are decided (section 5) and folded into the findings, packages and
+acceptance criteria below. Decision (Q10): the eight packages run as one wave before milestone 5.
+
 ## 1. Summary
 
 | | Count |
 |---|---|
 | Raw findings from the 8 auditors | 146 |
 | Merged away (same issue reported by two or more areas, or one issue split over Rust and TS reports) | 40 |
-| Dropped as false or as an allowed exception | 1 |
-| **Findings to fix** | **105** |
+| Dropped as false or as an allowed exception | 0 (one dropped, then restored as A15 by Q2) |
+| **Findings to fix** | **106** |
 
 Raw findings per auditor area: math-worldgen 14, sim-core 21, sim-modes-events 18, net-game 21,
 server-bots-dir 21, web-renderer 14, web-game-ui 18, tools-data-docs 19.
@@ -25,7 +28,7 @@ Findings by rule and package (package = owner area, see section 4):
 
 | Package | SSOT | ODR | DRY | Total |
 |---|---|---|---|---|
-| A gen-contracts (Rust to TS, ls-wasm) | 13 | 1 | 0 | 14 |
+| A gen-contracts (Rust to TS, ls-wasm) | 13 | 2 | 0 | 15 |
 | B codecs (share code, rule code, Crockford) | 1 | 2 | 0 | 3 |
 | C sim-framework (ls-sim structure and test support) | 3 | 4 | 16 | 23 |
 | D sim-data (gameplay numbers into `data/`) | 5 | 0 | 2 | 7 |
@@ -33,7 +36,7 @@ Findings by rule and package (package = owner area, see section 4):
 | G server-bots-dir | 4 | 3 | 3 | 10 |
 | H web-dry (renderer, shaders, UI, gallery) | 0 | 7 | 5 | 12 |
 | I tools-docs | 10 | 1 | 3 | 14 |
-| **Total** | **43** | **24** | **38** | **105** |
+| **Total** | **43** | **25** | **38** | **106** |
 
 Determinism-relevant findings (touch code under the determinism rules or hashed data): 29. Rows with two rules (A06) count under the first.
 Real behaviour bugs found (fixing them changes behaviour; stated in the packages): C01 (client
@@ -62,11 +65,12 @@ The remaining findings are accepted on the auditors' cited evidence; each packag
 findings before changing code.
 
 Dropped or corrected during verification:
-1. **Dropped:** "Belt Up progress function mirrored in TypeScript" (`web/src/game/race/course.ts`
-   mirrors `ls_sim::modes::belt_up::progress`). It is a deliberate, commented prediction mirror
-   checked against a Rust fixture, the allowed exception class; it moves to the open questions
-   (section 5, Q2). The constants half of that report (wedge count, gate count, tick rate) is
-   merged into A08/A11.
+1. **Dropped, then restored as A15:** "Belt Up progress function mirrored in TypeScript"
+   (`web/src/game/race/course.ts` mirrors `ls_sim::modes::belt_up::progress`). It is a deliberate,
+   commented prediction mirror checked against a Rust fixture, the allowed exception class, so
+   verification dropped it. Decision (Q2): ls-wasm exports the function and the TS copy goes, so
+   it is finding A15 in package A. The constants half of that report (wedge count, gate count,
+   tick rate) is merged into A08/A11.
 2. Corrected: the toolchain-pin finding (I14) claimed the master's `CLAUDE.md` still says
    `0.2.126`; both copies say `0.2.129`. The finding stands (pins restated in 4-5 places), the
    drift claim does not.
@@ -109,13 +113,14 @@ Dropped or corrected during verification:
 | A12 | SSOT | Terrain id tables (`NO_TEAM`/`NO_PAINT`, `SURFACE_*`, `MATERIAL_*`, `PAINT_*`) hand-copied into the renderer | `ls-math/src/terrain.rs:50-76,100-115`; `web/src/renderer/mesh.ts:16-34` | Generate them into `web/src/generated/world.ts` after E07 settles the Rust owners | low | no | S |
 | A13 | SSOT | Event and mode tuning numbers from `data/` copied into TS, plus a dead TS decoding fallback for "older" cores | `data/events/{director,tired_announcer,big_head_day,cat_paw,duck_parade,hat_rain,bored_level}.ron`, `data/rulesets/{belt_up,the_architect}.ron`; TS `game/events/fx.ts:4,12-14,100-127`, `game/killcam.ts:31`, `game/events/{bigHeadDay.ts:23,catPaw.ts:33,duckParade.ts:41,hatRain.ts:36,boredLevel.ts:45,info.ts:33}`, `game/race/raceFx.ts:49`, `ui/raceHud.ts:40`, `game/architect/model.ts:60-161,216-234`, `gallery/{eventCard.ts:13-24,eventScenesRun.ts:33-43,moodScenes.ts:38-39,spectacleRun.ts:127-130}`; `ls-wasm/src/events.rs:67-68` | `Game.eventFx()` carries the event's params map and announce end tick; `architectRules()` is required (no TS defaults); event phase lengths and client-relevant params go into the generated catalog for the gallery; delete `fxFromMood`, `unpackDir`, `unpackPos` | low | no | M |
 | A14 | ODR | Three JSON number formatters in ls-wasm with different rounding | `ls-wasm/src/modes.rs:50-69`, `events.rs:30-36`, `level.rs:120` | One `json` module in ls-wasm (`num`, `opt`, `vec3`, `object`, `array`, `json_str`) used by all; choose one rounding and check the TS tests | low | no | S |
+| A15 | ODR | Belt Up race progress function mirrored in TS (gates passed, then the position key in the sector), checked against a Rust fixture | `ls-sim/src/modes/belt_up.rs` (`progress`); `ls-sim/tests/race_progress.rs`, `tests/fixtures/race_progress.txt`; TS `game/race/course.ts:3-7,173-200`, `course.test.ts` | Decision (Q2): ls-wasm exports race progress from `ls_sim::modes::belt_up::progress`; `course.ts` calls it and keeps only the HUD maths built on it; delete the TS copy and its fixture comparison in `course.test.ts` (the Rust fixture test stays) | low | no | S |
 
 ### Package B: codecs (one codec per format)
 
 | Id | Rule | Title | Locations | Fix | Risk | Det. | Size |
 |---|---|---|---|---|---|---|---|
 | B01 | SSOT | Second share-code decoder in TS (all bit layouts, CRC-8, base-101 sliders) although ls-wasm exports `checkShareCode` | `ls-worldgen/src/sharecode.rs:146-270`; `ls-wasm/src/sharecode.rs:28`, `lib.rs:88-114`; TS `renderer/atmosphere.ts:47-122`, users `attract/worlds.ts:19`, `game/architect/index.ts:134`, `renderer/atmosphere.ts:256`; `docs/architecture/contracts.md:349-351` | Extend ls-wasm `ShareCodeInfo` with seed and sliders; `decodeShareCode` becomes a thin wrapper or callers use ls-wasm directly; atmosphere tests use Rust-generated fixture codes; drop the "mirrors both layouts" sentence | medium | no | M |
-| B02 | ODR | Rule set code format and `RuleSet::resolve_with` validation re-implemented in TS (about 1000 lines, "bit-exact mirror") | `ls-sim/src/rulecode.rs` (152-170 constants), `ls-sim/src/ruleset.rs` (`resolve_with`); TS `rules/code.ts` (whole file, 25-41, `MAX_NAME` 36), `rules/validate.ts` | Export `encodeRuleSet`, `decodeRuleCode`, `validateRuleSet` from ls-wasm; `code.ts` / `validate.ts` become wrappers; keep the catalog vectors as tests. Open question Q1 | medium | no | L |
+| B02 | ODR | Rule set code format and `RuleSet::resolve_with` validation re-implemented in TS (about 1000 lines, "bit-exact mirror") | `ls-sim/src/rulecode.rs` (152-170 constants), `ls-sim/src/ruleset.rs` (`resolve_with`); TS `rules/code.ts` (whole file, 25-41, `MAX_NAME` 36), `rules/validate.ts` | Export `encodeRuleSet`, `decodeRuleCode`, `validateRuleSet` from ls-wasm; `code.ts` / `validate.ts` become thin wrappers over ls-wasm (decision Q1: the rule set editor requires the WASM core); keep the catalog vectors as tests | medium | no | L |
 | B03 | ODR | Crockford alphabet, look-alike leniency (O to 0, I/L to 1) and bit packers defined in three Rust crates and three TS modules | `ls-sim/src/rulecode.rs:164,180-228,1090-1115`; `ls-worldgen/src/sharecode.rs:41,257-268`; `ls-server/src/rooms.rs:30` (+ `code_from_bits`, `parse_code`); TS `rules/code.ts:37,763`, `ui/shareCode.ts:11-60`, `renderer/atmosphere.ts:50` | `ls_math::code` (`ALPHABET`, `symbol_value`, `BitWriter`, `BitReader`) used by all three Rust codecs; one `web/src/util/crockford.ts`; outputs byte-identical (existing vector tests guard it) | low | yes | M |
 
 ### Package C: sim-framework (ls-sim structure, shared hooks, sim test support)
@@ -131,7 +136,7 @@ Dropped or corrected during verification:
 | C07 | DRY | Drone visitor events copy flight, outcome cue, spawn, shot-down/leaving and fly/pose blocks | `ls-sim/src/events/tax_drone.rs:40-170`, `pizza_delivery.rs:41-180`, `customer_survey.rs:59-160`, `mimic_pickups.rs:55-232`, `drone.rs` | `Flight::from_def`, `outcome_cue`, `spawn_drone`, `fly_home`, `fly_to` in `events/drone.rs` | medium | yes | M |
 | C08 | DRY | Spectacle events re-implement `drone::remove_props` | `ls-sim/src/events/drone.rs:484-500`; `cat_paw.rs:390,491-503`; `duck_parade.rs:273,295-307`; `disco_inferno.rs:124,139-151`; `hat_rain.rs:181,286-296` | Move `props` / `first_prop` / `remove_props` to `events/mod.rs`; all events call them | low | no | S |
 | C09 | DRY | Smoothstep written three times in events | `ls-sim/src/events/cat_paw.rs:99-102`, `disco_inferno.rs:31-34`, `bored_level.rs:43` | `ls_math::det::smoothstep01`; identical formula | low | yes | S |
-| C10 | DRY | Two cone-lock target searches (Seeker `acquire` vs `Ctx::target_in_cone`), a third manual nearest-ship loop in Decoy | `ls-sim/src/weapons/ordnance/seeker.rs:42-89`; `behavior.rs:474-525`; `gadgets/decoy.rs:127-145` | `Ctx::acquire(origin, dir, range, half_angle, filter, include_decoys)`; `target_in_cone` wraps it with the same iteration order. Open question Q9 on decoys for Leech Arc / Polite Laser | medium | yes | S |
+| C10 | DRY | Two cone-lock target searches (Seeker `acquire` vs `Ctx::target_in_cone`), a third manual nearest-ship loop in Decoy | `ls-sim/src/weapons/ordnance/seeker.rs:42-89`; `behavior.rs:474-525`; `gadgets/decoy.rs:127-145` | `Ctx::acquire(origin, dir, range, half_angle, filter, include_decoys)`; `target_in_cone` wraps it with the same iteration order. Decision (Q9): decoys keep fooling only the Seeker; the Leech Arc and Polite Laser locks stay as they are | medium | yes | S |
 | C11 | ODR | Client shot/beam prediction selects weapons by id strings in ls-wasm and repeats the modules' param defaults and the Leech Arc lock predicate | `ls-wasm/src/shots.rs:108-119,313-318`; `ls-wasm/src/beam.rs:33-120`; `ls-sim/src/weapons/energy/{corkscrew.rs:40,66,100,scatter_laser.rs:50,leech_arc.rs:55-102}`, `specials/borrowed_time.rs:41` | Typed `Params::of(def)` per module shared by sim and ls-wasm; `WeaponBehavior::client_shot_model()` hook; pure Leech Arc cone/keep predicate used by `lock()` and `aim_beam` | medium | yes | M |
 | C12 | SSOT | Railspike copies `Ctx::thickness`'s private sampling step | `ls-sim/src/behavior.rs:533-536`; `weapons/kinetic/railspike.rs:28,80` | `pub const THICKNESS_STEP` in behavior.rs, imported by Railspike | low | no | S |
 | C13 | DRY | Projectile and entity wire-id allocators repeat the free-id search | `ls-sim/src/world.rs:3396-3445` | `alloc_wire_id(counter, mask, live)`; projectile fast path kept in front | low | yes | S |
@@ -144,19 +149,19 @@ Dropped or corrected during verification:
 | C20 | DRY | Sim test fixtures (two-spawn setup, `world_with`, `place`, `equip`, `kill`, `hit`, `step`, force-event helpers, pickup clearing) copied into about 20 test modules | `ls-sim/src/tests.rs:21-60,694-696`; `tests_arsenal.rs:14-106,508-552`; `tests_world.rs:37-60,682-684`; `gadgets/test_util.rs`; `weapons/energy/scrap_laser.rs:88-210`; `weapons/{kinetic/rivet_gun,ordnance/heavy_rocket,specials/paint_thrower,tests}.rs`; `director/tests.rs:18-93`; `events/{world_events_tests.rs:25-107,spectacle_tests.rs:24-95,visitor_tests.rs:26-128}`; `modes/{tests.rs,hot_reactor/tests.rs,last_color_standing/tests.rs,heist/tests.rs,the_architect/tests.rs,belt_up/tests.rs}`; `mutators/instagib.rs:65-67,136` | One `#[cfg(test)] ls_sim::test_util` (fold `gadgets/test_util.rs` and the Scrap Laser helpers in); `RuleSet::clear_pickups()` also used by Instagib | low | no | M |
 | C21 | DRY | Replay harnesses duplicated (FNV fold literal in 8 files, roster loop, built-in rule set lookup, fixture bless/rewrite) | `ls-sim/src/events/replays.rs:60-221`; `events/visitor_replays.rs:56-197`; `event_replays.rs:95-127`; `golden.rs:227-237`; `world_replays.rs:202-212`; `modes/belt_up/replay.rs:160-244`; `modes/the_architect/replay.rs:154-155`; `hash.rs:5-6` | `replay_util`: `HashFold` on `hash.rs` constants, `add_roster`, `builtin_rules`, `bless_or_check_fixture`; RNG streams and step order unchanged | medium | yes | M |
 | C22 | DRY | Scripted "aim at nearest enemy" input generator copied across replays | `ls-sim/src/golden.rs:154-217`; `modes/team_brawl.rs:224-282`; `modes/last_color_standing/tests.rs:434-498`; `modes/hot_reactor/tests.rs:552-575`; `modes/the_squeeze/tests.rs:560-575`; `modes/the_architect/replay.rs:126`; `tests.rs:761-830`; `event_replays.rs:205`; `world_replays.rs:283` | `golden::aim` pub(crate) and `golden::scripted_inputs(rng, w, ids, tick, &InputProfile)`; each replay passes its current profile so draws stay identical | medium | yes | M |
-| C23 | ODR | Two per-mode replay golden systems with two bless procedures (hand-edited module constants and `mode_replays.txt`) | `ls-sim/src/modes/*/tests.rs` (`*_REPLAY_GOLDEN*`); `ls-sim/src/golden.rs`; `ls-sim/tests/fixtures/mode_replays.txt`; `docs/architecture/determinism.md:136-146`; `tools/determinism-check.mjs` | Register the tailored module replays as named entries in the fixture, blessed by `LS_BLESS_MODE_REPLAYS` and cross-checked by determinism-check; delete the constants. Open question Q5 | medium | yes | M |
+| C23 | ODR | Two per-mode replay golden systems with two bless procedures (hand-edited module constants and `mode_replays.txt`) | `ls-sim/src/modes/*/tests.rs` (`*_REPLAY_GOLDEN*`); `ls-sim/src/golden.rs`; `ls-sim/tests/fixtures/mode_replays.txt`; `docs/architecture/determinism.md:136-146`; `tools/determinism-check.mjs` | Register the tailored module replays as named entries in the fixture, blessed by `LS_BLESS_MODE_REPLAYS` and cross-checked by determinism-check; delete the constants (decision Q5: one bless mechanism) | medium | yes | M |
 
 ### Package D: sim-data (gameplay numbers live only in `data/`)
 
 | Id | Rule | Title | Locations | Fix | Risk | Det. | Size |
 |---|---|---|---|---|---|---|---|
-| D01 | SSOT | Every weapon, gadget and event param has a second default in code (`param(key, default)`, about 270 call sites; 240 weapon/gadget defaults equal the data value, 14 differ but never apply); `CHARGED_DRAIN_PER_SEC` repeats `leech_arc.ron`; ls-wasm repeats Bored Level's defaults | `ls-sim/src/weapon.rs:273`; `gadgets/mod.rs:122`; `events/mod.rs:233`; all `weapons/**`, `gadgets/*`, `events/*.rs` param calls (e.g. `echo_cannon.rs:43,51`, `seed_grenade.rs:94,156`, `tax_drone.rs:42-146`, `cat_paw.rs:128-461`); `world.rs:92,648-653`; `ls-wasm/src/events.rs:67-68` | Modules declare required keys; `validate` rejects defs missing one; `param(key)` without default plus `param_ticks(key)`; repeated reads into a typed params struct; `BoredLevel::turn(def)` for ls-wasm. Built-in data unchanged, so hashes unchanged; the charged-drain fallback is Q8 | medium | yes | L |
+| D01 | SSOT | Every weapon, gadget and event param has a second default in code (`param(key, default)`, about 270 call sites; 240 weapon/gadget defaults equal the data value, 14 differ but never apply); `CHARGED_DRAIN_PER_SEC` repeats `leech_arc.ron`; ls-wasm repeats Bored Level's defaults | `ls-sim/src/weapon.rs:273`; `gadgets/mod.rs:122`; `events/mod.rs:233`; all `weapons/**`, `gadgets/*`, `events/*.rs` param calls (e.g. `echo_cannon.rs:43,51`, `seed_grenade.rs:94,156`, `tax_drone.rs:42-146`, `cat_paw.rs:128-461`); `world.rs:92,648-653`; `ls-wasm/src/events.rs:67-68` | Modules declare required keys; `validate` rejects defs missing one; `param(key)` without default plus `param_ticks(key)`; repeated reads into a typed params struct; `BoredLevel::turn(def)` for ls-wasm. Built-in data unchanged, so replay hashes unchanged. Decision (Q8): the charged-surface drain without a Leech Arc (today `CHARGED_DRAIN_PER_SEC`, 5/s) moves into a `data/world/` settings file read through C04's loader, same value; the data hash changes (accepted, Q3) | medium | yes | L |
 | D02 | SSOT | Gameplay numbers kept as Rust constants: debris physics, pickup radius, wreck cap, knockback, paint contact margins, material crater scales, `DEFAULT_SECS` / `DEFAULT_TICKS`, monochrome palette (also in TS) | `ls-sim/src/entity.rs:32-43`; `world.rs:81,83,1446`; `weapon.rs:295`; `weapons/mod.rs:342`; `ship.rs:436-439`; `pigment.rs:41`; `ls-math/src/terrain.rs:58-64,119-121` (users `ls-sim/src/behavior.rs:650-672`); `web/src/renderer/ink.ts:28` | `data/world/debris.ron`, `data/world/contact.ron`, `data/world/materials.ron` through C04's loader; palette into `pigment.ron` and exported to TS; contract caps (`MAX_DEBRIS` if it is a wire limit) stay with a comment; `DEFAULT_SECS` / `DEFAULT_TICKS` replaced by a test helper with explicit ticks | medium | yes | M |
-| D03 | SSOT | Mode and event tuning consts in mode/event modules (Heist shed, Squeeze radius fractions and scrap, Team Brawl kill target scaling, Architect stroke timings, drone/hat/mimic consts) restated in docs | `ls-sim/src/modes/heist.rs:56-80`; `the_squeeze.rs:84-99`; `team_brawl.rs:30-38`; `belt_up.rs:105-108`; `the_architect.rs:93-118`; `modes/mod.rs:71`; `events/drone.rs:55-70`; `hat_rain.rs:53-55`; `mimic_pickups.rs:53`; `ruleset.rs:263-264`; `docs/milestone-3-plan.md:74` | `data/modes/<id>.ron` (embedded, hashed) read through a `ModeTuning::builtin()`, or new `mode_settings` fields where hosts may change them (Q4); event consts into their event params; docs name the file | medium | yes | L |
-| D04 | DRY | Built-in rule sets repeat the full arsenal availability and pickup tables (8+ files, about 30-80 lines each) | `data/rulesets/paint_the_void.ron:13-97`; `duel`, `team_brawl`, `heist`, `hot_reactor`, `last_color_standing`, `squeeze`, `the_architect`, `belt_up`, `sandbox_all_weapons` `.ron` | `base:` (or shared `data/rulesets/arsenal.ron`) merged by the loader; files state overrides only; resolved `RuleSet`s identical, so rule codes and `REPLAY_GOLDEN_HASH` hold; the data hash changes (Q3); re-bless the rules catalog and reference pages | medium | yes | M |
+| D03 | SSOT | Mode and event tuning consts in mode/event modules (Heist shed, Squeeze radius fractions and scrap, Team Brawl kill target scaling, Architect stroke timings, drone/hat/mimic consts) restated in docs | `ls-sim/src/modes/heist.rs:56-80`; `the_squeeze.rs:84-99`; `team_brawl.rs:30-38`; `belt_up.rs:105-108`; `the_architect.rs:93-118`; `modes/mod.rs:71`; `events/drone.rs:55-70`; `hat_rain.rs:53-55`; `mimic_pickups.rs:53`; `ruleset.rs:263-264`; `docs/milestone-3-plan.md:74` | `data/modes/<id>.ron` (embedded, hashed) read through a `ModeTuning::builtin()`. Decision (Q4): today's host-editable `mode_settings` stay as they are and every other mode tuning number moves into `data/modes/`; no new `mode_settings` fields, so the rule-code format is unchanged; event consts into their event params; docs name the file | medium | yes | L |
+| D04 | DRY | Built-in rule sets repeat the full arsenal availability and pickup tables (8+ files, about 30-80 lines each) | `data/rulesets/paint_the_void.ron:13-97`; `duel`, `team_brawl`, `heist`, `hot_reactor`, `last_color_standing`, `squeeze`, `the_architect`, `belt_up`, `sandbox_all_weapons` `.ron` | `base:` (or shared `data/rulesets/arsenal.ron`) merged by the loader; files state overrides only; resolved `RuleSet`s identical, so rule codes and `REPLAY_GOLDEN_HASH` hold; the data hash changes (accepted, Q3); re-bless the rules catalog and reference pages | medium | yes | M |
 | D05 | SSOT | Mode setting defaults exist in `mode_settings!` literals, in the rule set files, in RON header comments and in TS (Architect) | `ls-sim/src/ruleset.rs:195-532,718-728`; `modes/hot_reactor/tests.rs:121`; mode fallbacks `heist.rs:122`, `hot_reactor.rs:85`, `belt_up.rs:314`; `data/rulesets/*.ron` mode blocks and headers (e.g. `hot_reactor.ron:1-21`); TS side covered by A13 | Rule set file is the only source; macro keeps steps and bits (code contract) but no defaults; `ModeRules::default_for(kind)` = `RuleSet::default_for(kind).mode`; serde fills from it; drop numeric header comments | medium | yes | M |
-| D06 | DRY | Ship files repeat about 30 identical fields; game-wide paint constants live per ship | `data/ships/{skitter,tinker,hauler,tug}.ron:10-50` | `data/ships/common.ron` (or `base` merge) plus per-type overrides; paint bounce/sticky into a world data file; resolved tuning identical; data hash changes (Q3) | low | yes | M |
-| D07 | SSOT | Per-mode minimum and maximum players are rule facts hard-coded in ls-server by rule set id | `ls-server/src/playlist.rs:60-80`; `userDocs/hosting-guide.md:118` | Optional `min_players` / `max_players` in the rule set RON; `DEFAULT_ROTATION` keeps ids only; docs point to the data; data hash changes (Q3) | medium | yes | M |
+| D06 | DRY | Ship files repeat about 30 identical fields; game-wide paint constants live per ship | `data/ships/{skitter,tinker,hauler,tug}.ron:10-50` | `data/ships/common.ron` (or `base` merge) plus per-type overrides; paint bounce/sticky into a world data file; resolved tuning identical; data hash changes (accepted, Q3) | low | yes | M |
+| D07 | SSOT | Per-mode minimum and maximum players are rule facts hard-coded in ls-server by rule set id | `ls-server/src/playlist.rs:60-80`; `userDocs/hosting-guide.md:118` | Optional `min_players` / `max_players` in the rule set RON; `DEFAULT_ROTATION` keeps ids only; docs point to the data; data hash changes (accepted, Q3) | medium | yes | M |
 
 ### Package E: core-helpers (ls-math, ls-worldgen, ls-net, ls-game production code and their tests)
 
@@ -229,8 +234,8 @@ Dropped or corrected during verification:
 | I06 | ODR | Three RON readers in tools (full parser plus regex readers that match comments) | `tools/gen-weapon-docs.mjs:44-200`; `tools/e2e.mjs:314-350`; `tools/browser-smoke/{moods.mjs,race.mjs:24}` | `tools/lib/ron.mjs` (parser plus path setter) used by all | low | no | S |
 | I07 | SSOT | e2e `matchLength` re-implements mode durations including `FINAL_CLOSE_FACTOR` | `tools/e2e.mjs:333-350`; `ls-sim/src/modes/the_squeeze.rs:88-89`; `the_architect.rs`; `belt_up.rs` | `ModeModule::max_match_secs(&RuleSet)` in ls-sim, printed by the server (I01's output); e2e reads it | low | no | S |
 | I08 | SSOT | Smoke scripts hand-copy data and client constants | `tools/browser-smoke/moods.mjs:53,58`; `architect.mjs:16`; `steer.mjs:6` | Read `director.ron` / `the_architect.ron` via I06; import `DEFAULT_CONTROL_SETTINGS` from `controls.ts`; prop kinds from `entityKindNames()` | low | no | S |
-| I09 | SSOT | Server CLI flags and defaults restated in hosting guide, dev guide and CLAUDE.md (dev guide already incomplete); built-in rule set ids hand-listed | `ls-server/src/main.rs:60-140`; `userDocs/hosting-guide.md:134-162,144,148,850-856,931,1011`; `docs/dev-guide.md:144-160`; `CLAUDE.md` Commands | Generate the hosting-guide flag table from clap metadata with a CI check (or keep it as the only hand table, Q7); dev guide and CLAUDE.md link to it; ids from the generated reference | low | no | M |
-| I10 | SSOT | Player manual restates hundreds of `data/` numbers (ships, weapons, events) covered by the generated reference; Rust module docs and RON headers restate event values | `userDocs/player-manual.md:144,270-349,425-552,665-681`; `ls-sim/src/events/{tax_drone.rs:3-11,hat_rain.rs:3-12}`; `data/events/{tax_drone,cat_paw,pizza_delivery}.ron` headers | Template expansion by gen-weapon-docs with `--check`, or links to `userDocs/reference/*` (Q6); module docs and headers name the keys | medium | no | L |
+| I09 | SSOT | Server CLI flags and defaults restated in hosting guide, dev guide and CLAUDE.md (dev guide already incomplete); built-in rule set ids hand-listed | `ls-server/src/main.rs:60-140`; `userDocs/hosting-guide.md:134-162,144,148,850-856,931,1011`; `docs/dev-guide.md:144-160`; `CLAUDE.md` Commands | Decision (Q7): generate the hosting-guide flag table from clap metadata with a CI check; dev guide and CLAUDE.md link to it; ids from the generated reference | low | no | M |
+| I10 | SSOT | Player manual restates hundreds of `data/` numbers (ships, weapons, events) covered by the generated reference; Rust module docs and RON headers restate event values | `userDocs/player-manual.md:144,270-349,425-552,665-681`; `ls-sim/src/events/{tax_drone.rs:3-11,hat_rain.rs:3-12}`; `data/events/{tax_drone,cat_paw,pizza_delivery}.ron` headers | Decision (Q6): the manual's numbers become template placeholders expanded by gen-weapon-docs with `--check` (the prose stays readable); module docs and headers name the keys | medium | no | L |
 | I11 | SSOT | Architecture docs restate values owned by code or data (worldgen boxes and belt, wire masks, netcode timings and limits, renderer constants with one already drifted, radiation and gravity tuning, golden hash values, `SIM_BEHAVIOR_VERSION`) | `docs/architecture/{contracts.md:355-372,423-435,507-509,556,moods-and-world.md:210-231,arsenal-framework.md:282-285,game-glue.md:86-321,netcode.md:59-378,renderer.md:12-210,determinism.md:128,140-146,322}`; `docs/visual-quality-plan.md:147,272`; `userDocs/hosting-guide.md:220-221`; `ls-sim/src/radiation.rs:9-14` | Replace numbers with constant names and files; state each fact in one doc and link from the others; determinism.md keeps names and the history table only; measured costs stay (the doc is their source) | low | no | M |
 | I12 | SSOT | Reference-doc generator inputs listed in four places; `run-checks.mjs` header already stale | `tools/gen-weapon-docs.mjs:1290-1307`; `tools/lib/run-checks.mjs:7,32-34`; `CLAUDE.md`; `docs/dev-guide.md:288-292` | Export `INPUTS` from gen-weapon-docs; run-checks builds its matcher from it; docs point to the generator | low | no | S |
 | I13 | DRY | Repo root and "run as script" detection recomputed in nine tools | `tools/lib/work-folder.mjs:57`; `tools/{e2e.mjs:106,1187,determinism-check.mjs:29,gen-weapon-docs.mjs:30,check-binds.mjs:74,post-edit.mjs:61,hooks/pre-push.mjs:81}`; `tools/browser-smoke/{gallery,moods,race,smoke,workshop}.mjs` | `REPO_ROOT` and `isMain(import.meta.url)` from one lib module | low | no | S |
@@ -238,14 +243,17 @@ Dropped or corrected during verification:
 
 ## 4. Fix packages
 
-Eight packages (letters A-E, G-I; there is no F). Each package runs in its own work folder (`loosescrews.win2`+), starts from `origin/main`, and checks
-its own findings against the code before changing anything. Packages may run in parallel; the
-merge order below resolves the remaining overlaps (later packages rebase on earlier ones).
+Eight packages (letters A-E, G-I; there is no F). Decision (Q10): they run as one wave before
+milestone 5 starts, since every later change would otherwise add more hand copies; milestone 5
+wave A starts after this wave is integrated. Each package runs in its own work folder
+(`loosescrews.win2`+), starts from `origin/main`, and checks its own findings against the code
+before changing anything. Packages run in parallel; the merge order below resolves the remaining
+overlaps (later packages rebase on earlier ones).
 
 | Pkg | Name | Owner area (files it may change) | Findings | Size | Merge order |
 |---|---|---|---|---|---|
 | E | core-helpers | `crates/ls-math`, `crates/ls-worldgen`, `crates/ls-net`, `crates/ls-game` (incl. `tests/`), small call-site edits in ls-sim (E01, E05, E07, E08, E10), ls-wasm (E07), ls-server tests and `playlist.rs:86`, `ls-bots/src/steering.rs` | 22 | L | 1 |
-| A | gen-contracts | `crates/ls-wasm`, the catalog generator (`ls-sim` rulecode tests) plus a new ls-worldgen catalog test, `web/src/generated/` (new), `web/src/wasm/`, the TS consumers of each generated value, `.github`/`tools/ci.*` only if a check needs wiring, owner-names in ls-sim enums (`EventPhase::id`, cat paw phases) | 14 | L | 2 |
+| A | gen-contracts | `crates/ls-wasm`, the catalog generator (`ls-sim` rulecode tests) plus a new ls-worldgen catalog test, `web/src/generated/` (new), `web/src/wasm/`, the TS consumers of each generated value, `.github`/`tools/ci.*` only if a check needs wiring, owner-names in ls-sim enums (`EventPhase::id`, cat paw phases), `web/src/game/race/course.ts` and its test (A15) | 15 | L | 2 |
 | B | codecs | `ls-math::code` (new), `ls-sim/src/rulecode.rs`, `ls-worldgen/src/sharecode.rs`, `ls-server/src/rooms.rs`, `ls-wasm/src/sharecode.rs` and new rule-code exports, `web/src/rules/{code,validate}.ts`, `web/src/ui/shareCode.ts`, `web/src/renderer/atmosphere.ts` (decoder part), `web/src/util/crockford.ts` | 3 | L | 3 |
 | C | sim-framework | `crates/ls-sim` (structure, events framework, mode registry, test support), `ls-game/src/client/{prediction,session}.rs`, `ls-game/src/server/lagcomp.rs`, `ls-wasm/src/{shots,beam,modes}.rs`, `ls-server/src/{lobby.rs,main.rs:341}` | 23 | L | 4 |
 | D | sim-data | `data/**`, ls-sim data loading (`data.rs`, `ruleset.rs`, `tuning.rs`, `weapon.rs`/`gadgets`/`events` `param`), the param call sites in weapon/gadget/event modules, `ls-server/src/playlist.rs` (D07), re-blessed `catalog.ts` and `userDocs/reference/` | 7 | L | 5 |
@@ -286,23 +294,28 @@ Per package:
   in `web/src` for the listed findings (grep for the old names returns only the generated files).
   Every new generated file has a bless variable and fails CI when stale; `docs/dev-guide.md` and
   `CLAUDE.md` list the new bless commands. A13 removes the TS fallback decoder; A10 takes the HUD
-  pull from ls-wasm. Sim and data hashes unchanged.
+  pull from ls-wasm; A15: `course.ts` takes race progress from ls-wasm and holds no copy of
+  `belt_up::progress` (the Rust `race_progress` fixture test still passes). Sim and data hashes
+  unchanged.
 - **B codecs.** Share codes and rule codes byte-identical: existing Rust vector tests, the
   catalog vectors and share-code tests pass unchanged; one Crockford implementation per language.
+  The rule set editor runs on the ls-wasm codec and validation (Q1); `rules/code.ts` and
+  `validate.ts` hold no format logic of their own.
   Worldgen golden hashes and `GENERATOR_VERSION` unchanged.
 - **C sim-framework.** All sim hashes and replay fixtures unchanged (`preview equals step` tests
   kept). **Behaviour change, stated:** C01 brings the client predictor in line with `World::step`
   (`CONTROLS_OWNER` thrust zeroing, double `limits.apply`, boulder filter); this changes client
   prediction only, so prediction tests may need new expectations, which the package explains.
-  C10 keeps current decoy behaviour unless decided otherwise (Q9). C23 only if Q5 is
-  approved; it keeps every hash value, only the storage moves.
+  C10 keeps today's decoy behaviour (Q9: no change). C23 moves the per-mode golden constants into
+  the fixture (Q5); it keeps every hash value, only the storage moves.
 - **D sim-data.** Resolved rule sets, ship tuning and sim behaviour identical:
   `REPLAY_GOLDEN_HASH` and all replay fixtures unchanged. **The data hash changes** (new or
-  restructured hashed files in D02-D07): approved under Q3, old clients become incompatible
-  (handshake), recorded in `next-steps.md`. Re-bless `web/src/rules/catalog.ts`
-  (`LS_BLESS_RULES_CATALOG=1`) and regenerate `userDocs/reference/`; rule codes (`LR..`) for the
+  restructured hashed files in D01-D07): accepted under Q3, old clients become incompatible
+  (handshake), recorded in `next-steps.md`. D03 adds no `mode_settings` field (Q4). Re-bless
+  `web/src/rules/catalog.ts` (`LS_BLESS_RULES_CATALOG=1`) and regenerate `userDocs/reference/`; rule codes (`LR..`) for the
   built-in rule sets decode to the same rule sets. D01: a data set missing a required key fails at
-  load with a named error (test). Charged-drain fallback per Q8.
+  load with a named error (test). The charged-surface drain without a Leech Arc comes from the
+  data file with today's value (Q8).
 - **G server-bots-dir.** HTTP, lobby, duel and WebTransport tests pass; bots run against the
   server (`cargo test -p ls-bots --release`, `pwsh tools/e2e.ps1` once with `--transport wt`).
   No sim or data hash change (G09's bot data is outside the hashed set).
@@ -313,32 +326,37 @@ Per package:
 - **I tools-docs.** e2e covers The Architect in the default rotation and the smoke tests run on the
   current built-in rule sets (stated behaviour change of the test tools, I01, I02); one step list
   drives CI and pre-push; docs name constants and files instead of values for every listed site;
-  every new generated doc section has a `--check` in CI.
+  the hosting guide's flag table is generated from the server's clap definitions (Q7) and the
+  player manual's numbers from placeholders (Q6); every new generated doc section has a `--check`
+  in CI.
 
-## 5. Open decisions
+## 5. Decisions
 
-- **Q1 (B02):** may the rule set editor require the WASM core? If yes, `rules/code.ts` and
-  `validate.ts` become wrappers over ls-wasm. If the editor must work without WASM, record that as
-  an explicit exception in `code-quality.md` and only generate the format constants.
-- **Q2 (dropped finding):** keep `web/src/game/race/course.ts`'s TS mirror of
-  `belt_up::progress` as a deliberate, fixture-checked prediction mirror (add the exception
-  comment), or export race progress from ls-wasm?
-- **Q3 (D02, D04, D06, D07):** accept a handshake data-hash change (old clients and servers stop
-  matching) for restructuring `data/` without changing any resolved value? Best bundled in one
-  release with M5.
-- **Q4 (D03):** which mode tuning numbers become host-editable `mode_settings` (they then cost
-  rule-code bits) and which go into fixed `data/modes/*.ron`?
+All ten questions are decided; the findings, packages and acceptance criteria above follow them.
+
+- **Q1 (B02):** may the rule set editor require the WASM core? Decision: yes (the game needs the
+  WASM core anyway). `rules/code.ts` and `validate.ts` become thin wrappers over ls-wasm; no
+  exception in `code-quality.md`.
+- **Q2 (A15, the dropped finding):** keep `web/src/game/race/course.ts`'s TS mirror of
+  `belt_up::progress` as a commented, fixture-checked exception, or export race progress from
+  ls-wasm? Decision: export it from ls-wasm; the TS copy goes (finding A15, package A).
+- **Q3 (D01, D02, D04, D06, D07):** accept a handshake data-hash change (old clients and servers
+  stop matching) for restructuring `data/` without changing any resolved value? Decision: yes.
+- **Q4 (D03):** which mode tuning numbers become host-editable `mode_settings` (they cost
+  rule-code bits) and which go into fixed `data/modes/*.ron`? Decision: today's host-editable
+  settings stay as they are; everything else moves into `data/modes/`.
 - **Q5 (C23):** fold the hand-edited per-mode module golden constants into the
-  `mode_replays.txt` fixture (one bless mechanism)?
+  `mode_replays.txt` fixture (one bless mechanism)? Decision: yes.
 - **Q6 (I10):** player manual numbers: template placeholders expanded by gen-weapon-docs, or cut
-  from the prose with links to `userDocs/reference/`?
+  from the prose with links to `userDocs/reference/`? Decision: generator placeholders (the prose
+  stays readable), checked by `--check`.
 - **Q7 (I09):** generate the hosting guide's CLI table from clap, or keep it as the only
-  hand-written table and link to it everywhere else?
-- **Q8 (D01):** when no Leech Arc is in the weapon table, charged surfaces currently drain at the
-  code constant 5/s. Move that number to a world data file, or drain 0 in that case (a behaviour
-  change for custom data sets only)?
-- **Q9 (C10):** should Leech Arc and Polite Laser locks be fooled by decoys like the Seeker? The
-  refactor keeps today's behaviour unless the decision is yes (that would be a sim behaviour
-  change: bump `SIM_BEHAVIOR_VERSION`, re-bless `REPLAY_GOLDEN_HASH`).
-- **Q10:** scheduling against M5: run the eight packages as one wave before M5 starts, or
-  interleave (E, A, B first, since every later change otherwise adds more hand copies)?
+  hand-written table? Decision: generated from the server's clap definitions, with a CI check.
+- **Q8 (D01):** when no Leech Arc is in the weapon table, charged surfaces drain at the code
+  constant 5/s. Move that number to a world data file, or drain 0? Decision: a world data file
+  (no behaviour change).
+- **Q9 (C10):** should Leech Arc and Polite Laser locks be fooled by decoys like the Seeker?
+  Decision: no change; only the Seeker is fooled (a design question for play-testing, not part of
+  the refactor). No `SIM_BEHAVIOR_VERSION` bump.
+- **Q10:** run the eight packages as one wave before milestone 5, or interleave? Decision: one
+  wave before milestone 5, since every later change would otherwise add more hand copies.

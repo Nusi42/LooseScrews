@@ -1103,5 +1103,6 @@ the server list and invites over plain HTTP on one machine, not a TLS proxy.
   `absurdity: 0` (or worlds with Absurdity 0); `--event-schedule` is for tests only.
 - **No custom TLS certificate** for WebTransport and no built-in HTTPS for the web page or the
   directory (use a reverse proxy).
-- **No WebRTC fallback, desktop app, regional hosting or orchestration** (the design mentions
-  Agones or Nomad for later).
+- **No desktop app, regional hosting or orchestration** (Nomad deployment files are planned).
+  There is no WebRTC fallback and none is planned: browsers use WebTransport or fall back to
+  WebSocket.

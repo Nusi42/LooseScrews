@@ -20,8 +20,8 @@ Everything else in the design (full arsenal, ship types, comedy director, other 
 | Share codes | seed + all 7 sliders + generator version + checksum: 26 Crockford base32 symbols, printed as `LSxx-xxxx-…` (34 chars) | Rule set codes |
 | Match rules | Data-driven weapon definitions and one rule set format (availability, loadout, pickups, friendly fire), loaded from `data/` | Rule set editor UI, live balance list |
 | Mode | Paint the Void, 2 teams, up to 8 players, one server process | All other modes |
-| Networking | Authoritative server, 60 Hz tick, 30 Hz snapshots, quantized ship state (~18 B), input commands, prediction + reconciliation, 100 ms interpolation, lag-compensated hits; WebSocket transport first, WebTransport second | WebRTC fallback, Tauri UDP, lobby service, regions |
-| Client | Browser, TypeScript + Vite, thin WebGPU renderer, pointer-lock 6DOF controls, HUD (hull, energy, boost, scrap, ammo, team paint %), share-code entry | WebGL2 fallback (stretch), audio, cosmetics |
+| Networking | Authoritative server, 60 Hz tick, 30 Hz snapshots, quantized ship state (~18 B), input commands, prediction + reconciliation, 100 ms interpolation, lag-compensated hits; WebSocket transport first, WebTransport second | Tauri UDP, lobby service, regions (the WebRTC fallback was dropped in M5 planning) |
+| Client | Browser, TypeScript + Vite, thin WebGPU renderer, pointer-lock 6DOF controls, HUD (hull, energy, boost, scrap, ammo, team paint %), share-code entry | Audio, cosmetics (the WebGL2 fallback was dropped in M5 planning: WebGPU only) |
 | Tooling | Headless bots for load tests, determinism cross-check native vs WASM, CI script | Deployment |
 
 ## 2. Repository layout
@@ -227,7 +227,7 @@ Commands and details: [dev-guide.md](dev-guide.md#4-tests) and [architecture/det
 | M2 Arsenal and physics | Done | All weapons from the design doc, Tectonic Charge, debris physics, surface states, ship types, gadgets (Shield, Cloak, Decoy), rule set editor — see [milestone-2-plan.md](milestone-2-plan.md) |
 | M3 Modes and lobby | Done with exceptions (soak tick p99 on a quiet machine, private rooms' tick budget under load, the Tectonic collapse tick) — [milestone-3-plan.md](milestone-3-plan.md#milestone-summary) | Team Brawl, The Squeeze, Instagib, Heist, Hot Reactor, Last Color Standing, duels; lobby in `ls-server` with match rotation, optional directory service for the server list, invites, party codes ([modes-and-lobby.md](architecture/modes-and-lobby.md)) |
 | M4 The level has moods | Done with exceptions (review sign-off of the gallery and Belt Up looks pending; thin-rock steps and the cave-in remesh budget partly met; soak: bot-process stalls caused 6 server input-starvation warnings, tick p99 met outside load bursts) — [milestone-4-plan.md](milestone-4-plan.md#milestone-summary) | Comedy director with moods and all 18 events, remaining sliders (verticality, gravity chaos, palette, instability), monochrome levels and pigment, The Architect, the asteroid belt and the racing mode Belt Up, the Paperweight, world workshop, audio foundation ([moods-and-world.md](architecture/moods-and-world.md)); carried over: Tectonic collapse tick, dual contouring in play; M3 leftovers: thin-rock jaggies, bore-rim folds, reference mid-GPU timings, teams 3/4 spawn zones, quiet-machine soak (status below) |
-| M5 Platforms and ops | Next: plan drafted, pending review — [milestone-5-plan.md](milestone-5-plan.md) (open questions in §8) | Tauri app with UDP, WebRTC fallback, WebGL2 fallback, regional deployment with Agones or Nomad, bandwidth optimization; carried over: every M5 item below, the M3 security gaps, the M4 exceptions, the own-death kill-cam and the grumpy mood's cave-ins |
+| M5 Platforms and ops | Next: plan decided, starts after the code-quality audit's fix wave — [milestone-5-plan.md](milestone-5-plan.md) (decisions in §8) | Tauri app for Windows with UDP (QUIC datagrams), regional deployment artifacts with Nomad and a local multi-region simulation (no real cloud deployment in M5), bandwidth optimization; dropped: the WebRTC and WebGL2 fallbacks (WebGPU only); carried over: every M5 item below, the M3 security gaps, the M4 exceptions, the own-death kill-cam and the grumpy mood's cave-ins |
 | M6 Coop and business | Planned | Deep Dig, Tethered, Escort the Intern; cosmetics store, creator economy |
 
 ### Carried-over items
@@ -327,8 +327,7 @@ milestone-4-plan.md §7 (to be confirmed when M4 closes):
   modes with respawns" is the first item of the §7 cut order. Moves to M5 (client work, no
   protocol change).
 
-**M5 Platforms and ops** (all taken into [milestone-5-plan.md](milestone-5-plan.md) §1, draft pending
-review)
+**M5 Platforms and ops** (all taken into [milestone-5-plan.md](milestone-5-plan.md) §1, decided)
 - **Bandwidth worst case (accepted for now).** Busy 32-ship fights average within
   17,280 B/s at every baseline age, but the busiest snapshots are up to about 6 % over at a
   4-tick and 19 % over at a 6-tick baseline (`busy_fight_with_projectiles_fits_the_budget`).
@@ -346,7 +345,9 @@ review)
   (crbug 369219127); drop the option on Windows once the renderer targets more platforms.
   *From M2.*
 - **Reference mid-GPU gallery timings.** One gallery run on a GTX 1660 / RX 6600 / Apple M1
-  class machine (`gallery.mjs --label refgpu-<wave>`) to replace the estimates of the VQ
-  packages and M4 (ink, wells, events, belt, the Architect's map view). *From M3, via M4.*
+  class machine (`gallery.mjs --label refgpu-<name>`) to replace the estimates of the VQ
+  packages and M4 (ink, wells, events, belt, the Architect's map view). Decision (M5 question
+  10): no rented GPU; the maintainer measures on real hardware separately, outside the M5
+  packages. *From M3, via M4.*
 - **Kill-cam after your own death** (setting, default on in respawn modes, skipped by any key).
-  *From M4 (§3.7), pending confirmation of the cut.*
+  *From M4 (§3.7); confirmed for M5 wave A (M5 question 11).*

@@ -204,9 +204,9 @@ Playable and under active development. Four milestones are done:
 4. **The level has moods:** the comedy director and its 18 events, all seven world sliders, ink
    worlds and pigment, The Architect, asteroid belts and Belt Up, the world workshop, sound.
 
-Next is milestone 5, **platforms and ops** (planned): a desktop app with a native UDP
-connection, WebRTC and WebGL2 fallbacks, regional servers with Quick play, and bandwidth work
-for 32-player matches. Co-op modes, accounts and cosmetics come after that.
+Next is milestone 5, **platforms and ops** (planned): a Windows desktop app with a native UDP
+connection, regional servers with Quick play, and bandwidth work for 32-player matches. The game
+stays WebGPU only. Co-op modes, accounts and cosmetics come after that.
 
 ## Contributing
 

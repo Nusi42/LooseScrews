@@ -1493,4 +1493,5 @@ These are part of the game design but aren't in the Milestone 4 build:
 - **Accounts, friends lists, ranked play and matchmaking by skill:** parties live on one
   server; duel challenges reach players on servers listed in the same directory only.
 - **Settings:** no mouse sensitivity, invert-look or key rebinding options.
-- **Cosmetics, a WebGL2 fallback for browsers without WebGPU, and a desktop app.**
+- **Cosmetics and a desktop app.** Browsers without WebGPU are not supported, and no fallback
+  renderer is planned.

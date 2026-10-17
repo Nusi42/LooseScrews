@@ -86,6 +86,9 @@ import { assertWorkFolder } from "../lib/work-folder.mjs";
 
 assertWorkFolder("tools/browser-smoke/smoke.mjs");
 
+/** This script's folder: the smoke test's rule set files live next to it. */
+const here = import.meta.dirname;
+
 // ----- arguments -------------------------------------------------------------------
 
 function defaultTarget() {

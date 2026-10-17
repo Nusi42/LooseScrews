@@ -1,14 +1,17 @@
 // Checkout roles and work-folder names (docs/adr/0001).
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 
 import {
   DEFAULT_PREFIX, branchOf, checkoutRole, claudeLocalSettings, envValue, folderOf, folderPrefix, isMaster,
   masterCargoConfig, masterRefusal, MASTER_RUSTC_WRAPPER, parseFolderNumber, withEnvValue, workFolderNumber,
 } from "../lib/work-folder.mjs";
+import { git, tempRepo } from "./git-fixture.mjs";
 
 function checkout(envLocal) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "role-"));
@@ -66,4 +69,15 @@ test("master cargo config and local Claude settings", () => {
   assert.match(masterCargoConfig(".cargo\\refuse-build.cmd"), /rustc-wrapper = "\.cargo\/refuse-build\.cmd"/);
   const s = JSON.parse(claudeLocalSettings("C:\\w\\loosescrews.win2"));
   assert.equal(s.autoMemoryDirectory, "C:/w/loosescrews.win2/.claude/memory");
+});
+
+test("guard-master marks a checkout as the master and turns its hooks on", () => {
+  const master = tempRepo();
+  const script = fileURLToPath(new URL("../work-folders.mjs", import.meta.url));
+  const r = spawnSync(process.execPath, [script, "guard-master", master], { encoding: "utf8" });
+  assert.equal(r.status, 0, r.stderr);
+  assert.ok(isMaster(master, {}));
+  assert.equal(git(master, ["config", "--local", "core.hooksPath"]), ".githooks");
+  assert.match(fs.readFileSync(path.join(master, ".cargo", "config.local.toml"), "utf8"), /rustc-wrapper/);
+  fs.rmSync(master, { recursive: true, force: true });
 });

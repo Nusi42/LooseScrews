@@ -1,15 +1,17 @@
 #!/usr/bin/env node
 // Git pre-push (.githooks/pre-push): first every pushed commit's message and
 // author / committer identity (tools/check-commit.mjs; the pushed refs come on
-// stdin, commits already on the remote are skipped), then the checks: a push to a
-// local path remote (the master checkout) runs the fast CI subset (STEPS), a push
-// to a network remote (the public repository) the full check (tools/ci.*: release
-// bot tests, wasm32 tests, WASM build, determinism cross-check, browser smoke).
-// Git passes the remote's name and URL as arguments. `--list` prints the fast steps.
+// stdin, commits already on the remote are skipped), then the checks, by who pushes
+// where (docs/adr/0004-local-verification.md): a work folder pushes only to the
+// master checkout (a local path) and runs the fast CI subset (STEPS); the master
+// pushes only to the public remote (a network URL) and runs MASTER_STEPS (private
+// information, dependency licenses), since nothing is built there and `main` only
+// moves to commits that passed the full check (tools/ci.*) in win1. Every other push
+// is refused. Git passes the remote's name and URL as arguments. `--list` prints the
+// fast steps.
 //
 // Every step's output is shown live and also kept in
-// target/pre-push/<n>-<step>.log, the full check's in target/pre-push/full-check.log
-// (overwritten by the next push), so a failure under load can be read afterwards
+// target/pre-push/<n>-<step>.log (overwritten by the next push), so a failure under load can be read afterwards
 // even when the pushing terminal or agent cut the output short; a failed step
 // names its log.
 import { spawn, spawnSync } from "node:child_process";
@@ -19,7 +21,7 @@ import { fileURLToPath } from "node:url";
 
 import { IDENTITY_HINT, MESSAGE_HINT, checkIdentity, checkMessage } from "../check-commit.mjs";
 import { loadPrivateList } from "../check-private.mjs";
-import { REPO_ROOT, assertWorkFolder } from "../lib/work-folder.mjs";
+import { REPO_ROOT, isMaster } from "../lib/work-folder.mjs";
 
 export const STEPS = [
   ["cargo fmt --check", "cargo", ["fmt", "--all", "--", "--check"], "."],
@@ -34,26 +36,40 @@ export const STEPS = [
   ["web unit tests", "npm", ["test"], "web"],
 ];
 
-/** The full check of a push to the public remote: tools/ci.ps1 on Windows, tools/ci.sh elsewhere. */
-export function fullCheck(platform = process.platform) {
-  return platform === "win32"
-    ? ["full check (tools/ci.ps1)", "pwsh", ["-NoProfile", "-File", "tools/ci.ps1"], "."]
-    : ["full check (tools/ci.sh)", "bash", ["tools/ci.sh"], "."];
+/**
+ * The checks of a push from the master checkout to the public remote. Nothing is built in the
+ * master: its `main` only ever moves to a WIN1 commit that passed the full check in win1.
+ */
+export const MASTER_STEPS = STEPS.filter(([name]) => name === "private information" || name === "dependency licenses");
+
+/**
+ * The kind of a remote URL: "local" for a path (the master checkout: `C:\...`, `/...`,
+ * `../x`, `\\host\share`, `file://...`), "network" for a URL (`https://...`, `ssh://...`,
+ * scp-like `git@host:path`: the public remote).
+ */
+export function remoteKind(url) {
+  const u = (url ?? "").trim();
+  if (/^file:\/\//i.test(u)) return "local";
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(u)) return "network";
+  if (/^[a-z]:([\\/]|$)/i.test(u)) return "local";
+  const colon = u.indexOf(":");
+  const slash = u.search(/[\\/]/);
+  return colon > 0 && (slash < 0 || colon < slash) ? "network" : "local";
 }
 
 /**
- * Which checks a push to `url` runs: "fast" for a local path (the master checkout:
- * `C:\...`, `/...`, `../x`, `\\host\share`, `file://...`), "full" for a network
- * URL (`https://...`, `ssh://...`, scp-like `git@host:path`).
+ * What a push to `url` runs: the master publishes to the public remote only (MASTER_STEPS); a
+ * work folder pushes to the master only (the fast subset, STEPS). Anything else is refused
+ * with the reason.
  */
-export function pushMode(url) {
-  const u = (url ?? "").trim();
-  if (/^file:\/\//i.test(u)) return "fast";
-  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(u)) return "full";
-  if (/^[a-z]:([\\/]|$)/i.test(u)) return "fast";
-  const colon = u.indexOf(":");
-  const slash = u.search(/[\\/]/);
-  return colon > 0 && (slash < 0 || colon < slash) ? "full" : "fast";
+export function pushPlan({ master, url }) {
+  const network = remoteKind(url) === "network";
+  if (master) {
+    return network ? { steps: MASTER_STEPS } : { refused: "the master checkout pushes only to the public remote" };
+  }
+  return network
+    ? { refused: "a work folder pushes only to the master checkout; the public remote is updated from the master (git -C <master> push github main)" }
+    : { steps: STEPS };
 }
 
 /** The pushed refs git writes on stdin: `<local ref> <local sha> <remote ref> <remote sha>` per line. */
@@ -160,10 +176,14 @@ async function main() {
     for (const [name] of STEPS) console.log(name);
     return 0;
   }
-  assertWorkFolder("git push");
   const stdin = process.stdin.isTTY ? "" : readFileSync(0, "utf8");
   const remote = process.argv[2] ?? "origin";
   const url = process.argv[3] ?? spawnSync("git", ["remote", "get-url", remote], { cwd: REPO_ROOT, encoding: "utf8" }).stdout;
+  const plan = pushPlan({ master: isMaster(REPO_ROOT), url });
+  if (plan.refused) {
+    console.error(`pre-push: push to ${remote} refused: ${plan.refused} (docs/dev-guide.md "Work folders")`);
+    return 1;
+  }
   console.log("\n==> pre-push: commit messages and identities");
   const problems = pushProblems(REPO_ROOT, remote, stdin, loadPrivateList());
   if (problems.length) {
@@ -174,7 +194,7 @@ async function main() {
   }
   const logDir = path.join(REPO_ROOT, "target", "pre-push");
   mkdirSync(logDir, { recursive: true });
-  for (const [i, [name, cmd, args, dir]] of STEPS.entries()) {
+  for (const [i, [name, cmd, args, dir]] of plan.steps.entries()) {
     console.log(`\n==> pre-push: ${name}`);
     const logFile = path.join(logDir, logName(i, name));
     const code = await runStep(cmd, args, path.join(REPO_ROOT, dir), logFile);
@@ -187,7 +207,7 @@ async function main() {
   return 0;
 }
 
-// Run only as a script (tests import STEPS, logName, pushMode, fullCheck and the commit checks).
+// Run only as a script (tests import STEPS, MASTER_STEPS, logName, remoteKind, pushPlan and the commit checks).
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   process.exitCode = await main();
 }

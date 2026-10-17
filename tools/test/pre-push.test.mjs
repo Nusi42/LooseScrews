@@ -1,4 +1,4 @@
-// Tests of tools/hooks/pre-push.mjs: fast or full checks by remote URL, step logs (the output of every step is kept) and
+// Tests of tools/hooks/pre-push.mjs: who may push where and which checks run, step logs (the output of every step is kept) and
 // the checks of the pushed commits (throwaway repositories, a made-up private list).
 import assert from "node:assert/strict";
 import fs, { mkdtempSync, readFileSync } from "node:fs";
@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
-import { STEPS, fullCheck, logName, parsePushLines, pushProblems, pushedCommits, pushMode, readCommits, runStep } from "../hooks/pre-push.mjs";
+import { MASTER_STEPS, STEPS, logName, parsePushLines, pushPlan, pushProblems, pushedCommits, readCommits, remoteKind, runStep } from "../hooks/pre-push.mjs";
 import { commitRaw, git, tempRepo } from "./git-fixture.mjs";
 import { FIXTURE_LIST } from "./private-list-fixture.mjs";
 
@@ -16,19 +16,28 @@ test("every step has a distinct log name", () => {
   assert.equal(logName(5, "cargo test --workspace"), "06-cargo-test-workspace.log");
 });
 
-test("a push to a network remote runs the full check, a push to a local path the fast subset", () => {
+test("remote URLs are network URLs or local paths", () => {
   for (const url of ["https://github.com/example/repo.git", "http://host/x", "ssh://git@host/x.git", "git://host/x", "git@github.com:example/repo.git", "host:repo", "  https://h/x\n"]) {
-    assert.equal(pushMode(url), "full", url);
+    assert.equal(remoteKind(url), "network", url);
   }
   for (const url of ["C:\\work\\loosescrews", "c:/work/loosescrews", "D:", "/home/x/loosescrews", "../loosescrews", "loosescrews", "\\\\server\\share\\repo", "file:///C:/work/repo", "./a:b", "", undefined]) {
-    assert.equal(pushMode(url), "fast", String(url));
+    assert.equal(remoteKind(url), "local", String(url));
   }
 });
 
-test("the full check is tools/ci.ps1 on Windows and tools/ci.sh elsewhere; the fast subset checks licenses", () => {
-  assert.deepEqual(fullCheck("win32").slice(1, 3), ["pwsh", ["-NoProfile", "-File", "tools/ci.ps1"]]);
-  assert.deepEqual(fullCheck("linux").slice(1, 3), ["bash", ["tools/ci.sh"]]);
-  assert.ok(STEPS.some(([, cmd, args]) => cmd === "node" && args[0] === "tools/check-licenses.mjs"));
+test("the master publishes only to the public remote, a work folder pushes only to the master", () => {
+  const github = "https://github.com/example/repo.git";
+  const master = "C:\\work\\loosescrews";
+  assert.deepEqual(pushPlan({ master: true, url: github }), { steps: MASTER_STEPS });
+  assert.deepEqual(pushPlan({ master: false, url: master }), { steps: STEPS });
+  assert.match(pushPlan({ master: false, url: github }).refused, /only to the master checkout/);
+  assert.match(pushPlan({ master: true, url: master }).refused, /only to the public remote/);
+  // Nothing that builds runs in the master; both run the private-data and license checks.
+  assert.deepEqual(MASTER_STEPS.map(([, cmd]) => cmd), ["node", "node"]);
+  for (const steps of [STEPS, MASTER_STEPS]) {
+    assert.ok(steps.some(([, , args]) => args[0] === "tools/check-licenses.mjs"));
+    assert.ok(steps.some(([, , args]) => args[0] === "tools/check-private.mjs"));
+  }
 });
 
 test("runStep keeps the output and the exit code of a failing step", async () => {

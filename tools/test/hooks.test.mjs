@@ -43,9 +43,11 @@ test("every dev and CI entry point has the work-folder guard", () => {
   for (const f of ["tools/ci.ps1", "tools/ci.sh", "tools/e2e.ps1", "tools/e2e.sh", "tools/browser-smoke.ps1", "tools/browser-smoke.sh"]) {
     assert.match(read(f), /work-folders\.mjs['"]?\)? guard/, f);
   }
-  for (const f of ["tools/e2e.mjs", "tools/browser-smoke/smoke.mjs", "web/scripts/build-wasm.mjs", "tools/hooks/install.mjs", "tools/hooks/pre-commit.mjs", "tools/hooks/pre-push.mjs"]) {
+  for (const f of ["tools/e2e.mjs", "tools/browser-smoke/smoke.mjs", "web/scripts/build-wasm.mjs", "tools/hooks/install.mjs", "tools/hooks/pre-commit.mjs"]) {
     assert.match(read(f), /assertWorkFolder\(/, f);
   }
+  // pre-push decides by checkout role and remote (pushPlan): the master may publish, nothing else.
+  assert.match(read("tools/hooks/pre-push.mjs"), /pushPlan\(\{ master: isMaster\(REPO_ROOT\)/);
 });
 
 test("vite does not use the default port", () => {

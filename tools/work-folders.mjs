@@ -9,7 +9,8 @@
 //                                                   npm ci in web/
 //   node tools/work-folders.mjs guard-master [path] mark a checkout as the master (default: the checkout
 //                                                   containing the current directory): .env.local gets
-//                                                   LS_CHECKOUT_ROLE=master, Cargo refuses every build
+//                                                   LS_CHECKOUT_ROLE=master, Cargo refuses every build,
+//                                                   core.hooksPath = .githooks (pre-push guards publishing)
 //   node tools/work-folders.mjs status              per work folder: branch, uncommitted / unpushed work;
 //                                                   main vs WIN1 in the master
 //   node tools/work-folders.mjs guard "<what>"      exit 1 with the refusal in the master (shell scripts)
@@ -86,7 +87,11 @@ function guardMaster(target) {
   fs.mkdirSync(cargoDir, { recursive: true });
   fs.writeFileSync(path.join(cargoDir, "refuse-build.cmd"), MASTER_RUSTC_WRAPPER);
   fs.writeFileSync(path.join(cargoDir, "config.local.toml"), masterCargoConfig(".cargo/refuse-build.cmd"));
-  console.log(`${path.basename(master)}: ${ENV_LOCAL} sets ${ROLE_KEY}=${MASTER_ROLE}; cargo refuses to build (.cargo/config.local.toml)`);
+  // The hooks guard publishing: the master's pre-push allows only a push to the public remote.
+  git(master, ["config", "--local", "core.hooksPath", ".githooks"]);
+  console.log(
+    `${path.basename(master)}: ${ENV_LOCAL} sets ${ROLE_KEY}=${MASTER_ROLE}; cargo refuses to build (.cargo/config.local.toml); core.hooksPath = .githooks`,
+  );
 }
 
 function dirtyCount(dir) {

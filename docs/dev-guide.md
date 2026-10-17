@@ -74,13 +74,14 @@ node tools/work-folders.mjs status                    # uncommitted / unpushed p
 - **commit-msg** checks the message and the author and committer identity
   (`tools/hooks/commit-msg.mjs`, rules [below](#commit-messages-and-identity)).
 - **pre-push** first checks every pushed commit (message, author, committer; commits already on
-  the remote are skipped, deleted refs too), then the checks, chosen by the remote's URL: a
-  push to a local path (the master checkout) runs the fast CI subset
-  (`node tools/hooks/pre-push.mjs --list` prints its steps), a push to a network URL
-  (`https://...`, `git@host:...`: the public repository) runs the full check
-  (`pwsh tools/ci.ps1` on Windows, `bash tools/ci.sh` elsewhere). Each step's output is also
-  kept in `target/pre-push/<n>-<step>.log`, the full check's in `target/pre-push/full-check.log`
-  (overwritten by the next push); a failed step names its log, so a failure is readable even
+  the remote are skipped, deleted refs too), then the checks, chosen by
+  who pushes where: a work folder pushes only to the master checkout (a local path) and runs
+  the fast CI subset (`node tools/hooks/pre-push.mjs --list` prints its steps); the master
+  pushes only to the public remote (a network URL, `git -C <master> push github main`) and
+  runs the private-information and dependency-license checks, since nothing is built in the
+  master and `main` only moves to commits that passed the full check in win1. Every other push
+  is refused. Each step's output is also
+  kept in `target/pre-push/<n>-<step>.log` (overwritten by the next push); a failed step names its log, so a failure is readable even
   when the pushing terminal cut the output short.
 - **Claude Code** runs the same per-file checks after every edit (`.claude/settings.json` →
   `tools/post-edit.mjs`). It finds the checkout from the edited file, not from the session
@@ -103,7 +104,7 @@ folder:
 - `tools/ci.*`, `tools/e2e.*`, `tools/browser-smoke.*`;
 - `npm run dev` / `build` / `typecheck` (through `build-wasm.mjs`);
 - `npm ci`'s `prepare`;
-- the pre-commit and pre-push hooks.
+- the pre-commit hook; the pre-push hook allows the master only a push to the public remote.
 
 ### Private information
 

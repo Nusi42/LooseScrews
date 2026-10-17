@@ -21,7 +21,7 @@
 - Resume prompt (every new session starts with it): "Continue where we left off: follow \"If you are the lead\" in CLAUDE.md and .claude/memory/next-steps.md". A session can be stopped at any moment: keep next-steps.md current after every step (what runs where, what is pending, what to do next), fold it into the work commit on WIN1 (or `chore(notes): …`) and fast-forward `main`
 - On resume: `node tools/work-folders.mjs status`; a work folder with uncommitted package work belongs to an interrupted package — finish it from its diff, never `git reset` it; agents and workflows of an earlier session are gone, so restart unfinished ones from next-steps.md
 - Start: read `.claude/memory/next-steps.md`; `git -C <win1> fetch`; check the `WINn` branches
-- Integrate in win1: `git merge -m "Merge <what it brought>" origin/WINn`, run `pwsh tools/ci.ps1` there; only when green: `git push origin WIN1`, then `git -C <master> merge --ff-only WIN1`. `main` is always green. Push to `<public remote>` only when the maintainer says so
+- Integrate in win1: `git merge -m "Merge <what it brought>" origin/WINn`, run `pwsh tools/ci.ps1` there; only when green: `git push origin WIN1`, then `git -C <master> merge --ff-only WIN1`. `main` is always green. Publish only when the maintainer says so, from the master: `git -C <master> push github main` (work folders cannot push there)
 - CodeGraph's index lives in the win1 work folder's `.codegraph` (the master has none): pass that folder as `projectPath` to `codegraph_explore`, or run `codegraph explore` there
 - Agents belong to the session that started them; a new session can't see or stop an older session's agents
 - "Can I close this session?": report running background tasks, uncommitted/unpushed work per winN and `main` vs `WIN1` (`node tools/work-folders.mjs status`)
@@ -45,7 +45,7 @@
 - Stop any Vite dev server before CI (on Windows it locks `web/node_modules` and `npm ci` fails)
 
 ## Commands (full list and options: `docs/dev-guide.md`)
-- Full check: `pwsh tools/ci.ps1` (Windows) or `tools/ci.sh`; no hosted CI, verification is local (pre-push runs the full check on pushes to the public remote)
+- Full check: `pwsh tools/ci.ps1` (Windows) or `tools/ci.sh`; no hosted CI, verification is local: the full check in win1 gates `main`; only the master pushes to the public remote (work folders cannot)
 - `cargo test --workspace` · `cargo clippy --workspace --all-targets -- -D warnings` · `cargo fmt --all`; slow suites only in release: `cargo test -p ls-bots --release`, `cargo test -p ls-game --release`
 - Web: `cd web && npm install && npm run typecheck && npm test && npm run build`; web unit tests run under `node --test` with type stripping: `.ts` import extensions, erasable-only syntax (no enums/parameter properties)
 - Determinism: after a generator, sim behavior, tuning or `data/` change, re-bless as in `docs/architecture/determinism.md` "Re-blessing" (generator version, golden hashes, replay fixtures, `SIM_BEHAVIOR_VERSION`); `node tools/determinism-check.mjs` compares WASM with native

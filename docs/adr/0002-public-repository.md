@@ -56,9 +56,9 @@ must be enforced by the tooling, without the tooling itself containing the priva
   any configuration, builds, tests and commits normally. The work root is the parent of the
   current work folder and the master its `origin` remote. Refusals name placeholders
   (`<work root>/loosescrews.win1`), never personal paths.
-- **No hosted CI:** verification is local. `tools/ci.*` is the gate for `main`, and the pre-push
-  hook runs it on every push to the public (network) remote; pushes to the master checkout run
-  the fast subset. A release is built, signed and published locally; the GitHub release is
+- **No hosted CI:** verification is local. `tools/ci.*` in win1 is the gate for `main`; work
+  folders push only to the master checkout (fast subset), the master only to the public remote
+  (private-information and license checks; ADR 0004). A release is built, signed and published locally; the GitHub release is
   created by hand.
 - **History rewrite (2026-10-17):** before the first push to GitHub, the history was rewritten
   once: authors and committers set to the public identity, messages reworded to the rules,

@@ -156,7 +156,7 @@ Rows marked *Decided* follow a §8 answer. The other rows are the plan's design;
 
 ## 5. Waves
 
-M5 starts after the code-quality audit's eight fix packages are integrated (audit decision Q10). Each wave is a set of packages that run in parallel in separate work folders (`loosescrews.win2`+), one package per folder, as in M3 and M4. Packages in one wave touch disjoint files except under "Shared files"; the integrator (win1) merges them in the listed order. A package may start before its dependency is merged only against the listed day-one contract. "As built" notes are added under each wave during execution.
+M5 starts after the code-quality audit's fix packages (eight plus remesh performance) are integrated (audit decision Q10). Each wave is a set of packages that run in parallel in separate work folders (`loosescrews.win2`+), one package per folder, as in M3 and M4. Packages in one wave touch disjoint files except under "Shared files"; the integrator (win1) merges them in the listed order. A package may start before its dependency is merged only against the listed day-one contract. "As built" notes are added under each wave during execution.
 
 Package ids are kept stable: A5 (WebRTC fallback), A7 (WebGL2 spike and seam), B1 (WebGL2 renderer), C1 (WebGL2 effects) and C3 (real deployment) are dropped and have no replacement.
 

@@ -10,7 +10,8 @@ the table; a finding the maintainer rejects is marked `won't fix: <reason>` (and
 exception, the code gets the one-line comment `code-quality.md` asks for).
 
 The ten open questions are decided (section 5) and folded into the findings, packages and
-acceptance criteria below. Decision (Q10): the eight packages run as one wave before milestone 5.
+acceptance criteria below. Decision (Q10): the eight packages run as one wave before milestone 5,
+together with package J (remesh performance, section 3), which is not a code-quality finding.
 
 ## 1. Summary
 
@@ -222,6 +223,20 @@ Dropped or corrected during verification:
 | H11 | ODR | Two invite-link builders/parsers with different parameter names; `?server=` parsed twice | `ui/party.ts:56-112`; `rules/model.ts:165-196`; `net/transport.ts:25-33` | One `invite.ts` owning parameter names, build and parse | low | no | S |
 | H12 | DRY | DOM `el()` helper defined 18 times, `esc()` twice | `ui/{architect,eventBanner,hud,lobby,modeHud,party,raceHud,results,scoreboard,visitorHud,workshop}.ts`; `rules/editor.ts:99`; `audio/demo.ts:44` (and the remaining `el` definitions found by grep) | `ui/dom.ts` (`el`, `elWith`, `escapeHtml`) | low | no | S |
 
+### Package J: remesh performance (not a code-quality finding)
+
+The full check fails on The Squeeze's shell remesh benchmark (`crates/ls-game/tests/squeeze.rs`,
+`shell_remeshing_stays_within_the_frame_budget`): its 99th percentile chunk remesh must stay under
+`P99_BUDGET` (4 ms), and on the development machine the eight seeds measure 3.4-4.0 ms (p50
+1.4-1.7 ms), so it fails whenever the machine is slightly busy. No mesher code changed since the
+benchmark last passed: the true-surface mesher (snap, smooth normals, baked occlusion) costs about
+twice the old one, which milestone 4 accepted ("the cave-in remesh budget partly met"). Decision:
+fix the cost, keep the budget.
+
+| ID | Where | Problem | Fix |
+|---|---|---|---|
+| J01 | `ls-worldgen` chunk mesher (`mesh.rs`, `chunk.rs`), the client's remesh queue (`ls-game` terrain), `tests/squeeze.rs` | p99 chunk remesh at the 4 ms budget; the slowest chunks cost about the same with or without the shell, so the mesher itself is the cost | Profile the slow chunks first (`cargo test -p ls-game --release --test squeeze -- --nocapture` prints them), then make the busy-chunk path cheaper without changing its output: for example reuse the per-chunk SDF samples and occlusion between consecutive shell steps, skip unchanged cells, or move the shell's remeshes off the frame (background remesh with the same results). |
+
 ### Package I: tools-docs
 
 | Id | Rule | Title | Locations | Fix | Risk | Det. | Size |
@@ -243,7 +258,8 @@ Dropped or corrected during verification:
 
 ## 4. Fix packages
 
-Eight packages (letters A-E, G-I; there is no F). Decision (Q10): they run as one wave before
+Nine packages (letters A-E, G-J; there is no F; J is remesh performance, not a code-quality
+finding). Decision (Q10): they run as one wave before
 milestone 5 starts, since every later change would otherwise add more hand copies; milestone 5
 wave A starts after this wave is integrated. Each package runs in its own work folder
 (`loosescrews.win2`+), starts from `origin/main`, and checks its own findings against the code
@@ -260,12 +276,14 @@ overlaps (later packages rebase on earlier ones).
 | G | server-bots-dir | `crates/ls-server` (except `rooms.rs`, `playlist.rs`), `crates/ls-directory`, `crates/ls-bots`, `crates/ls-net` framing module (G04), `web/src/net/{social,webtransport}.ts` | 10 | M | 6 |
 | H | web-dry | `web/src/renderer/**`, `web/src/ui/**` (except files A/B own), `web/src/gallery/**`, `web/src/game/**` registries and helpers, `web/src/audio/**`, `web/src/math/**` | 12 | L | 7 |
 | I | tools-docs | `tools/**`, `docs/**` (except this file's status column, which every package updates), `userDocs/**` hand-written pages, `CLAUDE.md`, `web/scripts/build-wasm.mjs`, a small `max_match_secs` hook in ls-sim (I07) and the rotation print in ls-server (I01) | 14 | L | 8 |
+| J | remesh-perf | `crates/ls-worldgen` mesher (`mesh.rs`, `chunk.rs`), the ls-game client remesh queue (`terrain.rs`), `crates/ls-game/tests/squeeze.rs` (reporting only, the budgets stay) | 1 | M | 9 |
 
 Overlaps that the order handles: E adds the ls-math owners (terrain ids, slider indices, mode
 wire, well grid) before A generates TS from them; A and H both touch TS consumers (A replaces
 constants, H restructures helpers, so H rebases on A); C changes ls-sim module structure before D
 rewrites every `param` call in the same modules; G's playlist-free changes do not touch D07's
-`playlist.rs` edit; I05 needs A's facts block and D02's data files, so I merges last. Packages
+`playlist.rs` edit; I05 needs A's facts block and D02's data files, so I merges after the others except J; J rebases
+on E (both touch ls-worldgen and ls-game) and merges last. Packages
 that edit the same file in the same lines should coordinate through the lead rather than resolve
 conflicts silently.
 
@@ -329,6 +347,13 @@ Per package:
   the hosting guide's flag table is generated from the server's clap definitions (Q7) and the
   player manual's numbers from placeholders (Q6); every new generated doc section has a `--check`
   in CI.
+- **J remesh-perf.** The benchmark's p99 chunk remesh is under 3 ms on every seed on the
+  development machine (a 25 % margin under the unchanged 4 ms `P99_BUDGET`), in three consecutive
+  full checks; `CHUNK_BUDGET` and `P99_BUDGET` unchanged. Meshes identical: worldgen golden hashes
+  and every mesh test unchanged, plus a test that the faster path produces the same vertices and
+  indices as the plain mesher on the benchmark's slow chunks. Gallery screenshots identical. The
+  cat-paw remesh benchmark (`tests/cat_paw_remesh.rs`) does not get slower. The finding is marked
+  `fixed (<commit>)` with the measured numbers.
 
 ## 5. Decisions
 

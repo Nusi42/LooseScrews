@@ -1262,6 +1262,11 @@ Each GIF should stay under 3 MB (the run prints the sizes; `--fps` and `--width`
 smoothness and size, `--debug` keeps every sampled frame under `target/readme-media/<clip>/`).
 The banner `docs/media/banner.svg` is drawn by hand.
 
+`node tools/readme-media/social.mjs` renders the repository's social preview
+(`docs/media/social-preview.png`, 1280x640) from the banner's still frame over a gameplay still
+(`--still <docs/media PNG>`, default `open-sky-dark.png`). GitHub takes it only by hand: repository
+Settings, General, Social preview.
+
 ### Sound check and sound previews
 
 `?audio=demo` (for example `http://localhost:7777/?audio=demo`) is the sound check page: every

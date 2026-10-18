@@ -1,11 +1,13 @@
 // tools/readme-media/media.mjs: PNG decoding, the pointer sprite and click ring, frame
-// diffing and the GIF writer (decoded back here and composited like a browser does).
+// diffing and the GIF writer (decoded back here and composited like a browser does); the social
+// preview page of tools/readme-media/social.mjs.
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { deflateSync } from "node:zlib";
 
 import { changedPixels, decodePng, DiffGifWriter, drawPointer, drawRing, POINTER_SPRITE, quantizeMasked } from "../readme-media/media.mjs";
+import { previewHtml } from "../readme-media/social.mjs";
 
 // ----- helpers ---------------------------------------------------------------------
 
@@ -297,4 +299,12 @@ test("DiffGifWriter keeps the running clock: rounded delays add up to the total"
   assert.equal(gif.frames.length, 9);
   assert.equal(gif.frames.reduce((s, f) => s + f.delay, 0), Math.round((9 * 83) / 10));
   assert.throws(() => writer.add(new Uint8Array(4), 10), /not 8x8/);
+});
+
+test("the social preview is 1280x640 with the banner, the still and the public URL", () => {
+  const html = previewHtml("data:banner", "data:still");
+  assert.match(html, /width:1280px;height:640px/);
+  assert.match(html, /<img class="banner" src="data:banner"/);
+  assert.ok(html.includes("url(data:still)"));
+  assert.ok(html.includes("github.com/Nusi42/LooseScrews"));
 });

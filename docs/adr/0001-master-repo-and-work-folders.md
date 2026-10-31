@@ -32,7 +32,8 @@ The maintainer already ran another project as one main checkout plus clones name
   - `<work root>/loosescrews.win1`, branch `WIN1`, integrates. Integration and the full CI run
     here.
   - `loosescrews.win2` and up (`WIN2`, …) take one parallel change each. Each one is reset to
-    `origin/main`, commits its change and pushes its branch; win1 merges it into `WIN1`.
+    `origin/main`, commits its change and pushes its branch; win1 rebases it onto `WIN1` and
+    fast-forwards (ADR 0005).
   - `main` moves only after `tools/ci.*` is green in win1: `git push origin WIN1`, then
     `git -C <master> merge --ff-only WIN1`.
   - The tooling derives the folder prefix from the current checkout's name (the part before
@@ -63,15 +64,19 @@ The maintainer already ran another project as one main checkout plus clones name
     rustfmt, web `tsc`, wildcard binds, LF line endings, private information, generated
     reference docs for `data/`).
   - commit-msg checks the message and the commit identity (ADR 0002).
-  - pre-push checks the pushed commits (ADR 0002), then runs the fast CI subset
+  - pre-push checks the pushed commits (ADR 0002), then runs the plan of `pushPlan` (ADR
+    0005); a work folder's push to the master refuses merge commits and runs the fast CI subset
     (`tools/hooks/pre-push.mjs --list`): fmt, generated docs, binds, private information, tools
     tests, clippy, `cargo test --workspace`, web typecheck and unit tests. The full
     `tools/ci.*` runs in win1 before `main` moves.
-  - The Claude Code PostToolUse hook (`.claude/settings.json` → `tools/post-edit.mjs`):
+  - The Claude Code PostToolUse hook (`.claude/settings.json` → `tools/post-edit.mjs`, a small
+    loader, ADR 0005):
     - finds the checkout from the **edited file**, i.e. the nearest folder above it with `.git`
-      and the runner. It never uses `$CLAUDE_PROJECT_DIR`, which may be the master;
+      and `tools/lib/after-edit.mjs`. It never uses `$CLAUDE_PROJECT_DIR`, which may be the
+      master, and hands the file to that checkout's own after-edit module, which:
     - skips files of a checkout whose role is master;
-    - removes the `originSessionId` line from memory notes' front matter;
+    - removes the `originSessionId`, `modified` and `node_type` lines from memory notes' front
+      matter;
     - runs that clone's own checks;
     - on findings, exits 2 with at most 20 lines.
   - Every check ignores `target/`, `node_modules/`, `dist/` and the WASM `pkg/`.

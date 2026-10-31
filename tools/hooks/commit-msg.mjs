@@ -3,7 +3,8 @@
 // author and committer identity must follow the public-repository rules
 // (tools/check-commit.mjs, docs/adr/0002-public-repository.md). `git merge` runs
 // this hook too: a merge (MERGE_HEAD present) needs a "Merge <what it brought>"
-// subject. Runs in the repository git runs it in (the current directory).
+// subject, and pre-push refuses merge commits anyway (docs/adr/0005-linear-history.md:
+// branches are combined by rebasing). Runs in the repository git runs it in (the current directory).
 //   node tools/hooks/commit-msg.mjs <message file>
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";

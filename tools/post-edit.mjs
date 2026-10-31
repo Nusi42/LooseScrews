@@ -1,23 +1,23 @@
 #!/usr/bin/env node
-// Claude Code PostToolUse hook (.claude/settings.json, docs/adr/0001): runs the
-// per-file checks on the file an agent just edited. A session may run in one
-// checkout and edit files in another, so the checkout is found from the edited
-// file (nearest folder above it with .git and the runner), never from
-// $CLAUDE_PROJECT_DIR, and that checkout's own runner runs. Files of a checkout
-// whose role is master are skipped. Claude Code writes bookkeeping lines into the
-// front matter of memory notes (`.claude/memory/*.md`): `originSessionId` (a session
-// id, which must never be committed), `modified` (a timestamp) and `node_type`; they
-// are stripped before the checks. On findings: at most 20 lines on stderr, exit
-// code 2 (Claude Code hands them to the agent).
-
+// Claude Code PostToolUse hook (.claude/settings.json, docs/adr/0001): runs the per-file
+// checks on the file an agent just edited. Claude Code passes the tool call as JSON on stdin
+// (`tool_input.file_path`, or `notebook_path`). On findings the short report goes to stderr
+// with exit code 2, which Claude Code hands to the agent.
+//
+// Claude Code starts this file from the session's folder ($CLAUDE_PROJECT_DIR), often the
+// master, whose copy lags behind until `main` is fast-forwarded. So it stays a small, stable
+// loader: it finds the checkout from the edited file (the nearest folder above it with .git
+// and tools/lib/after-edit.mjs) and hands the file to that checkout's own after-edit module,
+// which does the work (clean a memory note, run the checks, skip a master checkout).
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { isMaster } from "./lib/work-folder.mjs";
-
+/** Exit code that makes Claude Code show stderr to the agent. */
 const FEEDBACK_EXIT_CODE = 2;
-const RUNNER = path.join("tools", "lib", "run-checks.mjs");
+
+/** The module that handles an edited file, relative to a checkout's root. */
+export const AFTER_EDIT = path.join("tools", "lib", "after-edit.mjs");
 
 /** The edited file named by the hook input, if any. */
 export function editedFile(stdin) {
@@ -35,33 +35,15 @@ export function editedFile(stdin) {
   return undefined;
 }
 
-/** The checkout containing `file` (nearest folder with .git and the runner). */
+/** The checkout containing `file` (nearest folder with .git and AFTER_EDIT), or undefined. */
 export function checkoutOf(file) {
   let dir = path.dirname(path.resolve(file));
   for (;;) {
-    if (fs.existsSync(path.join(dir, ".git")) && fs.existsSync(path.join(dir, RUNNER))) return dir;
+    if (fs.existsSync(path.join(dir, ".git")) && fs.existsSync(path.join(dir, AFTER_EDIT))) return dir;
     const parent = path.dirname(dir);
     if (parent === dir) return undefined;
     dir = parent;
   }
-}
-
-/** Whether repo-relative `rel` is a memory note (`.claude/memory/**.md`). */
-export function isMemoryNote(rel) {
-  return /^\.claude\/memory\/.*\.md$/.test(rel);
-}
-
-/** Front-matter keys Claude Code writes into memory notes; none of them belongs in git. */
-export const HARNESS_KEYS = ["originSessionId", "modified", "node_type"];
-
-/** `content` without the HARNESS_KEYS lines in its front matter (unchanged when there are none). */
-export function stripSessionId(content) {
-  const m = /^(---\r?\n)([\s\S]*?)(\r?\n---(?:\r?\n|$))/.exec(content);
-  if (!m) return content;
-  const harness = new RegExp(`^\\s*(?:${HARNESS_KEYS.join("|")})\\s*:`);
-  const kept = m[2].split(/\r?\n/).filter((l) => !harness.test(l));
-  const front = kept.join(m[1].endsWith("\r\n") ? "\r\n" : "\n");
-  return `${m[1]}${front}${m[3]}${content.slice(m[0].length)}`;
 }
 
 async function main() {
@@ -70,20 +52,17 @@ async function main() {
   const file = path.resolve(named);
   if (!fs.existsSync(file)) return;
   const root = checkoutOf(file);
-  if (root === undefined || isMaster(root)) return;
+  if (root === undefined) return;
   const rel = path.relative(root, file).split(path.sep).join("/");
-  if (isMemoryNote(rel)) {
-    const content = fs.readFileSync(file, "utf8");
-    const stripped = stripSessionId(content);
-    if (stripped !== content) fs.writeFileSync(file, stripped);
-  }
-  const runner = await import(pathToFileURL(path.join(root, RUNNER)).href);
-  const results = await runner.runChecks(root, [rel]);
-  if (results.every((r) => r.code === 0)) return;
-  console.error(runner.shortReport(results));
+  const handler = await import(pathToFileURL(path.join(root, AFTER_EDIT)).href);
+  const report = await handler.afterEdit(root, file, rel);
+  if (report === undefined) return;
+  console.error(report);
   process.exitCode = FEEDBACK_EXIT_CODE;
 }
 
+// Only as a script (the tests import editedFile and checkoutOf); a broken hook must not block
+// edits, since exit code 2 is feedback to the agent.
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   await main();
 }

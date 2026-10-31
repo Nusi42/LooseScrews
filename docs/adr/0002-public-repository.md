@@ -42,7 +42,8 @@ must be enforced by the tooling, without the tooling itself containing the priva
   committer must be exactly that name and the GitHub noreply address; no identity may match the
   list. The commit-msg hook checks the commit being made, pre-push every pushed commit.
 - **Commit messages:** Conventional Commits (`<type>(<scope>): <subject>`, lowercase subject,
-  first line at most 72 characters, no trailing period); merges say `Merge <what it brought>`;
+  first line at most 72 characters, no trailing period); merges say `Merge <what it brought>`
+  (since ADR 0005 branches are rebased, and pre-push refuses new merge commits);
   git's `Revert "..."` and `fixup!` / `squash!` subjects pass. Trailers: only
   `Co-Authored-By: Claude <model> <noreply@anthropic.com>` and `Signed-off-by` lines
   (`git commit -s`; contributions come under the CLA in CONTRIBUTING.md, ADR 0003). Messages contain no internal logistics (work folders, branch numbers,
@@ -69,7 +70,8 @@ must be enforced by the tooling, without the tooling itself containing the priva
 
 - The tooling holds no private value; the same checks run for every contributor, with or
   without a private list.
-- Commits made with git's default merge message are refused: merges need `-m "Merge ..."`.
+- Commits made with git's default merge message are refused. Since ADR 0005 no new merge
+  commits are pushed at all.
 - Every checkout needs the public identity in its git config once the private list names one;
   `create` copies it into new work folders.
 - The master must be marked once with `guard-master`; until then it is an ordinary checkout.

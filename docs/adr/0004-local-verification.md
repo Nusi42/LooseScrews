@@ -17,9 +17,11 @@ hooks.
   elsewhere) runs in the lead work folder before `main` moves; `main` only ever moves to a commit
   that passed it. `docs/dev-guide.md` lists the full local test run.
 - **Only the master publishes.** Work folders push only to the master checkout (the pre-push
-  hook runs the fast subset); the master pushes `main` only to the public remote, and its
-  pre-push hook runs the private-information and dependency-license checks (nothing is built in
-  the master). The hook refuses a push from a work folder to the public remote.
+  hook runs the fast subset); the master pushes only `main` (and release tags `v<semver>`) and
+  only to the public remote, and its pre-push hook runs the private-information and
+  dependency-license checks (nothing is built in the master). The hook refuses a push from a
+  work folder to the public remote and names the master's publish command. ADR 0005 adds the
+  linear-history check to both and puts the decision into one tested function (`pushPlan`).
 - **Releases are local.** A release is built, signed and published locally; the GitHub release is
   created by hand.
 

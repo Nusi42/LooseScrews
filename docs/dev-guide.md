@@ -31,7 +31,8 @@ contains `LS_CHECKOUT_ROLE=master`; the environment variable `LS_CHECKOUT_ROLE` 
 file. Any other value, or none, is a normal checkout. Run once inside the master:
 
 ```sh
-node tools/work-folders.mjs guard-master   # writes .env.local (the role) and the refusing .cargo/config.local.toml
+node tools/work-folders.mjs guard-master   # writes .env.local (the role) and the refusing .cargo/config.local.toml,
+                                           # sets core.hooksPath = .githooks (pre-push guards publishing)
 ```
 
 The committed `.cargo/config.toml` includes `.cargo/config.local.toml`; in the master its
@@ -56,8 +57,10 @@ Day to day:
 
 ```sh
 git fetch origin && git reset --hard origin/main      # a work folder starts from main (clean tree first)
-git push --force-with-lease origin WIN3               # change done (pre-push checks the commits, then the fast CI subset)
-# in win1: git merge -m "Merge <what it brought>" origin/WIN3, run pwsh tools/ci.ps1; when green:
+git push --force-with-lease origin WIN3               # change done (pre-push: the commits, no merge commits, the fast CI subset)
+# in win1, rebase (never merge, docs/adr/0005-linear-history.md), then run pwsh tools/ci.ps1:
+git fetch && git switch -C integrate origin/WIN3 && git rebase WIN1 && git switch WIN1 && git merge --ff-only integrate
+# when green:
 git push origin WIN1 && git -C <master> merge --ff-only WIN1
 node tools/work-folders.mjs status                    # uncommitted / unpushed per work folder, main vs WIN1 in the master
 ```
@@ -73,22 +76,35 @@ node tools/work-folders.mjs status                    # uncommitted / unpushed p
   so stage the whole file you fixed.
 - **commit-msg** checks the message and the author and committer identity
   (`tools/hooks/commit-msg.mjs`, rules [below](#commit-messages-and-identity)).
-- **pre-push** first checks every pushed commit (message, author, committer; commits already on
-  the remote are skipped, deleted refs too), then the checks, chosen by
-  who pushes where: a work folder pushes only to the master checkout (a local path) and runs
-  the fast CI subset (`node tools/hooks/pre-push.mjs --list` prints its steps); the master
-  pushes only to the public remote (a network URL, `git -C <master> push github main`) and
-  runs the private-information and dependency-license checks, since nothing is built in the
-  master and `main` only moves to commits that passed the full check in win1. Every other push
-  is refused. Each step's output is also
+- **pre-push** decides what a push runs with one function, `pushPlan` in
+  `tools/lib/push-plan.mjs` ([adr/0005-linear-history.md](adr/0005-linear-history.md)), from
+  the checkout's role, the remote's URL and the pushed refs. A refusal names the command to use
+  instead. Otherwise it first checks every pushed commit (message, author, committer; commits
+  on a remote-tracking branch or under the remote's old value are skipped, deleted refs too),
+  then runs the plan:
+  - a work folder pushes only to the master checkout (a local path): no merge commits
+    (`tools/check-linear.mjs`), then the fast CI subset (`node tools/hooks/pre-push.mjs --list`
+    prints the steps);
+  - the master pushes only `main` (and release tags `v<semver>`) and only to the public remote
+    (a network URL, `git -C <master> push github main`): no merge commits, private information
+    and dependency licenses, since nothing is built in the master and `main` only moves to
+    commits that passed the full check in win1;
+  - a plain clone (no master) runs the fast CI subset for every push;
+  - every other push is refused.
+
+  The hook runs on load (no "is main module" test), and `.githooks/pre-push` runs the tools of
+  the checkout the hooks belong to; `tools/test/pre-push-hook.test.mjs` runs it through git on
+  throw-away repositories. Each step's output is also
   kept in `target/pre-push/<n>-<step>.log` (overwritten by the next push); a failed step names its log, so a failure is readable even
   when the pushing terminal cut the output short.
 - **Claude Code** runs the same per-file checks after every edit (`.claude/settings.json` →
-  `tools/post-edit.mjs`). It finds the checkout from the edited file, not from the session
-  folder (a session may run in the master and edit work folders), and skips files of a
-  checkout whose role is master. In memory notes (`.claude/memory/*.md`) it first removes the
-  bookkeeping lines Claude Code writes into the front matter (`originSessionId`, `modified`,
-  `node_type`). Findings go back to the agent: exit 2, at most 20 lines.
+  `tools/post-edit.mjs`). That file runs from the session folder (often the master, whose copy
+  lags behind), so it is only a small loader: it finds the checkout from the edited file and
+  hands the file to that checkout's own `tools/lib/after-edit.mjs`. The after-edit module skips
+  files of a checkout whose role is master; in memory notes (`.claude/memory/*.md`) it first
+  removes the bookkeeping lines Claude Code writes into the front matter (`originSessionId`,
+  `modified`, `node_type`, at the top level or indented under `metadata`). Findings go back to
+  the agent: exit 2, at most 20 lines.
 
 No check looks at `target/`, `node_modules/`, `dist/` or the WASM `pkg/`.
 
@@ -104,7 +120,8 @@ folder:
 - `tools/ci.*`, `tools/e2e.*`, `tools/browser-smoke.*`;
 - `npm run dev` / `build` / `typecheck` (through `build-wasm.mjs`);
 - `npm ci`'s `prepare`;
-- the pre-commit hook; the pre-push hook allows the master only a push to the public remote.
+- the pre-commit hook; the pre-push hook allows the master only a push of `main` (and release
+  tags) to the public remote.
 
 ### Private information
 
@@ -147,9 +164,11 @@ are `tools/check-commit.mjs` (commit-msg and pre-push).
   `perf`, `refactor`, `test`, `docs`, `build`, `ci`, `chore`, `style`, `revert`; the scope
   (`[a-z0-9-]+`) is optional; the subject starts lowercase, has no trailing period, and the
   first line has at most 72 characters. A blank line separates the optional body.
-- **Merges** need an explicit subject `Merge <what it brought>`: git's default "Merge branch
-  ..." names branches and is refused, so merge with `git merge -m "Merge ..." <branch>`. git's
-  `Revert "..."` and `fixup!` / `squash!` subjects are accepted.
+- **No merge commits:** branches are combined by rebasing and fast-forwarding
+  ([adr/0005-linear-history.md](adr/0005-linear-history.md)); pre-push refuses merge commits on
+  pushes to and from the master. The older history's merge commits say `Merge <what it
+  brought>` (git's default "Merge branch ..." is refused). git's `Revert "..."` and `fixup!` /
+  `squash!` subjects are accepted.
 - **Trailers:** only `Co-Authored-By: Claude <model> <noreply@anthropic.com>` and
   `Signed-off-by: <name> <email>` lines (`git commit -s`).
 - **Not in a message:** internal logistics (work-folder names and branches, remote-tracking

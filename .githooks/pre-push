@@ -1,3 +1,4 @@
 #!/bin/sh
-# Pushed commits' messages and identities, then the fast CI subset (tools/hooks/pre-push.mjs).
-exec node "$(git rev-parse --show-toplevel)/tools/hooks/pre-push.mjs" "$@"
+# The push plan of this checkout's tools (tools/hooks/pre-push.mjs): who may push where,
+# the pushed commits' messages and identities, no merge commits, then the plan's checks.
+exec node "$(dirname "$0")/../tools/hooks/pre-push.mjs" "$@"

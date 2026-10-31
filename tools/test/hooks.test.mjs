@@ -7,8 +7,9 @@ import path from "node:path";
 import { test } from "node:test";
 
 import { MAX_LINES, plan, runChecks, shortReport } from "../lib/run-checks.mjs";
+import { afterEdit, cleanNote, isMemoryNote, withoutHarnessKeys } from "../lib/after-edit.mjs";
 import { REPO_ROOT } from "../lib/work-folder.mjs";
-import { checkoutOf, editedFile, isMemoryNote, stripSessionId } from "../post-edit.mjs";
+import { AFTER_EDIT, checkoutOf, editedFile } from "../post-edit.mjs";
 import { commitRaw, git, listFile, tempRepo } from "./git-fixture.mjs";
 import { FIXTURE_LIST } from "./private-list-fixture.mjs";
 
@@ -16,8 +17,9 @@ const read = (rel) => fs.readFileSync(path.join(REPO_ROOT, rel), "utf8");
 
 test("git hooks exist and call the node hooks", () => {
   assert.match(read(".githooks/pre-commit"), /tools\/hooks\/pre-commit\.mjs/);
-  assert.match(read(".githooks/pre-push"), /tools\/hooks\/pre-push\.mjs" "\$@"/);
-  assert.match(read(".githooks/commit-msg"), /tools\/hooks\/commit-msg\.mjs" "\$@"/);
+  // pre-push and commit-msg run the tools of the checkout the hooks belong to.
+  assert.ok(read(".githooks/pre-push").includes('exec node "$(dirname "$0")/../tools/hooks/pre-push.mjs" "$@"'));
+  assert.ok(read(".githooks/commit-msg").includes('exec node "$(dirname "$0")/../tools/hooks/commit-msg.mjs" "$@"'));
   const pkg = JSON.parse(read("web/package.json"));
   assert.equal(pkg.scripts.prepare, "node ../tools/hooks/install.mjs");
   assert.match(pkg.scripts.dev, /work-folders\.mjs guard/);
@@ -28,7 +30,8 @@ test("Claude Code post-edit hook runs tools/post-edit.mjs on edits", () => {
   const entry = s.hooks.PostToolUse[0];
   assert.match(entry.matcher, /Edit/);
   assert.match(entry.matcher, /Write/);
-  assert.match(entry.hooks[0].command, /tools\/post-edit\.mjs/);
+  // The session may run in the master; the loader finds the edited checkout itself.
+  assert.equal(entry.hooks[0].command, 'node "$CLAUDE_PROJECT_DIR/tools/post-edit.mjs"');
 });
 
 test("cargo includes the gitignored local config; build output is ignored", () => {
@@ -46,8 +49,15 @@ test("every dev and CI entry point has the work-folder guard", () => {
   for (const f of ["tools/e2e.mjs", "tools/browser-smoke/smoke.mjs", "web/scripts/build-wasm.mjs", "tools/hooks/install.mjs", "tools/hooks/pre-commit.mjs"]) {
     assert.match(read(f), /assertWorkFolder\(/, f);
   }
-  // pre-push decides by checkout role and remote (pushPlan): the master may publish, nothing else.
-  assert.match(read("tools/hooks/pre-push.mjs"), /pushPlan\(\{ master: isMaster\(REPO_ROOT\)/);
+  // pre-push decides by checkout role, remote and refs (pushPlan): the master may publish, nothing else.
+  assert.match(read("tools/hooks/pre-push.mjs"), /pushPlan\(\{ role: pushRole\(root\), url, refs: parsePushLines\(stdin\)/);
+});
+
+test("pre-push and the linear-history check run on load, never behind an is-main test", () => {
+  for (const f of ["tools/hooks/pre-push.mjs", "tools/check-linear.mjs"]) {
+    assert.doesNotMatch(read(f), /fileURLToPath\(import\.meta\.url\)/, f);
+    assert.doesNotMatch(read(f), /process\.argv\[1\]/, f);
+  }
 });
 
 test("vite does not use the default port", () => {
@@ -61,6 +71,7 @@ test("post-edit finds the checkout from the edited file", () => {
   assert.equal(editedFile('{"tool_input":{"file_path":"C:/a/b.rs"}}'), "C:/a/b.rs");
   assert.equal(editedFile("not json"), undefined);
   assert.equal(checkoutOf(path.join(REPO_ROOT, "tools", "lib", "run-checks.mjs")), REPO_ROOT);
+  assert.ok(fs.existsSync(path.join(REPO_ROOT, AFTER_EDIT)));
   assert.equal(checkoutOf(path.join(os.tmpdir(), "x", "y.rs")), undefined);
 });
 
@@ -94,16 +105,67 @@ test("every data folder the reference pages read triggers the generated-docs che
   assert.deepEqual(plan([...files, "data/other/x.ron"]).data, files);
 });
 
-test("post-edit strips the session id from memory notes' front matter", () => {
+test("post-edit strips Claude Code's keys from memory notes' front matter", () => {
   const key = ["origin", "SessionId"].join("");
   assert.ok(isMemoryNote(".claude/memory/next.md"));
   assert.ok(!isMemoryNote("docs/next.md"));
-  assert.equal(stripSessionId(`---\nname: x\n${key}: abc\ntype: y\n---\nbody ${key}: kept\n`), `---\nname: x\ntype: y\n---\nbody ${key}: kept\n`);
-  assert.equal(stripSessionId(`---\r\nname: x\r\n${key}: abc\r\n---\r\n`), "---\r\nname: x\r\n---\r\n");
-  const harness = `---\nname: x\nmetadata:\n  node_type: memory\n  type: y\n  ${key}: abc\n  modified: 2000-01-01T00:00:00Z\n---\n`;
-  assert.equal(stripSessionId(harness), "---\nname: x\nmetadata:\n  type: y\n---\n");
+  assert.equal(withoutHarnessKeys(`---\nname: x\n${key}: abc\ntype: y\n---\nbody ${key}: kept\n`), `---\nname: x\ntype: y\n---\nbody ${key}: kept\n`);
+  assert.equal(withoutHarnessKeys(`---\r\nname: x\r\n${key}: abc\r\n---\r\n`), "---\r\nname: x\r\n---\r\n");
+  const harness = `---\nname: x\nmodified: 2000-01-01\nnode_type: memory\nmetadata:\n  node_type: memory\n  type: y\n  ${key}: abc\n\t${key}: tab\n  modified: 2000-01-01T00:00:00Z\n---\n`;
+  assert.equal(withoutHarnessKeys(harness), "---\nname: x\nmetadata:\n  type: y\n---\n");
+  // Keys that only start like one of them stay.
+  const kept = "---\nmodified_by: x\nnode_types: y\n---\n";
+  assert.equal(withoutHarnessKeys(kept), kept);
   const plain = "# no front matter\n";
-  assert.equal(stripSessionId(plain), plain);
+  assert.equal(withoutHarnessKeys(plain), plain);
+});
+
+test("the after-edit module cleans a memory note in place, then runs the checks", async () => {
+  const key = ["origin", "SessionId"].join("");
+  const root = tempRepo();
+  try {
+    fs.mkdirSync(path.join(root, ".claude", "memory"), { recursive: true });
+    const note = path.join(root, ".claude", "memory", "note.md");
+    fs.writeFileSync(note, `---\nname: note\nmetadata:\n  ${key}: 1234\n  modified: 2000-01-01\n---\nbody\n`);
+    assert.equal(await afterEdit(root, note, ".claude/memory/note.md"), undefined);
+    assert.equal(fs.readFileSync(note, "utf8"), "---\nname: note\nmetadata:\n---\nbody\n");
+    // Only memory notes are rewritten; the checks still report the session key elsewhere.
+    const doc = path.join(root, "doc.md");
+    fs.writeFileSync(doc, `---\n${key}: 1234\n---\n`);
+    assert.equal(cleanNote(doc, "doc.md"), false);
+    assert.match(await afterEdit(root, doc, "doc.md"), /private information: failed/);
+    // Nothing runs for files of a master checkout.
+    fs.writeFileSync(path.join(root, ".env.local"), "LS_CHECKOUT_ROLE=master\n");
+    assert.equal(await afterEdit(root, doc, "doc.md"), undefined);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("the post-edit loader hands the file to the edited checkout's own after-edit module", () => {
+  // The loader may come from an older checkout (the master): what runs is the module of the
+  // checkout that holds the file.
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), "ls-post-edit-"));
+  const hook = path.join(REPO_ROOT, "tools", "post-edit.mjs");
+  const run = (file) => spawnSync(process.execPath, [hook], { input: JSON.stringify({ tool_input: { file_path: file } }), encoding: "utf8" });
+  try {
+    fs.mkdirSync(path.join(work, ".git"));
+    fs.mkdirSync(path.join(work, "tools", "lib"), { recursive: true });
+    fs.writeFileSync(path.join(work, AFTER_EDIT), "export const afterEdit = async (root, file, rel) => `this checkout's code: ${rel}`;\n");
+    fs.mkdirSync(path.join(work, "docs"));
+    const file = path.join(work, "docs", "a.md");
+    fs.writeFileSync(file, "x\n");
+    const edited = run(file);
+    assert.equal(edited.status, 2, edited.stderr);
+    assert.equal(edited.stderr.trim(), "this checkout's code: docs/a.md");
+    // A file outside any checkout: nothing runs.
+    fs.rmSync(path.join(work, ".git"), { recursive: true });
+    const outside = run(file);
+    assert.equal(outside.status, 0, outside.stderr);
+    assert.equal(outside.stderr, "");
+  } finally {
+    fs.rmSync(work, { recursive: true, force: true });
+  }
 });
 
 /** Runs the commit-msg hook in `repo` on `message` as `ident`; resolves to { code, stderr }. */
@@ -140,7 +202,7 @@ test("commit-msg checks the message, merges and both identities", () => {
 `);
   const merge = commitMsg(repo, "Merge branch 'WIN3' into WIN1\n", pub, list);
   assert.equal(merge.code, 1);
-  assert.match(merge.stderr, /git merge -m "Merge <what it brought>"/);
+  assert.match(merge.stderr, /Combine branches by rebasing/);
   assert.equal(commitMsg(repo, "Merge the tether gadget\n", pub, list).code, 0);
   assert.equal(commitMsg(repo, "feat: not a merge subject\n", pub, list).code, 1);
   fs.rmSync(repo, { recursive: true, force: true });

@@ -4,8 +4,9 @@
 // being written, the author and committer ident) and by pre-push (every pushed
 // commit). Tests: tools/test/check-commit.test.mjs.
 //   - Messages follow Conventional Commits: `<type>(<scope>): <subject>`, first line
-//     at most 72 characters, no trailing period, the subject starts lowercase. Merge
-//     commits say `Merge <what it brought>`; git's `Revert "..."` and `fixup!` /
+//     at most 72 characters, no trailing period, the subject starts lowercase. Branches
+//     are combined by rebasing (docs/adr/0005-linear-history.md); the merge commits of the
+//     older history say `Merge <what it brought>`; git's `Revert "..."` and `fixup!` /
 //     `squash!` subjects are accepted. Trailers: the Claude co-author line and
 //     `Signed-off-by: <name> <email>` lines (`git commit -s`); their names and emails
 //     are checked against the private list like the rest of the message.
@@ -36,7 +37,7 @@ export const PUBLIC_REPO = "github.com/Nusi42/LooseScrews";
 /** How to fix a refused message (printed by the hooks). */
 export const MESSAGE_HINT =
   'Commit messages: Conventional Commits, e.g. "fix(net): drop stale snapshots" (docs/adr/0002-public-repository.md).\n' +
-  'Merges need an explicit message: git merge -m "Merge <what it brought>" <branch>.';
+  "Combine branches by rebasing, not with a merge commit: git rebase <target>, then git merge --ff-only (docs/adr/0005-linear-history.md).";
 
 /** How to fix a refused identity. */
 export const IDENTITY_HINT =

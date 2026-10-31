@@ -4,6 +4,7 @@
 // made here; every refusal and the checks before the build steps are.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -16,12 +17,15 @@ import { FIXTURE_LIST } from "./private-list-fixture.mjs";
 
 const ZERO = "0".repeat(40);
 const NETWORK_URL = "https://github.com/example/repo.git";
-const { name: PUBLIC_NAME, email: PUBLIC_EMAIL } = FIXTURE_LIST.publicIdentity;
 
-/** A master and a work folder cloned from it, with this checkout's hooks; runs `body`, then cleans up. */
-function withRepos(body) {
+/**
+ * A master and a work folder cloned from it, with this checkout's hooks and the private list
+ * `privateList`; runs `body`, then cleans up.
+ */
+function withRepos(body, privateList = FIXTURE_LIST) {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), "ls-push-hook-"));
-  const list = listFile(FIXTURE_LIST);
+  const list = listFile(privateList);
+  const { name: PUBLIC_NAME, email: PUBLIC_EMAIL } = privateList.publicIdentity;
   try {
     const hooks = path.join(REPO_ROOT, ".githooks");
     const env = { ...process.env, LS_PRIVATE_LIST: list };
@@ -149,4 +153,29 @@ test("the master's publish refuses merge commits and commits that break the rule
     assert.equal(message.status, 1);
     assert.match(message.stderr, /pre-push: push refused\n {2}[0-9a-f]{10} Added stuff: message: /);
   });
+});
+
+/**
+ * A private list with fresh random values: the publish runs the hook checkout's own
+ * private-information check over its tracked files, whose tests hold FIXTURE_LIST's values.
+ */
+function freshList() {
+  const handle = `P${randomBytes(6).toString("hex")}`;
+  const name = `N${randomBytes(6).toString("hex")}`;
+  return { names: [`${name} X`], nameParts: [name], emails: [], accountNames: [], projects: [], caseSensitive: [], handle, publicIdentity: { name: handle, email: `1+${handle}@users.noreply.github.com` } };
+}
+
+test("the master publishes main and a release tag after the checks that build nothing", () => {
+  withRepos(({ master, commit, prePush }) => {
+    const base = git(master, ["rev-parse", "HEAD"]);
+    const head = commit(master, "a.txt", "fix: add the a file");
+    const lines = `refs/heads/main ${head} refs/heads/main ${base}
+refs/tags/v0.5.1 ${head} refs/tags/v0.5.1 ${ZERO}
+`;
+    const run = prePush(master, NETWORK_URL, lines);
+    assert.equal(run.status, 0, run.stderr);
+    assert.match(run.stderr, /pre-push: no merge commits/);
+    assert.match(run.stderr, /pre-push: private information/);
+    assert.doesNotMatch(run.stderr, /cargo (?:test|clippy)/);
+  }, freshList());
 });

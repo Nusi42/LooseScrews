@@ -23,7 +23,11 @@ import { logName, pushProblems, runStep } from "../lib/push-checks.mjs";
 import { WORK_STEPS, masterOf, parsePushLines, pushPlan, pushRole } from "../lib/push-plan.mjs";
 import { REPO_ROOT } from "../lib/work-folder.mjs";
 
-/** Node steps name a script of the hook's own checkout (REPO_ROOT); they check the pushing one. */
+/**
+ * Node steps run the scripts of the hook's own checkout (REPO_ROOT), which check that checkout's
+ * files. In use the hook is always the pushing checkout's own (`core.hooksPath = .githooks`), so
+ * both are the same; the tests point throwaway repositories at this checkout's hooks.
+ */
 function stepArgs(cmd, args) {
   return cmd === "node" && args[0]?.startsWith("tools/") ? [path.join(REPO_ROOT, ...args[0].split("/")), ...args.slice(1)] : args;
 }

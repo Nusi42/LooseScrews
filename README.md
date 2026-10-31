@@ -224,6 +224,8 @@ wasm32 tests, the WASM and web builds, the WASM-versus-native determinism check 
 or Edge is installed, the headless browser smoke test. The GIFs and stills above are recorded
 by `node tools/readme-media/record.mjs` ([developer guide](docs/dev-guide.md#readme-media)).
 
+Found a security problem? Please report it privately, as described in [SECURITY.md](SECURITY.md).
+
 ## License
 
 - **Code:** the [GNU Affero General Public License v3.0 or later](LICENSE). You may use, study,

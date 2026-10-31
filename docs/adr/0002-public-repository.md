@@ -65,6 +65,12 @@ must be enforced by the tooling, without the tooling itself containing the priva
   once: authors and committers set to the public identity, messages reworded to the rules,
   private values removed from every revision. The pre-push check of all commits not yet on the
   remote verified the result on that first push.
+- **GitHub settings (2026-10-31):** private vulnerability reporting on (`SECURITY.md` points
+  to it), Dependabot alerts on (automatic Dependabot pull requests off), secret scanning with
+  push protection on, Actions off (no hosted CI), pull requests merge by squash only, and the
+  ruleset "default" on `main` blocks deletion and force pushes and requires a linear history,
+  with the maintainer as the only bypass (ADR 0005). Each setting is changed by hand and read back
+  with `gh api`.
 
 ## Consequences
 
